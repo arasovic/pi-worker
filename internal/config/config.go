@@ -20,14 +20,23 @@ type Config struct {
 	DefaultModel  string `json:"defaultModel"`
 }
 
-// UserPath returns the default location of the personal configuration file
-// inside the current user's configuration directory.
-func UserPath() (string, error) {
-	dir, err := os.UserConfigDir()
+// UserDir returns the default configuration directory for pi-worker.
+func UserDir() (string, error) {
+	root, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "pi-worker", "config.json"), nil
+	return filepath.Join(root, "pi-worker"), nil
+}
+
+// UserPath returns the default location of the personal configuration file
+// inside the current user's configuration directory.
+func UserPath() (string, error) {
+	dir, err := UserDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.json"), nil
 }
 
 // Validate reports whether cfg is a well-formed configuration document.
