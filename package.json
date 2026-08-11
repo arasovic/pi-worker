@@ -1,0 +1,29 @@
+{
+  "name": "pi-worker",
+  "version": "0.0.0-private",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.20.0"
+  },
+  "bin": {
+    "pi-worker": "npm/bin/pi-worker.mjs"
+  },
+  "files": [
+    "npm/bin/",
+    "npm/generated/",
+    "npm/lib/",
+    "npm/native/",
+    "npm/scripts/postinstall.mjs",
+    "skills/pi-worker/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "dependencies": {
+    "skills": "1.5.22"
+  },
+  "scripts": {
+    "test": "node --test npm/test/native.test.mjs"
+  }
+}

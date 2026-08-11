@@ -1,5 +1,7 @@
 /bin/
 /dist/
+/node_modules/
+/npm/native/
 /coverage.out
 /.idea/
 /.vscode/
