@@ -129,13 +129,14 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker doctor [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker config show [--json]")
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
-	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
 }
 
 // runOptions holds the parsed run command surface.
 type runOptions struct {
 	model          string
 	modelSpecified bool
+	thinking       pi.ThinkingLevel
 	tasks          []string
 	taskFiles      []string
 	timeout        time.Duration
@@ -168,10 +169,11 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	}
 
 	result, err := run.New(newWorker()).Run(ctx, run.Request{
-		Model:     opts.model,
-		Tasks:     tasks,
-		Workspace: workspace,
-		Debug:     debug,
+		Model:         opts.model,
+		ThinkingLevel: opts.thinking,
+		Tasks:         tasks,
+		Workspace:     workspace,
+		Debug:         debug,
 	})
 	if err != nil {
 		// Defensive: the CLI validates the input surface first, so a
@@ -181,6 +183,11 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	}
 
 	code := runExitCode(result)
+	for i, worker := range result.Workers {
+		if worker.Warning != "" {
+			fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Warning)
+		}
+	}
 
 	if opts.json {
 		data, err := json.Marshal(result)
@@ -200,8 +207,9 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	}
 
 	for i, worker := range result.Workers {
+		label := workerOutputLabel(i+1, worker)
 		if worker.Status == pi.StatusCompleted {
-			fmt.Fprintf(stdout, "worker %d: %s\n", i+1, worker.Explanation)
+			fmt.Fprintf(stdout, "%s: %s\n", label, worker.Explanation)
 			continue
 		}
 		message := worker.Error
@@ -211,9 +219,16 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		if message == "" {
 			message = fmt.Sprintf("status %q", worker.Status)
 		}
-		fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, message)
+		fmt.Fprintf(stderr, "pi-worker: %s: %s\n", label, message)
 	}
 	return code
+}
+
+func workerOutputLabel(index int, worker pi.WorkerResult) string {
+	if worker.ThinkingLevel == "" {
+		return fmt.Sprintf("worker %d", index)
+	}
+	return fmt.Sprintf("worker %d [model=%s thinking=%s]", index, worker.Model, worker.ThinkingLevel)
 }
 
 func parseRunArgs(args []string) (runOptions, error) {
@@ -223,7 +238,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 		arg := args[i]
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--model", "--timeout":
+		case "--model", "--thinking", "--timeout":
 			if !hasValue {
 				if i+1 >= len(args) {
 					return opts, fmt.Errorf("flag %s requires a value", name)
@@ -238,6 +253,12 @@ func parseRunArgs(args []string) (runOptions, error) {
 			if name == "--model" {
 				opts.model = value
 				opts.modelSpecified = true
+			} else if name == "--thinking" {
+				level, ok := pi.ParseThinkingLevel(value)
+				if !ok {
+					return opts, fmt.Errorf("invalid thinking level %q: expected off, minimal, low, medium, high, xhigh, or max", value)
+				}
+				opts.thinking = level
 			} else {
 				duration, err := time.ParseDuration(value)
 				if err != nil {

@@ -227,6 +227,15 @@ func installRealFakePiWorker(t *testing.T) {
 func setupFakePiScript(t *testing.T, scriptConfig *script.Script) {
 	t.Helper()
 	dir := t.TempDir()
+	if scriptConfig.Triggers == nil {
+		scriptConfig.Triggers = make(map[string][]script.Step)
+	}
+	if _, hasTrigger := scriptConfig.Triggers["get_state"]; !hasTrigger && len(scriptConfig.TriggerSequences["get_state"]) == 0 {
+		scriptConfig.Triggers["get_state"] = []script.Step{{Response: &script.Response{
+			Success: true,
+			Data:    json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium","isStreaming":false}`),
+		}}}
+	}
 	data, err := json.Marshal(scriptConfig)
 	if err != nil {
 		t.Fatalf("marshal script: %v", err)
@@ -365,6 +374,11 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "empty task", args: []string{"run", "--model", "acme/m-1", "--task", ""}, stdin: ""},
 		{name: "task and task file", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--task-file", "b.txt"}, stdin: ""},
 		{name: "repeated model", args: []string{"run", "--model", "acme/m-1", "--model", "acme/m-2"}, stdin: ""},
+		{name: "thinking without value", args: []string{"run", "--model", "acme/m-1", "--thinking"}, stdin: ""},
+		{name: "empty thinking", args: []string{"run", "--model", "acme/m-1", "--thinking=", "--task", "a"}, stdin: ""},
+		{name: "invalid thinking", args: []string{"run", "--model", "acme/m-1", "--thinking", "ultra", "--task", "a"}, stdin: ""},
+		{name: "mixed-case thinking", args: []string{"run", "--model", "acme/m-1", "--thinking", "MAX", "--task", "a"}, stdin: ""},
+		{name: "repeated thinking", args: []string{"run", "--model", "acme/m-1", "--thinking", "low", "--thinking", "max", "--task", "a"}, stdin: ""},
 		{name: "repeated timeout", args: []string{"run", "--model", "acme/m-1", "--timeout", "1m", "--timeout", "2m"}, stdin: ""},
 		{name: "repeated json", args: []string{"run", "--model", "acme/m-1", "--json", "--json"}, stdin: ""},
 		{name: "debug with value", args: []string{"run", "--model", "acme/m-1", "--debug=true"}, stdin: ""},
@@ -430,6 +444,76 @@ func TestRunSuccessHuman(t *testing.T) {
 	remaining := time.Until(deadline)
 	if remaining < 29*time.Minute || remaining > 31*time.Minute {
 		t.Fatalf("default deadline is %v away, want about 30m", remaining)
+	}
+}
+
+func TestRunThinkingPropagatesAndLabelsHumanOutput(t *testing.T) {
+	fake := installFakeWorker(t, pi.WorkerResult{
+		Model:                  "acme/m-1",
+		RequestedThinkingLevel: pi.ThinkingMax,
+		ThinkingLevel:          pi.ThinkingMax,
+		Status:                 pi.StatusCompleted,
+		Explanation:            "All done.",
+	})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking=max", "--task", "fix the bug"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if stdout != "worker 1 [model=acme/m-1 thinking=max]: All done.\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	request := mustWorkerRequest(t, fake, 1)
+	if request.ThinkingLevel != pi.ThinkingMax {
+		t.Fatalf("thinking = %q, want max", request.ThinkingLevel)
+	}
+}
+
+func TestRunAcceptsEveryDocumentedThinkingLevel(t *testing.T) {
+	for _, level := range []pi.ThinkingLevel{
+		pi.ThinkingOff,
+		pi.ThinkingMinimal,
+		pi.ThinkingLow,
+		pi.ThinkingMedium,
+		pi.ThinkingHigh,
+		pi.ThinkingXHigh,
+		pi.ThinkingMax,
+	} {
+		t.Run(string(level), func(t *testing.T) {
+			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+			code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", string(level), "--task", "go"}, "")
+			if code != 0 || stderr != "" {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr)
+			}
+			if got := mustWorkerRequest(t, fake, 1).ThinkingLevel; got != level {
+				t.Fatalf("thinking = %q, want %q", got, level)
+			}
+		})
+	}
+}
+
+func TestRunThinkingFallbackWarnsAndKeepsSuccessfulExit(t *testing.T) {
+	warning := "requested thinking=max unavailable; continuing with Pi default thinking=medium"
+	result := pi.WorkerResult{
+		Model:                  "acme/m-1",
+		RequestedThinkingLevel: pi.ThinkingMax,
+		ThinkingLevel:          pi.ThinkingMedium,
+		ThinkingFallback:       true,
+		Warning:                warning,
+		Status:                 pi.StatusCompleted,
+		Explanation:            "Completed with default effort.",
+	}
+	_ = installFakeWorker(t, result)
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "go", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "pi-worker: worker 1: "+warning+"\n" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	output := decodeRunOutput(t, stdout)
+	if len(output.Workers) != 1 || !output.Workers[0].ThinkingFallback || output.Workers[0].ThinkingLevel != pi.ThinkingMedium || output.Workers[0].Warning != warning {
+		t.Fatalf("output = %#v", output)
 	}
 }
 
@@ -834,7 +918,7 @@ func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
 	}
 }
 
-func TestRunUsageShowsDebugFlag(t *testing.T) {
+func TestRunUsageShowsDebugAndThinkingFlags(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	code := Main([]string{}, strings.NewReader(""), &stdout, &stderr)
@@ -843,6 +927,9 @@ func TestRunUsageShowsDebugFlag(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--debug") {
 		t.Fatalf("usage does not mention --debug: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--thinking <level>") {
+		t.Fatalf("usage does not mention --thinking: %q", stderr.String())
 	}
 }
 

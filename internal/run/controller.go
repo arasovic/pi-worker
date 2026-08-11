@@ -21,9 +21,10 @@ const maxTasks = 3
 // Request describes one bounded parallel run: every accepted task runs
 // concurrently through the same worker with the same model and workspace.
 type Request struct {
-	Model     string
-	Tasks     []string
-	Workspace string
+	Model         string
+	ThinkingLevel pi.ThinkingLevel
+	Tasks         []string
+	Workspace     string
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
@@ -63,11 +64,12 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		go func(index int, task string) {
 			defer wg.Done()
 			results[index] = c.worker.Run(ctx, pi.WorkerRequest{
-				Model:     req.Model,
-				Prompt:    task,
-				Workspace: req.Workspace,
-				WorkerID:  index + 1,
-				Debug:     req.Debug,
+				Model:         req.Model,
+				ThinkingLevel: req.ThinkingLevel,
+				Prompt:        task,
+				Workspace:     req.Workspace,
+				WorkerID:      index + 1,
+				Debug:         req.Debug,
 			})
 		}(i, task)
 	}

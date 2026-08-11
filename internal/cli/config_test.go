@@ -199,6 +199,32 @@ func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestRunThinkingUsesSavedModelWithoutPersistingEffort(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+
+	code, _, stderr := runCLI(t, []string{"run", "--thinking", "max", "--task", "work"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("run default with thinking = (%d, %q)", code, stderr)
+	}
+	req := mustWorkerRequest(t, fake, 1)
+	if req.Model != "acme/default" || req.ThinkingLevel != pi.ThinkingMax {
+		t.Fatalf("worker request = %#v", req)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("config changed: %q, %v", after, err)
+	}
+}
+
 func TestRunModelExplicitEmptySelectorNeverFallsBack(t *testing.T) {
 	for _, test := range []struct {
 		name string

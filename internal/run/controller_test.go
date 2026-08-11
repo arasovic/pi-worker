@@ -42,6 +42,7 @@ import (
 type scriptedWorker struct {
 	mu        sync.Mutex
 	prompts   []string
+	thinking  []pi.ThinkingLevel
 	completed []string
 	ctxs      []context.Context
 	active    int
@@ -66,6 +67,7 @@ func newScriptedWorker() *scriptedWorker {
 func (w *scriptedWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
 	w.mu.Lock()
 	w.prompts = append(w.prompts, req.Prompt)
+	w.thinking = append(w.thinking, req.ThinkingLevel)
 	w.ctxs = append(w.ctxs, ctx)
 	w.active++
 	if w.active > w.maxActive {
@@ -133,6 +135,12 @@ func (w *scriptedWorker) promptsSeen() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]string(nil), w.prompts...)
+}
+
+func (w *scriptedWorker) thinkingSeen() []pi.ThinkingLevel {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]pi.ThinkingLevel(nil), w.thinking...)
 }
 
 func (w *scriptedWorker) completionOrder() []string {
@@ -209,6 +217,31 @@ func waitGate(t *testing.T, gate chan struct{}) {
 // validRequest is the minimal accepted controller request.
 func validRequest(tasks ...string) Request {
 	return Request{Model: "acme/m-1", Tasks: tasks, Workspace: "/workspace"}
+}
+
+func TestControllerPassesOneThinkingLevelToAllWorkers(t *testing.T) {
+	worker := newScriptedWorker()
+	result, err := New(worker).Run(context.Background(), Request{
+		Model:         "acme/m-1",
+		ThinkingLevel: pi.ThinkingMax,
+		Tasks:         []string{"a", "b", "c"},
+		Workspace:     "/workspace",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("status = %q", result.Status)
+	}
+	levels := worker.thinkingSeen()
+	if len(levels) != 3 {
+		t.Fatalf("thinking observations = %v", levels)
+	}
+	for i, level := range levels {
+		if level != pi.ThinkingMax {
+			t.Fatalf("worker %d thinking = %q, want max", i+1, level)
+		}
+	}
 }
 
 func TestControllerRejectsInvalidRequestsBeforeStartingWorkers(t *testing.T) {
