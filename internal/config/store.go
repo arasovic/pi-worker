@@ -9,6 +9,8 @@ import (
 	"runtime"
 )
 
+var chmodConfigDirectory = os.Chmod
+
 // Load reads and validates the configuration document at path. It rejects
 // unknown fields, trailing JSON after the document, unsupported schema
 // versions, and invalid default model selectors.
@@ -50,6 +52,11 @@ func Save(path string, cfg Config) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("save config %s: create directory: %w", path, err)
+	}
+	if runtime.GOOS != "windows" && filepath.Base(dir) == "pi-worker" && filepath.Base(path) == "config.json" {
+		if err := chmodConfigDirectory(dir, 0o700); err != nil {
+			return fmt.Errorf("save config %s: set directory permissions: %w", path, err)
+		}
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {

@@ -325,6 +325,59 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	}
 }
 
+func TestSaveTightensExistingPiWorkerDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on Windows")
+	}
+	dir := filepath.Join(t.TempDir(), "pi-worker")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("Mkdir(%q): %v", dir, err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
+		t.Fatalf("Save(%q): %v", path, err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", dir, err)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("config directory mode %o: group and other bits must be unset", perm)
+	}
+}
+
+func TestSaveAbortsBeforeReplacingConfigWhenDirectoryChmodFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not support Unix permission bits")
+	}
+	dir := filepath.Join(t.TempDir(), "pi-worker")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("Mkdir(%q): %v", dir, err)
+	}
+	path := filepath.Join(dir, "config.json")
+	before := []byte("{\"schemaVersion\":1,\"defaultModel\":\"provider/old\"}\n")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+	want := errors.New("chmod denied")
+	original := chmodConfigDirectory
+	chmodConfigDirectory = func(string, os.FileMode) error { return want }
+	t.Cleanup(func() { chmodConfigDirectory = original })
+
+	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/new"})
+	if !errors.Is(err, want) {
+		t.Fatalf("Save() error = %v, want wrapped %v", err, want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("config changed after chmod failure: before %q, after %q", before, after)
+	}
+	assertNoTempFiles(t, dir)
+}
+
 type fakeDirectorySyncHandle struct {
 	syncErr  error
 	closeErr error
