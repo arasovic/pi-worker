@@ -61,9 +61,14 @@ func TestRunIsReadyWhenAllChecksPass(t *testing.T) {
 func TestRunReportsMissingExecutableAsFailed(t *testing.T) {
 	deps := readyDependencies()
 	deps.Lookup = func(string) (string, error) { return "", errors.New("missing " + seededEnvironment) }
+	catalog := &catalogFake{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}}
+	deps.Catalog = catalog
 	result, err := Run(context.Background(), deps)
-	if err != nil || result.Ready || result.Checks[0].Status != CheckFailed {
+	if err != nil || result.Ready || len(result.Checks) != 6 || result.Checks[0].Status != CheckFailed || result.Checks[3].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
 		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if catalog.calls != 0 {
+		t.Fatalf("catalog calls = %d, want 0 when the executable is unavailable", catalog.calls)
 	}
 	assertRedacted(t, result)
 }
@@ -77,6 +82,30 @@ func TestRunReportsUnsupportedVersionAsFailed(t *testing.T) {
 	}
 }
 
+func TestRunUsesResolvedExecutableForVersionAndCatalog(t *testing.T) {
+	deps := readyDependencies()
+	const resolvedExecutable = "/tmp/resolved-pi"
+	deps.Lookup = func(string) (string, error) { return resolvedExecutable, nil }
+	deps.Version = func(_ context.Context, executable string) (string, error) {
+		if executable != resolvedExecutable {
+			t.Fatalf("version executable = %q, want %q", executable, resolvedExecutable)
+		}
+		return "0.84.1", nil
+	}
+	factoryCalls := 0
+	deps.CatalogFactory = func(executable string) pi.ModelCatalog {
+		factoryCalls++
+		if executable != resolvedExecutable {
+			t.Fatalf("catalog executable = %q, want %q", executable, resolvedExecutable)
+		}
+		return &catalogFake{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}}
+	}
+	result, err := Run(context.Background(), deps)
+	if err != nil || !result.Ready || factoryCalls != 1 {
+		t.Fatalf("result = %#v, err = %v, factory calls = %d", result, err, factoryCalls)
+	}
+}
+
 func TestRunReportsMissingConfigAsWarning(t *testing.T) {
 	deps := readyDependencies()
 	deps.LoadConfig = func() (config.Config, error) { return config.Config{}, fs.ErrNotExist }
@@ -87,13 +116,18 @@ func TestRunReportsMissingConfigAsWarning(t *testing.T) {
 }
 
 func TestRunNeverFlattensMalformedConfigToWarning(t *testing.T) {
-	deps := readyDependencies()
-	deps.LoadConfig = func() (config.Config, error) { return config.Config{}, errors.New("malformed " + seededSecret) }
-	result, err := Run(context.Background(), deps)
-	if err != nil || result.Ready || result.Checks[2].Status != CheckFailed {
-		t.Fatalf("result = %#v, err = %v", result, err)
+	for _, cfg := range []config.Config{
+		{},
+		{SchemaVersion: 1, DefaultModel: "acme/model"},
+	} {
+		deps := readyDependencies()
+		deps.LoadConfig = func() (config.Config, error) { return cfg, errors.New("malformed " + seededSecret) }
+		result, err := Run(context.Background(), deps)
+		if err != nil || result.Ready || result.Checks[2].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
+			t.Fatalf("config = %#v, result = %#v, err = %v", cfg, result, err)
+		}
+		assertRedacted(t, result)
 	}
-	assertRedacted(t, result)
 }
 
 func TestRunReportsEmptyCatalogAsFailed(t *testing.T) {

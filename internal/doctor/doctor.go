@@ -53,14 +53,15 @@ func FailureKindOf(err error) FailureKind {
 }
 
 type Dependencies struct {
-	Lookup     func(string) (string, error)
-	Version    func(context.Context, string) (string, error)
-	LoadConfig func() (config.Config, error)
-	Catalog    pi.ModelCatalog
-	Workspace  func() (string, error)
-	Home       func() (string, error)
-	Stat       func(string) (fs.FileInfo, error)
-	Debug      *pi.DebugSink
+	Lookup         func(string) (string, error)
+	Version        func(context.Context, string) (string, error)
+	LoadConfig     func() (config.Config, error)
+	CatalogFactory func(string) pi.ModelCatalog
+	Catalog        pi.ModelCatalog
+	Workspace      func() (string, error)
+	Home           func() (string, error)
+	Stat           func(string) (fs.FileInfo, error)
+	Debug          *pi.DebugSink
 }
 
 func Run(ctx context.Context, deps Dependencies) (Result, error) {
@@ -99,7 +100,13 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 	}
 
 	workspace, workspaceErr := deps.Workspace()
-	models, catalogErr := catalog(ctx, deps, workspace, workspaceErr)
+	var models []pi.ModelProjection
+	var catalogErr error
+	if executableErr != nil {
+		catalogErr = &pi.ReadinessError{Message: "pi executable is unavailable"}
+	} else {
+		models, catalogErr = catalog(ctx, deps, executable, workspace, workspaceErr)
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return result, contextFailure(ctxErr)
 	}
@@ -110,6 +117,8 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 	}
 
 	switch {
+	case configErr != nil && !configMissing:
+		add(&result, "default-model", CheckFailed, "Configured default model could not be checked")
 	case configMissing || cfg.DefaultModel == "":
 		add(&result, "default-model", CheckWarning, "No default model is configured")
 	case catalogErr != nil || !contains(models, cfg.DefaultModel):
@@ -145,11 +154,18 @@ func add(result *Result, name string, status CheckStatus, message string) {
 	}
 }
 
-func catalog(ctx context.Context, deps Dependencies, workspace string, workspaceErr error) ([]pi.ModelProjection, error) {
-	if workspaceErr != nil || deps.Catalog == nil {
+func catalog(ctx context.Context, deps Dependencies, executable, workspace string, workspaceErr error) ([]pi.ModelProjection, error) {
+	if workspaceErr != nil {
 		return nil, errors.New("catalog unavailable")
 	}
-	return deps.Catalog.List(ctx, pi.CatalogRequest{Workspace: workspace, Debug: deps.Debug})
+	catalog := deps.Catalog
+	if deps.CatalogFactory != nil {
+		catalog = deps.CatalogFactory(executable)
+	}
+	if catalog == nil {
+		return nil, errors.New("catalog unavailable")
+	}
+	return catalog.List(ctx, pi.CatalogRequest{Workspace: workspace, Debug: deps.Debug})
 }
 
 func contains(models []pi.ModelProjection, selector string) bool {

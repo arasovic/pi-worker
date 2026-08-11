@@ -111,6 +111,40 @@ func TestDoctorExitClassification(t *testing.T) {
 	}
 }
 
+func TestDoctorMissingExecutableKeepsReadinessExitWithoutCatalogProcess(t *testing.T) {
+	deps := readyDoctorDependencies()
+	deps.Lookup = func(string) (string, error) { return "", errors.New("missing") }
+	factoryCalls := 0
+	deps.CatalogFactory = func(string) pi.ModelCatalog {
+		factoryCalls++
+		return &fakeCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}}
+	}
+	installDoctorDependencies(t, deps)
+
+	code, stdout, stderr := runCLI(t, []string{"doctor"}, "")
+	if code != 3 || stderr != "" || factoryCalls != 0 {
+		t.Fatalf("exit = %d, stderr = %q, factory calls = %d", code, stderr, factoryCalls)
+	}
+	want := []string{
+		"pi-executable: failed - Pi executable is unavailable",
+		"pi-version: failed - Pi version could not be checked",
+		"config: ok - Pi-worker configuration is valid",
+		"model-catalog: failed - Pi model catalog is unavailable",
+		"default-model: failed - Configured default model is unavailable",
+		"global-skill: ok - Global pi-worker skill is installed",
+		"ready: no",
+	}
+	got := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(got) != len(want) {
+		t.Fatalf("output = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("output line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestDoctorDefaultTimeoutIs30Seconds(t *testing.T) {
 	// This catches doctor accidentally inheriting run's 30-minute timeout.
 	deadlineSeen := make(chan time.Duration, 1)
