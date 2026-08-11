@@ -53,9 +53,12 @@ func Save(path string, cfg Config) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("save config %s: create directory: %w", path, err)
 	}
-	if runtime.GOOS != "windows" && filepath.Base(dir) == "pi-worker" && filepath.Base(path) == "config.json" {
-		if err := chmodConfigDirectory(dir, 0o700); err != nil {
-			return fmt.Errorf("save config %s: set directory permissions: %w", path, err)
+	if runtime.GOOS != "windows" {
+		userPath, err := UserPath()
+		if err == nil && filepath.Clean(path) == filepath.Clean(userPath) {
+			if err := chmodConfigDirectory(dir, 0o700); err != nil {
+				return fmt.Errorf("save config %s: set directory permissions: %w", path, err)
+			}
 		}
 	}
 	data, err := json.Marshal(cfg)

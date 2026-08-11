@@ -325,15 +325,35 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	}
 }
 
+func isolatedUserConfigPath(t *testing.T) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("AppData", filepath.Join(t.TempDir(), "AppData"))
+	case "darwin":
+		t.Setenv("HOME", t.TempDir())
+	default:
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	}
+	path, err := UserPath()
+	if err != nil {
+		t.Fatalf("UserPath(): %v", err)
+	}
+	return path
+}
+
 func TestSaveTightensExistingPiWorkerDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are not meaningful on Windows")
 	}
-	dir := filepath.Join(t.TempDir(), "pi-worker")
+	path := isolatedUserConfigPath(t)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(dir), err)
+	}
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("Mkdir(%q): %v", dir, err)
 	}
-	path := filepath.Join(dir, "config.json")
 	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
 		t.Fatalf("Save(%q): %v", path, err)
 	}
@@ -346,15 +366,44 @@ func TestSaveTightensExistingPiWorkerDirectory(t *testing.T) {
 	}
 }
 
-func TestSaveAbortsBeforeReplacingConfigWhenDirectoryChmodFails(t *testing.T) {
+func TestSaveDoesNotTightenUnrelatedPiWorkerDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not support Unix permission bits")
+		t.Skip("permission bits are not meaningful on Windows")
 	}
+	_ = isolatedUserConfigPath(t)
 	dir := filepath.Join(t.TempDir(), "pi-worker")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("Mkdir(%q): %v", dir, err)
 	}
+	before, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", dir, err)
+	}
 	path := filepath.Join(dir, "config.json")
+	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
+		t.Fatalf("Save(%q): %v", path, err)
+	}
+	after, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", dir, err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("unrelated directory mode changed from %o to %o", before.Mode().Perm(), after.Mode().Perm())
+	}
+}
+
+func TestSaveAbortsBeforeReplacingConfigWhenDirectoryChmodFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not support Unix permission bits")
+	}
+	path := isolatedUserConfigPath(t)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", filepath.Dir(dir), err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("Mkdir(%q): %v", dir, err)
+	}
 	before := []byte("{\"schemaVersion\":1,\"defaultModel\":\"provider/old\"}\n")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatalf("WriteFile(%q): %v", path, err)
