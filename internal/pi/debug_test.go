@@ -69,6 +69,95 @@ func countBodiesWithPrefix(bodies []string, prefix string) int {
 	return n
 }
 
+func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writes := make(chan string, 4)
+	writer := &notifyingWriter{writes: writes}
+	scope := newDebugSinkWithClock(writer, clock.t, clock.now).Worker(1)
+	events := make(chan string, 2)
+	stdout, piOutput := io.Pipe()
+	t.Cleanup(func() {
+		_ = stdout.Close()
+		_ = piOutput.Close()
+	})
+
+	ticks := make(chan time.Time, 1)
+	tickerIntervals := make(chan time.Duration, 1)
+	client := NewClient(io.Discard, stdout, eventSignalHandler{events: events}, scope)
+	client.newIdleTicker = func(interval time.Duration) (<-chan time.Time, func()) {
+		tickerIntervals <- interval
+		return ticks, func() {}
+	}
+	client.awaitingSettled = true
+
+	done := make(chan error, 1)
+	go func() { done <- client.WaitSettled(context.Background()) }()
+	if interval := <-tickerIntervals; interval != debugHeartbeatInterval {
+		t.Fatalf("ticker interval = %v, want %v", interval, debugHeartbeatInterval)
+	}
+	clock.advance(debugHeartbeatInterval)
+	ticks <- clock.now()
+
+	select {
+	case line := <-writes:
+		if !strings.Contains(line, "worker=1 phase=waiting-for-pi no-event-for=30s") {
+			t.Fatalf("idle heartbeat = %q", line)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no idle heartbeat while Pi emitted no frames")
+	}
+
+	clock.advance(5 * time.Second)
+	if _, err := io.WriteString(piOutput, `{"type":"agent_start"}`+"\n"); err != nil {
+		t.Fatalf("write activity event: %v", err)
+	}
+	if eventType := <-events; eventType != "agent_start" {
+		t.Fatalf("event = %q, want agent_start", eventType)
+	}
+	clock.advance(debugHeartbeatInterval)
+	ticks <- clock.now()
+	select {
+	case line := <-writes:
+		if !strings.Contains(line, "worker=1 phase=waiting-for-pi no-event-for=30s") {
+			t.Fatalf("reset idle heartbeat = %q", line)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no idle heartbeat after the next no-event interval")
+	}
+
+	if _, err := io.WriteString(piOutput, `{"type":"agent_settled"}`+"\n"); err != nil {
+		t.Fatalf("write settlement: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("WaitSettled(): %v", err)
+	}
+}
+
+type notifyingWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	writes chan<- string
+}
+
+type eventSignalHandler struct {
+	events chan<- string
+}
+
+func (h eventSignalHandler) OnEvent(event Event) error {
+	h.events <- event.Type
+	return nil
+}
+
+func (w *notifyingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	w.mu.Unlock()
+	if n > 0 {
+		w.writes <- string(p[:n])
+	}
+	return n, err
+}
+
 func TestDebugSinkFormatsAndSanitizesLines(t *testing.T) {
 	var buf bytes.Buffer
 	sink := newDebugSink(&buf, time.Now().Add(-2*time.Minute))

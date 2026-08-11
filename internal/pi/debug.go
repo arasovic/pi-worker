@@ -22,6 +22,7 @@ const (
 	debugStarting  = "phase=starting" // + provider= model= thinking-requested=
 	debugThinking  = "phase=thinking-confirmed"
 	debugStreaming = "phase=model-streaming" // + elapsed=
+	debugWaiting   = "phase=waiting-for-pi"  // + no-event-for=
 	debugSettled   = "phase=settled"
 	debugStarted   = "status=started"
 	debugCompleted = "status=completed"
@@ -137,6 +138,12 @@ func (w *WorkerScope) Elapsed() time.Duration {
 		return 0
 	}
 	return w.sink.Elapsed()
+}
+
+// enabled reports whether this scope has a real destination. It lets callers
+// avoid starting background diagnostics when debug output is disabled.
+func (w *WorkerScope) enabled() bool {
+	return w != nil && w.sink != nil && w.sink.w != nil
 }
 
 // log writes one sanitized line for the worker scope that attempted it.

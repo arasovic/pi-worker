@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,11 +19,9 @@ type EventHandler interface {
 	OnEvent(Event) error
 }
 
-// streamingHeartbeatInterval bounds model-streaming debug lines by elapsed
-// run time: after the first message_update of a run logs one activity line,
-// later updates log at most one heartbeat per interval, independent of
-// frame count.
-const streamingHeartbeatInterval = 30 * time.Second
+// debugHeartbeatInterval bounds both model-streaming updates and host-clock
+// no-event diagnostics, independent of frame count.
+const debugHeartbeatInterval = 30 * time.Second
 
 // toolStartCap bounds the tool-execution start timings the client retains
 // for completion-duration correlation. Tool call ids are Pi-controlled
@@ -67,6 +66,9 @@ type Client struct {
 	// as this map key, never logged. Only the single driving goroutine
 	// touches it.
 	toolStarts map[string]time.Duration
+	// newIdleTicker is the testable host-clock boundary for no-event
+	// heartbeats while WaitSettled is blocked in the JSONL reader.
+	newIdleTicker func(time.Duration) (<-chan time.Time, func())
 }
 
 func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *WorkerScope) *Client {
@@ -75,6 +77,10 @@ func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *W
 		out:     NewFrameWriter(stdin),
 		handler: handler,
 		debug:   debug,
+		newIdleTicker: func(interval time.Duration) (<-chan time.Time, func()) {
+			ticker := time.NewTicker(interval)
+			return ticker.C, ticker.Stop
+		},
 	}
 }
 
@@ -347,6 +353,8 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 		c.awaitingSettled = false
 		return nil
 	}
+	markActivity, stopIdleHeartbeat := c.startIdleHeartbeat(ctx)
+	defer stopIdleHeartbeat()
 	for {
 		if err := ctx.Err(); err != nil {
 			c.awaitingSettled = false
@@ -357,6 +365,7 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 			c.awaitingSettled = false
 			return c.frameError(err)
 		}
+		markActivity()
 		isResponse, _, err := c.handleFrame(frame)
 		if err != nil {
 			c.awaitingSettled = false
@@ -371,6 +380,48 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// startIdleHeartbeat reports host-observed silence while WaitSettled is
+// blocked. It does not claim that the model is thinking: no event can also
+// mean Pi is compacting, running internal work, or stalled. Only elapsed idle
+// time is logged, with no frame content or upstream metadata.
+func (c *Client) startIdleHeartbeat(ctx context.Context) (markActivity func(), stop func()) {
+	if !c.debug.enabled() {
+		return func() {}, func() {}
+	}
+
+	var lastActivity atomic.Int64
+	lastActivity.Store(int64(c.debug.Elapsed()))
+	ticks, stopTicker := c.newIdleTicker(debugHeartbeatInterval)
+	stopping := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopping:
+				return
+			case <-ticks:
+				elapsed := c.debug.Elapsed()
+				idle := elapsed - time.Duration(lastActivity.Load())
+				if idle >= debugHeartbeatInterval {
+					c.debug.Log(debugWaiting, "no-event-for="+idle.Round(time.Second).String())
+				}
+			}
+		}
+	}()
+
+	return func() {
+			lastActivity.Store(int64(c.debug.Elapsed()))
+		}, func() {
+			stopTicker()
+			close(stopping)
+			<-done
+		}
 }
 
 // roundTrip sends one request and waits for its correlated response,
@@ -561,7 +612,7 @@ func toolName(name string) string {
 
 // streamingUpdate bounds model-streaming lines by elapsed run time: the
 // first message_update of the run logs one activity line, and later
-// updates log at most one heartbeat per streamingHeartbeatInterval,
+// updates log at most one heartbeat per debugHeartbeatInterval,
 // independent of frame count.
 func (c *Client) streamingUpdate() {
 	elapsed := c.debug.Elapsed().Round(time.Millisecond)
@@ -571,7 +622,7 @@ func (c *Client) streamingUpdate() {
 		c.debug.Log(debugStreaming, "elapsed="+elapsed.String())
 		return
 	}
-	if elapsed-c.lastBeat >= streamingHeartbeatInterval {
+	if elapsed-c.lastBeat >= debugHeartbeatInterval {
 		c.lastBeat = elapsed
 		c.debug.Log(debugStreaming, "elapsed="+elapsed.String())
 	}
