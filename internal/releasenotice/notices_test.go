@@ -57,7 +57,7 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 			"LICENSE": "purego license\n\n",
 		},
 		"github.com/tklauser/numcpus@v0.11.0": {
-			"LICENSE": "numcpus license\n\n",
+			"LICENSE": "numcpus license\n",
 		},
 	}
 	for moduleVersion, files := range fixtures {
@@ -80,6 +80,9 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 
 	if !strings.HasSuffix(content, "\n") {
 		t.Fatalf("rendered notices missing terminal newline")
+	}
+	if strings.HasSuffix(content, "\n\n") {
+		t.Fatalf("rendered notices contain a blank line at EOF")
 	}
 
 	order := []string{
@@ -237,7 +240,7 @@ func writeNoticeFixtureFiles(t *testing.T, moduleCache string) {
 			"LICENSE": "purego license\n\n",
 		},
 		"github.com/tklauser/numcpus@v0.11.0": {
-			"LICENSE": "numcpus license\n\n",
+			"LICENSE": "numcpus license\n",
 		},
 	}
 	for moduleVersion, files := range fixtures {

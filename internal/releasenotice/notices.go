@@ -39,7 +39,8 @@ func Inventory() []Dependency {
 // Render renders the third-party notice document from a module cache path.
 func Render(moduleCache string) ([]byte, error) {
 	var b strings.Builder
-	for i, dep := range Inventory() {
+	inventory := Inventory()
+	for i, dep := range inventory {
 		b.WriteString("## ")
 		b.WriteString(dep.Module)
 		b.WriteByte(' ')
@@ -50,7 +51,7 @@ func Render(moduleCache string) ([]byte, error) {
 		b.WriteByte('\n')
 		b.WriteByte('\n')
 
-		for _, fileName := range dep.LicenseFiles {
+		for j, fileName := range dep.LicenseFiles {
 			path := filepath.Join(moduleCache, filepath.FromSlash(dep.Module+"@"+dep.Version), fileName)
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -65,11 +66,9 @@ func Render(moduleCache string) ([]byte, error) {
 			if len(data) == 0 || data[len(data)-1] != '\n' {
 				b.WriteByte('\n')
 			}
-			b.WriteByte('\n')
-		}
-
-		if i+1 < len(fixedInventory) {
-			b.WriteByte('\n')
+			if i+1 < len(inventory) || j+1 < len(dep.LicenseFiles) {
+				b.WriteByte('\n')
+			}
 		}
 	}
 
