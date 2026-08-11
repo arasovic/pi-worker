@@ -345,6 +345,7 @@ func TestMainVersion(t *testing.T) {
 }
 
 func TestRunUsageErrors(t *testing.T) {
+	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
 	emptyFile := filepath.Join(t.TempDir(), "empty.txt")
 	if err := os.WriteFile(emptyFile, []byte("   \n"), 0o600); err != nil {
 		t.Fatalf("write empty file: %v", err)

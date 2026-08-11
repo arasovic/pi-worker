@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,13 @@ func installConfigPath(t *testing.T, path string) {
 	original := userConfigPath
 	userConfigPath = func() (string, error) { return path, nil }
 	t.Cleanup(func() { userConfigPath = original })
+}
+
+func runCLIReader(t *testing.T, args []string, stdin io.Reader) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := Main(args, stdin, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
 }
 
 func TestConfigShowHumanOutput(t *testing.T) {
@@ -187,6 +195,46 @@ func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 	}
 	if req, ok := fake.requestForWorker(1); !ok || req.Model != "acme/default" {
 		t.Fatalf("worker request = %#v, present=%v", req, ok)
+	}
+}
+
+func TestRunModelExplicitEmptySelectorNeverFallsBack(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{name: "equals form", args: []string{"run", "--model=", "--task", "work"}},
+		{name: "separate argument form", args: []string{"run", "--model", "", "--task", "work"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			original := userConfigPath
+			userConfigPath = func() (string, error) {
+				calls++
+				return path, nil
+			}
+			t.Cleanup(func() { userConfigPath = original })
+			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+			stdin := &errReader{}
+
+			code, _, stderr := runCLIReader(t, test.args, stdin)
+			if code != 2 || stderr == "" {
+				t.Fatalf("run explicit empty selector = (%d, %q)", code, stderr)
+			}
+			if calls != 0 {
+				t.Fatalf("explicit empty selector read configuration %d times", calls)
+			}
+			if fake.callCount() != 0 {
+				t.Fatalf("explicit empty selector launched %d workers", fake.callCount())
+			}
+			if stdin.read {
+				t.Fatal("explicit empty selector read stdin")
+			}
+		})
 	}
 }
 

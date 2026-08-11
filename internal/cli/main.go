@@ -104,7 +104,7 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 	if err != nil {
 		return opts, nil, err
 	}
-	if opts.model == "" {
+	if !opts.modelSpecified {
 		opts.model, err = configuredRunModel()
 		if err != nil {
 			return opts, nil, err
@@ -127,12 +127,13 @@ func printUsage(w io.Writer) {
 
 // runOptions holds the parsed run command surface.
 type runOptions struct {
-	model     string
-	tasks     []string
-	taskFiles []string
-	timeout   time.Duration
-	json      bool
-	debug     bool
+	model          string
+	modelSpecified bool
+	tasks          []string
+	taskFiles      []string
+	timeout        time.Duration
+	json           bool
+	debug          bool
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
@@ -229,6 +230,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 			seen[name] = true
 			if name == "--model" {
 				opts.model = value
+				opts.modelSpecified = true
 			} else {
 				duration, err := time.ParseDuration(value)
 				if err != nil {
@@ -273,7 +275,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 			return opts, fmt.Errorf("unexpected argument %q", arg)
 		}
 	}
-	if opts.model != "" {
+	if opts.modelSpecified {
 		if err := validateModel(opts.model); err != nil {
 			return opts, err
 		}

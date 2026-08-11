@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -313,6 +314,102 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	}
 	if perm&0o200 == 0 {
 		t.Fatalf("config mode %o: owner write bit must be set", perm)
+	}
+}
+
+type fakeDirectorySyncHandle struct {
+	syncErr  error
+	closeErr error
+}
+
+func (f *fakeDirectorySyncHandle) Sync() error  { return f.syncErr }
+func (f *fakeDirectorySyncHandle) Close() error { return f.closeErr }
+
+func TestSaveReturnsDirectorySyncIOErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not sync parent directories")
+	}
+	for _, test := range []struct {
+		name     string
+		openErr  error
+		syncErr  error
+		closeErr error
+	}{
+		{name: "open", openErr: errors.New("directory open failed")},
+		{name: "sync", syncErr: errors.New("directory sync failed")},
+		{name: "close", closeErr: errors.New("directory close failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := openDirectoryForSync
+			openDirectoryForSync = func(string) (directorySyncHandle, error) {
+				if test.openErr != nil {
+					return nil, test.openErr
+				}
+				return &fakeDirectorySyncHandle{syncErr: test.syncErr, closeErr: test.closeErr}, nil
+			}
+			t.Cleanup(func() { openDirectoryForSync = original })
+
+			err := Save(filepath.Join(t.TempDir(), "config.json"), Config{SchemaVersion: 1})
+			want := test.openErr
+			if want == nil {
+				want = test.syncErr
+			}
+			if want == nil {
+				want = test.closeErr
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("Save() error = %v, want wrapped %v", err, want)
+			}
+		})
+	}
+}
+
+func TestSaveToleratesOnlyUnsupportedDirectorySync(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not sync parent directories")
+	}
+	original := openDirectoryForSync
+	openDirectoryForSync = func(string) (directorySyncHandle, error) {
+		return &fakeDirectorySyncHandle{syncErr: syscall.EINVAL}, nil
+	}
+	t.Cleanup(func() { openDirectoryForSync = original })
+
+	if err := Save(filepath.Join(t.TempDir(), "config.json"), Config{SchemaVersion: 1}); err != nil {
+		t.Fatalf("Save() unsupported directory sync error: %v", err)
+	}
+}
+
+func TestSaveReturnsUnsupportedCodesOutsideDirectorySync(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not sync parent directories")
+	}
+	for _, test := range []struct {
+		name     string
+		openErr  error
+		closeErr error
+	}{
+		{name: "open", openErr: syscall.EINVAL},
+		{name: "close", closeErr: syscall.EINVAL},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			original := openDirectoryForSync
+			openDirectoryForSync = func(string) (directorySyncHandle, error) {
+				if test.openErr != nil {
+					return nil, test.openErr
+				}
+				return &fakeDirectorySyncHandle{closeErr: test.closeErr}, nil
+			}
+			t.Cleanup(func() { openDirectoryForSync = original })
+
+			err := Save(filepath.Join(t.TempDir(), "config.json"), Config{SchemaVersion: 1})
+			want := test.openErr
+			if want == nil {
+				want = test.closeErr
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("Save() error = %v, want wrapped %v", err, want)
+			}
+		})
 	}
 }
 

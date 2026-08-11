@@ -92,11 +92,8 @@ func Save(path string, cfg Config) error {
 		return fmt.Errorf("save config %s: replace: %w", path, err)
 	}
 	if runtime.GOOS != "windows" {
-		// Best effort: some platforms and filesystems do not support
-		// syncing a directory handle.
-		if d, err := os.Open(dir); err == nil {
-			_ = d.Sync()
-			_ = d.Close()
+		if err := syncParentDirectory(dir); err != nil {
+			return fmt.Errorf("save config %s: sync parent directory: %w", path, err)
 		}
 	}
 	return nil
