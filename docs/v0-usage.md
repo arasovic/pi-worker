@@ -16,20 +16,41 @@ or raw protocol output.
 
 ## Prerequisites
 
-- Go version from `go.mod`: language level `go 1.25.0` (toolchain declared as `go1.26.1`).
+- Node.js 22.20.0 or newer and npm.
 - Installed Pi CLI compatible with the **Pi 0.84.1** verified surface.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
-  - Open Pi interactively and use its `/login` flow for authentication.
-- Build from source only:
+  - Open Pi interactively and use Pi's own authentication flow.
+
+Pi Worker is not published to npm yet. These are the intended post-publication
+install commands; they are not currently usable from the registry:
+
+```sh
+npm install -g pi-worker
+npm install -g --foreground-scripts pi-worker
+```
+
+## Source build
+
+For the current checkout, the repository declares Go 1.25 language compatibility
+and a Go 1.26.1 toolchain:
 
 ```sh
 go build -o ./bin/pi-worker ./cmd/pi-worker
 ```
 
+After a source build, use `./bin/pi-worker` in place of `pi-worker` for the
+commands in this document.
+
 > Source builds report `version=dev`, `commit=unknown`, and
 > `build date=unknown`. Release artifacts inject all three values at build time
 > and print the full 40-hex commit in version output.
-> Packaging/installers are not part of v0.
+
+## npm postinstall
+
+During `npm install`, npm attempts to install the bundled provider-neutral
+`pi-worker` skill for detected agent targets via pinned `skills@1.5.22`. It
+records an `installed`, `blocked`, `skipped`, or `failed` outcome in the durable
+receipt. Existing conflicts may block, skip, or fail without overwriting them.
 
 ## Supported commands
 
@@ -122,6 +143,9 @@ operating system's user configuration directory. It contains only
 pi-worker config show [--json]
 pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]
 ```
+
+Replace the provider/model placeholder with one exact selector printed by
+`pi-worker models` before running `config set`.
 
 - `config show` reads the local document only. It never launches Pi.
 - `config set` requires an exact `provider/model` selector, queries Pi's model
@@ -289,7 +313,6 @@ cat prompt.txt | pi-worker run --model provider/model-id
 - Docker/OpenShell
 - worktree/patch application
 - durable registry / background / status / wait / steer / cancel / resume
-- public installer, package manager, and skill installation
 
 ## Compatibility note
 

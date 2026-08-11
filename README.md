@@ -1,143 +1,172 @@
 # Pi Worker
 
-Pi Worker runs one to three foreground Pi workers in the current writable
-workspace. Each worker uses the exact selected model, or an exact locally
-configured default, with an optional verified reasoning effort. The included
-agent skill is provider-neutral.
+Pi Worker lets a primary coding agent delegate work to models available
+through your local Pi installation.
 
-v0.1 is pre-release software. It is source-build only, pinned to Pi 0.84.1,
-and is not a sandbox.
+## What is it?
 
-## Prerequisites
+Keep your preferred coding agent as the orchestrator and send a bounded task
+to an exact model configured in Pi. Pi Worker starts the worker, waits for it,
+and returns its status and final explanation. It can run up to three independent
+tasks in parallel.
 
-- Go 1.25 or later (the repository declares its exact toolchain).
+## Why does it exist?
+
+Using the primary agent for every subtask can consume an expensive or limited
+quota. Pi may already expose a lower-cost API model or a model billed through a
+separate account. Pi Worker removes the manual prompt-and-result copying from
+that workflow.
+
+## How do I use it?
+
+Pi is a local coding-agent CLI that provides the model catalog and worker
+runtime used by Pi Worker. Choose an exact `provider/model` selector from Pi,
+then run a bounded task in your current workspace.
+
+## Requirements
+
+- Node.js 22.20.0 or newer and npm.
 - Pi CLI 0.84.1, with provider authentication configured in Pi.
+- An available exact model selector from `pi-worker models`.
 
-Build from a local source checkout:
+## Install with npm
+
+Pi Worker is not published to npm yet. The following commands are the intended
+post-publication install path; they are not currently usable from the registry:
 
 ```sh
-git clone <repository-url> pi-worker
-cd pi-worker
-go build -o ./bin/pi-worker ./cmd/pi-worker
-./bin/pi-worker version
+npm install -g pi-worker
 ```
 
-Source builds report `dev`.
-
-## Release artifacts
-
-Build four deterministic native artifacts locally (no tagging, upload, or publish):
-
-Release builds require a clean worktree and a repository checkout; the tool
-finds the repository root from the current or nested working directory. The
-`--output` directory must not already exist, and its parent must exist.
-Builds use the local Go toolchain and module cache in offline, read-only module
-mode; the release command does not fetch dependencies.
+For foreground installer diagnostics, use:
 
 ```sh
-go run ./tools/release --version v0.1.0 --commit "$(git rev-parse HEAD)" --build-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --output dist
+npm install -g --foreground-scripts pi-worker
 ```
 
-The command writes:
+For the current checkout, follow the
+[source-build instructions](./docs/v0-usage.md#source-build). Commands use
+`./bin/pi-worker` after a source build.
 
-- `dist/pi-worker_v0.1.0_darwin_arm64.tar.gz`
-- `dist/pi-worker_v0.1.0_darwin_amd64.tar.gz`
-- `dist/pi-worker_v0.1.0_linux_arm64.tar.gz`
-- `dist/pi-worker_v0.1.0_linux_amd64.tar.gz`
-- `dist/checksums.txt`
+## First run
 
-Each archive contains only `pi-worker`, `LICENSE`, and `THIRD_PARTY_NOTICES`.
+> **Safety before running a worker task:** Workers can modify the current
+> writable workspace and execute `bash` with the user's host permissions; they
+> are not a sandbox or worktree layer. Use a trusted workspace only; parallel
+> tasks must be disjoint.
 
-Stage the four verified archives into the npm package layout, then pack the
-allowlisted package. Staging refuses incomplete, extra, unsafe, or stale
-release inputs:
+Inspect available exact selectors and local readiness, then save one exact
+selector and run a task. Replace `provider/model` with one exact selector
+printed by `pi-worker models` before config set:
 
 ```sh
-npm run stage -- --dist dist
-npm pack --json
+pi-worker doctor
+pi-worker models
+pi-worker config set default-model provider/model
+pi-worker run --thinking high --task "Review this module and explain the main risks"
 ```
 
-Packing verifies `THIRD_PARTY_NOTICES` and the generated skills rules first.
+`doctor` is inspection-only. Its five checks, in order, are
+`pi-executable`, `pi-version`, `config`, `model-catalog`, and `default-model`.
+Skill installation status is separate.
 
-## Quick start
+Thinking effort is separate from model identity. Use `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, or `max` with `--thinking`. If an explicit effort is
+unsupported, Pi Worker keeps the same selected model, uses that model's
+confirmed Pi default effort, and reports the fallback.
 
-List the available exact selectors, optionally save one as the local default,
-then inspect readiness:
+## Use from a coding agent
 
-```sh
-./bin/pi-worker models
-./bin/pi-worker config set default-model provider/model-id
-./bin/pi-worker doctor
+Give the coding agent an exact model and effort instruction:
+
+```text
+Use pi-worker with provider/model at high effort to complete this task.
 ```
 
-Run one task directly:
+The agent should report the selected model, effective effort, status, and final
+explanation. An explicit model or the configured exact default is required;
+Pi Worker does not infer a replacement.
+
+## Run independent tasks in parallel
+
+Run one to three independent tasks with disjoint file ownership:
 
 ```sh
-./bin/pi-worker run --model provider/model-id --thinking max --task "Implement the requested fix"
-```
-
-Run disjoint file-based tasks in parallel:
-
-```sh
-./bin/pi-worker run --model provider/model-id \
+pi-worker run --model provider/model \
   --thinking high \
-  --task-file ./task-a.txt --task-file ./task-b.txt
+  --task-file ./task-a.txt --task-file ./task-b.txt --task-file ./task-c.txt
 ```
 
-`run --model` has exact precedence: an explicit `--model`, then the configured
-default model, then a usage error. Pi Worker never infers a model, falls back,
-or switches providers. `--thinking` accepts `off`, `minimal`, `low`, `medium`,
-`high`, `xhigh`, or `max`. If an explicit level is unsupported or rejected,
-Pi Worker continues with that selected model's confirmed Pi default and reports
-the fallback; it never changes models.
+Use one task for overlapping work. Parallel workers share the workspace, so
+parallel writes must target disjoint files.
 
-## Workspace and safety boundary
+## What gets installed
 
-Workers share the current writable workspace. Run only one to three workers;
-parallel writes must target disjoint files. Every worker has `bash` enabled and
-can run commands with the current user's host permissions. Pi Worker is not a
-sandbox or worktree isolation layer.
+- The package contains four native binaries for macOS/Linux arm64/x64. The
+  launcher selects the matching binary at runtime; installation does not remove
+  the others.
+- It contains the canonical provider-neutral `pi-worker` skill.
+- npm install attempts to install the bundled provider-neutral skill for detected
+  agent targets via pinned `skills@1.5.22` and records an installed,
+  blocked, skipped, or failed outcome in the durable receipt. Existing conflicts
+  may block, skip, or fail without overwriting.
 
-## Output and exits
+## Safety
 
-Human results identify each worker's model and effective thinking level.
-`run --json` writes one JSON document after valid invocation, including
-`thinkingLevel` and any `thinkingFallback` warning. Diagnostics, warnings, and
-sanitized `--debug` output may be written to stderr. During an otherwise silent
-run, debug reports how long Pi has emitted no event without claiming why.
+Workers use the current writable workspace. Parallel writes must target
+disjoint files. bash has the current user's host permissions, and Pi Worker
+is not a sandbox or worktree isolation layer.
 
-| Exit | Meaning |
-| --- | --- |
-| 0 | Completed, or inspection completed with warnings only |
-| 2 | Usage or configuration input error |
-| 3 | Readiness failure, including unavailable Pi or model |
-| 5 | Task failure or partial completion |
-| 7 | Timeout |
-| 8 | Cancellation |
-| 9 | Protocol or internal failure |
+An exact requested model/provider never silently changes. An explicit effort
+fallback stays on the same model and is reported.
 
-`models` and `doctor` are inspection-only: neither submits a prompt nor invokes
-a model. Both report a missing or unavailable Pi as readiness exit 3.
-`config set default-model` also checks the live catalog without prompting and
-saves only an available exact selector. `config show` reads local configuration
-only.
+## Install from GitHub Releases
 
-## Agent skill
+Pi Worker is not published yet. Release links will be added when available.
 
-The canonical source is [`skills/pi-worker`](./skills/pi-worker). It supports
-one to three disjoint Pi-worker tasks, separate model/effort selection, visible
-thinking fallback, and no recursive delegation. Skill installation status is
-reported by `pi-worker skill status`.
+## Troubleshooting
 
-## Details
+Check skill installation separately from the five doctor checks:
+
+```sh
+pi-worker skill status
+pi-worker skill status --json
+pi-worker skill receipt-path
+npx --yes skills@1.5.22 list -g
+```
+
+`skill status --json` reports affected targets and recovery information;
+`skill receipt-path` reports the durable receipt location. If npm installation
+is otherwise unclear, rerun it in the foreground:
+
+```sh
+npm install -g --foreground-scripts pi-worker
+```
+
+For identity-verified unmanaged or drifted Pi Worker content only: inspect
+every affected path and make a backup first. Only after every affected path is
+verified as Pi Worker content may you run:
+
+```sh
+npx --yes skills@1.5.22 remove pi-worker -g -y
+npm install -g --foreground-scripts pi-worker
+```
+
+Never use that global remove command for markerless, foreign, or mixed
+conflicts. Preserve those paths, inspect them, and resolve them separately.
+A direct GitHub skill installation includes the stable Pi Worker identity
+marker, but it is receipt-untracked; a later npm install stops before adopting
+it. Do not remove receipt-untracked content without inspecting and backing it
+up.
+
+## Advanced documentation
 
 - [Detailed v0 usage](./docs/v0-usage.md)
-- [Pi 0.84.1 compatibility record](./docs/pi-cli-surface.md)
+- [Pi CLI compatibility and RPC surface](./docs/pi-cli-surface.md)
 
-## Deferred to v1
+The detailed documents contain exit-code tables, RPC details, compatibility
+evidence, lifecycle boundaries, and source-build information.
 
-- Trust and content-provenance controls
-- Sandbox or container execution
-- Worktree and patch-application isolation
-- Background lifecycle and durable worker management
-- Public installer, package-manager distribution, and automated skill installation
+## License
+
+See [LICENSE](./LICENSE) and [THIRD_PARTY_NOTICES](./THIRD_PARTY_NOTICES).
