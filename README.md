@@ -48,6 +48,17 @@ The command writes:
 
 Each archive contains only `pi-worker`, `LICENSE`, and `THIRD_PARTY_NOTICES`.
 
+Stage the four verified archives into the npm package layout, then pack the
+allowlisted package. Staging refuses incomplete, extra, unsafe, or stale
+release inputs:
+
+```sh
+npm run stage -- --dist dist
+npm pack --json
+```
+
+Packing verifies `THIRD_PARTY_NOTICES` and the generated skills rules first.
+
 ## Quick start
 
 List the available exact selectors, optionally save one as the local default,

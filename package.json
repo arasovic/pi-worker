@@ -25,7 +25,10 @@
   },
   "scripts": {
     "postinstall": "node npm/scripts/postinstall.mjs",
+    "stage": "node npm/scripts/stage-package.mjs",
     "test": "node --test npm/test/*.test.mjs",
-    "skills-rules:check": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json"
+    "notices:check": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
+    "skills-rules:check": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json",
+    "prepack": "npm run notices:check && npm run skills-rules:check"
   }
 }
