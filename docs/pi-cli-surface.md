@@ -110,11 +110,17 @@ example. The v0 consumer projection follows this section.
 {"id":"model-1","type":"set_model","provider":"...","modelId":"..."}
 {"id":"model-1","type":"response","command":"set_model","success":true,"data":{"provider":"...","id":"..."}}
 
+{"id":"state-1","type":"get_state"}
+{"id":"state-1","type":"response","command":"get_state","success":true,"data":{"model":{"provider":"...","id":"..."},"thinkingLevel":"medium","isStreaming":false,"sessionId":"...","messageCount":0,"pendingMessageCount":0}}
+
+{"id":"levels-1","type":"get_available_thinking_levels"}
+{"id":"levels-1","type":"response","command":"get_available_thinking_levels","success":true,"data":{"levels":["off","minimal","low","medium","high","xhigh","max"]}}
+
+{"id":"thinking-1","type":"set_thinking_level","level":"max"}
+{"id":"thinking-1","type":"response","command":"set_thinking_level","success":true}
+
 {"id":"prompt-1","type":"prompt","message":"..."}
 {"id":"prompt-1","type":"response","command":"prompt","success":true}
-
-{"id":"state-1","type":"get_state"}
-{"id":"state-1","type":"response","command":"get_state","success":true,"data":{"model":{},"isStreaming":false,"sessionId":"...","messageCount":0,"pendingMessageCount":0}}
 
 {"id":"final-1","type":"get_last_assistant_text"}
 {"id":"final-1","type":"response","command":"get_last_assistant_text","success":true,"data":{"text":"..."}}
@@ -125,9 +131,9 @@ example. The v0 consumer projection follows this section.
 {"id":"bad-1","type":"response","command":"set_model","success":false,"error":"..."}
 ```
 
-The `get_state` and `abort` frames above are observed upstream commands, not
-emitted by v0: they are deferred until a lifecycle consumer needs them.
-Pi-worker never constructs those request shapes.
+The `abort` frames above are observed upstream commands but are not emitted by
+v0. Pi-worker constructs `get_state` only for exact model/thinking
+confirmation; it never forwards caller-supplied request shapes.
 
 `set_model` requires an exact `provider` plus `modelId` that exists in the
 current available-model snapshot; otherwise it returns `success: false`.
@@ -175,13 +181,21 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 0.84.1 also observes the `get_state` success container exactly as
+Pi 0.84.1 observes the `get_available_thinking_levels` success container as
+`data:{levels: ThinkingLevel[]}`, with exact levels `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, and `max`. V0 requires a non-null array of unique,
+recognized strings. A well-formed `set_thinking_level success:false` is the
+only setter rejection that worker policy may recover from; transport and
+malformed responses remain failures.
+
+Pi 0.84.1 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
-V0 does not call `get_state`; the command and its `RpcSessionState` projection
-are deferred until a lifecycle consumer needs them. The full version-pinned
+V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
+required after model activation; the model must equal the selected catalog
+entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
 `@earendil-works/pi-coding-agent@0.84.1/dist/modes/rpc/rpc-types.d.ts`; V0
-does not validate or re-serialize it.
+does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
 
@@ -193,12 +207,14 @@ response correlation, it emits only these request shapes:
 | --- | --- |
 | `get_available_models` | `type` |
 | `set_model` | `type`, `provider: string`, `modelId: string` |
+| `get_state` | `type` |
+| `get_available_thinking_levels` | `type` |
+| `set_thinking_level` | `type`, `level: ThinkingLevel` |
 | `prompt` | `type`, `message: string` |
 | `get_last_assistant_text` | `type` |
 
-The observed upstream `get_state` and RPC `abort` commands are not on this
-allowlist: they are deferred until a lifecycle consumer needs them. Until
-then, Pi-worker must reject and must not emit them.
+The observed upstream RPC `abort` command is not on this allowlist. Pi-worker
+must reject and must not emit it.
 
 Pi-worker must reject and must not emit every other RPC type. In particular,
 it must reject direct RPC `bash`: Pi 0.84.1 dispatches that command directly,

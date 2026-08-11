@@ -2,7 +2,8 @@
 
 Pi Worker runs one to three foreground Pi workers in the current writable
 workspace. Each worker uses the exact selected model, or an exact locally
-configured default. The included agent skill is provider-neutral.
+configured default, with an optional verified reasoning effort. The included
+agent skill is provider-neutral.
 
 v0.1 is pre-release software. It is source-build only, pinned to Pi 0.84.1,
 and is not a sandbox.
@@ -37,19 +38,23 @@ then inspect readiness:
 Run one task directly:
 
 ```sh
-./bin/pi-worker run --model provider/model-id --task "Implement the requested fix"
+./bin/pi-worker run --model provider/model-id --thinking max --task "Implement the requested fix"
 ```
 
 Run disjoint file-based tasks in parallel:
 
 ```sh
 ./bin/pi-worker run --model provider/model-id \
+  --thinking high \
   --task-file ./task-a.txt --task-file ./task-b.txt
 ```
 
 `run --model` has exact precedence: an explicit `--model`, then the configured
 default model, then a usage error. Pi Worker never infers a model, falls back,
-or switches providers.
+or switches providers. `--thinking` accepts `off`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, or `max`. If an explicit level is unsupported or rejected,
+Pi Worker continues with that selected model's confirmed Pi default and reports
+the fallback; it never changes models.
 
 ## Workspace and safety boundary
 
@@ -60,9 +65,11 @@ sandbox or worktree isolation layer.
 
 ## Output and exits
 
-Human results use labeled worker lines. `run --json` writes one JSON document
-after valid invocation; diagnostics, including sanitized `--debug` output, may
-be written to stderr.
+Human results identify each worker's model and effective thinking level.
+`run --json` writes one JSON document after valid invocation, including
+`thinkingLevel` and any `thinkingFallback` warning. Diagnostics, warnings, and
+sanitized `--debug` output may be written to stderr. During an otherwise silent
+run, debug reports how long Pi has emitted no event without claiming why.
 
 | Exit | Meaning |
 | --- | --- |

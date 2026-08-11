@@ -9,8 +9,10 @@ The canonical provider-neutral agent skill is
 selecting cheaper or separately metered models, or assigning one to three Pi
 workers. It resolves informal model names from the catalog, uses an exact
 explicit selector without fallback, and otherwise lets the configured default
-apply. It uses external task files, keeps parallel work disjoint, and reports
-the parsed final JSON result without debug or raw protocol output.
+apply. It keeps model and explicit reasoning effort separate, reports any
+thinking fallback to Pi's confirmed default, uses external task files, keeps
+parallel work disjoint, and returns the parsed final JSON result without debug
+or raw protocol output.
 
 ## Prerequisites
 
@@ -83,7 +85,7 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
 ## Exact run command
 
 ```text
-pi-worker run [--model <provider/model>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]
+pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]
 ```
 
 ## Personal default model
@@ -123,6 +125,26 @@ pi-worker config set default-model <provider/model> [--debug] [--timeout <durati
   4. confirmation check that `set_model` returns the exact same `provider` and `id`
 - If no exact model match exists, or confirmation differs/missing, execution stops with an error. There is **no** pattern matching, fallback, or switching.
 
+### Thinking level
+
+- `--thinking` accepts exactly `off`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, or `max` and applies to every worker in the run.
+- Model and effort are separate: `provider/model:max` remains invalid.
+- After exact model activation, every worker calls `get_state` to confirm the
+  active model and capture Pi's default `thinkingLevel`.
+- With explicit `--thinking`, the worker queries
+  `get_available_thinking_levels`, applies the exact level when supported, and
+  confirms the effective value with a second `get_state`.
+- If the explicit level is unsupported or Pi returns a well-formed rejection,
+  the worker keeps the captured Pi default, emits a warning, and continues. A
+  successful task still exits `0`.
+- Malformed RPC data, transport failure, active-model mismatch, or a successful
+  set that is not confirmed are hard failures; they never fall back.
+- When the flag is omitted, Pi's confirmed default is used and reported. The
+  configuration file does not persist a thinking default.
+- `models` and `doctor` do not enumerate thinking support because doing so
+  requires activating a model; both commands remain inspection-only.
+
 ### Exactly one input mechanism
 
 - `--task` and `--task-file` may each repeat up to 3 total tasks.
@@ -148,19 +170,23 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 
 ### Output
 
-- Human output labels every worker result with `worker N:`.
+- Human output with confirmed state labels every result as
+  `worker N [model=provider/model thinking=level]:`.
   - Completed worker output goes to stdout.
   - Failed/errored worker output goes to stderr.
 - `--json` emits **exactly one** JSON object (single document) only after argument/input validation succeeds and a run starts, with:
   - `schemaVersion` = `1`
   - `status`
   - `workers` in input order (the same order as task inputs, not completion order)
+  - each confirmed worker's effective `thinkingLevel`; explicit requests also
+    include `requestedThinkingLevel`
+  - fallback workers include `thinkingFallback: true` and a fixed `warning`
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
 
 ```json
-{"schemaVersion":1,"status":"completed","workers":[{"model":"provider/model-id","status":"completed","explanation":"Worker one done"},{"model":"provider/model-id","status":"completed","explanation":"Worker two done"}]}
+{"schemaVersion":1,"status":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with Pi default thinking=high","status":"completed","explanation":"Worker one done"}]}
 ```
 
 ### Exit codes
@@ -178,8 +204,14 @@ Example:
 
 `--debug` writes sanitized lifecycle progress only to stderr. It includes:
 - worker identity and start line
-- RPC request status/duration (`get_available_models`, `set_model`, `prompt`, `get_last_assistant_text`)
+- RPC request status/duration (`get_available_models`, `set_model`,
+  `get_state`, `get_available_thinking_levels`, `set_thinking_level`, `prompt`,
+  `get_last_assistant_text`)
+- requested and confirmed effective thinking; fallback is a fixed boolean field
 - model streaming heartbeat (`phase=model-streaming`, first line and at most one heartbeat every 30s)
+- host-clock idle heartbeat (`phase=waiting-for-pi`) after every 30 seconds
+  without an inbound frame; this reports observed silence and does not prove
+  the model is thinking rather than compacting, doing internal work, or stalled
 - tool start/end status and duration
 - settlement line
 - worker completion and total duration
@@ -205,17 +237,17 @@ It does **not** print:
 ### One direct task (human)
 
 ```sh
-pi-worker run --model provider/model-id --task "Implement the requested fix"
+pi-worker run --model provider/model-id --thinking max --task "Implement the requested fix"
 ```
 
 ### Two/three tasks via files (parallel workers)
 
 ```sh
-pi-worker run --model provider/model-id --task-file ./task-a.txt --task-file ./task-b.txt
+pi-worker run --model provider/model-id --thinking high --task-file ./task-a.txt --task-file ./task-b.txt
 ```
 
 ```sh
-pi-worker run --model provider/model-id --task-file ./task-a.txt --task-file ./task-b.txt --task-file ./task-c.txt
+pi-worker run --model provider/model-id --thinking high --task-file ./task-a.txt --task-file ./task-b.txt --task-file ./task-c.txt
 ```
 
 ### Stdin fallback
