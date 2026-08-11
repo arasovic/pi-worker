@@ -24,6 +24,28 @@ go build -o ./bin/pi-worker ./cmd/pi-worker
 
 Source builds report `dev`.
 
+## Release artifacts
+
+Build four deterministic native artifacts locally (no tagging, upload, or publish):
+
+Release builds require a clean worktree and a repository checkout; the tool
+finds the repository root from the current or nested working directory. The
+`--output` directory must not already exist, and its parent must exist.
+
+```sh
+go run ./tools/release --version v0.1.0 --commit "$(git rev-parse HEAD)" --build-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --output dist
+```
+
+The command writes:
+
+- `dist/pi-worker_v0.1.0_darwin_arm64.tar.gz`
+- `dist/pi-worker_v0.1.0_darwin_amd64.tar.gz`
+- `dist/pi-worker_v0.1.0_linux_arm64.tar.gz`
+- `dist/pi-worker_v0.1.0_linux_amd64.tar.gz`
+- `dist/checksums.txt`
+
+Each archive contains only `pi-worker`, `LICENSE`, and `THIRD_PARTY_NOTICES`.
+
 ## Quick start
 
 List the available exact selectors, optionally save one as the local default,
