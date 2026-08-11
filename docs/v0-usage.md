@@ -26,8 +26,9 @@ or raw protocol output.
 go build -o ./bin/pi-worker ./cmd/pi-worker
 ```
 
-> Source builds report version `dev`.
-> Release/version injection and packaging remain deferred.
+> Source builds report `version=dev`, `commit=unknown`, and
+> `build date=unknown`. Release artifacts inject all three values at build time
+> and print the full 40-hex commit in version output.
 > Packaging/installers are not part of v0.
 
 ## Supported commands

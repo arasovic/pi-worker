@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"pi-worker/internal/buildinfo"
 	"pi-worker/internal/pi"
 	"pi-worker/internal/skillinstall"
 	"pi-worker/internal/testutil/fakepi/script"
@@ -213,6 +214,17 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 	return code, stdout.String(), stderr.String()
 }
 
+func withBuildInfo(t *testing.T, version, commit, buildDate string) {
+	t.Helper()
+	oldVersion, oldCommit, oldBuildDate := buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate
+	buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate = version, commit, buildDate
+	t.Cleanup(func() {
+		buildinfo.Version = oldVersion
+		buildinfo.Commit = oldCommit
+		buildinfo.BuildDate = oldBuildDate
+	})
+}
+
 // installRealFakePiWorker points the newWorker seam at the fakepi test
 // double so CLI cancellation tests exercise the real process lifecycle,
 // reaping, and session-directory cleanup instead of the scripted stub.
@@ -351,6 +363,30 @@ func TestMainVersion(t *testing.T) {
 	}
 	if got := stdout.String(); got != "pi-worker dev\n" {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestVersionCommandUsesInjectedIdentity(t *testing.T) {
+	withBuildInfo(t, "v0.1.0", "0123456789abcdef0123456789abcdef01234567", "2026-08-11T00:00:00Z")
+	code, stdout, stderr := runCLI(t, []string{"version"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr)
+	}
+	const want = "pi-worker v0.1.0 (commit 0123456789abcdef0123456789abcdef01234567, built 2026-08-11T00:00:00Z)\n"
+	if got := stdout; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestVersionCommandWithContextUsesInjectedIdentity(t *testing.T) {
+	withBuildInfo(t, "v0.1.0", "0123456789abcdef0123456789abcdef01234567", "2026-08-11T00:00:00Z")
+	code, stdout, stderr := runCLIWithContext(t, context.Background(), []string{"version"}, "")
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stderr = %q", code, stderr)
+	}
+	const want = "pi-worker v0.1.0 (commit 0123456789abcdef0123456789abcdef01234567, built 2026-08-11T00:00:00Z)\n"
+	if got := stdout; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
 

@@ -40,7 +40,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Version)
+		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Current())
 		return 0
 	case "models":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -84,7 +84,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Version)
+		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Current())
 		return 0
 	case "models":
 		return modelsCommand(ctx, args[1:], stdout, stderr)
