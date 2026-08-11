@@ -163,6 +163,8 @@ up.
 
 - [Detailed v0 usage](./docs/v0-usage.md)
 - [Pi CLI compatibility and RPC surface](./docs/pi-cli-surface.md)
+- [Contributing](./CONTRIBUTING.md)
+- [Security](./SECURITY.md)
 
 The detailed documents contain exit-code tables, RPC details, compatibility
 evidence, lifecycle boundaries, and source-build information.

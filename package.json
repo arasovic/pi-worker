@@ -17,6 +17,8 @@
     "npm/scripts/postinstall.mjs",
     "skills/pi-worker/",
     "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES"
   ],

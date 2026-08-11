@@ -125,7 +125,7 @@ function runStage(packageRoot, dist = join(packageRoot, "dist")) {
 }
 
 function copyPackageFixture(root) {
-  for (const path of ["package.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES", "skills", "npm/bin", "npm/generated", "npm/lib", "npm/scripts", "npm/test", "go.mod", "go.sum", "tools", "internal/releasenotice"]) {
+  for (const path of ["package.json", "README.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES", "skills", "npm/bin", "npm/generated", "npm/lib", "npm/scripts", "npm/test", "go.mod", "go.sum", "tools", "internal/releasenotice"]) {
     cpSync(join(repository, path), join(root, path), { recursive: true });
   }
   mkdirSync(join(root, "node_modules"));
@@ -133,8 +133,10 @@ function copyPackageFixture(root) {
 }
 
 const expectedFiles = [
+  "CONTRIBUTING.md",
   "LICENSE",
   "README.md",
+  "SECURITY.md",
   "THIRD_PARTY_NOTICES",
   "npm/bin/pi-worker.mjs",
   "npm/generated/skills-rules.json",

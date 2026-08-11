@@ -8,9 +8,15 @@ import { test } from "node:test";
 const repository = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const readmePath = join(repository, "README.md");
 const usagePath = join(repository, "docs", "v0-usage.md");
+const contributingPath = join(repository, "CONTRIBUTING.md");
+const securityPath = join(repository, "SECURITY.md");
 const readme = readFileSync(readmePath, "utf8");
 const usage = readFileSync(usagePath, "utf8");
+const contributing = existsSync(contributingPath) ? readFileSync(contributingPath, "utf8") : "";
+const security = existsSync(securityPath) ? readFileSync(securityPath, "utf8") : "";
+const normalizedSecurity = security.replace(/\s+/g, " ");
 const packageManifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
+const npmReadmeTargets = ["CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES"];
 
 const sections = [
   "What is it?",
@@ -38,8 +44,12 @@ function headingPositions(markdown) {
 
 function relativeLinks(markdown) {
   return [...markdown.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)]
-    .map(([, target]) => target.split("#", 1)[0])
+    .map(([, target]) => target.split("#", 1)[0].replace(/^\.\//, ""))
     .filter((target) => target && !/^[a-z][a-z+.-]*:/i.test(target) && !target.startsWith("//"));
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 test("README is the concise public entry point with the approved contract", () => {
@@ -149,6 +159,11 @@ test("README links resolve and the npm tarball has one root README", () => {
     assert.equal(existsSync(resolve(repository, target)), true, `relative link resolves: ${target}`);
   }
 
+  for (const target of npmReadmeTargets) {
+    assert.ok(relativeLinks(readme).includes(target), `README links to ${target}`);
+    assert.equal(existsSync(resolve(repository, target)), true, `required public document resolves: ${target}`);
+  }
+
   const manifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
   const readmeEntries = manifest.files.filter((entry) => /README\.md$/i.test(entry));
   assert.deepEqual(readmeEntries, ["README.md"], "package allowlist has one root README");
@@ -159,6 +174,52 @@ test("README links resolve and the npm tarball has one root README", () => {
   });
   assert.equal(packed.status, 0, packed.stderr);
   const metadata = JSON.parse(packed.stdout)[0];
+  const packedPaths = new Set(metadata.files.map(({ path }) => path));
   assert.deepEqual(metadata.files.map(({ path }) => path).filter((path) => /README\.md$/i.test(path)), ["README.md"]);
+  for (const target of npmReadmeTargets) {
+    assert.ok(packedPaths.has(target), `npm tarball contains README target: ${target}`);
+  }
   assert.equal(existsSync(join(repository, metadata.filename)), false, "dry run leaves no tarball");
+});
+
+test("contribution guidance covers the public workflow and local checks", () => {
+  assert.match(contributing, /prerequisites/i);
+  assert.match(contributing, /go\.mod|Go toolchain/i);
+  assert.match(contributing, /Node(?:\.js)?\s*>=?\s*22\.20\.0/i);
+  assert.match(contributing, /npm/i);
+  assert.match(contributing, /Pi\s+(?:CLI\s+)?0\.84\.1.*(?:integration|dogfood)/is);
+  assert.match(contributing, /fork/i);
+  assert.match(contributing, /purpose[- ]named branch/i);
+  assert.match(contributing, /focused changes/i);
+  assert.match(contributing, /English.*(?:code|comments|docs|commit messages)/is);
+  for (const check of ["gofmt", "go vet", "-race", "go build", "npm test", "npm run verify", "rules", "notices", "git diff --check"]) {
+    assert.match(contributing, new RegExp(escapeRegex(check), "i"), `CONTRIBUTING.md includes ${check}`);
+  }
+  for (const sensitiveItem of ["dist", "npm/native", "tgz", "credentials", "Pi profiles", "provider config", "prompts", "workspace contents"]) {
+    assert.match(contributing, new RegExp(`(?:do not|don't|never)[^\\n]*${escapeRegex(sensitiveItem)}`, "i"), `CONTRIBUTING.md protects ${sensitiveItem}`);
+  }
+  assert.match(contributing, /security reports follow SECURITY\.md/i);
+  assert.doesNotMatch(contributing, /Co-Authored-By/i);
+  assert.doesNotMatch(contributing, /(?:agent workflow|private plan|work log|review metadata|\/Users\/|\/home\/|\/tmp\/)/i);
+});
+
+test("security guidance states the current public reporting boundary", () => {
+  for (const warning of ["credentials", "Pi profiles", "provider configuration", "prompts", "workspace contents", "public issues"]) {
+    assert.match(normalizedSecurity, new RegExp(escapeRegex(warning), "i"), `SECURITY.md mentions ${warning}`);
+  }
+  assert.match(normalizedSecurity, /do not.*(?:post|disclose).*public issues/i);
+  assert.match(normalizedSecurity, /no public security[- ]reporting channel is active/i);
+  assert.match(normalizedSecurity, /GitHub private vulnerability reporting/i);
+  assert.match(normalizedSecurity, /after.*public.*(?:repository|feature).*exists/i);
+  assert.match(normalizedSecurity, /public release must not be made until.*channel is enabled/i);
+  assert.match(normalizedSecurity, /v0\.1/i);
+  assert.match(normalizedSecurity, /workers?.*execute.*bash.*current user.*permissions/i);
+  assert.match(normalizedSecurity, /current writable workspace/i);
+  assert.match(normalizedSecurity, /not a sandbox/i);
+  assert.match(normalizedSecurity, /do not disclose publicly/i);
+  assert.doesNotMatch(security, /https?:\/\/|mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
+
+  const publicDocs = `${readme}\n${contributing}\n${security}`;
+  assert.doesNotMatch(publicDocs, /https?:\/\/|mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
+  assert.doesNotMatch(publicDocs, /(?:\.github\/workflows|private plan|work log|review metadata|\/Users\/|\/home\/|\/tmp\/)/i);
 });
