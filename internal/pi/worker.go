@@ -20,9 +20,10 @@ const (
 
 // WorkerRequest describes one foreground worker invocation.
 type WorkerRequest struct {
-	Model     string
-	Prompt    string
-	Workspace string
+	Model         string
+	ThinkingLevel ThinkingLevel
+	Prompt        string
+	Workspace     string
 	// WorkerID is operational metadata used only to label debug lines;
 	// the zero value (direct callers) defaults to worker 1, and the
 	// controller passes 1..N. It never appears in results or JSON.
@@ -33,10 +34,14 @@ type WorkerRequest struct {
 
 // WorkerResult is the concise result of one worker invocation.
 type WorkerResult struct {
-	Model       string `json:"model"`
-	Explanation string `json:"explanation,omitempty"`
-	Status      string `json:"status"`
-	Error       string `json:"error,omitempty"`
+	Model                  string        `json:"model"`
+	RequestedThinkingLevel ThinkingLevel `json:"requestedThinkingLevel,omitempty"`
+	ThinkingLevel          ThinkingLevel `json:"thinkingLevel,omitempty"`
+	ThinkingFallback       bool          `json:"thinkingFallback,omitempty"`
+	Warning                string        `json:"warning,omitempty"`
+	Explanation            string        `json:"explanation,omitempty"`
+	Status                 string        `json:"status"`
+	Error                  string        `json:"error,omitempty"`
 }
 
 // Worker runs one foreground worker through Pi JSONL RPC.
@@ -63,34 +68,47 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	if req.Model == "" {
 		return WorkerResult{Status: StatusFailed, Error: "model is required"}
 	}
+	thinking := thinkingOutcome{requested: req.ThinkingLevel}
+	withThinking := func(result WorkerResult) WorkerResult {
+		return thinking.apply(result)
+	}
+	if req.ThinkingLevel != "" {
+		if parsed, ok := ParseThinkingLevel(string(req.ThinkingLevel)); !ok || parsed != req.ThinkingLevel {
+			return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: fmt.Sprintf("invalid thinking level %q", req.ThinkingLevel)})
+		}
+	}
 	if req.Prompt == "" {
-		return WorkerResult{Model: req.Model, Status: StatusFailed, Error: "prompt is required"}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "prompt is required"})
 	}
 	if req.Workspace == "" {
-		return WorkerResult{Model: req.Model, Status: StatusFailed, Error: "workspace is required"}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "workspace is required"})
 	}
 	provider, id, ok := splitModelSelector(req.Model)
 	if !ok {
-		return WorkerResult{Model: req.Model, Status: StatusFailed, Error: fmt.Sprintf("invalid model selector %q: expected exact provider/model", req.Model)}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: fmt.Sprintf("invalid model selector %q: expected exact provider/model", req.Model)})
 	}
 	if err := ctx.Err(); err != nil {
 		// An already-expired deadline must surface as timed-out (exit 7
 		// path) and an already-cancelled context as cancellation (exit 8
 		// path); either way the host executable must not launch.
 		if errors.Is(err, context.DeadlineExceeded) {
-			return WorkerResult{Model: req.Model, Status: StatusTimedOut, Error: fmt.Sprintf("timed out: %v", err)}
+			return withThinking(WorkerResult{Model: req.Model, Status: StatusTimedOut, Error: fmt.Sprintf("timed out: %v", err)})
 		}
-		return WorkerResult{Model: req.Model, Status: StatusCancelled, Error: fmt.Sprintf("cancelled: %v", err)}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusCancelled, Error: fmt.Sprintf("cancelled: %v", err)})
 	}
 	debug := req.Debug.Worker(workerID(req.WorkerID))
 	defer func() {
 		debug.Log("status="+result.Status, "total="+debug.Elapsed().Round(time.Millisecond).String())
 	}()
-	debug.Log(debugStarting, "provider="+provider, "model="+id)
+	requestedDebug := "default"
+	if req.ThinkingLevel != "" {
+		requestedDebug = string(req.ThinkingLevel)
+	}
+	debug.Log(debugStarting, "provider="+provider, "model="+id, "thinking-requested="+requestedDebug)
 
 	proc, err := NewProcess(w.executable, req.Workspace)
 	if err != nil {
-		return WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: err.Error()}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: err.Error()})
 	}
 	defer proc.Close()
 
@@ -99,18 +117,18 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 			// A start failure caused by an expired deadline is a timeout
 			// (exit 7 path), not a cancellation or readiness failure.
-			return WorkerResult{Model: req.Model, Status: StatusTimedOut, Error: fmt.Sprintf("timed out: %v", err)}
+			return withThinking(WorkerResult{Model: req.Model, Status: StatusTimedOut, Error: fmt.Sprintf("timed out: %v", err)})
 		case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
-			return WorkerResult{Model: req.Model, Status: StatusCancelled, Error: fmt.Sprintf("cancelled: %v", err)}
+			return withThinking(WorkerResult{Model: req.Model, Status: StatusCancelled, Error: fmt.Sprintf("cancelled: %v", err)})
 		}
-		return WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("start pi: %v", err)}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("start pi: %v", err)})
 	}
 
 	client := NewClient(proc.Stdin(), proc.Stdout(), nil, debug)
 
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
-		return w.classify(req.Model, ctx, err)
+		return withThinking(w.classify(req.Model, ctx, err))
 	}
 	found := false
 	for _, model := range models {
@@ -120,25 +138,81 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		}
 	}
 	if !found {
-		return WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("model %q is not in the available catalog; no fallback attempted", req.Model)}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("model %q is not in the available catalog; no fallback attempted", req.Model)})
 	}
 	if err := client.SetModel(ctx, provider, id); err != nil {
-		return w.classify(req.Model, ctx, err)
+		return withThinking(w.classify(req.Model, ctx, err))
 	}
+	baseline, err := client.GetState(ctx)
+	if err != nil {
+		return withThinking(w.classify(req.Model, ctx, err))
+	}
+	if err := validateStateModel(baseline, provider, id); err != nil {
+		return withThinking(w.classify(req.Model, ctx, err))
+	}
+	thinking.effective = baseline.ThinkingLevel
+
+	if req.ThinkingLevel != "" {
+		levels, err := client.GetAvailableThinkingLevels(ctx)
+		if err != nil {
+			return withThinking(w.classify(req.Model, ctx, err))
+		}
+		if !thinkingLevelsContain(levels, req.ThinkingLevel) {
+			thinking.fallback = true
+			thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "unavailable")
+		} else {
+			err := client.SetThinkingLevel(ctx, req.ThinkingLevel)
+			var rejected *ThinkingLevelRejectedError
+			switch {
+			case err == nil:
+				confirmed, stateErr := client.GetState(ctx)
+				if stateErr != nil {
+					return withThinking(w.classify(req.Model, ctx, stateErr))
+				}
+				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
+					return withThinking(w.classify(req.Model, ctx, stateErr))
+				}
+				if confirmed.ThinkingLevel != req.ThinkingLevel {
+					return withThinking(w.classify(req.Model, ctx, newProtocolError("get_state did not confirm requested thinking level")))
+				}
+				thinking.effective = confirmed.ThinkingLevel
+			case errors.As(err, &rejected):
+				confirmed, stateErr := client.GetState(ctx)
+				if stateErr != nil {
+					return withThinking(w.classify(req.Model, ctx, stateErr))
+				}
+				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
+					return withThinking(w.classify(req.Model, ctx, stateErr))
+				}
+				if confirmed.ThinkingLevel != baseline.ThinkingLevel {
+					return withThinking(w.classify(req.Model, ctx, newProtocolError("rejected thinking change did not preserve Pi default")))
+				}
+				thinking.fallback = true
+				thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "rejected")
+			default:
+				return withThinking(w.classify(req.Model, ctx, err))
+			}
+		}
+	}
+	debugFields := []string{"thinking-effective=" + string(thinking.effective)}
+	if thinking.fallback {
+		debugFields = append(debugFields, "thinking-fallback=true")
+	}
+	debug.Log(debugThinking, debugFields...)
 	if err := client.Prompt(ctx, req.Prompt); err != nil {
-		return w.classify(req.Model, ctx, err)
+		return withThinking(w.classify(req.Model, ctx, err))
 	}
 	if err := client.WaitSettled(ctx); err != nil {
-		return w.classify(req.Model, ctx, err)
+		return withThinking(w.classify(req.Model, ctx, err))
 	}
 	text, err := client.GetLastAssistantText(ctx)
 	if err != nil {
-		return w.classify(req.Model, ctx, err)
+		return withThinking(w.classify(req.Model, ctx, err))
 	}
 	if strings.TrimSpace(text) == "" {
-		return WorkerResult{Model: req.Model, Status: StatusFailed, Error: "agent settled without producing final text"}
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "agent settled without producing final text"})
 	}
-	return WorkerResult{Model: req.Model, Status: StatusCompleted, Explanation: text}
+	return withThinking(WorkerResult{Model: req.Model, Status: StatusCompleted, Explanation: text})
 }
 
 // workerID maps an unset or invalid worker identity onto worker 1: direct

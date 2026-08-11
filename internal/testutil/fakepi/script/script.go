@@ -9,7 +9,8 @@ import "encoding/json"
 // frames fakepi emits for that request. A request type without a trigger
 // receives a default successful response.
 type Script struct {
-	Triggers map[string][]Step `json:"triggers"`
+	Triggers         map[string][]Step   `json:"triggers"`
+	TriggerSequences map[string][][]Step `json:"triggerSequences,omitempty"`
 }
 
 // Step is one action in a trigger sequence.

@@ -128,6 +128,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	scanner := bufio.NewScanner(stdin)
 	scanner.Buffer(make([]byte, 64*1024), 16<<20)
+	sequenceIndex := make(map[string]int)
 	for scanner.Scan() {
 		var req struct {
 			ID   string `json:"id"`
@@ -139,6 +140,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		logRequest(logPath, req.ID, req.Type)
 
 		steps := scriptConfig.Triggers[req.Type]
+		if sequences := scriptConfig.TriggerSequences[req.Type]; len(sequences) > 0 {
+			index := sequenceIndex[req.Type]
+			sequenceIndex[req.Type] = index + 1
+			if index < len(sequences) {
+				steps = sequences[index]
+			} else {
+				steps = nil
+			}
+		}
 		if len(steps) == 0 {
 			writeResponse(out, req.ID, req.Type, &script.Response{Success: true})
 			continue

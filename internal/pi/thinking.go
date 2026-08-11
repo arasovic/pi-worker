@@ -1,6 +1,9 @@
 package pi
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // ThinkingLevel is one Pi 0.84.1 reasoning-effort value.
 type ThinkingLevel string
@@ -42,4 +45,34 @@ type ThinkingLevelRejectedError struct {
 
 func (e *ThinkingLevelRejectedError) Error() string {
 	return fmt.Sprintf("thinking level rejected: %s", e.Level)
+}
+
+type thinkingOutcome struct {
+	requested ThinkingLevel
+	effective ThinkingLevel
+	fallback  bool
+	warning   string
+}
+
+func (o thinkingOutcome) apply(result WorkerResult) WorkerResult {
+	result.RequestedThinkingLevel = o.requested
+	result.ThinkingLevel = o.effective
+	result.ThinkingFallback = o.fallback
+	result.Warning = o.warning
+	return result
+}
+
+func thinkingLevelsContain(levels []ThinkingLevel, requested ThinkingLevel) bool {
+	return slices.Contains(levels, requested)
+}
+
+func thinkingFallbackWarning(requested, effective ThinkingLevel, reason string) string {
+	return fmt.Sprintf("requested thinking=%s %s; continuing with Pi default thinking=%s", requested, reason, effective)
+}
+
+func validateStateModel(state SessionState, provider, id string) error {
+	if state.Model.Provider != provider || state.Model.ID != id {
+		return newProtocolError("get_state confirmed a different active model")
+	}
+	return nil
 }

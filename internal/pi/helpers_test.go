@@ -42,6 +42,15 @@ func setupFakePiEnv(t *testing.T, scriptConfig *script.Script) string {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "script.json")
 	if scriptConfig != nil {
+		if scriptConfig.Triggers == nil {
+			scriptConfig.Triggers = make(map[string][]script.Step)
+		}
+		if _, hasTrigger := scriptConfig.Triggers["get_state"]; !hasTrigger && len(scriptConfig.TriggerSequences["get_state"]) == 0 {
+			scriptConfig.Triggers["get_state"] = []script.Step{{Response: &script.Response{
+				Success: true,
+				Data:    json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium","isStreaming":false}`),
+			}}}
+		}
 		data, err := json.Marshal(scriptConfig)
 		if err != nil {
 			t.Fatalf("marshal script: %v", err)

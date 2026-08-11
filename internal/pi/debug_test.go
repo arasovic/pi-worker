@@ -768,14 +768,17 @@ func TestWorkerDebugLogsLifecycleAndRedactsSecrets(t *testing.T) {
 	}
 
 	bodies := debugBodies(t, out)
-	// The complete v0 lifecycle: starting, four RPC steps, one streaming
-	// activity line, tool start/end, settlement, and the completion line.
+	// The complete lifecycle includes baseline thinking confirmation without
+	// exposing any Pi response body.
 	want := []string{
-		"worker=1 phase=starting provider=acme model=m-1",
+		"worker=1 phase=starting provider=acme model=m-1 thinking-requested=default",
 		"worker=1 rpc=get_available_models status=started",
 		"worker=1 rpc=get_available_models status=completed duration=",
 		"worker=1 rpc=set_model status=started",
 		"worker=1 rpc=set_model status=completed duration=",
+		"worker=1 rpc=get_state status=started",
+		"worker=1 rpc=get_state status=completed duration=",
+		"worker=1 phase=thinking-confirmed thinking-effective=medium",
 		"worker=1 rpc=prompt status=started",
 		"worker=1 rpc=prompt status=completed duration=",
 		"worker=1 phase=model-streaming elapsed=",
@@ -1173,11 +1176,14 @@ func TestWorkerDebugFailedRPCReportsFailedStatus(t *testing.T) {
 	out := debugOut.String()
 	bodies := debugBodies(t, out)
 	want := []string{
-		"worker=1 phase=starting provider=acme model=m-1",
+		"worker=1 phase=starting provider=acme model=m-1 thinking-requested=default",
 		"worker=1 rpc=get_available_models status=started",
 		"worker=1 rpc=get_available_models status=completed duration=",
 		"worker=1 rpc=set_model status=started",
 		"worker=1 rpc=set_model status=completed duration=",
+		"worker=1 rpc=get_state status=started",
+		"worker=1 rpc=get_state status=completed duration=",
+		"worker=1 phase=thinking-confirmed thinking-effective=medium",
 		"worker=1 rpc=prompt status=started",
 		"worker=1 rpc=prompt status=failed duration=",
 		"worker=1 status=failed total=",
@@ -1192,5 +1198,43 @@ func TestWorkerDebugFailedRPCReportsFailedStatus(t *testing.T) {
 	}
 	if strings.Contains(out, "id=r") {
 		t.Fatalf("debug output leaked a request id:\n%s", out)
+	}
+}
+
+func TestWorkerDebugReportsExplicitThinkingFallbackWithoutUpstreamDetail(t *testing.T) {
+	const upstreamSecret = "SECRET-THINKING-REJECTION"
+	scriptConfig := happyPathScript("answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","max"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: false, Error: upstreamSecret}}}
+	setupFakePiEnv(t, scriptConfig)
+
+	var debugOut bytes.Buffer
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+		Debug:         NewDebugSink(&debugOut),
+	})
+	if result.Status != StatusCompleted || !result.ThinkingFallback {
+		t.Fatalf("result = %#v", result)
+	}
+	out := debugOut.String()
+	for _, want := range []string{
+		"phase=starting provider=acme model=m-1 thinking-requested=max",
+		"phase=thinking-confirmed thinking-effective=medium thinking-fallback=true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("debug missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, upstreamSecret) || strings.Contains(out, result.Warning) {
+		t.Fatalf("debug leaked rejection detail or free-form warning:\n%s", out)
 	}
 }

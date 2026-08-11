@@ -24,6 +24,9 @@ func happyPathScript(finalText string) *script.Script {
 		"set_model": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
 		},
+		"get_state": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium","isStreaming":false}`)}},
+		},
 		"prompt": {
 			{Response: &script.Response{Success: true}},
 			{Event: json.RawMessage(`{"type":"agent_start"}`)},
@@ -101,13 +104,214 @@ func TestWorkerCompletesAndRetrievesFinalText(t *testing.T) {
 		t.Fatalf("error = %q", result.Error)
 	}
 
-	types := waitRequestLog(t, logPath, 4)
-	want := []string{"get_available_models", "set_model", "prompt", "get_last_assistant_text"}
+	types := waitRequestLog(t, logPath, 5)
+	want := []string{"get_available_models", "set_model", "get_state", "prompt", "get_last_assistant_text"}
 	if !slices.Equal(types, want) {
 		t.Fatalf("request log = %v, want %v", types, want)
 	}
 	if slices.Contains(types, "bash") {
 		t.Fatalf("worker emitted a direct rpc bash request")
+	}
+}
+
+func TestWorkerOmittedThinkingReportsConfirmedDefault(t *testing.T) {
+	logPath := setupFakePiEnv(t, happyPathScript("default answer"))
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted || result.ThinkingLevel != ThinkingMedium {
+		t.Fatalf("result = %#v, want completed medium", result)
+	}
+	if result.RequestedThinkingLevel != "" || result.ThinkingFallback || result.Warning != "" {
+		t.Fatalf("omitted thinking metadata = %#v", result)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "prompt", "get_last_assistant_text"}
+	if got := waitRequestLog(t, logPath, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+}
+
+func TestWorkerExplicitThinkingAppliesAndConfirms(t *testing.T) {
+	scriptConfig := happyPathScript("max answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"max"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium","max"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: true}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted || result.RequestedThinkingLevel != ThinkingMax || result.ThinkingLevel != ThinkingMax {
+		t.Fatalf("result = %#v, want completed explicit max", result)
+	}
+	if result.ThinkingFallback || result.Warning != "" {
+		t.Fatalf("explicit max unexpectedly fell back: %#v", result)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "get_available_thinking_levels", "set_thinking_level", "get_state", "prompt", "get_last_assistant_text"}
+	if got := waitRequestLog(t, logPath, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+}
+
+func TestWorkerThinkingUnavailableFallsBackToConfirmedDefault(t *testing.T) {
+	scriptConfig := happyPathScript("fallback answer")
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium"]}`)}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted || result.ThinkingLevel != ThinkingMedium || !result.ThinkingFallback {
+		t.Fatalf("result = %#v, want completed fallback to medium", result)
+	}
+	wantWarning := "requested thinking=max unavailable; continuing with Pi default thinking=medium"
+	if result.Warning != wantWarning {
+		t.Fatalf("warning = %q, want %q", result.Warning, wantWarning)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "get_available_thinking_levels", "prompt", "get_last_assistant_text"}
+	if got := waitRequestLog(t, logPath, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+}
+
+func TestWorkerThinkingRejectionFallsBackOnlyWhenDefaultUnchanged(t *testing.T) {
+	tests := []struct {
+		name       string
+		finalLevel string
+		wantStatus string
+		wantPrompt bool
+	}{
+		{name: "unchanged default", finalLevel: "medium", wantStatus: StatusCompleted, wantPrompt: true},
+		{name: "changed after rejection", finalLevel: "high", wantStatus: StatusError, wantPrompt: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			scriptConfig := happyPathScript("answer")
+			scriptConfig.TriggerSequences = map[string][][]script.Step{
+				"get_state": {
+					{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+					{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"` + test.finalLevel + `"}`)}}},
+				},
+			}
+			scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","max"]}`)}}}
+			scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: false, Error: "SECRET-REJECTION"}}}
+			logPath := setupFakePiEnv(t, scriptConfig)
+
+			result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+				Model:         "acme/m-1",
+				ThinkingLevel: ThinkingMax,
+				Prompt:        "go",
+				Workspace:     t.TempDir(),
+			})
+
+			if result.Status != test.wantStatus {
+				t.Fatalf("result = %#v, want status %q", result, test.wantStatus)
+			}
+			if strings.Contains(result.Warning+result.Error, "SECRET-REJECTION") {
+				t.Fatalf("result leaked upstream rejection: %#v", result)
+			}
+			if test.wantPrompt {
+				if !result.ThinkingFallback || result.ThinkingLevel != ThinkingMedium {
+					t.Fatalf("result = %#v, want fallback to medium", result)
+				}
+			} else if result.ThinkingFallback {
+				t.Fatalf("mismatched state must not be marked as fallback: %#v", result)
+			}
+			types := waitRequestLog(t, logPath, 6)
+			if slices.Contains(types, "prompt") != test.wantPrompt {
+				t.Fatalf("request log = %v, wantPrompt=%v", types, test.wantPrompt)
+			}
+		})
+	}
+}
+
+func TestWorkerThinkingConfirmationMismatchStopsBeforePrompt(t *testing.T) {
+	scriptConfig := happyPathScript("must not be returned")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"high"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","max"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: true}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusError || result.ThinkingFallback {
+		t.Fatalf("result = %#v, want hard confirmation failure", result)
+	}
+	types := waitRequestLog(t, logPath, 6)
+	if slices.Contains(types, "prompt") {
+		t.Fatalf("request log = %v; confirmation mismatch must stop before prompt", types)
+	}
+}
+
+func TestWorkerThinkingProtocolFailureDoesNotFallbackOrPrompt(t *testing.T) {
+	scriptConfig := happyPathScript("must not be returned")
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["ultra"]}`)}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusError || result.ThinkingFallback || result.Warning != "" {
+		t.Fatalf("result = %#v, want hard protocol failure", result)
+	}
+	types := waitRequestLog(t, logPath, 4)
+	if slices.Contains(types, "prompt") {
+		t.Fatalf("request log = %v; malformed thinking catalog must stop before prompt", types)
+	}
+}
+
+func TestWorkerTaskFailureRetainsConfirmedThinkingMetadata(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"max"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","max"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: true}}}
+	scriptConfig.Triggers["prompt"] = []script.Step{{Response: &script.Response{Success: false, Error: "task rejected"}}}
+	setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusFailed || result.RequestedThinkingLevel != ThinkingMax || result.ThinkingLevel != ThinkingMax {
+		t.Fatalf("result = %#v, want failed task with confirmed max metadata", result)
 	}
 }
 
