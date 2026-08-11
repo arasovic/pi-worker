@@ -1,0 +1,540 @@
+package pi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"pi-worker/internal/testutil/fakepi/script"
+)
+
+// happyPathScript drives fakepi through the full worker lifecycle.
+func happyPathScript(finalText string) *script.Script {
+	return &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"agent_start"}`)},
+			{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The answer is 42."}]}}`)},
+			{Event: json.RawMessage(`{"type":"turn_end","message":{},"toolResults":[]}`)},
+			{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"` + finalText + `"}`)}},
+		},
+	}}
+}
+
+func TestWorkerIDZeroDefaultsToOne(t *testing.T) {
+	// Direct callers leave the identity zero; it must label worker 1. The
+	// controller passes explicit identities 1..N through unchanged.
+	for id, want := range map[int]int{0: 1, -3: 1, 1: 1, 2: 2, 3: 3} {
+		if got := workerID(id); got != want {
+			t.Fatalf("workerID(%d) = %d, want %d", id, got, want)
+		}
+	}
+}
+
+func TestWorkerDebugLinesCarryRequestedIdentity(t *testing.T) {
+	// The worker identity in the request labels every debug line; it is
+	// operational metadata only and never appears in results.
+	setupFakePiEnv(t, happyPathScript("identity answer"))
+	var debugOut bytes.Buffer
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		WorkerID:  2,
+		Debug:     NewDebugSink(&debugOut),
+	})
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	out := debugOut.String()
+	if !strings.Contains(out, "worker=2 phase=starting provider=acme model=m-1") {
+		t.Fatalf("debug missing identity-2 starting line:\n%s", out)
+	}
+	if !strings.Contains(out, "worker=2 status=completed total=") {
+		t.Fatalf("debug missing identity-2 completion line:\n%s", out)
+	}
+	if strings.Contains(out, "worker=1 ") {
+		t.Fatalf("identity-2 run emitted worker=1 lines:\n%s", out)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.Count(line, "worker=") != 1 {
+			t.Fatalf("line %q carries %d worker labels", line, strings.Count(line, "worker="))
+		}
+	}
+}
+
+func TestWorkerCompletesAndRetrievesFinalText(t *testing.T) {
+	logPath := setupFakePiEnv(t, happyPathScript("The answer is 42."))
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "solve it",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if result.Model != "acme/m-1" {
+		t.Fatalf("model = %q", result.Model)
+	}
+	if result.Explanation != "The answer is 42." {
+		t.Fatalf("explanation = %q", result.Explanation)
+	}
+	if result.Error != "" {
+		t.Fatalf("error = %q", result.Error)
+	}
+
+	types := waitRequestLog(t, logPath, 4)
+	want := []string{"get_available_models", "set_model", "prompt", "get_last_assistant_text"}
+	if !slices.Equal(types, want) {
+		t.Fatalf("request log = %v, want %v", types, want)
+	}
+	if slices.Contains(types, "bash") {
+		t.Fatalf("worker emitted a direct rpc bash request")
+	}
+}
+
+func TestWorkerWaitsForSettledPastAgentEnd(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"after settle"}`)}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusCompleted || result.Explanation != "after settle" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestWorkerModelUnavailableNeverFallsBack(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"other","id":"x"}]}`)}},
+		},
+	}}
+	logPath := setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusUnavailable {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "acme/m-1") || !strings.Contains(result.Error, "no fallback") {
+		t.Fatalf("error = %q", result.Error)
+	}
+	types := waitRequestLog(t, logPath, 1)
+	if !slices.Equal(types, []string{"get_available_models"}) {
+		t.Fatalf("request log = %v; worker must stop before set_model/prompt", types)
+	}
+}
+
+func TestWorkerInvalidCatalogContainerIsProtocolError(t *testing.T) {
+	// A success response with a missing data container is a protocol
+	// violation (exit 9 path), not a model-unavailable/readiness failure
+	// (exit 3 path).
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusError {
+		t.Fatalf("status = %q, want error; error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "protocol error") {
+		t.Fatalf("error = %q, want protocol classification", result.Error)
+	}
+}
+
+func TestWorkerExplicitEmptyCatalogIsModelUnavailable(t *testing.T) {
+	// An explicitly present empty models array is a valid catalog: the
+	// requested model is simply unavailable (exit 3 path), never a
+	// protocol error.
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[]}`)}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusUnavailable {
+		t.Fatalf("status = %q, want unavailable; error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "not in the available catalog") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestWorkerCatalogReadinessFailure(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: false, Error: "authentication required"}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusUnavailable {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "authentication required") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestWorkerSetModelFailureIsReadiness(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: false, Error: "provider not configured"}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusUnavailable {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "provider not configured") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestWorkerPromptRejectedIsTaskFailure(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: false, Error: "prompt rejected"}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "prompt rejected") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestWorkerNoFinalTextIsTaskFailure(t *testing.T) {
+	// An explicit text:null means no assistant text exists; the worker
+	// reports a task failure (exit 5 path), not a protocol error.
+
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":null}`)}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "final text") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestWorkerOmittedTextFieldIsTaskFailure(t *testing.T) {
+	// Observed Pi 0.84.1 behavior: when no assistant text exists, the
+	// server serializes the undefined value as an omitted text key
+	// (data:{}), not as text:null. A model error that settles without
+	// content must classify as a task failure (exit 5 path), never as a
+	// protocol violation (exit 9 path).
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed; error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "final text") {
+		t.Fatalf("error = %q", result.Error)
+	}
+}
+
+func TestWorkerTimeoutCleansUpProcessAndSession(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{SleepMS: 10000},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; error = %q", result.Status, result.Error)
+	}
+	if result.Error == "" {
+		t.Fatalf("timed-out result must carry an error message")
+	}
+	if _, err := os.Stat(sessionDirFromMeta(t, metaPath)); !os.IsNotExist(err) {
+		t.Fatalf("session directory left behind after timeout: %v", err)
+	}
+}
+
+func TestWorkerCancellationCleansUp(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{SleepMS: 10000},
+		},
+	}}
+	setupFakePiEnv(t, script)
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(150*time.Millisecond, cancel)
+	defer timer.Stop()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCancelled {
+		t.Fatalf("status = %q, want cancelled; error = %q", result.Status, result.Error)
+	}
+	if _, err := os.Stat(sessionDirFromMeta(t, metaPath)); !os.IsNotExist(err) {
+		t.Fatalf("session directory left behind after cancellation: %v", err)
+	}
+}
+
+func TestWorkerAlreadyExpiredDeadlineIsTimedOutWithoutLaunchingPi(t *testing.T) {
+	// An already-expired deadline must yield StatusTimedOut (exit 7 path)
+	// and must not launch the host executable at all. Regression: the
+	// pre-launch ctx.Err() check used to map DeadlineExceeded to cancelled.
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; error = %q", result.Status, result.Error)
+	}
+	if result.Error == "" {
+		t.Fatalf("timed-out result must carry an error message")
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Fatalf("pi was launched for an already-expired run")
+	}
+}
+
+// deadlineBeforeStartContext is a context whose first Err() call (the
+// worker's pre-launch check) reports nil while its Done channel is already
+// closed. The child launch then fails deterministically with
+// DeadlineExceeded before spawning anything, exercising the start-failure
+// classification without sleeping.
+type deadlineBeforeStartContext struct {
+	context.Context
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *deadlineBeforeStartContext) Done() <-chan struct{} {
+	closed := make(chan struct{})
+	close(closed)
+	return closed
+}
+
+func (c *deadlineBeforeStartContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls >= 2 {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func TestWorkerStartFailureFromDeadlineExceededIsTimedOut(t *testing.T) {
+	// A start failure caused by DeadlineExceeded must yield StatusTimedOut
+	// (exit 7 path), not cancelled or unavailable. Regression: the
+	// proc.Start error path used to map DeadlineExceeded to cancelled.
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	ctx := &deadlineBeforeStartContext{Context: context.Background()}
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "timed out") {
+		t.Fatalf("error = %q, want timed-out detail", result.Error)
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Fatalf("pi was launched for a start that failed with DeadlineExceeded")
+	}
+}
+
+func TestWorkerAlreadyCancelledContextIsCancelledWithoutLaunchingPi(t *testing.T) {
+	// An already-cancelled context must yield StatusCancelled (exit 8
+	// path) and must not launch the host executable at all. Explicit
+	// cancellation stays cancelled even after the regression fix.
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCancelled {
+		t.Fatalf("status = %q, want cancelled; error = %q", result.Status, result.Error)
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Fatalf("pi was launched for an already-cancelled run")
+	}
+}
+
+func TestWorkerRejectsInvalidInputWithoutLaunchingPi(t *testing.T) {
+	worker := New(fakePiBin)
+	workspace := t.TempDir()
+	tests := []struct {
+		name string
+		req  WorkerRequest
+	}{
+		{"empty prompt", WorkerRequest{Model: "acme/m-1", Workspace: workspace}},
+		{"empty model", WorkerRequest{Prompt: "go", Workspace: workspace}},
+		{"empty workspace", WorkerRequest{Model: "acme/m-1", Prompt: "go"}},
+		{"malformed model", WorkerRequest{Model: "acme", Prompt: "go", Workspace: workspace}},
+		{"model with thinking suffix", WorkerRequest{Model: "acme/m-1:thinking", Prompt: "go", Workspace: workspace}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := worker.Run(context.Background(), test.req)
+			if result.Status != StatusFailed {
+				t.Fatalf("status = %q, want failed; error = %q", result.Status, result.Error)
+			}
+			if result.Error == "" {
+				t.Fatalf("error must not be empty")
+			}
+		})
+	}
+}
