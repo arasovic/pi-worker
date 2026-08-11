@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -19,7 +21,7 @@ type EventHandler interface {
 	OnEvent(Event) error
 }
 
-// debugHeartbeatInterval bounds both model-streaming updates and host-clock
+// debugHeartbeatInterval bounds repeated model-phase updates and host-clock
 // no-event diagnostics, independent of frame count.
 const debugHeartbeatInterval = 30 * time.Second
 
@@ -55,11 +57,11 @@ type Client struct {
 	// from the prompt lifecycle become terminal and log "agent settled".
 	awaitingSettled bool
 	debug           *WorkerScope
-	// streamed records that the first model-activity line was emitted;
-	// lastBeat is the run elapsed time of the last emitted model-streaming
-	// line. Only the single driving goroutine touches them.
-	streamed bool
-	lastBeat time.Duration
+	// modelPhase is the last projected assistant message phase. lastBeat is
+	// the run elapsed time of its last emitted line. Only the single driving
+	// goroutine touches them.
+	modelPhase string
+	lastBeat   time.Duration
 	// toolStarts correlates tool_execution_start/end timings by the
 	// internal tool-call identifier, bounded by toolStartCap. The
 	// identifier is Pi-controlled untrusted input and is only ever used
@@ -536,18 +538,30 @@ var allowedToolNames = map[string]bool{
 }
 
 // debugEvent projects one inbound event into the worker debug stream. The
-// switch below is the fixed event vocabulary: message_update drives the
-// elapsed-time streaming heartbeat; tool_execution_start and
-// tool_execution_end report only the allowlisted tool name and a fixed
-// status, plus the duration on completion; agent_settled reports
-// settlement. agent_start/end, turn_start/end, message_start/end,
-// tool_execution_update, and every other Pi-controlled type are suppressed
-// entirely. No content, deltas, chunk or message counts, tool arguments,
-// results, or raw frames are ever logged.
+// switch below is the fixed event vocabulary: message_update inspects only
+// assistantMessageEvent.type and drives the model phase heartbeat;
+// tool_execution_start and tool_execution_end report only the allowlisted
+// tool name, fixed status, duration, and the fixed bash failure cause
+// projection; agent_settled reports settlement. agent_start/end,
+// turn_start/end, message_start/end, tool_execution_update, and every other
+// Pi-controlled type are suppressed entirely. No content, deltas, chunk or
+// message counts, tool arguments, results, or raw frames are ever logged.
 func (c *Client) debugEvent(eventType string, frame []byte) {
 	switch eventType {
 	case "message_update":
-		c.streamingUpdate()
+		var projection struct {
+			AssistantMessageEvent struct {
+				Type string `json:"type"`
+			} `json:"assistantMessageEvent"`
+		}
+		// Only assistantMessageEvent.type is part of the phase projection;
+		// all other message_update fields remain opaque. A malformed frame
+		// cannot provide a subtype and therefore maps to model-activity.
+		phase := debugModelActivity
+		if err := json.Unmarshal(frame, &projection); err == nil {
+			phase = modelPhase(projection.AssistantMessageEvent.Type)
+		}
+		c.modelUpdate(phase)
 	case "tool_execution_start":
 		var projection struct {
 			ToolCallID string `json:"toolCallId"`
@@ -591,6 +605,13 @@ func (c *Client) debugEvent(eventType string, frame []byte) {
 			delete(c.toolStarts, projection.ToolCallID)
 			fields = append(fields, "duration="+(c.debug.Elapsed()-started).Round(time.Millisecond).String())
 		}
+		if projection.IsError {
+			cause, exitCode := bashFailureCause(projection.ToolName, frame)
+			fields = append(fields, "cause="+cause)
+			if exitCode != "" {
+				fields = append(fields, "exit-code="+exitCode)
+			}
+		}
 		c.debug.Log("tool="+toolName(projection.ToolName), fields...)
 	case "agent_settled":
 		c.debug.Log(debugSettled)
@@ -613,22 +634,132 @@ func toolName(name string) string {
 	return name
 }
 
-// streamingUpdate bounds model-streaming lines by elapsed run time: the
-// first message_update of the run logs one activity line, and later
-// updates log at most one heartbeat per debugHeartbeatInterval,
-// independent of frame count.
-func (c *Client) streamingUpdate() {
+// modelPhase maps only the assistantMessageEvent.type vocabulary that Pi
+// 0.84.1 emits. Missing, malformed, and unknown subtypes intentionally share
+// model-activity; no other frame field participates in this projection.
+func modelPhase(subtype string) string {
+	switch subtype {
+	case "thinking_start", "thinking_delta", "thinking_end":
+		return debugModelThinking
+	case "text_start", "text_delta", "text_end":
+		return debugModelOutput
+	case "toolcall_start", "toolcall_delta", "toolcall_end":
+		return debugModelToolCall
+	default:
+		return debugModelActivity
+	}
+}
+
+// modelUpdate emits immediately when the fixed model phase changes. Repeated
+// events in that phase are heartbeated by elapsed run time, never by frame
+// count.
+func (c *Client) modelUpdate(phase string) {
 	elapsed := c.debug.Elapsed().Round(time.Millisecond)
-	if !c.streamed {
-		c.streamed = true
+	if phase != c.modelPhase {
+		c.modelPhase = phase
 		c.lastBeat = elapsed
-		c.debug.Log(debugStreaming, "elapsed="+elapsed.String())
+		c.debug.Log(phase, "elapsed="+elapsed.String())
 		return
 	}
 	if elapsed-c.lastBeat >= debugHeartbeatInterval {
 		c.lastBeat = elapsed
-		c.debug.Log(debugStreaming, "elapsed="+elapsed.String())
+		c.debug.Log(phase, "elapsed="+elapsed.String())
 	}
+}
+
+// bashFailureCause projects only the final text entry of result.content for
+// an exact bash failure. It never returns any upstream text; exitCode is the
+// only value copied into a debug field, and only after strict validation.
+func bashFailureCause(tool string, frame []byte) (cause, exitCode string) {
+	if tool != "bash" {
+		return "unknown", ""
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(frame, &envelope); err != nil || len(envelope.Result) == 0 || isJSONNull(envelope.Result) {
+		return "unknown", ""
+	}
+	var result struct {
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(envelope.Result, &result); err != nil || result.Content == nil || len(result.Content) == 0 {
+		return "unknown", ""
+	}
+	var entry struct {
+		Type string          `json:"type"`
+		Text json.RawMessage `json:"text"`
+	}
+	if err := json.Unmarshal(result.Content[len(result.Content)-1], &entry); err != nil || entry.Type != "text" || len(entry.Text) == 0 || isJSONNull(entry.Text) {
+		return "unknown", ""
+	}
+	var text string
+	if err := json.Unmarshal(entry.Text, &text); err != nil {
+		return "unknown", ""
+	}
+	status, ok := finalBashStatus(text)
+	if !ok {
+		return "unknown", ""
+	}
+	if strings.HasPrefix(status, "Command exited with code ") {
+		value := strings.TrimPrefix(status, "Command exited with code ")
+		if isPositiveDecimal(value) {
+			return "nonzero-exit", value
+		}
+		return "unknown", ""
+	}
+	if strings.HasPrefix(status, "Command timed out after ") && strings.HasSuffix(status, " seconds") {
+		value := strings.TrimSuffix(strings.TrimPrefix(status, "Command timed out after "), " seconds")
+		if isDecimal(value) {
+			return "timeout", ""
+		}
+		return "unknown", ""
+	}
+	if status == "Command aborted" || status == "Operation aborted" {
+		return "cancelled", ""
+	}
+	return "unknown", ""
+}
+
+// finalBashStatus accepts the exact status text Pi appends, either as the
+// complete output or after its fixed blank-line separator. Arbitrary output
+// before the suffix is deliberately discarded and never returned.
+func finalBashStatus(text string) (string, bool) {
+	if (strings.HasPrefix(text, "Command ") || text == "Operation aborted") && !strings.Contains(text, "\n\n") {
+		return text, true
+	}
+	if index := strings.LastIndex(text, "\n\n"); index >= 0 && index+2 < len(text) {
+		status := text[index+2:]
+		if !strings.Contains(status, "\n") {
+			return status, true
+		}
+	}
+	return "", false
+}
+
+func isPositiveDecimal(value string) bool {
+	if !isDecimal(value) || value[0] == '0' {
+		return false
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && n > 0
+}
+
+func isDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	dot := false
+	for i := 0; i < len(value); i++ {
+		switch {
+		case value[i] >= '0' && value[i] <= '9':
+		case value[i] == '.' && !dot:
+			dot = true
+		default:
+			return false
+		}
+	}
+	return value[0] != '.' && value[len(value)-1] != '.'
 }
 
 // frameError maps framing failures onto deterministic errors.

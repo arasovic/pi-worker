@@ -232,11 +232,14 @@ Example:
   `get_state`, `get_available_thinking_levels`, `set_thinking_level`, `prompt`,
   `get_last_assistant_text`)
 - requested and confirmed effective thinking; fallback is a fixed boolean field
-- model streaming heartbeat (`phase=model-streaming`, first line and at most one heartbeat every 30s)
+- model phase heartbeat (`phase=model-thinking`, `phase=model-output`,
+  `phase=model-tool-call`, or `phase=model-activity`; transitions are immediate
+  and repeated events heartbeat at most once every 30s)
 - host-clock idle heartbeat (`phase=waiting-for-pi`) after every 30 seconds
   without an inbound frame; this reports observed silence and does not prove
   the model is thinking rather than compacting, doing internal work, or stalled
-- tool start/end status and duration
+- tool start/end status and duration; failed tools include a fixed `cause`, and
+  bash nonzero exits also include `exit-code`
 - settlement line
 - worker completion and total duration
 

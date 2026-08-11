@@ -220,6 +220,22 @@ Pi-worker must reject and must not emit every other RPC type. In particular,
 it must reject direct RPC `bash`: Pi 0.84.1 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
+### Debug observability
+
+The v0 debug projection uses fixed model phases: `model-thinking`,
+`model-output`, `model-tool-call`, and `model-activity`. A `message_update`
+frame is classified only from `assistantMessageEvent.type`; transitions are
+reported immediately and repeated events are heartbeated at most once per 30
+seconds. Host-clock silence remains `phase=waiting-for-pi` with
+`no-event-for=<duration>` and does not imply model thinking.
+
+For failed tools, only an exact `bash` tool name is eligible for a cause
+projection from the final `result.content` text entry: nonzero exits report
+`cause=nonzero-exit exit-code=N`, timeouts report `cause=timeout`, and aborts
+report `cause=cancelled`. Other and malformed forms, and all non-bash failures,
+report `cause=unknown`. Debug output never includes command, result, argument,
+identifier, path, or credential data.
+
 ### Completion and final text
 
 Treat `{"type":"agent_settled"}` as the terminal condition for a submitted

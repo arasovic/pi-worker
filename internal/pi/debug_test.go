@@ -175,12 +175,12 @@ func TestDebugSinkFormatsAndSanitizesLines(t *testing.T) {
 	sink := newDebugSink(&buf, time.Now().Add(-2*time.Minute))
 	scope := sink.Worker(1)
 	scope.Log("phase=starting", "provider=acme", "model=m-1")
-	scope.Log("phase=model-streaming", "elapsed=hostile\r\n[pi-worker +99s] forged", "model=ls\tname", "note=bell\x07")
+	scope.Log("phase=model-output", "elapsed=hostile\r\n[pi-worker +99s] forged", "model=ls\tname", "note=bell\x07")
 
 	bodies := debugBodies(t, buf.String())
 	want := []string{
 		"worker=1 phase=starting provider=acme model=m-1",
-		"worker=1 phase=model-streaming elapsed=hostile??[pi-worker +99s] forged model=ls?name note=bell?",
+		"worker=1 phase=model-output elapsed=hostile??[pi-worker +99s] forged model=ls?name note=bell?",
 	}
 	if !slices.Equal(bodies, want) {
 		t.Fatalf("line bodies = %q, want %q", bodies, want)
@@ -214,7 +214,7 @@ func TestDebugSinkConcurrentWritesDoNotInterleave(t *testing.T) {
 			defer wg.Done()
 			scope := sink.Worker(id)
 			for j := 0; j < linesPerScope; j++ {
-				scope.Log("phase=model-streaming", "elapsed=0s")
+				scope.Log("phase=model-output", "elapsed=0s")
 			}
 		}(i + 1)
 	}
@@ -238,7 +238,7 @@ func TestDebugSinkTruncatesOversizedLinesPreservingUTF8(t *testing.T) {
 	// the 512-byte cut lands, exercising the rune-boundary backup.
 	var buf bytes.Buffer
 	sink := NewDebugSink(&buf)
-	sink.Worker(1).Log("phase=model-streaming", "elapsed="+strings.Repeat("界", 200))
+	sink.Worker(1).Log("phase=model-output", "elapsed="+strings.Repeat("界", 200))
 
 	bodies := debugBodies(t, buf.String())
 	if len(bodies) != 1 {
@@ -258,7 +258,7 @@ func TestDebugSinkEmitsBudgetNoticeOnceAndSuppresses(t *testing.T) {
 	sink := NewDebugSink(&buf)
 	scope := sink.Worker(1)
 	for i := 0; i < debugLineBudget+100; i++ {
-		scope.Log("phase=model-streaming", "elapsed=0s")
+		scope.Log("phase=model-output", "elapsed=0s")
 	}
 
 	out := buf.String()
@@ -308,7 +308,7 @@ func TestDebugSinkScopedWorkersShareSynchronizationAndBudget(t *testing.T) {
 		go func(id int, scope *WorkerScope) {
 			defer wg.Done()
 			for j := 0; j < linesPerWorker; j++ {
-				scope.Log("phase=model-streaming", "elapsed=0s")
+				scope.Log("phase=model-output", "elapsed=0s")
 			}
 		}(i+1, scope)
 	}
@@ -357,9 +357,9 @@ func TestDebugSinkScopedWorkersShareSynchronizationAndBudget(t *testing.T) {
 	}
 }
 
-// TestClientDebugStreamingHeartbeatIsTimeBased proves the model-streaming
+// TestClientDebugStreamingHeartbeatIsTimeBased proves the model-output
 // heartbeat is driven by elapsed run time, never by frame count: 10,000
-// streaming updates inside 30 seconds emit only the first activity line,
+// output updates inside 30 seconds emit only the first activity line,
 // and later heartbeats occur at most once per 30-second interval.
 func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
@@ -369,7 +369,7 @@ func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
 
 	update := json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"delta"}}`)
 	streaming := func() int {
-		return countBodiesWithPrefix(debugBodies(t, buf.String()), "worker=1 phase=model-streaming ")
+		return countBodiesWithPrefix(debugBodies(t, buf.String()), "worker=1 phase=model-output ")
 	}
 
 	// 10,000 updates inside 30 seconds: exactly one activity line, on the
@@ -395,7 +395,7 @@ func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
 	if got := streaming(); got != 2 {
 		t.Fatalf("update at 30s emitted %d lines, want 2:\n%s", got, buf.String())
 	}
-	if !slices.Contains(bodies, "worker=1 phase=model-streaming elapsed="+(30*time.Second).String()) {
+	if !slices.Contains(bodies, "worker=1 phase=model-output elapsed="+(30*time.Second).String()) {
 		t.Fatalf("heartbeat at 30s missing from:\n%s", buf.String())
 	}
 
@@ -412,7 +412,7 @@ func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
 	if got := streaming(); got != 3 {
 		t.Fatalf("update at 60s emitted %d lines, want 3:\n%s", got, buf.String())
 	}
-	if !slices.Contains(debugBodies(t, buf.String()), "worker=1 phase=model-streaming elapsed="+(60*time.Second).String()) {
+	if !slices.Contains(debugBodies(t, buf.String()), "worker=1 phase=model-output elapsed="+(60*time.Second).String()) {
 		t.Fatalf("heartbeat at 60s missing from:\n%s", buf.String())
 	}
 }
@@ -423,6 +423,122 @@ func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
 // used only to correlate timings and is never logged; neither are
 // arguments, partial content, results, or raw frames. Parallel tool calls
 // keep their own durations.
+func TestClientDebugMessageUpdateUsesFixedPhases(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	var buf bytes.Buffer
+	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
+	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+
+	updates := []json.RawMessage{
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta"},"content":{"type":"text_delta"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_end"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_start"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_end"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_end"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{}}`),
+		json.RawMessage(`{"type":"message_update"}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"unknown"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"start"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"done"}}`),
+		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"error"}}`),
+		json.RawMessage(`{"type":"message_update","type":"text_delta","content":{"type":"text_delta"}}`),
+	}
+	for _, update := range updates {
+		client.debugEvent("message_update", update)
+	}
+
+	bodies := debugBodies(t, buf.String())
+	want := []string{
+		"worker=1 phase=model-thinking elapsed=0s",
+		"worker=1 phase=model-output elapsed=0s",
+		"worker=1 phase=model-tool-call elapsed=0s",
+		"worker=1 phase=model-activity elapsed=0s",
+	}
+	if !slices.Equal(bodies, want) {
+		t.Fatalf("phase lines = %q, want %q", bodies, want)
+	}
+}
+
+func TestClientDebugMessageUpdateHeartbeatsPerPhase(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	var buf bytes.Buffer
+	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
+	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+
+	thinking := json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta"}}`)
+	output := json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}`)
+	client.debugEvent("message_update", thinking)
+	for i := 0; i < 10000; i++ {
+		client.debugEvent("message_update", thinking)
+	}
+	clock.advance(29 * time.Second)
+	client.debugEvent("message_update", thinking)
+	clock.advance(time.Second)
+	client.debugEvent("message_update", thinking)
+	client.debugEvent("message_update", output)
+	clock.advance(29 * time.Second)
+	client.debugEvent("message_update", output)
+	clock.advance(time.Second)
+	client.debugEvent("message_update", output)
+
+	bodies := debugBodies(t, buf.String())
+	want := []string{
+		"worker=1 phase=model-thinking elapsed=0s",
+		"worker=1 phase=model-thinking elapsed=30s",
+		"worker=1 phase=model-output elapsed=30s",
+		"worker=1 phase=model-output elapsed=1m0s",
+	}
+	if !slices.Equal(bodies, want) {
+		t.Fatalf("phase heartbeat lines = %q, want %q", bodies, want)
+	}
+}
+
+func TestClientDebugBashFailureCauseUsesOnlyFinalStatusText(t *testing.T) {
+	cases := []struct {
+		name   string
+		tool   string
+		result string
+		want   string
+	}{
+		{"nonzero", "bash", `{"content":[{"type":"text","text":"stdout-secret\n\nCommand exited with code 7"}]}`, "cause=nonzero-exit exit-code=7"},
+		{"timeout", "bash", `{"content":[{"type":"text","text":"output-secret\n\nCommand timed out after 10 seconds"}]}`, "cause=timeout"},
+		{"command-aborted", "bash", `{"content":[{"type":"text","text":"Command aborted"}]}`, "cause=cancelled"},
+		{"operation-aborted", "bash", `{"content":[{"type":"text","text":"Operation aborted"}]}`, "cause=cancelled"},
+		{"non-bash", "read", `{"content":[{"type":"text","text":"Command exited with code 7"}]}`, "cause=unknown"},
+		{"wrong-suffix", "bash", `{"content":[{"type":"text","text":"output-secret\n\nCommand exited with code 0"}]}`, "cause=unknown"},
+		{"malformed", "bash", `{"content":[{"type":"image","text":"output-secret\n\nCommand aborted"}]}`, "cause=unknown"},
+		{"not-final", "bash", `{"content":[{"type":"text","text":"Command exited with code 7\n\nstdout-secret"}]}`, "cause=unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+			var buf bytes.Buffer
+			client := NewClient(io.Discard, strings.NewReader(""), nil, newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1))
+			frame := json.RawMessage(fmt.Sprintf(`{"type":"tool_execution_end","toolName":%q,"isError":true,"result":%s}`, tc.tool, tc.result))
+			client.debugEvent("tool_execution_end", frame)
+			bodies := debugBodies(t, buf.String())
+			if len(bodies) != 1 || !strings.Contains(bodies[0], tc.want) {
+				t.Fatalf("failure line = %q, want %q", bodies, tc.want)
+			}
+			if strings.Contains(buf.String(), "stdout-secret") {
+				t.Fatalf("failure line leaked result text: %s", buf.String())
+			}
+		})
+	}
+
+	var success bytes.Buffer
+	client := NewClient(io.Discard, strings.NewReader(""), nil, NewDebugSink(&success).Worker(1))
+	client.debugEvent("tool_execution_end", json.RawMessage(`{"type":"tool_execution_end","toolName":"bash","isError":false,"result":{"content":[{"type":"text","text":"Command exited with code 7"}]}}`))
+	if strings.Contains(success.String(), "cause=") || strings.Contains(success.String(), "exit-code=") {
+		t.Fatalf("successful tool included failure fields: %s", success.String())
+	}
+}
+
 func TestClientDebugToolLinesReportSafeNameStatusAndDuration(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
@@ -459,7 +575,7 @@ func TestClientDebugToolLinesReportSafeNameStatusAndDuration(t *testing.T) {
 	want := []string{
 		"worker=1 tool=read status=started",
 		"worker=1 tool=bash status=started",
-		"worker=1 tool=bash status=failed duration=1s",
+		"worker=1 tool=bash status=failed duration=1s cause=unknown",
 		"worker=1 tool=read status=completed duration=3s",
 	}
 	if !slices.Equal(bodies, want) {
@@ -882,7 +998,7 @@ func TestWorkerDebugLogsLifecycleAndRedactsSecrets(t *testing.T) {
 		"worker=1 phase=thinking-confirmed thinking-effective=medium",
 		"worker=1 rpc=prompt status=started",
 		"worker=1 rpc=prompt status=completed duration=",
-		"worker=1 phase=model-streaming elapsed=",
+		"worker=1 phase=model-output elapsed=",
 		"worker=1 tool=read status=started",
 		"worker=1 tool=read status=completed duration=",
 		"worker=1 phase=settled",
@@ -1030,8 +1146,8 @@ func TestWorkerDebugThrottlesUpdateFloods(t *testing.T) {
 
 	// Exactly one elapsed-time activity line for the whole flood, and no
 	// chunk counts, message counts, or noisy lifecycle frames anywhere.
-	if got := countBodiesWithPrefix(bodies, "worker=1 phase=model-streaming "); got != 1 {
-		t.Fatalf("flood emitted %d streaming lines, want 1:\n%s", got, out)
+	if got := countBodiesWithPrefix(bodies, "worker=1 phase=model-output "); got != 1 {
+		t.Fatalf("flood emitted %d model-output lines, want 1:\n%s", got, out)
 	}
 	for _, forbidden := range []string{
 		"chunks=", "message_start", "message_end", "agent_start", "turn_",

@@ -19,14 +19,17 @@ import (
 // only events the worker and client layers may emit, each carrying only
 // the explicitly safe key=value projections listed next to it.
 const (
-	debugStarting  = "phase=starting" // + provider= model= thinking-requested=
-	debugThinking  = "phase=thinking-confirmed"
-	debugStreaming = "phase=model-streaming" // + elapsed=
-	debugWaiting   = "phase=waiting-for-pi"  // + no-event-for=
-	debugSettled   = "phase=settled"
-	debugStarted   = "status=started"
-	debugCompleted = "status=completed"
-	debugFailed    = "status=failed"
+	debugStarting      = "phase=starting" // + provider= model= thinking-requested=
+	debugThinking      = "phase=thinking-confirmed"
+	debugModelThinking = "phase=model-thinking"  // + elapsed=
+	debugModelOutput   = "phase=model-output"    // + elapsed=
+	debugModelToolCall = "phase=model-tool-call" // + elapsed=
+	debugModelActivity = "phase=model-activity"  // + elapsed=
+	debugWaiting       = "phase=waiting-for-pi"  // + no-event-for=
+	debugSettled       = "phase=settled"
+	debugStarted       = "status=started"
+	debugCompleted     = "status=completed"
+	debugFailed        = "status=failed"
 )
 
 const (
