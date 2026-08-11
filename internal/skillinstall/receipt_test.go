@@ -362,8 +362,11 @@ func TestInspectBlockedGlobalRecoveryPolicy(t *testing.T) {
 		if inspection.Status != StatusBlocked {
 			t.Fatalf("status = %q, want %q", inspection.Status, StatusBlocked)
 		}
-		if !containsValue(inspection.Recovery, "global remove all") {
-			t.Fatalf("global recovery missing: %v", inspection.Recovery)
+		if len(inspection.Recovery) != 1 || inspection.Recovery[0] != "global remove all" {
+			t.Fatalf("run-level recovery = %v, want only global remove", inspection.Recovery)
+		}
+		if len(inspection.AffectedTargets) != 1 || len(inspection.AffectedTargets[0].Recovery) != 1 || inspection.AffectedTargets[0].Recovery[0] != "backup managed" {
+			t.Fatalf("path-specific recovery = %+v", inspection.AffectedTargets)
 		}
 	})
 	t.Run("markerless unmanaged path omits global", func(t *testing.T) {
@@ -373,6 +376,9 @@ func TestInspectBlockedGlobalRecoveryPolicy(t *testing.T) {
 		}
 		if containsValue(inspection.Recovery, "global remove all") {
 			t.Fatalf("global recovery unexpectedly present: %v", inspection.Recovery)
+		}
+		if len(inspection.Recovery) != 0 {
+			t.Fatalf("run-level recovery must stay empty when global recovery is unsafe: %v", inspection.Recovery)
 		}
 	})
 	t.Run("changed marker omits global", func(t *testing.T) {

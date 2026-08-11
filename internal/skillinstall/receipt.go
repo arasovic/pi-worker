@@ -136,9 +136,9 @@ func Inspect(path string) (Inspection, error) {
 	}
 	sort.Strings(insp.VerifiedTargets)
 
-	recovery := collectPathSpecificRecovery(receipt.AffectedTargets)
+	var recovery []string
 	if shouldExposeGlobalRemove(receipt, missingTargets, driftedTargets) {
-		recovery = append(recovery, receipt.Recovery...)
+		recovery = append([]string{}, receipt.Recovery...)
 	}
 	sort.Strings(recovery)
 	insp.Recovery = recovery
@@ -352,14 +352,6 @@ func cloneAffectedTargets(targets []AffectedTarget) []AffectedTarget {
 		return filepath.Clean(cloned[i].Path) < filepath.Clean(cloned[j].Path)
 	})
 	return cloned
-}
-
-func collectPathSpecificRecovery(targets []AffectedTarget) []string {
-	recovery := make([]string, 0)
-	for _, target := range targets {
-		recovery = append(recovery, target.Recovery...)
-	}
-	return recovery
 }
 
 func shouldExposeGlobalRemove(r Receipt, missingTargets, driftedTargets []string) bool {
