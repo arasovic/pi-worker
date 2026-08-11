@@ -2,6 +2,16 @@
 
 This documents the current public v0 behavior.
 
+## Agent skill
+
+The canonical provider-neutral agent skill is
+[`skills/pi-worker`](../skills/pi-worker). Use it when delegating through Pi,
+selecting cheaper or separately metered models, or assigning one to three Pi
+workers. It resolves informal model names from the catalog, uses an exact
+explicit selector without fallback, and otherwise lets the configured default
+apply. It uses external task files, keeps parallel work disjoint, and reports
+the parsed final JSON result without debug or raw protocol output.
+
 ## Prerequisites
 
 - Go version from `go.mod`: language level `go 1.25.0` (toolchain declared as `go1.26.1`).

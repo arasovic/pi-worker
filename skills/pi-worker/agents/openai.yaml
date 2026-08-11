@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pi Worker"
+  short_description: "Delegate work through configured Pi models"
+  default_prompt: "Use $pi-worker to delegate this task through an explicitly requested or configured model."
