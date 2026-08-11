@@ -128,6 +128,10 @@ function copyPackageFixture(root) {
   for (const path of ["package.json", "README.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES", "skills", "npm/bin", "npm/generated", "npm/lib", "npm/scripts", "npm/test", "go.mod", "go.sum", "tools", "internal/releasenotice"]) {
     cpSync(join(repository, path), join(root, path), { recursive: true });
   }
+  const initialized = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const tracked = spawnSync("git", ["add", "--all"], { cwd: root, encoding: "utf8" });
+  assert.equal(tracked.status, 0, tracked.stderr);
   mkdirSync(join(root, "node_modules"));
   symlinkSync(join(repository, "node_modules/skills"), join(root, "node_modules/skills"), "dir");
 }
@@ -423,13 +427,14 @@ test("never replaces a pre-existing npm/native directory", (t) => {
   assert.equal(readFileSync(join(native, "stale"), "utf8"), "keep me");
 });
 
-test("prepack executes the configured notice and skill-rule checks", (t) => {
+test("prepack executes the configured notice, skill-rule, and hygiene checks", (t) => {
   const manifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
-  assert.equal(manifest.scripts.prepack, "npm run notices:check && npm run skills-rules:check");
+  assert.equal(manifest.scripts.prepack, "npm run check:notices && npm run check:rules && npm run check:hygiene");
 
   const cases = [
     ["notice", (root) => writeFileSync(join(root, "THIRD_PARTY_NOTICES"), "controlled failure\n")],
     ["skills rules", (root) => writeFileSync(join(root, "npm/generated/skills-rules.json"), "{}\n")],
+    ["hygiene", (root) => writeFileSync(join(root, "README.md"), `private ${["/Us", "ers/example"].join("")}\n`)],
   ];
   for (const [name, corrupt] of cases) {
     const root = mkdtempSync(join(tmpdir(), "pi-worker-package-prepack-"));
@@ -448,6 +453,15 @@ test("manifest allowlist includes all ignored binaries and excludes npm/test", (
     assert.ok(manifest.files.some((entry) => nativePath === entry || nativePath.startsWith(`${entry.replace(/\/$/, "")}/`)), nativePath);
   }
   assert.ok(manifest.files.every((entry) => !entry.startsWith("npm/test")));
+});
+
+test("manifest exposes one non-duplicated local verification pipeline", () => {
+  const manifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
+  assert.equal(manifest.scripts["check:rules"], "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json");
+  assert.equal(manifest.scripts["check:notices"], "go run ./tools/notices --check THIRD_PARTY_NOTICES");
+  assert.equal(manifest.scripts["check:hygiene"], "node npm/scripts/check-hygiene.mjs");
+  assert.match(manifest.scripts.test, /npm\/test\/\*\.test\.mjs/);
+  assert.equal(manifest.scripts.verify, "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene");
 });
 
 test("npm pack has the exact allowlisted inventory, modes, and identity bytes", (t) => {
@@ -478,4 +492,22 @@ test("npm pack has the exact allowlisted inventory, modes, and identity bytes", 
     assert.equal(packedBinary.mode, 0o755);
     assert.deepEqual(packedBinary.data, archiveBinary(readFileSync(join(dist, `pi-worker_v0.1.0_${suffix}.tar.gz`))));
   }
+});
+
+test("current checkout npm pack has the exact staged inventory when requested", {
+  skip: process.env.PI_WORKER_ASSERT_STAGED !== "1",
+}, () => {
+  for (const nativePath of expectedFiles.filter((path) => path.startsWith("npm/native/"))) {
+    const entry = lstatSync(join(repository, nativePath));
+    assert.equal(entry.isFile(), true, `${nativePath} is a regular file`);
+    assert.equal(entry.mode & 0o777, 0o755, `${nativePath} is executable`);
+  }
+  const packed = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: repository,
+    encoding: "utf8",
+  });
+  assert.equal(packed.status, 0, packed.stderr);
+  const metadata = JSON.parse(packed.stdout)[0];
+  assert.deepEqual(metadata.files.map((file) => file.path).sort(), expectedFiles);
+  assert.equal(existsSync(join(repository, metadata.filename)), false, "dry run leaves no tarball");
 });

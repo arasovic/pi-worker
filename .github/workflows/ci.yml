@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Check gofmt
+        shell: bash
+        run: |
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < <(git ls-files -z -- '*.go')
+          test -z "$(gofmt -l "${files[@]}")"
+      - name: Verify modules
+        run: go mod verify
+      - name: Vet
+        run: go vet ./...
+      - name: Test with race detection
+        run: go test -race -count=1 ./...
+      - name: Build
+        run: go build ./...
+
+  go-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test with race detection
+        run: go test -race -count=1 ./...
+      - name: Build
+        run: go build ./...
+
+  windows-readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Cross-build Windows amd64
+        run: GOOS=windows GOARCH=amd64 go build ./...
+      - name: Compile Windows test packages
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/windows-test-binaries"
+          index=0
+          while IFS= read -r package; do
+            index=$((index + 1))
+            GOOS=windows GOARCH=amd64 go test -c \
+              -o "$RUNNER_TEMP/windows-test-binaries/$index.test.exe" \
+              "$package"
+          done < <(GOOS=windows GOARCH=amd64 go list ./...)
+
+  node-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.2
+          cache: npm
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install npm dependencies
+        run: npm ci --ignore-scripts
+      - name: Verify package
+        run: npm run verify
+
+  release-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.23.2
+          cache: npm
+      - name: Install npm dependencies
+        run: npm ci --ignore-scripts
+      - name: Check notices
+        run: npm run check:notices
+      - name: Check generated skill rules
+        run: npm run check:rules
+      - name: Check tracked-file hygiene
+        run: npm run check:hygiene
+      - name: Build release snapshot
+        run: |
+          go run ./tools/release \
+            --version v0.1.0 \
+            --commit "$(git rev-parse HEAD)" \
+            --build-date 2026-08-11T00:00:00Z \
+            --output dist
+      - name: Stage native npm binaries
+        run: npm run stage -- --dist dist
+      - name: Assert npm pack inventory
+        run: PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm/test/package.test.mjs

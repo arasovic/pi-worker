@@ -167,7 +167,8 @@ up.
 - [Security](./SECURITY.md)
 
 The detailed documents contain exit-code tables, RPC details, compatibility
-evidence, lifecycle boundaries, and source-build information.
+evidence, lifecycle boundaries, and source-build information. Run `npm run verify`
+for the complete local Node/package verification.
 
 ## License
 

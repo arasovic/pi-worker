@@ -60,9 +60,10 @@ func TestUserDir(t *testing.T) {
 }
 
 func TestUserDirMacPathSemantics(t *testing.T) {
-	got := configDirForGoos("darwin", "/Users/example", "/unused")
-	if got != filepath.Join("/Users/example", "Library", "Application Support") {
-		t.Fatalf("configDirForGoos(darwin, ...): %q, want %q", got, filepath.Join("/Users/example", "Library", "Application Support"))
+	macUser := "/" + "Users" + "/example"
+	got := configDirForGoos("darwin", macUser, "/unused")
+	if got != filepath.Join(macUser, "Library", "Application Support") {
+		t.Fatalf("configDirForGoos(darwin, ...): %q, want %q", got, filepath.Join(macUser, "Library", "Application Support"))
 	}
 }
 

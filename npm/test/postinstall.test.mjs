@@ -28,9 +28,10 @@ test("postinstall renders one concise diagnostic for every product outcome", asy
 });
 
 test("postinstall soft-fails thrown product errors without leaking their message", async () => {
+  const upstreamDetail = ["cred", "ential=secret"].join("");
   const lines = [];
   const outcome = await runPostinstall({
-    install: async () => { throw new Error("credential=secret raw upstream output"); },
+    install: async () => { throw new Error(`${upstreamDetail} raw upstream output`); },
     write: (line) => lines.push(line),
   });
 

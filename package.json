@@ -29,8 +29,12 @@
     "postinstall": "node npm/scripts/postinstall.mjs",
     "stage": "node npm/scripts/stage-package.mjs",
     "test": "node --test npm/test/*.test.mjs",
-    "notices:check": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
-    "skills-rules:check": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json",
-    "prepack": "npm run notices:check && npm run skills-rules:check"
+    "check:rules": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json",
+    "check:notices": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
+    "check:hygiene": "node npm/scripts/check-hygiene.mjs",
+    "notices:check": "npm run check:notices",
+    "skills-rules:check": "npm run check:rules",
+    "verify": "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene",
+    "prepack": "npm run check:notices && npm run check:rules && npm run check:hygiene"
   }
 }

@@ -15,8 +15,10 @@ documentation, and commit messages.
 Run checks appropriate to the changed surface:
 
 - Go: `gofmt` formatting, `go vet ./...`, `go test -race -count=1 ./...`, and `go build ./...`.
-- npm: `npm test` and `npm run verify` when available; run the rules and notices checks when relevant (`npm run skills-rules:check` and `npm run notices:check`).
+- npm: `npm test` and `npm run verify`; focused checks are `npm run check:rules`, `npm run check:notices`, and `npm run check:hygiene`.
 - All changes: `git diff --check`.
+
+The hygiene command is a narrow accidental-artifact gate, not a general secret scanner. Inspect staged changes before every commit.
 
 Integration tests start workers that can execute `bash` with host-user
 permissions in the current writable workspace; workers have no sandbox. Use a

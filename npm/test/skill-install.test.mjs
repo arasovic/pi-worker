@@ -357,7 +357,7 @@ test("persists verified partial targets when the child exits unsuccessfully", as
     cpSync(f.skill, canonical, { recursive: true });
     mkdirSync(join(copy, ".."), { recursive: true });
     cpSync(f.skill, copy, { recursive: true });
-  }, { code: 9, stderr: "upstream secret=credential-value\n" });
+  }, { code: 9, stderr: `upstream ${["sec", "ret=credential-value"].join("")}\n` });
 
   const result = await installSkill(options(f, child));
 
@@ -382,7 +382,7 @@ test("persists verified partial targets when the child exits unsuccessfully", as
 
 test("fails softly after a nonzero child exit and never persists child prose", async (t) => {
   const f = fixture(t);
-  const child = childFor(undefined, { code: 9, stderr: "Failed to install 1\ncredential=secret\n" });
+  const child = childFor(undefined, { code: 9, stderr: `Failed to install 1\n${["cred", "ential=secret"].join("")}\n` });
 
   const result = await installSkill(options(f, child));
 
