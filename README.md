@@ -28,6 +28,7 @@ then run a bounded task in your current workspace.
 - Node.js 22.20.0 or newer and npm.
 - Pi CLI 0.84.1, with provider authentication configured in Pi.
 - An available exact model selector from `pi-worker models`.
+- Go 1.26.1 for source builds and release snapshots; the module language baseline is Go 1.25.0.
 
 ## Install with npm
 
@@ -163,6 +164,7 @@ up.
 
 - [Detailed v0 usage](./docs/v0-usage.md)
 - [Pi CLI compatibility and RPC surface](./docs/pi-cli-surface.md)
+- [Release snapshot runbook](./docs/releasing.md)
 - [Contributing](./CONTRIBUTING.md)
 - [Security](./SECURITY.md)
 
