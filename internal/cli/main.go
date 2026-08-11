@@ -46,6 +46,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		return modelsCommand(ctx, args[1:], stdout, stderr)
+	case "config":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
@@ -76,6 +80,8 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		return 0
 	case "models":
 		return modelsCommand(ctx, args[1:], stdout, stderr)
+	case "config":
+		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
@@ -98,6 +104,12 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 	if err != nil {
 		return opts, nil, err
 	}
+	if opts.model == "" {
+		opts.model, err = configuredRunModel()
+		if err != nil {
+			return opts, nil, err
+		}
+	}
 	tasks, err := resolveTasks(opts, stdin)
 	if err != nil {
 		return opts, nil, err
@@ -108,7 +120,9 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: pi-worker version")
 	fmt.Fprintln(w, "       pi-worker models [--timeout <duration>] [--json] [--debug]")
-	fmt.Fprintln(w, "       pi-worker run --model <provider/model> [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker config show [--json]")
+	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
+	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
 }
 
 // runOptions holds the parsed run command surface.
@@ -259,11 +273,10 @@ func parseRunArgs(args []string) (runOptions, error) {
 			return opts, fmt.Errorf("unexpected argument %q", arg)
 		}
 	}
-	if opts.model == "" {
-		return opts, fmt.Errorf("missing required flag --model")
-	}
-	if err := validateModel(opts.model); err != nil {
-		return opts, err
+	if opts.model != "" {
+		if err := validateModel(opts.model); err != nil {
+			return opts, err
+		}
 	}
 	if len(opts.tasks) > 0 && len(opts.taskFiles) > 0 {
 		return opts, fmt.Errorf("specify exactly one input source: --task or --task-file, not both")

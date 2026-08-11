@@ -22,6 +22,8 @@ go build -o ./bin/pi-worker ./cmd/pi-worker
 
 - `pi-worker version`
 - `pi-worker models ...`
+- `pi-worker config show [--json]`
+- `pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]`
 - `pi-worker run ...`
 
 ## Model catalog
@@ -43,14 +45,37 @@ pi-worker models [--timeout <duration>] [--json] [--debug]
 ## Exact run command
 
 ```text
-pi-worker run --model <provider/model> [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]
+pi-worker run [--model <provider/model>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]
 ```
+
+## Personal default model
+
+`pi-worker` stores a two-field, versioned JSON configuration document in the
+operating system's user configuration directory. It contains only
+`schemaVersion` and `defaultModel`; the empty default is provider-neutral.
+
+```text
+pi-worker config show [--json]
+pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]
+```
+
+- `config show` reads the local document only. It never launches Pi.
+- `config set` requires an exact `provider/model` selector, queries Pi's model
+  catalog once, and writes the default only when that exact selector is
+  available. There is no fallback.
+- Configuration writes use a same-directory temporary file, file sync, atomic
+  replacement, and owner-only permissions where supported.
+- Model precedence is explicit `run --model`, then the configured
+  `defaultModel`, then a usage error (exit `2`). When no model resolves, stdin
+  is not read.
 
 ## Behavior
 
 ### Model selection
 
 - `--model` must be an exact `provider/model` string.
+- An explicit `--model` always wins over the configured default and does not
+  read or rewrite the configuration document.
 - `run` resolves the model by:
   1. `get_available_models`
   2. exact catalog match
