@@ -121,6 +121,31 @@ func TestProcessInheritsHostEnvironmentWithoutMaterializingEnv(t *testing.T) {
 	}
 }
 
+func TestProcessCatalogProfileUsesReadOnlyTools(t *testing.T) {
+	// This catches a read-only catalog process accidentally retaining the
+	// coding-worker write or shell tool permissions.
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+
+	proc, err := newCatalogProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new catalog process: %v", err)
+	}
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	meta := readMeta(t, metaPath)
+	if !slices.Contains(meta.Argv, "read,grep,find,ls") {
+		t.Fatalf("catalog argv = %v, want read-only tools", meta.Argv)
+	}
+	if slices.Contains(meta.Argv, toolAllowlist) {
+		t.Fatalf("catalog argv retained writable worker tools: %v", meta.Argv)
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
 func TestProcessCancellationTerminatesChild(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	proc, err := NewProcess(fakePiBin, t.TempDir())

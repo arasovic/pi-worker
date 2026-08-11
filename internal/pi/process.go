@@ -16,6 +16,11 @@ import (
 // coding worker, per docs/pi-cli-surface.md.
 const toolAllowlist = "read,grep,find,ls,edit,write,bash"
 
+// catalogToolAllowlist is the exact read-only tool slice for catalog
+// processes: a catalog query only reads the available-model catalog and
+// must never edit files or execute shell commands.
+const catalogToolAllowlist = "read,grep,find,ls"
+
 // processCloseGrace is how long Close waits for the child to exit on stdin
 // EOF before killing it. Tests shorten it.
 var processCloseGrace = 5 * time.Second
@@ -39,6 +44,7 @@ type Process struct {
 	workspace  string
 	sessionDir string
 	name       string
+	tools      string
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -70,6 +76,18 @@ func processName(sessionDir string) string {
 // NewProcess prepares a fresh private per-worker session directory. The
 // executable is resolved at Start time.
 func NewProcess(executable, workspace string) (*Process, error) {
+	return newProcess(executable, workspace, toolAllowlist)
+}
+
+// newCatalogProcess prepares a fresh private session directory for a
+// read-only catalog process. The executable is resolved at Start time.
+func newCatalogProcess(executable, workspace string) (*Process, error) {
+	return newProcess(executable, workspace, catalogToolAllowlist)
+}
+
+// newProcess is the shared constructor for worker and catalog processes;
+// tools is the exact --tools allowlist of the process profile.
+func newProcess(executable, workspace, tools string) (*Process, error) {
 	sessionDir, err := os.MkdirTemp("", "pi-worker-v0-*")
 	if err != nil {
 		return nil, fmt.Errorf("create session directory: %w", err)
@@ -79,6 +97,7 @@ func NewProcess(executable, workspace string) (*Process, error) {
 		workspace:  workspace,
 		sessionDir: sessionDir,
 		name:       processName(sessionDir),
+		tools:      tools,
 	}, nil
 }
 
@@ -87,7 +106,8 @@ func (p *Process) SessionDir() string {
 	return p.sessionDir
 }
 
-// argv is the exact writable worker launch from docs/pi-cli-surface.md.
+// argv is the exact launch from docs/pi-cli-surface.md with the process
+// profile's tool allowlist.
 func (p *Process) argv() []string {
 	return []string{
 		p.executable,
@@ -100,7 +120,7 @@ func (p *Process) argv() []string {
 		"--no-prompt-templates",
 		"--no-themes",
 		"--no-approve",
-		"--tools", toolAllowlist,
+		"--tools", p.tools,
 	}
 }
 

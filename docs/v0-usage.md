@@ -21,7 +21,24 @@ go build -o ./bin/pi-worker ./cmd/pi-worker
 ## Supported commands
 
 - `pi-worker version`
+- `pi-worker models ...`
 - `pi-worker run ...`
+
+## Model catalog
+
+```text
+pi-worker models [--timeout <duration>] [--json] [--debug]
+```
+
+- `models` queries Pi once with `get_available_models`; it never activates a
+  model or submits a prompt.
+- The catalog process enables only `read,grep,find,ls`; it cannot write files
+  or run shell commands through Pi.
+- Human output is one sorted exact `provider/id` selector per line.
+- `--json` emits one object with `schemaVersion: 1` and sorted `models`, each
+  containing `provider`, `id`, and `selector`.
+- The default timeout is `30s`. An empty catalog is a readiness failure (exit
+  code `3`), malformed Pi data is a protocol/internal failure (exit code `9`).
 
 ## Exact run command
 

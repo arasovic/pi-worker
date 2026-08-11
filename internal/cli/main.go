@@ -23,6 +23,10 @@ const defaultRunTimeout = 30 * time.Minute
 // scripted fake so CLI tests never launch the user's real Pi profile.
 var newWorker = func() pi.Worker { return pi.New("pi") }
 
+// newCatalog is the private dependency-injection seam for the read-only
+// model catalog command.
+var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
+
 // Main runs the pi-worker command. Signal interception is installed only
 // after the run arguments and the tasks are resolved: while pi-worker
 // reads the task from stdin there is no child process and no
@@ -38,6 +42,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Version)
 		return 0
+	case "models":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return modelsCommand(ctx, args[1:], stdout, stderr)
 	case "run":
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
@@ -66,6 +74,8 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "version":
 		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Version)
 		return 0
+	case "models":
+		return modelsCommand(ctx, args[1:], stdout, stderr)
 	case "run":
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
@@ -97,6 +107,7 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: pi-worker version")
+	fmt.Fprintln(w, "       pi-worker models [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker run --model <provider/model> [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
 }
 
