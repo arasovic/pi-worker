@@ -37,6 +37,8 @@ go build -o ./bin/pi-worker ./cmd/pi-worker
 - `pi-worker doctor [--timeout <duration>] [--json] [--debug]`
 - `pi-worker config show [--json]`
 - `pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]`
+- `pi-worker skill status [--json]`
+- `pi-worker skill receipt-path [--json]`
 - `pi-worker run ...`
 
 ## Model catalog
@@ -81,6 +83,27 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
 - Exit codes are `0` for ready or warning-only results, `3` for readiness
   failures, `7` for timeout, `8` for cancellation, and `9` for protocol or
   internal failures. Invalid flags return `2` before an inspection starts.
+
+## Skill installation status
+
+```text
+pi-worker skill receipt-path [--json]
+pi-worker skill status [--json]
+```
+
+- `skill receipt-path` reports the absolute path where the installer receipt is
+  stored.
+- `skill status` reads and verifies that receipt, including managed/affected
+  target status and recovery instructions.
+- The command is read-only: it never installs, repairs, removes, or adopts a
+  skill.
+- `--json` emits one complete `schemaVersion: 1` document with `status`,
+  `receiptPath`, verified targets, affected targets, and recovery instructions.
+- Exit code `0` means all managed targets verified. Completion results for blocked,
+  missing target, drifted target, skipped, and failed outcomes exit `3`.
+- A missing receipt file reports `status: "missing"` and exits `3` with a complete JSON document.
+- Malformed or unreadable receipts return code `9`.
+- Usage, cancellation, and internal failures emit no `stdout` document.
 
 ## Exact run command
 

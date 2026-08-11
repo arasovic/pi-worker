@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"pi-worker/internal/pi"
+	"pi-worker/internal/skillinstall"
 	"pi-worker/internal/testutil/fakepi/script"
 )
 
@@ -1137,5 +1138,54 @@ func TestRunCancellationDuringRunExits8ReapsAndCleansUp(t *testing.T) {
 	// CLI exits.
 	if !strings.Contains(stderr, "worker=1 status=cancelled total=") {
 		t.Fatalf("stderr missing cancelled completion line: %q", stderr)
+	}
+}
+
+func TestMainUsageIncludesSkillCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Main([]string{}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "pi-worker skill status [--json]") {
+		t.Fatalf("usage missing status command: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "pi-worker skill receipt-path [--json]") {
+		t.Fatalf("usage missing receipt-path command: %q", stderr.String())
+	}
+}
+
+func TestMainSupportsSkillStatusCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skill-install.json")
+	writeReceiptForSkillTest(t, path, skillinstall.Receipt{
+		SchemaVersion:    skillinstall.SchemaVersion,
+		InstallerVersion: "1",
+		SkillsVersion:    "1",
+		Outcome:          skillinstall.OutcomeInstalled,
+	})
+	installSkillReceiptPath(t, path)
+
+	code, _, stderr := runCLI(t, []string{"skill", "status", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d; stderr = %q", code, stderr)
+	}
+}
+
+func TestMainCancelsSkillCommandsCleanly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skill-install.json")
+	writeReceiptForSkillTest(t, path, skillinstall.Receipt{
+		SchemaVersion:    skillinstall.SchemaVersion,
+		InstallerVersion: "1",
+		SkillsVersion:    "1",
+		Outcome:          skillinstall.OutcomeInstalled,
+	})
+	installSkillReceiptPath(t, path)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	code, stdout, _ := runCLIWithContext(t, ctx, []string{"skill", "status", "--json"}, "")
+	if code != 8 || stdout != "" {
+		t.Fatalf("exit = %d, stdout = %q", code, stdout)
 	}
 }

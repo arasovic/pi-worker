@@ -64,6 +64,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		return runCommand(ctx, opts, tasks, stdout, stderr)
+	case "skill":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return skillCommand(ctx, args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -96,6 +100,8 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 			return 2
 		}
 		return runCommand(ctx, opts, tasks, stdout, stderr)
+	case "skill":
+		return skillCommand(ctx, args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -129,6 +135,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker doctor [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker config show [--json]")
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
+	fmt.Fprintln(w, "       pi-worker skill status [--json]")
+	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
 }
 
