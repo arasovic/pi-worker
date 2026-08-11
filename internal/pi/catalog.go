@@ -45,7 +45,10 @@ func (c *catalog) List(ctx context.Context, req CatalogRequest) ([]ModelProjecti
 	defer proc.Close()
 
 	if err := proc.Start(ctx); err != nil {
-		return nil, err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, &ReadinessError{Message: "unable to start Pi; verify executable availability"}
 	}
 	// A catalog query is a single process with no worker id of its own, so
 	// its debug lines carry the direct-caller label.

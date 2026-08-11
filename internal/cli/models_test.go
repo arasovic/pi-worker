@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -135,6 +136,17 @@ func TestModelsEmptyCatalogExits3(t *testing.T) {
 
 	code, stdout, stderr := runCLI(t, []string{"models", "--json"}, "")
 	if code != 3 || stdout != "" || !strings.Contains(stderr, "empty catalog") {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
+func TestModelsMissingExecutableExits3(t *testing.T) {
+	// This catches mapping a catalog startup failure to internal exit 9
+	// instead of the user-actionable readiness exit.
+	installFakeCatalog(t, pi.NewCatalog(filepath.Join(t.TempDir(), "missing-pi")))
+
+	code, stdout, stderr := runCLI(t, []string{"models"}, "")
+	if code != 3 || stdout != "" || !strings.Contains(stderr, "pi not ready") {
 		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 }

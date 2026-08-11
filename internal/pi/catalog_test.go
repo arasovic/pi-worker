@@ -53,6 +53,50 @@ func TestCatalogRejectsExplicitEmptyCatalogAsReadiness(t *testing.T) {
 	}
 }
 
+func TestCatalogClassifiesStartFailureAsReadiness(t *testing.T) {
+	// This catches leaking a host executable startup failure as an internal
+	// error, which makes read-only catalog consumers report exit 9.
+	missingExecutable := filepath.Join(t.TempDir(), "missing-pi")
+
+	_, err := NewCatalog(missingExecutable).List(context.Background(), CatalogRequest{Workspace: t.TempDir()})
+	var readiness *ReadinessError
+	if !errors.As(err, &readiness) {
+		t.Fatalf("error = %v, want ReadinessError", err)
+	}
+}
+
+func TestCatalogStartFailurePreservesCompletedContext(t *testing.T) {
+	// This catches classifying a completed caller context as readiness when
+	// it must keep the timeout/cancellation exit mapping.
+	for _, test := range []struct {
+		name string
+		ctx  context.Context
+		want error
+	}{
+		{name: "cancelled", ctx: cancelledContext(), want: context.Canceled},
+		{name: "deadline exceeded", ctx: expiredContext(), want: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewCatalog(filepath.Join(t.TempDir(), "missing-pi")).List(test.ctx, CatalogRequest{Workspace: t.TempDir()})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func cancelledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func expiredContext() context.Context {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	cancel()
+	return ctx
+}
+
 func TestCatalogRejectsMalformedDataAsProtocolError(t *testing.T) {
 	// This catches treating malformed catalog data as an empty/ready catalog.
 	setupFakePiEnv(t, &script.Script{Triggers: map[string][]script.Step{

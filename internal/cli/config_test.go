@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,5 +300,26 @@ func TestConfigSetCatalogFailurePreservesConfig(t *testing.T) {
 	got, err := config.Load(path)
 	if code != 9 || err != nil || got != before {
 		t.Fatalf("failed catalog = code %d, config %#v, error %v", code, got, err)
+	}
+}
+
+func TestConfigSetMissingExecutableExits3WithoutWritingConfig(t *testing.T) {
+	// This catches treating catalog startup as an internal error or writing a
+	// new default model after the read-only availability check failed.
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	if err := config.Save(path, before); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	installFakeCatalog(t, pi.NewCatalog(filepath.Join(t.TempDir(), "missing-pi")))
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/model"}, "")
+	if code != 3 || stdout != "" || !strings.Contains(stderr, "pi not ready") {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != before {
+		t.Fatalf("config after failed set = %#v, %v", got, err)
 	}
 }
