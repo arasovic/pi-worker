@@ -82,18 +82,19 @@ func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
 	})
 
 	ticks := make(chan time.Time, 1)
-	tickerIntervals := make(chan time.Duration, 1)
+	timerStarts := make(chan time.Duration, 1)
+	timerResets := make(chan time.Duration, 4)
 	client := NewClient(io.Discard, stdout, eventSignalHandler{events: events}, scope)
-	client.newIdleTicker = func(interval time.Duration) (<-chan time.Time, func()) {
-		tickerIntervals <- interval
-		return ticks, func() {}
+	client.newIdleTimer = func(interval time.Duration) (<-chan time.Time, func(time.Duration), func()) {
+		timerStarts <- interval
+		return ticks, func(next time.Duration) { timerResets <- next }, func() {}
 	}
 	client.awaitingSettled = true
 
 	done := make(chan error, 1)
 	go func() { done <- client.WaitSettled(context.Background()) }()
-	if interval := <-tickerIntervals; interval != debugHeartbeatInterval {
-		t.Fatalf("ticker interval = %v, want %v", interval, debugHeartbeatInterval)
+	if interval := <-timerStarts; interval != debugHeartbeatInterval {
+		t.Fatalf("timer interval = %v, want %v", interval, debugHeartbeatInterval)
 	}
 	clock.advance(debugHeartbeatInterval)
 	ticks <- clock.now()
@@ -106,6 +107,9 @@ func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("no idle heartbeat while Pi emitted no frames")
 	}
+	if next := <-timerResets; next != debugHeartbeatInterval {
+		t.Fatalf("timer reset after heartbeat = %v, want %v", next, debugHeartbeatInterval)
+	}
 
 	clock.advance(5 * time.Second)
 	if _, err := io.WriteString(piOutput, `{"type":"agent_start"}`+"\n"); err != nil {
@@ -114,7 +118,12 @@ func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
 	if eventType := <-events; eventType != "agent_start" {
 		t.Fatalf("event = %q, want agent_start", eventType)
 	}
-	clock.advance(debugHeartbeatInterval)
+	clock.advance(debugHeartbeatInterval - 5*time.Second)
+	ticks <- clock.now()
+	if next := <-timerResets; next != 5*time.Second {
+		t.Fatalf("timer reset after recent activity = %v, want 5s", next)
+	}
+	clock.advance(5 * time.Second)
 	ticks <- clock.now()
 	select {
 	case line := <-writes:
@@ -123,6 +132,9 @@ func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no idle heartbeat after the next no-event interval")
+	}
+	if next := <-timerResets; next != debugHeartbeatInterval {
+		t.Fatalf("timer reset after second heartbeat = %v, want %v", next, debugHeartbeatInterval)
 	}
 
 	if _, err := io.WriteString(piOutput, `{"type":"agent_settled"}`+"\n"); err != nil {

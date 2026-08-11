@@ -66,9 +66,9 @@ type Client struct {
 	// as this map key, never logged. Only the single driving goroutine
 	// touches it.
 	toolStarts map[string]time.Duration
-	// newIdleTicker is the testable host-clock boundary for no-event
+	// newIdleTimer is the testable host-clock boundary for no-event
 	// heartbeats while WaitSettled is blocked in the JSONL reader.
-	newIdleTicker func(time.Duration) (<-chan time.Time, func())
+	newIdleTimer func(time.Duration) (<-chan time.Time, func(time.Duration), func())
 }
 
 func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *WorkerScope) *Client {
@@ -77,9 +77,9 @@ func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *W
 		out:     NewFrameWriter(stdin),
 		handler: handler,
 		debug:   debug,
-		newIdleTicker: func(interval time.Duration) (<-chan time.Time, func()) {
-			ticker := time.NewTicker(interval)
-			return ticker.C, ticker.Stop
+		newIdleTimer: func(interval time.Duration) (<-chan time.Time, func(time.Duration), func()) {
+			timer := time.NewTimer(interval)
+			return timer.C, func(next time.Duration) { timer.Reset(next) }, func() { timer.Stop() }
 		},
 	}
 }
@@ -393,7 +393,7 @@ func (c *Client) startIdleHeartbeat(ctx context.Context) (markActivity func(), s
 
 	var lastActivity atomic.Int64
 	lastActivity.Store(int64(c.debug.Elapsed()))
-	ticks, stopTicker := c.newIdleTicker(debugHeartbeatInterval)
+	ticks, resetTimer, stopTimer := c.newIdleTimer(debugHeartbeatInterval)
 	stopping := make(chan struct{})
 	done := make(chan struct{})
 
@@ -410,7 +410,10 @@ func (c *Client) startIdleHeartbeat(ctx context.Context) (markActivity func(), s
 				idle := elapsed - time.Duration(lastActivity.Load())
 				if idle >= debugHeartbeatInterval {
 					c.debug.Log(debugWaiting, "no-event-for="+idle.Round(time.Second).String())
+					resetTimer(debugHeartbeatInterval)
+					continue
 				}
+				resetTimer(debugHeartbeatInterval - idle)
 			}
 		}
 	}()
@@ -418,9 +421,9 @@ func (c *Client) startIdleHeartbeat(ctx context.Context) (markActivity func(), s
 	return func() {
 			lastActivity.Store(int64(c.debug.Elapsed()))
 		}, func() {
-			stopTicker()
 			close(stopping)
 			<-done
+			stopTimer()
 		}
 }
 
