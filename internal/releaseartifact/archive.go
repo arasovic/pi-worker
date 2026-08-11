@@ -26,6 +26,25 @@ var openArchiveSource = func(path string) (io.ReadCloser, error) {
 	return os.Open(path)
 }
 
+type archiveSourceStatter interface {
+	Stat() (os.FileInfo, error)
+}
+
+func statArchiveSource(sourceFile io.ReadCloser) (os.FileInfo, error) {
+	statter, ok := sourceFile.(archiveSourceStatter)
+	if !ok {
+		return nil, errors.New("opened archive source does not support stat")
+	}
+	return statter.Stat()
+}
+
+func closeArchiveSourceWithError(sourceFile io.ReadCloser, entryName string, sourceErr error) error {
+	if closeErr := sourceFile.Close(); closeErr != nil {
+		return errors.Join(sourceErr, fmt.Errorf("close archive source %s: %w", entryName, closeErr))
+	}
+	return sourceErr
+}
+
 // createArchive creates a deterministic tar.gz archive from one binary and two
 // metadata files. Caller controls the archive contents' header timestamp.
 func createArchive(binaryPath, licensePath, noticePath, outputPath string, buildDate time.Time) (err error) {
@@ -63,19 +82,45 @@ func createArchive(binaryPath, licensePath, noticePath, outputPath string, build
 	}()
 
 	for _, entry := range entries {
-		info, err := os.Stat(entry.source)
+		info, err := os.Lstat(entry.source)
 		if err != nil {
 			return fmt.Errorf("read archive source %s: %w", entry.name, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("read archive source %s: source is a symlink", entry.name)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("read archive source %s: source is not a regular file", entry.name)
 		}
 
 		sourceFile, err := openArchiveSource(entry.source)
 		if err != nil {
 			return fmt.Errorf("open archive source %s: %w", entry.name, err)
 		}
+		openedInfo, err := statArchiveSource(sourceFile)
+		if err != nil {
+			return closeArchiveSourceWithError(sourceFile, entry.name, fmt.Errorf("stat archive source %s: %w", entry.name, err))
+		}
+		if !openedInfo.Mode().IsRegular() {
+			return closeArchiveSourceWithError(sourceFile, entry.name, fmt.Errorf("read archive source %s: opened source is not a regular file", entry.name))
+		}
+		if !os.SameFile(info, openedInfo) {
+			return closeArchiveSourceWithError(sourceFile, entry.name, fmt.Errorf("read archive source %s: source changed while opening", entry.name))
+		}
+		currentInfo, err := os.Lstat(entry.source)
+		if err != nil {
+			return closeArchiveSourceWithError(sourceFile, entry.name, fmt.Errorf("read archive source %s: %w", entry.name, err))
+		}
+		if currentInfo.Mode()&os.ModeSymlink != 0 {
+			return closeArchiveSourceWithError(sourceFile, entry.name, fmt.Errorf("read archive source %s: source is a symlink", entry.name))
+		}
+		if !currentInfo.Mode().IsRegular() || !os.SameFile(currentInfo, openedInfo) {
+			return closeArchiveSourceWithError(sourceFile, entry.name, fmt.Errorf("read archive source %s: source changed while opening", entry.name))
+		}
 
 		hdr := &tar.Header{
 			Name:    filepath.Clean(entry.name),
-			Size:    info.Size(),
+			Size:    openedInfo.Size(),
 			Mode:    entry.mode,
 			ModTime: buildDate,
 			Uid:     0,

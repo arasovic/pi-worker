@@ -124,6 +124,109 @@ func TestCreateArchiveBytesAndGzipMetadataAreDeterministic(t *testing.T) {
 	}
 }
 
+func TestCreateArchiveRejectsSymlinkSources(t *testing.T) {
+	root := t.TempDir()
+	sources := map[string]string{
+		"binary":  filepath.Join(root, "binary"),
+		"license": filepath.Join(root, "LICENSE"),
+		"notice":  filepath.Join(root, "THIRD_PARTY_NOTICES"),
+	}
+	for name, path := range sources {
+		if err := os.WriteFile(path, []byte(name+" target"), 0o644); err != nil {
+			t.Fatalf("write %s target: %v", name, err)
+		}
+	}
+
+	for name, source := range sources {
+		t.Run(name, func(t *testing.T) {
+			link := source + ".link"
+			if err := os.Symlink(source, link); err != nil {
+				t.Fatalf("create %s symlink: %v", name, err)
+			}
+			binaryPath, licensePath, noticePath := sources["binary"], sources["license"], sources["notice"]
+			switch name {
+			case "binary":
+				binaryPath = link
+			case "license":
+				licensePath = link
+			case "notice":
+				noticePath = link
+			}
+			if err := createArchive(binaryPath, licensePath, noticePath, filepath.Join(root, name+".tar.gz"), time.Time{}); err == nil {
+				t.Fatalf("createArchive archived symlink source %s", name)
+			}
+		})
+	}
+}
+
+func TestCreateArchiveRejectsNonRegularSource(t *testing.T) {
+	root := t.TempDir()
+	binaryPath := filepath.Join(root, "binary")
+	licensePath := filepath.Join(root, "LICENSE")
+	noticePath := filepath.Join(root, "THIRD_PARTY_NOTICES")
+	for path, content := range map[string]string{
+		binaryPath:  "binary-content",
+		licensePath: "license-content",
+		noticePath:  "third-party-notices",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write fixture %s: %v", path, err)
+		}
+	}
+	if err := os.Remove(licensePath); err != nil {
+		t.Fatalf("remove license fixture: %v", err)
+	}
+	if err := os.Mkdir(licensePath, 0o755); err != nil {
+		t.Fatalf("create non-regular source: %v", err)
+	}
+
+	err := createArchive(binaryPath, licensePath, noticePath, filepath.Join(root, "archive.tar.gz"), time.Time{})
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("createArchive() error = %v, want non-regular source error", err)
+	}
+}
+
+func TestCreateArchiveUsesOpenedSourceMetadata(t *testing.T) {
+	root := t.TempDir()
+	binaryPath := filepath.Join(root, "binary")
+	licensePath := filepath.Join(root, "LICENSE")
+	noticePath := filepath.Join(root, "THIRD_PARTY_NOTICES")
+	for path, content := range map[string]string{
+		binaryPath:  "binary-content",
+		licensePath: "original-license-content",
+		noticePath:  "third-party-notices",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write fixture %s: %v", path, err)
+		}
+	}
+
+	oldOpenSource := openArchiveSource
+	openArchiveSource = func(path string) (io.ReadCloser, error) {
+		if path == licensePath {
+			if err := os.WriteFile(path, []byte("opened"), 0o644); err != nil {
+				return nil, err
+			}
+		}
+		return os.Open(path)
+	}
+	t.Cleanup(func() { openArchiveSource = oldOpenSource })
+
+	outputPath := filepath.Join(root, "archive.tar.gz")
+	if err := createArchive(binaryPath, licensePath, noticePath, outputPath, time.Time{}); err != nil {
+		t.Fatalf("createArchive() unexpected error: %v", err)
+	}
+	for _, entry := range readTarEntries(t, outputPath) {
+		if entry.Name == "LICENSE" {
+			if entry.Size != int64(len("opened")) || entry.Data != "opened" {
+				t.Fatalf("LICENSE metadata/content = size %d, data %q; want size %d, data %q", entry.Size, entry.Data, len("opened"), "opened")
+			}
+			return
+		}
+	}
+	t.Fatal("LICENSE entry not found")
+}
+
 func TestCreateArchiveRequiresSourceFiles(t *testing.T) {
 	root := t.TempDir()
 	if err := createArchive(filepath.Join(root, "missing"), filepath.Join(root, "LICENSE"), filepath.Join(root, "THIRD_PARTY_NOTICES"), filepath.Join(root, "archive.tar.gz"), time.Time{}); err == nil {
@@ -256,6 +359,14 @@ func (r *closeErrorReader) Close() error {
 		return errors.Join(r.err, closeErr)
 	}
 	return r.err
+}
+
+func (r *closeErrorReader) Stat() (os.FileInfo, error) {
+	statter, ok := r.ReadCloser.(interface{ Stat() (os.FileInfo, error) })
+	if !ok {
+		return nil, errors.New("source does not support stat")
+	}
+	return statter.Stat()
 }
 
 type tarEntry struct {
