@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +68,26 @@ func TestCatalogRejectsMalformedDataAsProtocolError(t *testing.T) {
 	}
 }
 
+func TestCatalogPreservesMissingOrNullModelsAsProtocolError(t *testing.T) {
+	// This catches Catalog reinterpreting Client's malformed missing/null
+	// models contract as an empty catalog or a readiness failure.
+	for _, data := range []string{`{}`, `{"models":null}`} {
+		t.Run(data, func(t *testing.T) {
+			setupFakePiEnv(t, &script.Script{Triggers: map[string][]script.Step{
+				"get_available_models": {
+					{Response: &script.Response{Success: true, Data: json.RawMessage(data)}},
+				},
+			}})
+
+			_, err := NewCatalog(fakePiBin).List(context.Background(), CatalogRequest{Workspace: t.TempDir()})
+			var protocol *ProtocolError
+			if !errors.As(err, &protocol) {
+				t.Fatalf("error = %v, want ProtocolError", err)
+			}
+		})
+	}
+}
+
 func TestCatalogTimeoutCleansUpProcessAndSession(t *testing.T) {
 	// This catches a timed-out catalog query that leaves the child or its
 	// private session directory behind.
@@ -86,3 +108,45 @@ func TestCatalogTimeoutCleansUpProcessAndSession(t *testing.T) {
 		t.Fatalf("session directory left behind after timeout: %v", err)
 	}
 }
+
+func TestCatalogCancellationAfterResponseWinsAndCleansUp(t *testing.T) {
+	// This catches returning a successful catalog after the caller cancelled
+	// immediately after Pi's response arrived.
+	setupFakePiEnv(t, &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"a"}]}`)}},
+		},
+	}})
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	debug := piDebugCancelAfterCatalogResponse{cancel: cancel}
+
+	models, err := NewCatalog(fakePiBin).List(ctx, CatalogRequest{
+		Workspace: t.TempDir(),
+		Debug:     NewDebugSink(&debug),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled; models = %#v", err, models)
+	}
+	sessionDir := sessionDirFromMeta(t, metaPath)
+	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
+		t.Fatalf("session directory left behind after cancellation: %v", err)
+	}
+}
+
+type piDebugCancelAfterCatalogResponse struct {
+	cancel func()
+	once   bool
+}
+
+func (w *piDebugCancelAfterCatalogResponse) Write(data []byte) (int, error) {
+	if !w.once && strings.Contains(string(data), "rpc=get_available_models status=completed") {
+		w.once = true
+		w.cancel()
+	}
+	return len(data), nil
+}
+
+var _ io.Writer = (*piDebugCancelAfterCatalogResponse)(nil)

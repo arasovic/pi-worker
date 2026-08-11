@@ -2,7 +2,6 @@ package pi
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strings"
 )
@@ -53,14 +52,15 @@ func (c *catalog) List(ctx context.Context, req CatalogRequest) ([]ModelProjecti
 	client := NewClient(proc.Stdin(), proc.Stdout(), nil, req.Debug.Worker(1))
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
-		// The kill callback terminates the child when the deadline fires, so
-		// the client may observe EOF and report a readiness failure before
-		// its next context check. A done deadline is the primary failure and
-		// must surface as such, mirroring the worker classification.
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return nil, ctx.Err()
+		// The kill callback can close the stream before Client observes the
+		// caller's cancellation. The caller's completed context is primary.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
 		}
 		return nil, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
 	}
 	if len(models) == 0 {
 		return nil, &ReadinessError{Message: "get_available_models returned an empty catalog; verify Pi compatibility and provider login"}
