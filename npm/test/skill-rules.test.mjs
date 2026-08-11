@@ -1,0 +1,380 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import process from "node:process";
+import { describe, test } from "node:test";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  extractRulesFromSource,
+  resolvePinnedSource,
+} from "../scripts/extract-skills-rules.mjs";
+import {
+  loadRules,
+  resolveAllTargets,
+  resolveRule,
+} from "../lib/skill-rules.mjs";
+
+const npmRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const generatedPath = join(npmRoot, "generated", "skills-rules.json");
+const extractorPath = join(npmRoot, "scripts", "extract-skills-rules.mjs");
+
+function sourceFixture() {
+  const { distPath } = resolvePinnedSource();
+  return readFileSync(distPath, "utf8");
+}
+
+function expectExtractionFailure(source, pattern) {
+  assert.throws(
+    () => extractRulesFromSource(source),
+    (error) => {
+      assert.match(error.message, pattern);
+      return true;
+    }
+  );
+}
+
+function validDocument(rules) {
+  const globalRules = rules.filter((rule) => rule.kind !== "no-global-target");
+  const noGlobalRules = rules.filter((rule) => rule.kind === "no-global-target");
+  while (globalRules.length < 74) {
+    globalRules.push({ kind: "home-relative", path: `.generated-${globalRules.length}/skills` });
+  }
+  while (noGlobalRules.length < 2) {
+    noGlobalRules.push({ kind: "no-global-target" });
+  }
+  assert.equal(globalRules.length, 74);
+  assert.equal(noGlobalRules.length, 2);
+  const agents = [...globalRules, ...noGlobalRules].map((rule, index) => ({
+    id: `agent-${index}`,
+    rule,
+  }));
+  return {
+    schemaVersion: 1,
+    skillsVersion: "1.5.22",
+    agentCount: 76,
+    globalTargetCount: 74,
+    noGlobalTargetCount: 2,
+    agents,
+  };
+}
+
+describe("pinned skills target-rule extraction contract", () => {
+  test("resolves the bin entry and derives the sibling dist bundle", () => {
+    const resolved = resolvePinnedSource();
+
+    assert.match(resolved.cliPath, /node_modules[\\/]skills[\\/]bin[\\/]cli\.mjs$/);
+    assert.match(resolved.distPath, /node_modules[\\/]skills[\\/]dist[\\/]cli\.mjs$/);
+    assert.notEqual(resolved.cliPath, resolved.distPath);
+  });
+
+  test("extracts the exact pinned inventory", () => {
+    const document = extractRulesFromSource(sourceFixture());
+    const ids = document.agents.map((agent) => agent.id);
+    const rules = document.agents.map((agent) => agent.rule);
+
+    assert.equal(document.schemaVersion, 1);
+    assert.equal(document.skillsVersion, "1.5.22");
+    assert.equal(document.agentCount, 76);
+    assert.equal(document.globalTargetCount, 74);
+    assert.equal(document.noGlobalTargetCount, 2);
+    assert.equal(ids.length, 76);
+    assert.equal(new Set(ids).size, 76);
+    assert.equal(rules.length, 76);
+    assert.equal(rules.filter((rule) => rule.kind === "no-global-target").length, 2);
+    assert.equal(rules.filter((rule) => rule.kind !== "no-global-target").length, 74);
+    assert.ok(rules.every((rule) => [
+      "home-relative",
+      "config-home-relative",
+      "environment-or-home",
+      "first-existing-home-relative",
+      "no-global-target",
+    ].includes(rule.kind)));
+  });
+
+  test("checked-in JSON exactly matches the pinned source", () => {
+    const document = loadRules(generatedPath);
+    assert.deepEqual(document, extractRulesFromSource(sourceFixture()));
+  });
+
+  test("rejects an unknown global target expression", () => {
+    const source = sourceFixture().replace(
+      'globalSkillsDir: join(home, ".aider-desk/skills")',
+      "globalSkillsDir: getMysteryTarget()"
+    );
+    expectExtractionFailure(source, /unknown|unrecognized/i);
+  });
+
+  test("rejects a missing agent name", () => {
+    const source = sourceFixture().replace('name: "aider-desk",', "");
+    expectExtractionFailure(source, /missing|name|agent/i);
+  });
+
+  test("rejects duplicate agent IDs", () => {
+    const source = sourceFixture()
+      .replace('\tamp: {', '\t"aider-desk": {')
+      .replace('name: "amp",', 'name: "aider-desk",');
+    expectExtractionFailure(source, /duplicate/i);
+  });
+
+  test("rejects an empty agents result", () => {
+    const source = sourceFixture().replace(
+      /const agents = \{[\s\S]*?\n\};\nasync function detectInstalledAgents/,
+      "const agents = {};\nasync function detectInstalledAgents"
+    );
+    expectExtractionFailure(source, /empty|count|agent/i);
+  });
+
+  test("rejects a bundle version mismatch", () => {
+    const source = sourceFixture().replace(
+      'var version$1 = "1.5.22";',
+      'var version$1 = "1.5.21";'
+    );
+    expectExtractionFailure(source, /version/i);
+  });
+
+  test("rejects a rule count mismatch", () => {
+    const source = sourceFixture().replace(
+      'globalSkillsDir: join(home, ".aider-desk/skills")',
+      "globalSkillsDir: void 0"
+    );
+    expectExtractionFailure(source, /count/i);
+  });
+
+  test("rejects an oversized source before parsing it", () => {
+    expectExtractionFailure(`${sourceFixture()}${" ".repeat(1024 * 1024)}`, /size|oversized|large/i);
+  });
+
+  test("rejects duplicate anchors", () => {
+    expectExtractionFailure(`${sourceFixture()}\nconst agents = {};\n`, /duplicate|anchor/i);
+  });
+
+  test("rejects an unterminated recognized section", () => {
+    const source = sourceFixture().replace(/\n\};\nasync function detectInstalledAgents/, "\nasync function detectInstalledAgents");
+    expectExtractionFailure(source, /unterminated|section|agent|missing/i);
+  });
+
+  test("the generator supports write followed by check", () => {
+    const writePath = join(npmRoot, "generated", ".skills-rules-test.json");
+    const write = spawnSync(process.execPath, [extractorPath, "--write", writePath], {
+      cwd: dirname(npmRoot),
+      encoding: "utf8",
+    });
+    assert.equal(write.status, 0, write.stderr);
+
+    const check = spawnSync(process.execPath, [extractorPath, "--check", writePath], {
+      cwd: dirname(npmRoot),
+      encoding: "utf8",
+    });
+    assert.equal(check.status, 0, check.stderr);
+
+    const cleanup = spawnSync(process.execPath, [
+      "-e",
+      `const { unlinkSync } = require("node:fs"); unlinkSync(${JSON.stringify(writePath)});`,
+    ], { encoding: "utf8" });
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+  });
+});
+
+describe("runtime target resolution", () => {
+  const home = "/home/tester";
+  const runtime = {
+    env: {},
+    home,
+    platform: "linux",
+    exists: () => false,
+  };
+
+  test("resolves literal home-relative paths", () => {
+    assert.equal(
+      resolveRule({ kind: "home-relative", path: ".pi/agent/skills" }, runtime),
+      "/home/tester/.pi/agent/skills"
+    );
+  });
+
+  test("uses trimmed environment values and falls back for blank values", () => {
+    const cases = [
+      ["CLAUDE_CONFIG_DIR", ".claude"],
+      ["CODEX_HOME", ".codex"],
+      ["HERMES_HOME", ".hermes"],
+      ["GROK_HOME", ".grok"],
+      ["VIBE_HOME", ".vibe"],
+      ["AUTOHAND_HOME", ".autohand"],
+    ];
+
+    for (const [variable, fallback] of cases) {
+      const rule = {
+        kind: "environment-or-home",
+        variable,
+        fallback,
+        suffix: "skills",
+      };
+      assert.equal(
+        resolveRule(rule, { ...runtime, env: { [variable]: `  /custom/${variable}  ` } }),
+        `/custom/${variable}/skills`
+      );
+      assert.equal(
+        resolveRule(rule, { ...runtime, env: { [variable]: " \n\t" } }),
+        `${home}/${fallback}/skills`
+      );
+    }
+  });
+
+  test("resolves config-home targets using pinned XDG precedence", () => {
+    const rule = {
+      kind: "config-home-relative",
+      path: "agents/skills",
+    };
+    assert.equal(
+      resolveRule(rule, { ...runtime, env: { XDG_CONFIG_HOME: "/xdg/config" } }),
+      "/xdg/config/agents/skills"
+    );
+    assert.equal(resolveRule(rule, runtime), "/home/tester/.config/agents/skills");
+    assert.equal(
+      resolveRule(rule, { ...runtime, env: { XDG_CONFIG_HOME: "" } }),
+      "/home/tester/.config/agents/skills"
+    );
+  });
+
+  test("follows OpenClaw home-directory priority and fallback", () => {
+    const rule = {
+      kind: "first-existing-home-relative",
+      candidates: [".openclaw", ".clawdbot", ".moltbot"],
+      suffix: "skills",
+      fallback: ".openclaw",
+    };
+    for (const selected of [".openclaw", ".clawdbot", ".moltbot"]) {
+      const checked = [];
+      const target = resolveRule(rule, {
+        ...runtime,
+        exists: (path) => {
+          checked.push(path);
+          return path === `${home}/${selected}`;
+        },
+      });
+      assert.equal(target, `${home}/${selected}/skills`);
+      assert.deepEqual(checked, [
+        `${home}/.openclaw`,
+        ...(selected === ".openclaw" ? [] : [`${home}/.clawdbot`]),
+        ...(selected === ".moltbot" && selected !== ".openclaw" ? [`${home}/.moltbot`] : []),
+      ]);
+    }
+    assert.equal(
+      resolveRule(rule, { ...runtime, exists: () => false }),
+      `${home}/.openclaw/skills`
+    );
+  });
+
+  test("resolves no-global markers to no target", () => {
+    assert.equal(resolveRule({ kind: "no-global-target" }, runtime), null);
+  });
+
+  test("rejects relative path traversal at load and resolution boundaries", (t) => {
+    const unsafeRules = [
+      { kind: "home-relative", path: "../../etc" },
+      { kind: "config-home-relative", path: "../escape" },
+      {
+        kind: "environment-or-home",
+        variable: "CODEX_HOME",
+        fallback: "../../etc",
+        suffix: "skills",
+      },
+      {
+        kind: "environment-or-home",
+        variable: "CODEX_HOME",
+        fallback: ".codex",
+        suffix: "../escape",
+      },
+      {
+        kind: "first-existing-home-relative",
+        candidates: ["../escape"],
+        fallback: ".openclaw",
+        suffix: "skills",
+      },
+    ];
+
+    for (const rule of unsafeRules) {
+      assert.throws(() => resolveRule(rule, runtime), /relative|unsafe|path|traversal/i);
+    }
+
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), "pi-worker-rules-test-"));
+    const documentPath = join(temporaryDirectory, "rules.json");
+    t.after(() => rmSync(temporaryDirectory, { recursive: true, force: true }));
+    writeFileSync(documentPath, JSON.stringify(validDocument([unsafeRules[0]])), "utf8");
+    assert.throws(() => loadRules(documentPath), /relative|unsafe|path|traversal/i);
+  });
+
+  test("requires an explicit filesystem predicate for first-existing rules", () => {
+    assert.throws(
+      () => resolveRule({
+        kind: "first-existing-home-relative",
+        candidates: [".openclaw", ".clawdbot", ".moltbot"],
+        fallback: ".openclaw",
+        suffix: "skills",
+      }, { env: {}, home, platform: "linux" }),
+      /exists/i
+    );
+  });
+
+  test("revalidates the full document before resolving targets", () => {
+    assert.throws(
+      () => resolveAllTargets({ agents: [] }, runtime),
+      /schema|version|count|invalid/i
+    );
+
+    const document = loadRules(generatedPath);
+    document.agents[0].rule.path = "../../etc";
+    assert.throws(() => resolveAllTargets(document, runtime), /relative|unsafe|path|traversal/i);
+  });
+
+  test("deduplicates only after resolving every rule", () => {
+    const calls = [];
+    const document = validDocument([
+      {
+        kind: "environment-or-home",
+        variable: "CODEX_HOME",
+        fallback: ".unused",
+        suffix: "skills",
+      },
+      { kind: "home-relative", path: ".shared/skills" },
+      { kind: "no-global-target" },
+    ]);
+    const targets = resolveAllTargets(document, {
+      ...runtime,
+      env: { CODEX_HOME: `${home}/.shared` },
+      exists: (path) => {
+        calls.push(path);
+        return false;
+      },
+    });
+
+    assert.equal(targets[0], `${home}/.shared/skills`);
+    assert.equal(targets.filter((target) => target === `${home}/.shared/skills`).length, 1);
+    assert.deepEqual(calls, []);
+  });
+
+  test("deduplicates case-insensitively after Windows resolution", () => {
+    const document = validDocument([
+      { kind: "home-relative", path: ".Shared/skills" },
+      {
+        kind: "environment-or-home",
+        variable: "CODEX_HOME",
+        fallback: ".unused",
+        suffix: "skills",
+      },
+    ]);
+    const targets = resolveAllTargets(document, {
+      env: { CODEX_HOME: "c:\\users\\u\\.shared" },
+      home: "C:\\Users\\U",
+      platform: "win32",
+      exists: () => false,
+    });
+
+    assert.equal(
+      targets.filter((target) => target.toLowerCase() === "c:\\users\\u\\.shared\\skills").length,
+      1
+    );
+  });
+});

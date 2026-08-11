@@ -1,0 +1,557 @@
+{
+  "schemaVersion": 1,
+  "skillsVersion": "1.5.22",
+  "agentCount": 76,
+  "globalTargetCount": 74,
+  "noGlobalTargetCount": 2,
+  "agents": [
+    {
+      "id": "aider-desk",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".aider-desk/skills"
+      }
+    },
+    {
+      "id": "amp",
+      "rule": {
+        "kind": "config-home-relative",
+        "path": "agents/skills"
+      }
+    },
+    {
+      "id": "antigravity",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".gemini/antigravity/skills"
+      }
+    },
+    {
+      "id": "antigravity-cli",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".gemini/antigravity-cli/skills"
+      }
+    },
+    {
+      "id": "astrbot",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".astrbot/data/skills"
+      }
+    },
+    {
+      "id": "autohand-code",
+      "rule": {
+        "kind": "environment-or-home",
+        "variable": "AUTOHAND_HOME",
+        "fallback": ".autohand",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "augment",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".augment/skills"
+      }
+    },
+    {
+      "id": "bob",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".bob/skills"
+      }
+    },
+    {
+      "id": "claude-code",
+      "rule": {
+        "kind": "environment-or-home",
+        "variable": "CLAUDE_CONFIG_DIR",
+        "fallback": ".claude",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "openclaw",
+      "rule": {
+        "kind": "first-existing-home-relative",
+        "candidates": [
+          ".openclaw",
+          ".clawdbot",
+          ".moltbot"
+        ],
+        "fallback": ".openclaw",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "cline",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      }
+    },
+    {
+      "id": "codearts-agent",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".codeartsdoer/skills"
+      }
+    },
+    {
+      "id": "codebuddy",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".codebuddy/skills"
+      }
+    },
+    {
+      "id": "codemaker",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".codemaker/skills"
+      }
+    },
+    {
+      "id": "codestudio",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".codestudio/skills"
+      }
+    },
+    {
+      "id": "codex",
+      "rule": {
+        "kind": "environment-or-home",
+        "variable": "CODEX_HOME",
+        "fallback": ".codex",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "command-code",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".commandcode/skills"
+      }
+    },
+    {
+      "id": "continue",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".continue/skills"
+      }
+    },
+    {
+      "id": "cortex",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".snowflake/cortex/skills"
+      }
+    },
+    {
+      "id": "crush",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".config/crush/skills"
+      }
+    },
+    {
+      "id": "cursor",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".cursor/skills"
+      }
+    },
+    {
+      "id": "deepagents",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".deepagents/agent/skills"
+      }
+    },
+    {
+      "id": "devin",
+      "rule": {
+        "kind": "config-home-relative",
+        "path": "devin/skills"
+      }
+    },
+    {
+      "id": "dexto",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      }
+    },
+    {
+      "id": "droid",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".factory/skills"
+      }
+    },
+    {
+      "id": "eve",
+      "rule": {
+        "kind": "no-global-target"
+      }
+    },
+    {
+      "id": "firebender",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".firebender/skills"
+      }
+    },
+    {
+      "id": "forgecode",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".forge/skills"
+      }
+    },
+    {
+      "id": "gemini-cli",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".gemini/skills"
+      }
+    },
+    {
+      "id": "github-copilot",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".copilot/skills"
+      }
+    },
+    {
+      "id": "goose",
+      "rule": {
+        "kind": "config-home-relative",
+        "path": "goose/skills"
+      }
+    },
+    {
+      "id": "grok",
+      "rule": {
+        "kind": "environment-or-home",
+        "variable": "GROK_HOME",
+        "fallback": ".grok",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "hermes-agent",
+      "rule": {
+        "kind": "environment-or-home",
+        "variable": "HERMES_HOME",
+        "fallback": ".hermes",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "inference-sh",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".inferencesh/skills"
+      }
+    },
+    {
+      "id": "jazz",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".jazz/skills"
+      }
+    },
+    {
+      "id": "junie",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".junie/skills"
+      }
+    },
+    {
+      "id": "iflow-cli",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".iflow/skills"
+      }
+    },
+    {
+      "id": "kilo",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".kilocode/skills"
+      }
+    },
+    {
+      "id": "kimchi",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".config/kimchi/harness/skills"
+      }
+    },
+    {
+      "id": "kimi-code-cli",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      }
+    },
+    {
+      "id": "kiro-cli",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".kiro/skills"
+      }
+    },
+    {
+      "id": "kode",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".kode/skills"
+      }
+    },
+    {
+      "id": "lingma",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".lingma/skills"
+      }
+    },
+    {
+      "id": "loaf",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      }
+    },
+    {
+      "id": "mcpjam",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".mcpjam/skills"
+      }
+    },
+    {
+      "id": "minimax-code",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".minimax/skills"
+      }
+    },
+    {
+      "id": "mistral-vibe",
+      "rule": {
+        "kind": "environment-or-home",
+        "variable": "VIBE_HOME",
+        "fallback": ".vibe",
+        "suffix": "skills"
+      }
+    },
+    {
+      "id": "moxby",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".moxby/skills"
+      }
+    },
+    {
+      "id": "mux",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".mux/skills"
+      }
+    },
+    {
+      "id": "opencode",
+      "rule": {
+        "kind": "config-home-relative",
+        "path": "opencode/skills"
+      }
+    },
+    {
+      "id": "openhands",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".openhands/skills"
+      }
+    },
+    {
+      "id": "ona",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".ona/skills"
+      }
+    },
+    {
+      "id": "pi",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".pi/agent/skills"
+      }
+    },
+    {
+      "id": "qoder",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".qoder/skills"
+      }
+    },
+    {
+      "id": "qoder-cn",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".qoder-cn/skills"
+      }
+    },
+    {
+      "id": "qwen-code",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".qwen/skills"
+      }
+    },
+    {
+      "id": "replit",
+      "rule": {
+        "kind": "config-home-relative",
+        "path": "agents/skills"
+      }
+    },
+    {
+      "id": "reasonix",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".reasonix/skills"
+      }
+    },
+    {
+      "id": "rovodev",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".rovodev/skills"
+      }
+    },
+    {
+      "id": "roo",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".roo/skills"
+      }
+    },
+    {
+      "id": "tabnine-cli",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".tabnine/agent/skills"
+      }
+    },
+    {
+      "id": "terramind",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".terramind/skills"
+      }
+    },
+    {
+      "id": "tinycloud",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".tinycloud/skills"
+      }
+    },
+    {
+      "id": "trae",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".trae/skills"
+      }
+    },
+    {
+      "id": "trae-cn",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".trae-cn/skills"
+      }
+    },
+    {
+      "id": "warp",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      }
+    },
+    {
+      "id": "windsurf",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".codeium/windsurf/skills"
+      }
+    },
+    {
+      "id": "zed",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      }
+    },
+    {
+      "id": "zcode",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".zcode/skills"
+      }
+    },
+    {
+      "id": "zencoder",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".zencoder/skills"
+      }
+    },
+    {
+      "id": "zenflow",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".zencoder/skills"
+      }
+    },
+    {
+      "id": "neovate",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".neovate/skills"
+      }
+    },
+    {
+      "id": "pochi",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".pochi/skills"
+      }
+    },
+    {
+      "id": "promptscript",
+      "rule": {
+        "kind": "no-global-target"
+      }
+    },
+    {
+      "id": "adal",
+      "rule": {
+        "kind": "home-relative",
+        "path": ".adal/skills"
+      }
+    },
+    {
+      "id": "universal",
+      "rule": {
+        "kind": "config-home-relative",
+        "path": "agents/skills"
+      }
+    }
+  ]
+}
