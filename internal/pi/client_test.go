@@ -72,6 +72,50 @@ func TestClientCorrelatesInterleavedResponsesAndEvents(t *testing.T) {
 	}
 }
 
+func TestClientAcceptsLargeLegitimateEventAndFinalTextFrames(t *testing.T) {
+	large := strings.Repeat("x", (1<<20)+1)
+	event, err := json.Marshal(map[string]any{
+		"type":       "tool_execution_end",
+		"toolCallId": "large-read",
+		"toolName":   "read",
+		"result":     large,
+	})
+	if err != nil {
+		t.Fatalf("marshal large event: %v", err)
+	}
+	finalData, err := json.Marshal(map[string]string{"text": large})
+	if err != nil {
+		t.Fatalf("marshal large final text: %v", err)
+	}
+
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: event},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: finalData}},
+		},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	if err := client.Prompt(context.Background(), "hello"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if err := client.WaitSettled(context.Background()); err != nil {
+		t.Fatalf("wait settled: %v", err)
+	}
+	text, err := client.GetLastAssistantText(context.Background())
+	if err != nil {
+		t.Fatalf("get large final text: %v", err)
+	}
+	if text != large {
+		t.Fatalf("final text length = %d, want %d", len(text), len(large))
+	}
+}
+
 func TestClientAgentEndIsNotTerminal(t *testing.T) {
 	// WaitSettled must consume every frame through agent_settled. If
 	// agent_end were treated as terminal, the event snapshot taken right

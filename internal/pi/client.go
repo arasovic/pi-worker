@@ -33,7 +33,7 @@ const debugHeartbeatInterval = 30 * time.Second
 const toolStartCap = debugLineBudget / 8
 
 // toolCallIDMaxBytes bounds one retained tool-call id in bytes. Pi controls
-// the id and one frame may approach the 1 MiB record limit, so an id is
+// the id and one frame may approach the multi-megabyte record limit, so an id is
 // only eligible for timing correlation when it fits this small fixed bound:
 // oversized and empty ids are never retained, their safe start/end lines
 // still appear, and their completions omit the duration. The id is only

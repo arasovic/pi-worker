@@ -12,9 +12,10 @@ import (
 	"io"
 )
 
-// MaxFrameBytes bounds one JSONL record in either direction. Pi messages are
-// small; this bound keeps malformed or hostile peers from exhausting memory.
-const MaxFrameBytes = 1 << 20
+// MaxFrameBytes bounds one inbound JSONL record. Legitimate Pi tool-result and
+// final-text frames can exceed 1 MiB during long reviews; 8 MiB keeps those
+// workflows usable while retaining a fixed per-worker memory ceiling.
+const MaxFrameBytes = 8 << 20
 
 // ErrFrameTooLarge reports a JSONL record that exceeds the configured bound.
 var ErrFrameTooLarge = errors.New("frame exceeds maximum record size")

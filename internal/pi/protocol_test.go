@@ -170,6 +170,18 @@ func TestFrameReaderRejectsOversizedRecords(t *testing.T) {
 	}
 }
 
+func TestFrameReaderAcceptsLegitimateRecordsAboveOneMiB(t *testing.T) {
+	payload := strings.Repeat("x", (1<<20)+1)
+	reader := NewFrameReader(strings.NewReader(payload+"\n"), MaxFrameBytes)
+	frame, err := reader.ReadFrame()
+	if err != nil {
+		t.Fatalf("read large legitimate frame: %v", err)
+	}
+	if len(frame) != len(payload) {
+		t.Fatalf("frame length = %d, want %d", len(frame), len(payload))
+	}
+}
+
 func TestFrameReaderRejectsEmptyRecords(t *testing.T) {
 	reader := NewFrameReader(strings.NewReader("\n"), MaxFrameBytes)
 	if _, err := reader.ReadFrame(); err == nil {

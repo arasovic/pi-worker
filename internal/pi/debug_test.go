@@ -583,7 +583,7 @@ func TestClientDebugEmptyToolCallIDIsNotTracked(t *testing.T) {
 
 // TestClientDebugOversizedToolCallIDIsNotRetained is the regression test
 // for per-id byte-bound retention: a Pi-controlled toolCallId may approach
-// the 1 MiB frame limit, so retaining every id at the count cap could hold
+// the multi-megabyte frame limit, so retaining every id at the count cap could hold
 // tens of MiB of untrusted strings. Only ids within the small fixed byte
 // limit are eligible for timing correlation; an oversized id still emits
 // its safe started line and its completion omits the duration. The long id
