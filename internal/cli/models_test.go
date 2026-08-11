@@ -161,6 +161,16 @@ func TestModelsProtocolErrorExits9(t *testing.T) {
 	}
 }
 
+func TestModelsMalformedCatalogSelectorExits9WithoutJSON(t *testing.T) {
+	// This catches publishing a selector that cannot be passed back to run.
+	installFakeCatalog(t, &fakeCatalog{models: []pi.ModelProjection{{Provider: "ac/me", ID: "model"}}})
+
+	code, stdout, stderr := runCLI(t, []string{"models", "--json"}, "")
+	if code != 9 || stdout != "" || !strings.Contains(stderr, "protocol error") {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+}
+
 func TestModelsCancellationExits8(t *testing.T) {
 	// This catches a caller cancellation being mistaken for a timeout or an
 	// internal catalog failure.

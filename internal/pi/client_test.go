@@ -363,6 +363,55 @@ func TestClientGetAvailableModelsExplicitEmptyArrayIsValidCatalog(t *testing.T) 
 	}
 }
 
+func TestClientGetAvailableModelsRejectsMalformedSelectors(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		id       string
+	}{
+		{name: "slash in provider", provider: "ac/me", id: "model"},
+		{name: "slash in id", provider: "acme", id: "mo/del"},
+		{name: "colon", provider: "acme", id: "model:thinking"},
+		{name: "ASCII whitespace", provider: "acme", id: "mo del"},
+		{name: "Unicode whitespace", provider: "acme", id: "mo\u00a0del"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{"models": []ModelProjection{{Provider: test.provider, ID: test.id}}})
+			if err != nil {
+				t.Fatalf("marshal catalog: %v", err)
+			}
+			script := &script.Script{Triggers: map[string][]script.Step{
+				"get_available_models": {{Response: &script.Response{Success: true, Data: data}}},
+			}}
+			proc := startScriptedPi(t, script)
+			_, err = NewClient(proc.Stdin(), proc.Stdout(), nil, nil).GetAvailableModels(context.Background())
+			var protocolErr *ProtocolError
+			if !errors.As(err, &protocolErr) {
+				t.Fatalf("error = %v, want *ProtocolError", err)
+			}
+			if strings.Contains(err.Error(), test.provider) || strings.Contains(err.Error(), test.id) {
+				t.Fatalf("error leaked malformed selector: %q", err)
+			}
+		})
+	}
+}
+
+func TestClientGetAvailableModelsAcceptsDashedDottedSelector(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"open-ai","id":"gpt.4o-mini"}]}`)}}},
+	}}
+	proc := startScriptedPi(t, script)
+	models, err := NewClient(proc.Stdin(), proc.Stdout(), nil, nil).GetAvailableModels(context.Background())
+	if err != nil {
+		t.Fatalf("GetAvailableModels error: %v", err)
+	}
+	want := []ModelProjection{{Provider: "open-ai", ID: "gpt.4o-mini"}}
+	if !slices.Equal(models, want) {
+		t.Fatalf("models = %#v, want %#v", models, want)
+	}
+}
+
 func TestClientSuccessFalseMapsToTypedErrors(t *testing.T) {
 	tests := []struct {
 		name  string

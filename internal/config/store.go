@@ -48,7 +48,7 @@ func Save(path string, cfg Config) error {
 		return err
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("save config %s: create directory: %w", path, err)
 	}
 	data, err := json.Marshal(cfg)

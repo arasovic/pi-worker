@@ -297,7 +297,8 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are not meaningful on Windows")
 	}
-	path := filepath.Join(t.TempDir(), "config.json")
+	dir := filepath.Join(t.TempDir(), "pi-worker")
+	path := filepath.Join(dir, "config.json")
 	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
@@ -314,6 +315,13 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	}
 	if perm&0o200 == 0 {
 		t.Fatalf("config mode %o: owner write bit must be set", perm)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat(%q) error: %v", dir, err)
+	}
+	if dirPerm := dirInfo.Mode().Perm(); dirPerm&0o077 != 0 {
+		t.Fatalf("config directory mode %o: group and other bits must be unset", dirPerm)
 	}
 }
 

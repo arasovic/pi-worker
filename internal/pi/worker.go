@@ -153,10 +153,8 @@ func workerID(id int) int {
 // splitModelSelector parses an exact provider/model selector.
 func splitModelSelector(selector string) (provider, id string, ok bool) {
 	provider, id, found := strings.Cut(selector, "/")
-	if !found || provider == "" || id == "" || strings.Contains(id, "/") {
-		return "", "", false
-	}
-	if strings.ContainsAny(selector, ": \t\r\n") {
+	canonical, componentsOK := ExactModelSelector(provider, id)
+	if !found || !componentsOK || canonical != selector {
 		return "", "", false
 	}
 	return provider, id, true

@@ -113,8 +113,8 @@ func (c *Client) GetAvailableModels(ctx context.Context) ([]ModelProjection, err
 		return nil, newProtocolError("get_available_models data missing models array")
 	}
 	for i, model := range data.Models {
-		if model.Provider == "" || model.ID == "" {
-			return nil, newProtocolError("catalog entry %d missing provider or id", i)
+		if _, ok := ExactModelSelector(model.Provider, model.ID); !ok {
+			return nil, newProtocolError("catalog entry %d has invalid provider or id", i)
 		}
 	}
 	return data.Models, nil

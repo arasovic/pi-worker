@@ -65,7 +65,11 @@ func modelsCommand(parent context.Context, args []string, stdout, stderr io.Writ
 	if opts.json {
 		output := modelsOutput{SchemaVersion: 1, Models: make([]modelOutput, len(models))}
 		for i, model := range models {
-			output.Models[i] = modelOutput{Provider: model.Provider, ID: model.ID, Selector: model.Provider + "/" + model.ID}
+			selector, ok := pi.ExactModelSelector(model.Provider, model.ID)
+			if !ok {
+				return modelsErrorCode(ctx, &pi.ProtocolError{Message: "catalog entry has invalid provider or id"}, stderr)
+			}
+			output.Models[i] = modelOutput{Provider: model.Provider, ID: model.ID, Selector: selector}
 		}
 		data, err := json.Marshal(output)
 		if err != nil {
@@ -76,7 +80,11 @@ func modelsCommand(parent context.Context, args []string, stdout, stderr io.Writ
 		return 0
 	}
 	for _, model := range models {
-		fmt.Fprintf(stdout, "%s/%s\n", model.Provider, model.ID)
+		selector, ok := pi.ExactModelSelector(model.Provider, model.ID)
+		if !ok {
+			return modelsErrorCode(ctx, &pi.ProtocolError{Message: "catalog entry has invalid provider or id"}, stderr)
+		}
+		fmt.Fprintln(stdout, selector)
 	}
 	return 0
 }
