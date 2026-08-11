@@ -71,8 +71,10 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
 - `model-catalog` sends only `get_available_models`; it does not activate a
   model or send a prompt. An empty catalog is failed.
 - The default timeout is `30s`. Human output has one line per ordered check and
-  an overall readiness line. `--json` writes exactly one `doctor.Result`
-  document to stdout; `--debug` and diagnostics write only to stderr.
+  an overall readiness line. For a completed inspection, `--json` writes exactly
+  one `doctor.Result` document to stdout. A timed-out, cancelled, or internally
+  aborted inspection writes no result to stdout; `--debug` and diagnostics write
+  only to stderr.
 - Exit codes are `0` for ready or warning-only results, `3` for readiness
   failures, `7` for timeout, `8` for cancellation, and `9` for protocol or
   internal failures. Invalid flags return `2` before an inspection starts.

@@ -82,30 +82,74 @@ func TestDoctorJSONIsOneDocumentAndDebugStaysOnStderr(t *testing.T) {
 func TestDoctorExitClassification(t *testing.T) {
 	// This catches each public exit class being collapsed into a generic error.
 	for _, test := range []struct {
-		name string
-		ctx  context.Context
-		deps func() doctor.Dependencies
-		want int
+		name       string
+		ctx        context.Context
+		deps       func() doctor.Dependencies
+		want       int
+		wantOutput bool
 	}{
-		{"ready", context.Background(), readyDoctorDependencies, 0},
+		{"ready", context.Background(), readyDoctorDependencies, 0, true},
 		{"readiness", context.Background(), func() doctor.Dependencies {
 			d := readyDoctorDependencies()
 			d.Lookup = func(string) (string, error) { return "", errors.New("missing") }
 			return d
-		}, 3},
+		}, 3, true},
 		{"internal", context.Background(), func() doctor.Dependencies {
 			d := readyDoctorDependencies()
 			d.Catalog = &fakeCatalog{err: &pi.ProtocolError{Message: "bad"}}
 			return d
-		}, 9},
-		{"timeout", expiredDoctorContext(t, context.DeadlineExceeded), readyDoctorDependencies, 7},
-		{"cancellation", expiredDoctorContext(t, context.Canceled), readyDoctorDependencies, 8},
+		}, 9, false},
+		{"timeout", expiredDoctorContext(t, context.DeadlineExceeded), readyDoctorDependencies, 7, false},
+		{"cancellation", expiredDoctorContext(t, context.Canceled), readyDoctorDependencies, 8, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			installDoctorDependencies(t, test.deps())
-			code, _, _ := runCLIWithContext(t, test.ctx, []string{"doctor", "--json"}, "")
+			code, stdout, _ := runCLIWithContext(t, test.ctx, []string{"doctor", "--json"}, "")
 			if code != test.want {
 				t.Fatalf("exit = %d, want %d", code, test.want)
+			}
+			if test.wantOutput != (stdout != "") {
+				t.Fatalf("stdout = %q, want output = %v", stdout, test.wantOutput)
+			}
+		})
+	}
+}
+
+func TestDoctorAbortAfterPartialChecksDoesNotRenderResult(t *testing.T) {
+	for _, format := range []struct {
+		name string
+		args []string
+	}{
+		{name: "human", args: []string{"doctor", "--timeout", "1ms"}},
+		{name: "json", args: []string{"doctor", "--json", "--timeout", "1ms"}},
+	} {
+		t.Run("timeout/"+format.name, func(t *testing.T) {
+			deps := readyDoctorDependencies()
+			deps.Version = func(ctx context.Context, _ string) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			installDoctorDependencies(t, deps)
+
+			code, stdout, stderr := runCLI(t, format.args, "")
+			if code != 7 || stdout != "" || !strings.Contains(stderr, "doctor timed out") {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+		})
+
+		t.Run("cancellation/"+format.name, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			deps := readyDoctorDependencies()
+			deps.Version = func(ctx context.Context, _ string) (string, error) {
+				cancel()
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			installDoctorDependencies(t, deps)
+
+			code, stdout, stderr := runCLIWithContext(t, parent, format.args, "")
+			if code != 8 || stdout != "" || !strings.Contains(stderr, "doctor cancelled") {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 			}
 		})
 	}

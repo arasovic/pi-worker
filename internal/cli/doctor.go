@@ -40,6 +40,12 @@ func doctorCommand(parent context.Context, args []string, stdout, stderr io.Writ
 	deps := newDoctorDependencies(debug)
 	result, runErr := doctor.Run(ctx, deps)
 	code := doctorExitCode(ctx, result, runErr, stderr)
+	if runErr != nil {
+		// An aborted inspection has no complete result to report. Rendering a
+		// partial result could claim readiness that the remaining checks never
+		// established.
+		return code
+	}
 
 	if opts.json {
 		data, err := json.Marshal(result)
