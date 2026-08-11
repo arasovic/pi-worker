@@ -23,8 +23,6 @@ func DefaultDependencies(debug *pi.DebugSink) Dependencies {
 		LoadConfig:     loadUserConfig,
 		CatalogFactory: pi.NewCatalog,
 		Workspace:      os.Getwd,
-		Home:           os.UserHomeDir,
-		Stat:           os.Stat,
 		Debug:          debug,
 	}
 }

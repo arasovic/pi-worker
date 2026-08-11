@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"os"
 	"strings"
 	"testing"
@@ -25,8 +24,6 @@ func readyDoctorDependencies() doctor.Dependencies {
 		},
 		Catalog:   &fakeCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}},
 		Workspace: func() (string, error) { return ".", nil },
-		Home:      func() (string, error) { return "/home/test", nil },
-		Stat:      func(string) (fs.FileInfo, error) { return cliRegularFileInfo{}, nil },
 	}
 }
 
@@ -40,7 +37,7 @@ func installDoctorDependencies(t *testing.T, deps doctor.Dependencies) {
 	t.Cleanup(func() { newDoctorDependencies = original })
 }
 
-func TestDoctorHumanOutputKeepsSixChecksInOrder(t *testing.T) {
+func TestDoctorHumanOutputKeepsFiveChecksInOrder(t *testing.T) {
 	// This catches a CLI formatter that hides a check or changes the runner's
 	// contract order, making readiness diagnosis ambiguous.
 	installDoctorDependencies(t, readyDoctorDependencies())
@@ -49,7 +46,7 @@ func TestDoctorHumanOutputKeepsSixChecksInOrder(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	want := []string{
-		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.1 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "global-skill: ok - Global pi-worker skill is installed", "ready: yes",
+		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.1 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "ready: yes",
 	}
 	for i, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		if i >= len(want) || line != want[i] {
@@ -74,7 +71,7 @@ func TestDoctorJSONIsOneDocumentAndDebugStaysOnStderr(t *testing.T) {
 		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	var result doctor.Result
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result.Checks) != 6 {
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result.Checks) != 5 || result.SchemaVersion != 1 {
 		t.Fatalf("JSON = %q, result = %#v, err = %v", stdout, result, err)
 	}
 }
@@ -175,7 +172,6 @@ func TestDoctorMissingExecutableKeepsReadinessExitWithoutCatalogProcess(t *testi
 		"config: ok - Pi-worker configuration is valid",
 		"model-catalog: failed - Pi model catalog is unavailable",
 		"default-model: failed - Configured default model is unavailable",
-		"global-skill: ok - Global pi-worker skill is installed",
 		"ready: no",
 	}
 	got := strings.Split(strings.TrimSpace(stdout), "\n")
@@ -237,8 +233,6 @@ func TestDoctorRealFakePiUsesOnlyCatalogRequest(t *testing.T) {
 	deps.Version = func(context.Context, string) (string, error) { return "0.84.1", nil }
 	deps.Catalog = pi.NewCatalog(fakePiBin)
 	deps.Workspace = func() (string, error) { return t.TempDir(), nil }
-	deps.Home = func() (string, error) { return t.TempDir(), nil }
-	deps.Stat = func(string) (fs.FileInfo, error) { return cliRegularFileInfo{}, nil }
 	installDoctorDependencies(t, deps)
 
 	code, stdout, stderr := runCLI(t, []string{"doctor", "--json"}, "")
@@ -268,12 +262,3 @@ func expiredDoctorContext(t *testing.T, kind error) context.Context {
 	cancel()
 	return ctx
 }
-
-type cliRegularFileInfo struct{}
-
-func (cliRegularFileInfo) Name() string       { return "SKILL.md" }
-func (cliRegularFileInfo) Size() int64        { return 0 }
-func (cliRegularFileInfo) Mode() fs.FileMode  { return 0 }
-func (cliRegularFileInfo) ModTime() time.Time { return time.Time{} }
-func (cliRegularFileInfo) IsDir() bool        { return false }
-func (cliRegularFileInfo) Sys() any           { return nil }

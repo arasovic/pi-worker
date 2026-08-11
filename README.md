@@ -83,14 +83,9 @@ only.
 ## Agent skill
 
 The canonical source is [`skills/pi-worker`](./skills/pi-worker). It supports
-one to three disjoint Pi-worker tasks, exact model selection, and no recursive
-delegation. Global installation is optional and manual; for example, a runtime
-that uses `~/.agents/skills` can link the canonical source:
-
-```sh
-mkdir -p "$HOME/.agents/skills"
-ln -s "$(pwd)/skills/pi-worker" "$HOME/.agents/skills/pi-worker"
-```
+one to three disjoint Pi-worker tasks, separate model/effort selection, visible
+thinking fallback, and no recursive delegation. Skill installation status is
+reported by `pi-worker skill status`.
 
 ## Details
 

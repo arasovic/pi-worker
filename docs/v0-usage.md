@@ -64,10 +64,11 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   switches providers or models, reads Pi profile/auth files, invokes a model,
   or submits a prompt.
 - It performs these checks in this exact order: `pi-executable`, `pi-version`,
-  `config`, `model-catalog`, `default-model`, and `global-skill`.
-- The Pi version check accepts exactly `0.84.1`. A missing configuration or
-  global skill is a warning; warnings leave the environment ready. A failed
-  check makes it not ready.
+  `config`, `model-catalog`, and `default-model`.
+- The Pi version check accepts exactly `0.84.1`. A missing configuration is a
+  warning; warnings leave the environment ready. A failed check makes it not
+  ready.
+- Skill installation status is reported separately by `pi-worker skill status`.
 - `model-catalog` sends only `get_available_models`; it does not activate a
   model or send a prompt. An empty catalog is failed.
 - The default timeout is `30s`. Human output has one line per ordered check and

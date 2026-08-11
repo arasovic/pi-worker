@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"path/filepath"
 
 	"pi-worker/internal/config"
 	"pi-worker/internal/pi"
@@ -59,8 +58,6 @@ type Dependencies struct {
 	CatalogFactory func(string) pi.ModelCatalog
 	Catalog        pi.ModelCatalog
 	Workspace      func() (string, error)
-	Home           func() (string, error)
-	Stat           func(string) (fs.FileInfo, error)
 	Debug          *pi.DebugSink
 }
 
@@ -68,7 +65,7 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, contextFailure(err)
 	}
-	result := Result{SchemaVersion: 1, Ready: true, Checks: make([]Check, 0, 6)}
+	result := Result{SchemaVersion: 1, Ready: true, Checks: make([]Check, 0, 5)}
 	executable, executableErr := deps.Lookup("pi")
 	if executableErr != nil {
 		add(&result, "pi-executable", CheckFailed, "Pi executable is unavailable")
@@ -125,17 +122,6 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 		add(&result, "default-model", CheckFailed, "Configured default model is unavailable")
 	default:
 		add(&result, "default-model", CheckOK, "Configured default model is available")
-	}
-
-	home, homeErr := deps.Home()
-	if homeErr != nil {
-		add(&result, "global-skill", CheckFailed, "Global pi-worker skill could not be checked")
-	} else if info, err := deps.Stat(filepath.Join(home, ".agents", "skills", "pi-worker", "SKILL.md")); errors.Is(err, fs.ErrNotExist) {
-		add(&result, "global-skill", CheckWarning, "Global pi-worker skill is not installed")
-	} else if err != nil || !info.Mode().IsRegular() {
-		add(&result, "global-skill", CheckFailed, "Global pi-worker skill is invalid")
-	} else {
-		add(&result, "global-skill", CheckOK, "Global pi-worker skill is installed")
 	}
 
 	if catalogErr != nil {

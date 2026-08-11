@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,17 +24,15 @@ func readyDependencies() Dependencies {
 		},
 		Catalog:   &catalogFake{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}},
 		Workspace: func() (string, error) { return ".", nil },
-		Home:      func() (string, error) { return "/home/test", nil },
-		Stat:      func(string) (fs.FileInfo, error) { return regularFileInfo{}, nil },
 	}
 }
 
-func TestRunKeepsSixChecksInDeterministicOrder(t *testing.T) {
+func TestRunKeepsFiveChecksInDeterministicOrder(t *testing.T) {
 	result, err := Run(context.Background(), readyDependencies())
 	if err != nil {
 		t.Fatalf("Run error = %v", err)
 	}
-	want := []string{"pi-executable", "pi-version", "config", "model-catalog", "default-model", "global-skill"}
+	want := []string{"pi-executable", "pi-version", "config", "model-catalog", "default-model"}
 	if len(result.Checks) != len(want) {
 		t.Fatalf("checks = %#v", result.Checks)
 	}
@@ -64,7 +61,7 @@ func TestRunReportsMissingExecutableAsFailed(t *testing.T) {
 	catalog := &catalogFake{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}}
 	deps.Catalog = catalog
 	result, err := Run(context.Background(), deps)
-	if err != nil || result.Ready || len(result.Checks) != 6 || result.Checks[0].Status != CheckFailed || result.Checks[3].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
+	if err != nil || result.Ready || len(result.Checks) != 5 || result.Checks[0].Status != CheckFailed || result.Checks[3].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
 	if catalog.calls != 0 {
@@ -159,20 +156,20 @@ func TestRunChecksConfiguredDefaultAgainstCatalog(t *testing.T) {
 	}
 }
 
-func TestRunReportsMissingSkillAndStatFailure(t *testing.T) {
+func TestRunReportsConfigStatusInDefaultModelCheck(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		err  error
 		want CheckStatus
 	}{
 		{"missing", fs.ErrNotExist, CheckWarning},
-		{"failure", errors.New("stat " + seededEnvironment), CheckFailed},
+		{"failure", errors.New("config " + seededEnvironment), CheckFailed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			deps := readyDependencies()
-			deps.Stat = func(string) (fs.FileInfo, error) { return nil, test.err }
+			deps.LoadConfig = func() (config.Config, error) { return config.Config{}, test.err }
 			result, err := Run(context.Background(), deps)
-			if err != nil || result.Checks[5].Status != test.want {
+			if err != nil || len(result.Checks) != 5 || result.SchemaVersion != 1 || result.Checks[4].Status != test.want {
 				t.Fatalf("result = %#v, err = %v", result, err)
 			}
 			assertRedacted(t, result)
@@ -233,15 +230,6 @@ func (f *catalogFake) List(context.Context, pi.CatalogRequest) ([]pi.ModelProjec
 	return f.models, f.err
 }
 
-type regularFileInfo struct{}
-
-func (regularFileInfo) Name() string       { return "SKILL.md" }
-func (regularFileInfo) Size() int64        { return 0 }
-func (regularFileInfo) Mode() fs.FileMode  { return 0 }
-func (regularFileInfo) ModTime() time.Time { return time.Time{} }
-func (regularFileInfo) IsDir() bool        { return false }
-func (regularFileInfo) Sys() any           { return nil }
-
 func assertRedacted(t *testing.T, result Result) {
 	t.Helper()
 	text := ""
@@ -266,5 +254,3 @@ func cancelledContext() context.Context {
 	cancel()
 	return ctx
 }
-
-var _ = os.ErrNotExist
