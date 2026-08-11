@@ -219,10 +219,32 @@ func archiveName(version string, target Target) string {
 }
 
 func targetEnvironment(target Target) []string {
-	env := append([]string(nil), os.Environ()...)
-	env = setEnv(env, "GOOS", target.GOOS)
-	env = setEnv(env, "GOARCH", target.GOARCH)
-	env = setEnv(env, "CGO_ENABLED", "0")
+	return targetEnvironmentFrom(os.Environ(), target)
+}
+
+func targetEnvironmentFrom(hostEnv []string, target Target) []string {
+	env := append([]string(nil), hostEnv...)
+	for _, setting := range []struct {
+		key   string
+		value string
+	}{
+		{key: "GOPROXY", value: "off"},
+		{key: "GOSUMDB", value: "off"},
+		{key: "GOTOOLCHAIN", value: "local"},
+		{key: "GOWORK", value: "off"},
+		{key: "GOFLAGS", value: "-mod=readonly"},
+		{key: "GOENV", value: "off"},
+		{key: "GOTELEMETRY", value: "off"},
+		{key: "GOEXPERIMENT", value: "none"},
+		{key: "GOFIPS140", value: "off"},
+		{key: "GOAMD64", value: "v1"},
+		{key: "GOARM64", value: "v8.0"},
+		{key: "GOOS", value: target.GOOS},
+		{key: "GOARCH", value: target.GOARCH},
+		{key: "CGO_ENABLED", value: "0"},
+	} {
+		env = setEnv(env, setting.key, setting.value)
+	}
 	return env
 }
 

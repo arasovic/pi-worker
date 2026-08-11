@@ -31,6 +31,8 @@ Build four deterministic native artifacts locally (no tagging, upload, or publis
 Release builds require a clean worktree and a repository checkout; the tool
 finds the repository root from the current or nested working directory. The
 `--output` directory must not already exist, and its parent must exist.
+Builds use the local Go toolchain and module cache in offline, read-only module
+mode; the release command does not fetch dependencies.
 
 ```sh
 go run ./tools/release --version v0.1.0 --commit "$(git rev-parse HEAD)" --build-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --output dist

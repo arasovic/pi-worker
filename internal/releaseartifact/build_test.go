@@ -235,6 +235,69 @@ func TestBuildRemovesStagingAfterTargetFailure(t *testing.T) {
 	}
 }
 
+func TestTargetEnvironmentReplacesConflictingHostEntries(t *testing.T) {
+	hostEnv := []string{
+		"PATH=/bin",
+		"GOPROXY=https://proxy.golang.org",
+		"GOPROXY=https://host.invalid",
+		"GOSUMDB=sum.golang.org",
+		"GOSUMDB=host.invalid",
+		"GOTOOLCHAIN=auto",
+		"GOTOOLCHAIN=host-toolchain",
+		"GOWORK=/host/workspace.work",
+		"GOWORK=/another/workspace.work",
+		"GOFLAGS=-mod=mod",
+		"GOFLAGS=-x",
+		"GOENV=/host/goenv",
+		"GOENV=/another/goenv",
+		"GOTELEMETRY=local",
+		"GOTELEMETRY=on",
+		"GOEXPERIMENT=arenas",
+		"GOEXPERIMENT=boringcrypto",
+		"GOFIPS140=v1.0.0",
+		"GOFIPS140=latest",
+		"GOAMD64=v3",
+		"GOAMD64=v4",
+		"GOARM64=v9.0",
+		"GOARM64=v9.1",
+		"GOOS=darwin",
+		"GOOS=windows",
+		"GOARCH=386",
+		"GOARCH=amd64",
+		"CGO_ENABLED=1",
+		"CGO_ENABLED=1",
+	}
+
+	got := targetEnvironmentFrom(hostEnv, Target{GOOS: "linux", GOARCH: "arm64"})
+	want := map[string]string{
+		"GOPROXY":      "off",
+		"GOSUMDB":      "off",
+		"GOTOOLCHAIN":  "local",
+		"GOWORK":       "off",
+		"GOFLAGS":      "-mod=readonly",
+		"GOENV":        "off",
+		"GOTELEMETRY":  "off",
+		"GOEXPERIMENT": "none",
+		"GOFIPS140":    "off",
+		"GOAMD64":      "v1",
+		"GOARM64":      "v8.0",
+		"GOOS":         "linux",
+		"GOARCH":       "arm64",
+		"CGO_ENABLED":  "0",
+	}
+	for key, wantValue := range want {
+		var values []string
+		for _, entry := range got {
+			if strings.HasPrefix(entry, key+"=") {
+				values = append(values, strings.TrimPrefix(entry, key+"="))
+			}
+		}
+		if len(values) != 1 || values[0] != wantValue {
+			t.Fatalf("%s entries = %#v, want exactly [%q]", key, values, wantValue)
+		}
+	}
+}
+
 func TestBuildInvokesGoBuildAndWritesArchives(t *testing.T) {
 	options := Options{
 		Version:   "v0.1.0",

@@ -21,6 +21,11 @@ var runCommand = func(ctx context.Context, name string, args ...string) ([]byte,
 	return output, err
 }
 
+var runGitCommand = func(_ context.Context, cmd *exec.Cmd) ([]byte, error) {
+	output, err := cmd.CombinedOutput()
+	return output, err
+}
+
 var runReleaseBuild = releaseartifact.Build
 var verifyNotices = releasenotice.Verify
 
@@ -72,6 +77,13 @@ func run(args []string) error {
 	if err := ensureCleanWorktree(context.Background(), root); err != nil {
 		return err
 	}
+	head, err := resolveRepositoryHead(context.Background(), root)
+	if err != nil {
+		return err
+	}
+	if head != *commit {
+		return fmt.Errorf("release commit %q does not match repository HEAD %q", *commit, head)
+	}
 
 	moduleCache, err := queryGomodcache(context.Background())
 	if err != nil {
@@ -96,8 +108,46 @@ func run(args []string) error {
 	return nil
 }
 
+var gitRepositoryRedirectingEnvironment = map[string]struct{}{
+	"GIT_DIR":                          {},
+	"GIT_WORK_TREE":                    {},
+	"GIT_INDEX_FILE":                   {},
+	"GIT_OBJECT_DIRECTORY":             {},
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": {},
+	"GIT_COMMON_DIR":                   {},
+}
+
+func runGit(ctx context.Context, root string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+	cmd.Env = sanitizedGitEnvironment(os.Environ())
+	return runGitCommand(ctx, cmd)
+}
+
+func sanitizedGitEnvironment(env []string) []string {
+	sanitized := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, hasValue := strings.Cut(entry, "=")
+		if hasValue {
+			if _, ok := gitRepositoryRedirectingEnvironment[key]; ok {
+				continue
+			}
+		}
+		sanitized = append(sanitized, entry)
+	}
+	return sanitized
+}
+
 func ensureCleanWorktree(ctx context.Context, root string) error {
-	status, err := runCommand(ctx, "git", "-C", root, "status", "--short")
+	topLevel, err := runGit(ctx, root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("verify git repository root: %w", err)
+	}
+	reportedRoot := filepath.Clean(strings.TrimSpace(string(topLevel)))
+	if reportedRoot != filepath.Clean(root) {
+		return fmt.Errorf("git repository root %q does not match discovered root %q", reportedRoot, root)
+	}
+
+	status, err := runGit(ctx, root, "status", "--short", "--untracked-files=all")
 	if err != nil {
 		return fmt.Errorf("check git worktree: %w", err)
 	}
@@ -105,6 +155,14 @@ func ensureCleanWorktree(ctx context.Context, root string) error {
 		return fmt.Errorf("working tree has uncommitted changes")
 	}
 	return nil
+}
+
+func resolveRepositoryHead(ctx context.Context, root string) (string, error) {
+	head, err := runGit(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve git HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(head)), nil
 }
 
 func queryGomodcache(ctx context.Context) (string, error) {
