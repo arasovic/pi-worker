@@ -32,6 +32,7 @@ go build -o ./bin/pi-worker ./cmd/pi-worker
 
 - `pi-worker version`
 - `pi-worker models ...`
+- `pi-worker doctor [--timeout <duration>] [--json] [--debug]`
 - `pi-worker config show [--json]`
 - `pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]`
 - `pi-worker run ...`
@@ -51,6 +52,29 @@ pi-worker models [--timeout <duration>] [--json] [--debug]
   containing `provider`, `id`, and `selector`.
 - The default timeout is `30s`. An empty catalog is a readiness failure (exit
   code `3`), malformed Pi data is a protocol/internal failure (exit code `9`).
+
+## Local readiness doctor
+
+```text
+pi-worker doctor [--timeout <duration>] [--json] [--debug]
+```
+
+- `doctor` is inspection-only: it never repairs configuration, logs in,
+  switches providers or models, reads Pi profile/auth files, invokes a model,
+  or submits a prompt.
+- It performs these checks in this exact order: `pi-executable`, `pi-version`,
+  `config`, `model-catalog`, `default-model`, and `global-skill`.
+- The Pi version check accepts exactly `0.84.1`. A missing configuration or
+  global skill is a warning; warnings leave the environment ready. A failed
+  check makes it not ready.
+- `model-catalog` sends only `get_available_models`; it does not activate a
+  model or send a prompt. An empty catalog is failed.
+- The default timeout is `30s`. Human output has one line per ordered check and
+  an overall readiness line. `--json` writes exactly one `doctor.Result`
+  document to stdout; `--debug` and diagnostics write only to stderr.
+- Exit codes are `0` for ready or warning-only results, `3` for readiness
+  failures, `7` for timeout, `8` for cancellation, and `9` for protocol or
+  internal failures. Invalid flags return `2` before an inspection starts.
 
 ## Exact run command
 
@@ -199,7 +223,7 @@ cat prompt.txt | pi-worker run --model provider/model-id
 - trust store and content provenance
 - Docker/OpenShell
 - worktree/patch application
-- durable registry / background / status / wait / steer / cancel / resume / doctor
+- durable registry / background / status / wait / steer / cancel / resume
 - public installer, package manager, and skill installation
 
 ## Compatibility note

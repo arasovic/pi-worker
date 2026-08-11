@@ -46,6 +46,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		return modelsCommand(ctx, args[1:], stdout, stderr)
+	case "doctor":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "config":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
@@ -80,6 +84,8 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		return 0
 	case "models":
 		return modelsCommand(ctx, args[1:], stdout, stderr)
+	case "doctor":
+		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "config":
 		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
@@ -120,6 +126,7 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: pi-worker version")
 	fmt.Fprintln(w, "       pi-worker models [--timeout <duration>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker doctor [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker config show [--json]")
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
 	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
