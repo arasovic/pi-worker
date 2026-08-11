@@ -41,7 +41,7 @@ const toolStartCap = debugLineBudget / 8
 // ever used as a map key, never logged.
 const toolCallIDMaxBytes = 128
 
-// Client drives the four documented outbound RPC request types over a Pi
+// Client drives the seven documented outbound RPC request types over a Pi
 // JSONL stream. Requests carry generated IDs; responses are correlated by ID
 // while events interleave. The client is single-flight: one request at a
 // time, matching the worker's linear prompt lifecycle. There is no arbitrary
@@ -150,6 +150,127 @@ func (c *Client) SetModel(ctx context.Context, provider, modelID string) error {
 		return newProtocolError("set_model confirmed %q/%q, expected %q/%q", data.Provider, data.ID, provider, modelID)
 	}
 	return nil
+}
+
+// GetAvailableThinkingLevels returns the exact unique thinking levels Pi
+// reports for the active model. Unknown or duplicate values are protocol
+// violations because pi-worker is pinned to the Pi 0.84.1 vocabulary.
+func (c *Client) GetAvailableThinkingLevels(ctx context.Context) ([]ThinkingLevel, error) {
+	req, err := newRequest(requestGetAvailableThinkingLevels)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.roundTrip(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if !*resp.Success {
+		return nil, &ReadinessError{Message: "get_available_thinking_levels: " + responseDetail(resp)}
+	}
+	if len(resp.Data) == 0 || isJSONNull(resp.Data) {
+		return nil, newProtocolError("get_available_thinking_levels data must be an object with a levels array")
+	}
+	var container struct {
+		Levels json.RawMessage `json:"levels"`
+	}
+	if err := json.Unmarshal(resp.Data, &container); err != nil {
+		return nil, newProtocolError("malformed get_available_thinking_levels data: %v", err)
+	}
+	if len(container.Levels) == 0 || isJSONNull(container.Levels) {
+		return nil, newProtocolError("get_available_thinking_levels data missing levels array")
+	}
+	var rawLevels []json.RawMessage
+	if err := json.Unmarshal(container.Levels, &rawLevels); err != nil {
+		return nil, newProtocolError("malformed get_available_thinking_levels levels: %v", err)
+	}
+	levels := make([]ThinkingLevel, 0, len(rawLevels))
+	seen := make(map[ThinkingLevel]bool, len(rawLevels))
+	for i, raw := range rawLevels {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, newProtocolError("thinking level %d must be a string", i)
+		}
+		level, ok := ParseThinkingLevel(value)
+		if !ok {
+			return nil, newProtocolError("thinking level %d is unknown", i)
+		}
+		if seen[level] {
+			return nil, newProtocolError("thinking level %d is duplicated", i)
+		}
+		seen[level] = true
+		levels = append(levels, level)
+	}
+	return levels, nil
+}
+
+// SetThinkingLevel asks Pi to apply one exact supported level. A correlated,
+// well-formed rejection is typed separately so worker policy can retain the
+// previously confirmed default without treating transport failures as fallback.
+func (c *Client) SetThinkingLevel(ctx context.Context, level ThinkingLevel) error {
+	if parsed, ok := ParseThinkingLevel(string(level)); !ok || parsed != level {
+		return fmt.Errorf("invalid thinking level %q", level)
+	}
+	req, err := newRequest(requestSetThinkingLevel)
+	if err != nil {
+		return err
+	}
+	req.Level = level
+	resp, err := c.roundTrip(ctx, req)
+	if err != nil {
+		return err
+	}
+	if !*resp.Success {
+		return &ThinkingLevelRejectedError{Level: level}
+	}
+	return nil
+}
+
+// GetState returns the exact active model and effective thinking level needed
+// for post-activation confirmation. Every required projection is strict.
+func (c *Client) GetState(ctx context.Context) (SessionState, error) {
+	req, err := newRequest(requestGetState)
+	if err != nil {
+		return SessionState{}, err
+	}
+	resp, err := c.roundTrip(ctx, req)
+	if err != nil {
+		return SessionState{}, err
+	}
+	if !*resp.Success {
+		return SessionState{}, &ReadinessError{Message: "get_state: " + responseDetail(resp)}
+	}
+	if len(resp.Data) == 0 || isJSONNull(resp.Data) {
+		return SessionState{}, newProtocolError("get_state data must be an object with model and thinkingLevel")
+	}
+	var container struct {
+		Model         json.RawMessage `json:"model"`
+		ThinkingLevel json.RawMessage `json:"thinkingLevel"`
+	}
+	if err := json.Unmarshal(resp.Data, &container); err != nil {
+		return SessionState{}, newProtocolError("malformed get_state data: %v", err)
+	}
+	if len(container.Model) == 0 || isJSONNull(container.Model) {
+		return SessionState{}, newProtocolError("get_state data missing model object")
+	}
+	var model ModelProjection
+	if err := json.Unmarshal(container.Model, &model); err != nil {
+		return SessionState{}, newProtocolError("malformed get_state model: %v", err)
+	}
+	if _, ok := ExactModelSelector(model.Provider, model.ID); !ok {
+		return SessionState{}, newProtocolError("get_state model has invalid provider or id")
+	}
+	if len(container.ThinkingLevel) == 0 || isJSONNull(container.ThinkingLevel) {
+		return SessionState{}, newProtocolError("get_state data missing thinkingLevel")
+	}
+	var value string
+	if err := json.Unmarshal(container.ThinkingLevel, &value); err != nil {
+		return SessionState{}, newProtocolError("malformed get_state thinkingLevel: %v", err)
+	}
+	level, ok := ParseThinkingLevel(value)
+	if !ok {
+		return SessionState{}, newProtocolError("get_state thinkingLevel is unknown")
+	}
+	return SessionState{Model: model, ThinkingLevel: level}, nil
 }
 
 // Prompt submits one prompt message. A successful response only means Pi

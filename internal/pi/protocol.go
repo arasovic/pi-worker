@@ -1,5 +1,5 @@
 // Package pi implements the pi-worker v0 foreground worker: it launches the
-// host Pi 0.84.1 executable in RPC mode and drives it through the four
+// host Pi 0.84.1 executable in RPC mode and drives it through a closed set of
 // documented outbound JSONL request types.
 package pi
 
@@ -86,35 +86,40 @@ type TaskError struct {
 
 func (e *TaskError) Error() string { return "task failed: " + e.Message }
 
-// Outbound RPC request types. Pi-worker emits exactly these four request
+// Outbound RPC request types. Pi-worker emits exactly these seven request
 // shapes and rejects every other RPC type, in particular direct RPC bash.
-// The observed upstream get_state and abort commands are deferred until a
-// lifecycle consumer needs them.
 const (
-	requestGetAvailableModels   = "get_available_models"
-	requestSetModel             = "set_model"
-	requestPrompt               = "prompt"
-	requestGetLastAssistantText = "get_last_assistant_text"
+	requestGetAvailableModels         = "get_available_models"
+	requestSetModel                   = "set_model"
+	requestGetAvailableThinkingLevels = "get_available_thinking_levels"
+	requestSetThinkingLevel           = "set_thinking_level"
+	requestGetState                   = "get_state"
+	requestPrompt                     = "prompt"
+	requestGetLastAssistantText       = "get_last_assistant_text"
 )
 
 var allowedRequestTypes = map[string]bool{
-	requestGetAvailableModels:   true,
-	requestSetModel:             true,
-	requestPrompt:               true,
-	requestGetLastAssistantText: true,
+	requestGetAvailableModels:         true,
+	requestSetModel:                   true,
+	requestGetAvailableThinkingLevels: true,
+	requestSetThinkingLevel:           true,
+	requestGetState:                   true,
+	requestPrompt:                     true,
+	requestGetLastAssistantText:       true,
 }
 
-// request is the closed outbound envelope. Only the four documented request
+// request is the closed outbound envelope. Only the seven documented request
 // types may be constructed; callers never supply raw RPC JSON.
 type request struct {
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type"`
-	Provider string `json:"provider,omitempty"`
-	ModelID  string `json:"modelId,omitempty"`
-	Message  string `json:"message,omitempty"`
+	ID       string        `json:"id,omitempty"`
+	Type     string        `json:"type"`
+	Provider string        `json:"provider,omitempty"`
+	ModelID  string        `json:"modelId,omitempty"`
+	Level    ThinkingLevel `json:"level,omitempty"`
+	Message  string        `json:"message,omitempty"`
 }
 
-// newRequest constructs a request of one of the four documented types and
+// newRequest constructs a request of one of the seven documented types and
 // rejects every other RPC type, keeping the outbound surface closed.
 func newRequest(kind string) (request, error) {
 	if !allowedRequestTypes[kind] {

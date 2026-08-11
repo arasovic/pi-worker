@@ -9,10 +9,36 @@ import (
 	"testing"
 )
 
-func TestNewRequestAcceptsOnlyTheFourDocumentedTypes(t *testing.T) {
+func TestParseThinkingLevelAcceptsOnlyDocumentedValues(t *testing.T) {
+	want := []ThinkingLevel{
+		ThinkingOff,
+		ThinkingMinimal,
+		ThinkingLow,
+		ThinkingMedium,
+		ThinkingHigh,
+		ThinkingXHigh,
+		ThinkingMax,
+	}
+	for _, level := range want {
+		got, ok := ParseThinkingLevel(string(level))
+		if !ok || got != level {
+			t.Fatalf("ParseThinkingLevel(%q) = (%q, %v), want (%q, true)", level, got, ok, level)
+		}
+	}
+	for _, value := range []string{"", "MAX", " max", "max ", "ultra", "none"} {
+		if got, ok := ParseThinkingLevel(value); ok || got != "" {
+			t.Fatalf("ParseThinkingLevel(%q) = (%q, %v), want zero,false", value, got, ok)
+		}
+	}
+}
+
+func TestNewRequestAcceptsOnlyTheSevenDocumentedTypes(t *testing.T) {
 	documented := []string{
 		"get_available_models",
 		"set_model",
+		"get_available_thinking_levels",
+		"set_thinking_level",
+		"get_state",
 		"prompt",
 		"get_last_assistant_text",
 	}
@@ -25,7 +51,7 @@ func TestNewRequestAcceptsOnlyTheFourDocumentedTypes(t *testing.T) {
 			t.Fatalf("newRequest(%q).Type = %q", kind, req.Type)
 		}
 	}
-	disallowed := []string{"bash", "response", "event", "get_prompt_templates", "get_state", "abort", ""}
+	disallowed := []string{"bash", "response", "event", "get_prompt_templates", "cycle_thinking_level", "abort", ""}
 	for _, kind := range disallowed {
 		if _, err := newRequest(kind); err == nil {
 			t.Fatalf("newRequest(%q) succeeded, want rejection", kind)
@@ -69,6 +95,25 @@ func TestRequestEnvelopeMarshalsOnlyDocumentedFields(t *testing.T) {
 	for key, value := range want {
 		if payload[key] != value {
 			t.Fatalf("prompt payload[%q] = %v, want %v", key, payload[key], value)
+		}
+	}
+
+	setThinking := request{ID: "r3", Type: "set_thinking_level", Level: ThinkingMax}
+	data, err = json.Marshal(setThinking)
+	if err != nil {
+		t.Fatalf("marshal set_thinking_level: %v", err)
+	}
+	payload = nil
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal set_thinking_level: %v", err)
+	}
+	want = map[string]any{"id": "r3", "type": "set_thinking_level", "level": "max"}
+	if len(payload) != len(want) {
+		t.Fatalf("set_thinking_level payload = %v, want %v", payload, want)
+	}
+	for key, value := range want {
+		if payload[key] != value {
+			t.Fatalf("set_thinking_level payload[%q] = %v, want %v", key, payload[key], value)
 		}
 	}
 }

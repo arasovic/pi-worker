@@ -545,6 +545,142 @@ func TestClientSetModelAcceptsExactConfirmation(t *testing.T) {
 	}
 }
 
+func TestClientGetAvailableThinkingLevelsAcceptsExactUniqueValues(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_thinking_levels": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","minimal","low","medium","high","xhigh","max"]}`)}},
+		},
+	}}
+	proc := startScriptedPi(t, script)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	levels, err := client.GetAvailableThinkingLevels(context.Background())
+	if err != nil {
+		t.Fatalf("get available thinking levels: %v", err)
+	}
+	want := []ThinkingLevel{ThinkingOff, ThinkingMinimal, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh, ThinkingMax}
+	if !slices.Equal(levels, want) {
+		t.Fatalf("levels = %v, want %v", levels, want)
+	}
+}
+
+func TestClientGetAvailableThinkingLevelsRejectsInvalidSuccessData(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "missing data", data: ""},
+		{name: "null data", data: "null"},
+		{name: "missing levels", data: `{}`},
+		{name: "null levels", data: `{"levels":null}`},
+		{name: "data is array", data: `[]`},
+		{name: "levels is object", data: `{"levels":{}}`},
+		{name: "levels is string", data: `{"levels":"max"}`},
+		{name: "unknown level", data: `{"levels":["ultra"]}`},
+		{name: "duplicate level", data: `{"levels":["max","max"]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script := &script.Script{Triggers: map[string][]script.Step{
+				"get_available_thinking_levels": {{Response: &script.Response{Success: true, Data: json.RawMessage(test.data)}}},
+			}}
+			proc := startScriptedPi(t, script)
+			client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+			_, err := client.GetAvailableThinkingLevels(context.Background())
+			var protocolErr *ProtocolError
+			if !errors.As(err, &protocolErr) {
+				t.Fatalf("err = %v, want *ProtocolError", err)
+			}
+		})
+	}
+}
+
+func TestClientSetThinkingLevelAcceptsSuccessAndTypesRejection(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		script := &script.Script{Triggers: map[string][]script.Step{
+			"set_thinking_level": {{Response: &script.Response{Success: true}}},
+		}}
+		proc := startScriptedPi(t, script)
+		client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+		if err := client.SetThinkingLevel(context.Background(), ThinkingMax); err != nil {
+			t.Fatalf("set thinking level: %v", err)
+		}
+	})
+
+	t.Run("rejection", func(t *testing.T) {
+		script := &script.Script{Triggers: map[string][]script.Step{
+			"set_thinking_level": {{Response: &script.Response{Success: false, Error: "SECRET-UPSTREAM-DETAIL"}}},
+		}}
+		proc := startScriptedPi(t, script)
+		client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+		err := client.SetThinkingLevel(context.Background(), ThinkingMax)
+		var rejected *ThinkingLevelRejectedError
+		if !errors.As(err, &rejected) || rejected.Level != ThinkingMax {
+			t.Fatalf("SetThinkingLevel error = %v, want max rejection", err)
+		}
+		if strings.Contains(err.Error(), "SECRET-UPSTREAM-DETAIL") {
+			t.Fatalf("rejection leaked upstream detail: %q", err)
+		}
+	})
+}
+
+func TestClientGetStateAcceptsExactModelAndThinking(t *testing.T) {
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_state": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1","ignored":true},"thinkingLevel":"high","isStreaming":false}`)}},
+		},
+	}}
+	proc := startScriptedPi(t, script)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	state, err := client.GetState(context.Background())
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	want := SessionState{Model: ModelProjection{Provider: "acme", ID: "m-1"}, ThinkingLevel: ThinkingHigh}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestClientGetStateRejectsInvalidSuccessData(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "missing data", data: ""},
+		{name: "null data", data: "null"},
+		{name: "data is array", data: `[]`},
+		{name: "missing model", data: `{"thinkingLevel":"high"}`},
+		{name: "null model", data: `{"model":null,"thinkingLevel":"high"}`},
+		{name: "missing provider", data: `{"model":{"id":"m-1"},"thinkingLevel":"high"}`},
+		{name: "missing id", data: `{"model":{"provider":"acme"},"thinkingLevel":"high"}`},
+		{name: "invalid selector", data: `{"model":{"provider":"acme","id":"m-1:max"},"thinkingLevel":"high"}`},
+		{name: "missing thinking", data: `{"model":{"provider":"acme","id":"m-1"}}`},
+		{name: "null thinking", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":null}`},
+		{name: "unknown thinking", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"ultra"}`},
+		{name: "thinking is number", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":7}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			script := &script.Script{Triggers: map[string][]script.Step{
+				"get_state": {{Response: &script.Response{Success: true, Data: json.RawMessage(test.data)}}},
+			}}
+			proc := startScriptedPi(t, script)
+			client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+			_, err := client.GetState(context.Background())
+			var protocolErr *ProtocolError
+			if !errors.As(err, &protocolErr) {
+				t.Fatalf("err = %v, want *ProtocolError", err)
+			}
+		})
+	}
+}
+
 func TestClientLastAssistantTextRejectsInvalidSuccessContainers(t *testing.T) {
 	tests := []struct {
 		name string
