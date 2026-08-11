@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "skillsVersion": "1.5.22",
   "agentCount": 76,
   "globalTargetCount": 74,
@@ -10,6 +10,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".aider-desk/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".aider-desk"
+          }
+        ]
       }
     },
     {
@@ -17,6 +26,15 @@
       "rule": {
         "kind": "config-home-relative",
         "path": "agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "config-home-relative",
+            "path": "amp"
+          }
+        ]
       }
     },
     {
@@ -24,6 +42,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".gemini/antigravity/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".gemini/antigravity"
+          }
+        ]
       }
     },
     {
@@ -31,6 +58,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".gemini/antigravity-cli/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".gemini/antigravity-cli"
+          }
+        ]
       }
     },
     {
@@ -38,6 +74,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".astrbot/data/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "cwd-relative",
+            "path": "data/skills"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".astrbot"
+          }
+        ]
       }
     },
     {
@@ -47,6 +96,16 @@
         "variable": "AUTOHAND_HOME",
         "fallback": ".autohand",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "AUTOHAND_HOME",
+            "fallback": ".autohand"
+          }
+        ]
       }
     },
     {
@@ -54,6 +113,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".augment/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".augment"
+          }
+        ]
       }
     },
     {
@@ -61,6 +129,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".bob/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".bob"
+          }
+        ]
       }
     },
     {
@@ -70,6 +147,16 @@
         "variable": "CLAUDE_CONFIG_DIR",
         "fallback": ".claude",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "CLAUDE_CONFIG_DIR",
+            "fallback": ".claude"
+          }
+        ]
       }
     },
     {
@@ -83,6 +170,23 @@
         ],
         "fallback": ".openclaw",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".openclaw"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".clawdbot"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".moltbot"
+          }
+        ]
       }
     },
     {
@@ -90,6 +194,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".cline"
+          }
+        ]
       }
     },
     {
@@ -97,6 +210,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".codeartsdoer/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".codeartsdoer"
+          }
+        ]
       }
     },
     {
@@ -104,6 +226,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".codebuddy/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "cwd-relative",
+            "path": ".codebuddy"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".codebuddy"
+          }
+        ]
       }
     },
     {
@@ -111,6 +246,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".codemaker/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".codemaker"
+          }
+        ]
       }
     },
     {
@@ -118,6 +262,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".codestudio/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".codestudio"
+          }
+        ]
       }
     },
     {
@@ -127,6 +280,20 @@
         "variable": "CODEX_HOME",
         "fallback": ".codex",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "CODEX_HOME",
+            "fallback": ".codex"
+          },
+          {
+            "kind": "absolute",
+            "path": "/etc/codex"
+          }
+        ]
       }
     },
     {
@@ -134,6 +301,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".commandcode/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".commandcode"
+          }
+        ]
       }
     },
     {
@@ -141,6 +317,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".continue/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "cwd-relative",
+            "path": ".continue"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".continue"
+          }
+        ]
       }
     },
     {
@@ -148,6 +337,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".snowflake/cortex/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".snowflake/cortex"
+          }
+        ]
       }
     },
     {
@@ -155,6 +353,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".config/crush/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".config/crush"
+          }
+        ]
       }
     },
     {
@@ -162,6 +369,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".cursor/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".cursor"
+          }
+        ]
       }
     },
     {
@@ -169,6 +385,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".deepagents/agent/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".deepagents"
+          }
+        ]
       }
     },
     {
@@ -176,6 +401,15 @@
       "rule": {
         "kind": "config-home-relative",
         "path": "devin/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "config-home-relative",
+            "path": "devin"
+          }
+        ]
       }
     },
     {
@@ -183,6 +417,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".dexto"
+          }
+        ]
       }
     },
     {
@@ -190,12 +433,33 @@
       "rule": {
         "kind": "home-relative",
         "path": ".factory/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".factory"
+          }
+        ]
       }
     },
     {
       "id": "eve",
       "rule": {
         "kind": "no-global-target"
+      },
+      "detector": {
+        "kind": "eve-project",
+        "agentPath": {
+          "kind": "cwd-relative",
+          "path": "agent"
+        },
+        "packageJsonPath": {
+          "kind": "cwd-relative",
+          "path": "package.json"
+        },
+        "dependency": "eve"
       }
     },
     {
@@ -203,6 +467,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".firebender/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".firebender"
+          }
+        ]
       }
     },
     {
@@ -210,6 +483,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".forge/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".forge"
+          }
+        ]
       }
     },
     {
@@ -217,6 +499,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".gemini/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".gemini"
+          }
+        ]
       }
     },
     {
@@ -224,6 +515,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".copilot/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".copilot"
+          }
+        ]
       }
     },
     {
@@ -231,6 +531,15 @@
       "rule": {
         "kind": "config-home-relative",
         "path": "goose/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "config-home-relative",
+            "path": "goose"
+          }
+        ]
       }
     },
     {
@@ -240,6 +549,16 @@
         "variable": "GROK_HOME",
         "fallback": ".grok",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "GROK_HOME",
+            "fallback": ".grok"
+          }
+        ]
       }
     },
     {
@@ -249,6 +568,16 @@
         "variable": "HERMES_HOME",
         "fallback": ".hermes",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "HERMES_HOME",
+            "fallback": ".hermes"
+          }
+        ]
       }
     },
     {
@@ -256,6 +585,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".inferencesh/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".inferencesh"
+          }
+        ]
       }
     },
     {
@@ -263,6 +601,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".jazz/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".jazz"
+          },
+          {
+            "kind": "cwd-relative",
+            "path": ".jazz"
+          }
+        ]
       }
     },
     {
@@ -270,6 +621,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".junie/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".junie"
+          }
+        ]
       }
     },
     {
@@ -277,6 +637,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".iflow/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".iflow"
+          }
+        ]
       }
     },
     {
@@ -284,6 +653,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".kilocode/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".kilocode"
+          }
+        ]
       }
     },
     {
@@ -291,6 +669,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".config/kimchi/harness/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".config/kimchi"
+          }
+        ]
       }
     },
     {
@@ -298,6 +685,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".kimi-code"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".kimi"
+          }
+        ]
       }
     },
     {
@@ -305,6 +705,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".kiro/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".kiro"
+          }
+        ]
       }
     },
     {
@@ -312,6 +721,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".kode/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".kode"
+          }
+        ]
       }
     },
     {
@@ -319,6 +737,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".lingma/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".lingma"
+          }
+        ]
       }
     },
     {
@@ -326,6 +753,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".loaf"
+          }
+        ]
       }
     },
     {
@@ -333,6 +769,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".mcpjam/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".mcpjam"
+          }
+        ]
       }
     },
     {
@@ -340,6 +785,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".minimax/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".minimax"
+          },
+          {
+            "kind": "absolute",
+            "path": "/Applications/MiniMax Code.app"
+          }
+        ]
       }
     },
     {
@@ -349,6 +807,16 @@
         "variable": "VIBE_HOME",
         "fallback": ".vibe",
         "suffix": "skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "VIBE_HOME",
+            "fallback": ".vibe"
+          }
+        ]
       }
     },
     {
@@ -356,6 +824,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".moxby/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".moxby"
+          }
+        ]
       }
     },
     {
@@ -363,6 +840,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".mux/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".mux"
+          }
+        ]
       }
     },
     {
@@ -370,6 +856,15 @@
       "rule": {
         "kind": "config-home-relative",
         "path": "opencode/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "config-home-relative",
+            "path": "opencode"
+          }
+        ]
       }
     },
     {
@@ -377,6 +872,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".openhands/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".openhands"
+          }
+        ]
       }
     },
     {
@@ -384,6 +888,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".ona/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".ona"
+          }
+        ]
       }
     },
     {
@@ -391,6 +904,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".pi/agent/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".pi/agent"
+          }
+        ]
       }
     },
     {
@@ -398,6 +920,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".qoder/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".qoder"
+          }
+        ]
       }
     },
     {
@@ -405,6 +936,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".qoder-cn/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".qoder-cn"
+          }
+        ]
       }
     },
     {
@@ -412,6 +952,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".qwen/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".qwen"
+          }
+        ]
       }
     },
     {
@@ -419,6 +968,15 @@
       "rule": {
         "kind": "config-home-relative",
         "path": "agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "cwd-relative",
+            "path": ".replit"
+          }
+        ]
       }
     },
     {
@@ -426,6 +984,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".reasonix/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".reasonix"
+          }
+        ]
       }
     },
     {
@@ -433,6 +1000,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".rovodev/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".rovodev"
+          }
+        ]
       }
     },
     {
@@ -440,6 +1016,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".roo/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".roo"
+          }
+        ]
       }
     },
     {
@@ -447,6 +1032,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".tabnine/agent/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".tabnine"
+          }
+        ]
       }
     },
     {
@@ -454,6 +1048,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".terramind/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".terramind"
+          }
+        ]
       }
     },
     {
@@ -461,6 +1064,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".tinycloud/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".tinycloud"
+          }
+        ]
       }
     },
     {
@@ -468,6 +1080,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".trae/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".trae"
+          }
+        ]
       }
     },
     {
@@ -475,6 +1096,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".trae-cn/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".trae-cn"
+          }
+        ]
       }
     },
     {
@@ -482,6 +1112,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".warp"
+          }
+        ]
       }
     },
     {
@@ -489,6 +1128,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".codeium/windsurf/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".codeium/windsurf"
+          }
+        ]
       }
     },
     {
@@ -496,6 +1144,25 @@
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "config-home-relative",
+            "path": "zed"
+          },
+          {
+            "kind": "environment-relative",
+            "variable": "APPDATA",
+            "suffix": "Zed"
+          },
+          {
+            "kind": "environment-relative",
+            "variable": "FLATPAK_XDG_CONFIG_HOME",
+            "suffix": "zed"
+          }
+        ]
       }
     },
     {
@@ -503,6 +1170,19 @@
       "rule": {
         "kind": "home-relative",
         "path": ".zcode/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".zcode"
+          },
+          {
+            "kind": "absolute",
+            "path": "/Applications/ZCode.app"
+          }
+        ]
       }
     },
     {
@@ -510,6 +1190,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".zencoder/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".zencoder"
+          }
+        ]
       }
     },
     {
@@ -517,6 +1206,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".zencoder/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".zencoder"
+          }
+        ]
       }
     },
     {
@@ -524,6 +1222,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".neovate/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".neovate"
+          }
+        ]
       }
     },
     {
@@ -531,12 +1238,34 @@
       "rule": {
         "kind": "home-relative",
         "path": ".pochi/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".pochi"
+          }
+        ]
       }
     },
     {
       "id": "promptscript",
       "rule": {
         "kind": "no-global-target"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "cwd-relative",
+            "path": ".promptscript"
+          },
+          {
+            "kind": "cwd-relative",
+            "path": "promptscript.yaml"
+          }
+        ]
       }
     },
     {
@@ -544,6 +1273,15 @@
       "rule": {
         "kind": "home-relative",
         "path": ".adal/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".adal"
+          }
+        ]
       }
     },
     {
@@ -551,6 +1289,9 @@
       "rule": {
         "kind": "config-home-relative",
         "path": "agents/skills"
+      },
+      "detector": {
+        "kind": "never"
       }
     }
   ]

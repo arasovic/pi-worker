@@ -1193,12 +1193,26 @@ func TestMainUsageIncludesSkillCommands(t *testing.T) {
 }
 
 func TestMainSupportsSkillStatusCommand(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "skill-install.json")
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	writeFileForSkillTest(t, filepath.Join(target, "skill.txt"), "skill")
+	writeFileForSkillTest(t, filepath.Join(target, skillinstall.IdentityFile), skillinstall.IdentityContent)
+	writeFileForSkillTest(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+	path := filepath.Join(root, "skill-install.json")
 	writeReceiptForSkillTest(t, path, skillinstall.Receipt{
 		SchemaVersion:    skillinstall.SchemaVersion,
 		InstallerVersion: "1",
-		SkillsVersion:    "1",
+		SkillsVersion:    skillinstall.PinnedSkillsVersion,
 		Outcome:          skillinstall.OutcomeInstalled,
+		Targets: []skillinstall.Target{{
+			Path: target,
+			Kind: "canonical",
+			Files: []skillinstall.FileHash{
+				{Path: "skill.txt", SHA256: hashString(t, "skill")},
+				{Path: skillinstall.IdentityFile, SHA256: hashString(t, skillinstall.IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString(t, "---\nname: pi-worker\n---\n")},
+			},
+		}},
 	})
 	installSkillReceiptPath(t, path)
 

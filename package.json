@@ -24,7 +24,8 @@
     "skills": "1.5.22"
   },
   "scripts": {
-    "test": "node --test npm/test/native.test.mjs npm/test/skill-rules.test.mjs",
+    "postinstall": "node npm/scripts/postinstall.mjs",
+    "test": "node --test npm/test/*.test.mjs",
     "skills-rules:check": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json"
   }
 }

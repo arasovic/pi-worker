@@ -2,10 +2,31 @@
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
-import { nativePath, nativeTarget, runNative } from "../lib/native.mjs";
+import {
+  UnsupportedPlatformError,
+  nativePath,
+  nativeTarget,
+  runNative,
+} from "../lib/native.mjs";
 
-const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
-const target = nativeTarget();
-const binary = nativePath(packageRoot, target.platform, target.arch);
+function unsupportedPlatformDiagnostic(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  return message
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[^\x20-\x7e]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200) || "Unsupported platform/architecture";
+}
 
-process.exitCode = await runNative(binary, process.argv.slice(2));
+try {
+  const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const target = nativeTarget();
+  const binary = nativePath(packageRoot, target.platform, target.arch);
+
+  process.exitCode = await runNative(binary, process.argv.slice(2));
+} catch (error) {
+  if (!(error instanceof UnsupportedPlatformError)) throw error;
+  process.stderr.write(`${unsupportedPlatformDiagnostic(error)}\n`);
+  process.exitCode = 1;
+}

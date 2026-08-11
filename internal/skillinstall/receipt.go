@@ -1,6 +1,7 @@
 package skillinstall
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	posixpath "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,6 +20,15 @@ const SchemaVersion = 1
 const IdentityFile = "PI_WORKER_IDENTITY"
 
 const IdentityContent = "pi-worker-skill/v1\n"
+
+const PinnedSkillsVersion = "1.5.22"
+
+const SafeRecoveryCommand = "npm install -g --foreground-scripts pi-worker"
+
+const (
+	directoryReadBatchSize = 128
+	maxTreeEntries         = 100000
+)
 
 const (
 	targetKindCanonical = "canonical"
@@ -91,13 +102,12 @@ type Inspection struct {
 
 // Load decodes a receipt file and validates it structurally.
 func Load(path string) (Receipt, error) {
-	f, err := os.Open(path)
+	data, err := readReceiptBytes(path)
 	if err != nil {
-		return Receipt{}, err
+		return Receipt{}, fmt.Errorf("load receipt %s: %w", path, err)
 	}
-	defer f.Close()
 
-	dec := json.NewDecoder(f)
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var receipt Receipt
 	if err := dec.Decode(&receipt); err != nil {
@@ -127,25 +137,65 @@ func Inspect(path string) (Inspection, error) {
 		return Inspection{}, err
 	}
 
+	status := statusFromReceiptOutcomeAndTargets(receipt.Outcome, missingTargets, driftedTargets)
+	if receipt.Outcome == OutcomeInstalled && !hasVerifiedReceiptEvidence(receipt) {
+		verifiedTargets = []string{}
+		if status == StatusVerified {
+			status = StatusFailed
+		}
+	}
+
 	insp := Inspection{
 		SchemaVersion:   SchemaVersion,
 		ReceiptPath:     path,
+		Status:          status,
 		VerifiedTargets: append([]string{}, verifiedTargets...),
 		AffectedTargets: cloneAffectedTargets(receipt.AffectedTargets),
-		Status:          statusFromReceiptOutcomeAndTargets(receipt.Outcome, missingTargets, driftedTargets),
+		Recovery:        []string{},
 	}
 	sort.Strings(insp.VerifiedTargets)
 
-	var recovery []string
-	if shouldExposeGlobalRemove(receipt, missingTargets, driftedTargets) {
-		recovery = append([]string{}, receipt.Recovery...)
+	switch {
+	case (receipt.Outcome == OutcomeFailed || receipt.Outcome == OutcomeSkipped) && isExactSafeRecovery(receipt.Recovery):
+		insp.Recovery = []string{SafeRecoveryCommand}
+	case receipt.Outcome != OutcomeFailed && receipt.Outcome != OutcomeSkipped && len(missingTargets) > 0:
+		insp.Recovery = []string{SafeRecoveryCommand}
+	case shouldExposeGlobalRemove(receipt, missingTargets, driftedTargets):
+		insp.Recovery = append([]string{}, receipt.Recovery...)
 	}
-	sort.Strings(recovery)
-	insp.Recovery = recovery
 	return insp, nil
 }
 
 func validateReceipt(r Receipt) error {
+	stringFields := []struct {
+		name  string
+		value string
+	}{
+		{"installerVersion", r.InstallerVersion},
+		{"skillsVersion", r.SkillsVersion},
+		{"outcome", string(r.Outcome)},
+	}
+	for _, field := range stringFields {
+		if strings.ContainsRune(field.value, '\x00') {
+			return fmt.Errorf("%s must not contain NUL", field.name)
+		}
+	}
+
+	if strings.TrimSpace(r.InstallerVersion) == "" {
+		return errors.New("installerVersion must not be empty")
+	}
+	if strings.TrimSpace(r.SkillsVersion) == "" {
+		return errors.New("skillsVersion must not be empty")
+	}
+	if r.Targets == nil {
+		return errors.New("targets must not be null")
+	}
+	if r.AffectedTargets == nil {
+		return errors.New("affectedTargets must not be null")
+	}
+	if r.Recovery == nil {
+		return errors.New("recovery must not be null")
+	}
 	if r.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported schemaVersion %d: want %d", r.SchemaVersion, SchemaVersion)
 	}
@@ -153,6 +203,9 @@ func validateReceipt(r Receipt) error {
 		return fmt.Errorf("invalid outcome %q", r.Outcome)
 	}
 
+	if r.Outcome == OutcomeInstalled && len(r.Targets) == 0 {
+		return errors.New("installed outcome requires at least one target")
+	}
 	if r.Outcome == OutcomeInstalled && len(r.AffectedTargets) != 0 {
 		return errors.New("installed outcome must not include affectedTargets")
 	}
@@ -166,6 +219,14 @@ func validateReceipt(r Receipt) error {
 
 	seenTargets := map[string]struct{}{}
 	for _, t := range r.Targets {
+		if err := rejectNULStrings([]string{t.Path, t.Kind}, fmt.Sprintf("target %q", t.Path)); err != nil {
+			return err
+		}
+		for _, file := range t.Files {
+			if err := rejectNULStrings([]string{file.Path, file.SHA256}, fmt.Sprintf("target %q file", t.Path)); err != nil {
+				return err
+			}
+		}
 		if t.Path == "" {
 			return errors.New("target path is empty")
 		}
@@ -180,25 +241,21 @@ func validateReceipt(r Receipt) error {
 		if !isValidKind(t.Kind) {
 			return fmt.Errorf("invalid target kind %q", t.Kind)
 		}
+		if len(t.Files) == 0 {
+			return fmt.Errorf("target %q files must not be empty", t.Path)
+		}
 		seenFiles := map[string]struct{}{}
 		for _, file := range t.Files {
 			if file.Path == "" {
 				return fmt.Errorf("target %q has empty file path", t.Path)
 			}
-			if filepath.IsAbs(file.Path) {
-				return fmt.Errorf("target %q file path %q is absolute", t.Path, file.Path)
+			if !isValidReceiptFilePath(file.Path) {
+				return fmt.Errorf("target %q file path %q is not a normalized POSIX relative path", t.Path, file.Path)
 			}
-			if containsTraversalOrDot(file.Path) {
-				return fmt.Errorf("target %q file path %q has traversal", t.Path, file.Path)
+			if _, ok := seenFiles[file.Path]; ok {
+				return fmt.Errorf("target %q has duplicate file path %q", t.Path, file.Path)
 			}
-			cleanFile := filepath.Clean(file.Path)
-			if cleanFile == "." {
-				return fmt.Errorf("target %q file path %q is invalid", t.Path, file.Path)
-			}
-			if _, ok := seenFiles[cleanFile]; ok {
-				return fmt.Errorf("target %q has duplicate file path %q", t.Path, cleanFile)
-			}
-			seenFiles[cleanFile] = struct{}{}
+			seenFiles[file.Path] = struct{}{}
 			if !isValidSHA256(file.SHA256) {
 				return fmt.Errorf("target %q file %q has invalid sha256", t.Path, file.Path)
 			}
@@ -207,6 +264,12 @@ func validateReceipt(r Receipt) error {
 
 	seenAffected := map[string]struct{}{}
 	for _, affected := range r.AffectedTargets {
+		if err := rejectNULStrings([]string{affected.Path, string(affected.State)}, "affected target"); err != nil {
+			return err
+		}
+		if err := rejectNULStrings(affected.Recovery, "affected recovery"); err != nil {
+			return err
+		}
 		if affected.Path == "" {
 			return errors.New("affected path is empty")
 		}
@@ -220,6 +283,9 @@ func validateReceipt(r Receipt) error {
 		seenAffected[cleanAffected] = struct{}{}
 		if !isValidAffectedState(affected.State) {
 			return fmt.Errorf("invalid affected state %q", affected.State)
+		}
+		if affected.Recovery == nil {
+			return errors.New("affected recovery must not be null")
 		}
 		if err := validateRecoveryCommands(affected.Recovery, "affected recovery"); err != nil {
 			return err
@@ -236,7 +302,7 @@ func inspectTargets(targets []Target) ([]string, []string, []string, error) {
 
 	for _, target := range targets {
 		cleanTarget := filepath.Clean(target.Path)
-		info, err := os.Stat(cleanTarget)
+		info, err := os.Lstat(cleanTarget)
 		if err != nil {
 			if os.IsNotExist(err) {
 				missing = append(missing, cleanTarget)
@@ -245,11 +311,21 @@ func inspectTargets(targets []Target) ([]string, []string, []string, error) {
 			drifted = append(drifted, cleanTarget)
 			continue
 		}
-		if !info.IsDir() && target.Kind != targetKindSymlink {
+		if !info.IsDir() {
 			drifted = append(drifted, cleanTarget)
 			continue
 		}
 		state := inspectTargetFiles(cleanTarget, target)
+		finalInfo, finalErr := os.Lstat(cleanTarget)
+		if finalErr != nil {
+			if os.IsNotExist(finalErr) {
+				state = "missing"
+			} else {
+				state = "drifted"
+			}
+		} else if !finalInfo.IsDir() || !os.SameFile(info, finalInfo) {
+			state = "drifted"
+		}
 		switch state {
 		case "missing":
 			missing = append(missing, cleanTarget)
@@ -267,40 +343,175 @@ func inspectTargets(targets []Target) ([]string, []string, []string, error) {
 }
 
 func inspectTargetFiles(targetRoot string, target Target) string {
-	for _, file := range target.Files {
-		filePath := filepath.Join(targetRoot, file.Path)
-		expected := strings.ToLower(file.SHA256)
-		switch target.Kind {
-		case targetKindSymlink:
+	switch target.Kind {
+	case targetKindSymlink:
+		// A symlink target records the directory containing the links. Its
+		// receipt intentionally does not describe every entry in that directory.
+		for _, file := range target.Files {
+			filePath := joinReceiptPath(targetRoot, file.Path)
 			got, err := inspectSymlink(filePath)
 			if err != nil {
 				return fileStatusFromFilesystemErr(err)
 			}
-			if strings.ToLower(got) != expected {
+			if !strings.EqualFold(got, file.SHA256) {
 				return "drifted"
 			}
-		case targetKindCanonical, targetKindCopy:
-			got, err := inspectRegular(filePath)
-			if err != nil {
-				return fileStatusFromFilesystemErr(err)
-			}
-			if strings.ToLower(got) != expected {
-				return "drifted"
-			}
-		default:
-			return "drifted"
 		}
+		return "verified"
+	case targetKindCanonical, targetKindCopy:
+		return inspectExactTree(targetRoot, target.Files)
+	default:
+		return "drifted"
+	}
+}
+
+func inspectExactTree(targetRoot string, files []FileHash) string {
+	expectedFiles := make(map[string]FileHash, len(files))
+	expectedDirs := map[string]struct{}{"": {}}
+	for _, file := range files {
+		expectedFiles[file.Path] = file
+		parts := strings.Split(file.Path, "/")
+		for i := 1; i < len(parts); i++ {
+			expectedDirs[strings.Join(parts[:i], "/")] = struct{}{}
+		}
+	}
+
+	seenFiles := make(map[string]struct{}, len(files))
+	entryCount := 0
+	status := walkExactDirectory(targetRoot, "", expectedFiles, expectedDirs, seenFiles, &entryCount)
+	if status != "verified" {
+		return status
+	}
+	if len(seenFiles) != len(expectedFiles) {
+		return "missing"
 	}
 	return "verified"
 }
 
-func inspectRegular(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func walkExactDirectory(dirPath, relativeDir string, expectedFiles map[string]FileHash, expectedDirs, seenFiles map[string]struct{}, entryCount *int) string {
+	before, err := os.Lstat(dirPath)
+	if err != nil {
+		return fileStatusFromFilesystemErr(err)
+	}
+	if !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+		return "drifted"
+	}
+
+	dir, err := openNoFollow(dirPath)
+	if err != nil {
+		return "drifted"
+	}
+	defer dir.Close()
+	opened, err := dir.Stat()
+	if err != nil || !opened.IsDir() || opened.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, opened) {
+		return "drifted"
+	}
+
+	for {
+		entries, readErr := dir.Readdir(directoryReadBatchSize)
+		for _, entry := range entries {
+			(*entryCount)++
+			if *entryCount > maxTreeEntries {
+				return "drifted"
+			}
+
+			name := entry.Name()
+			relativePath := name
+			if relativeDir != "" {
+				relativePath = relativeDir + "/" + name
+			}
+			childPath := filepath.Join(dirPath, name)
+			child, lstatErr := os.Lstat(childPath)
+			if lstatErr != nil {
+				return fileStatusFromFilesystemErr(lstatErr)
+			}
+			if child.Mode()&os.ModeSymlink != 0 {
+				return "drifted"
+			}
+			if child.IsDir() {
+				if _, ok := expectedDirs[relativePath]; !ok {
+					return "drifted"
+				}
+				if status := walkExactDirectory(childPath, relativePath, expectedFiles, expectedDirs, seenFiles, entryCount); status != "verified" {
+					return status
+				}
+				continue
+			}
+			if !child.Mode().IsRegular() {
+				return "drifted"
+			}
+			expected, ok := expectedFiles[relativePath]
+			if !ok {
+				return "drifted"
+			}
+			got, hashErr := inspectRegular(childPath)
+			if hashErr != nil {
+				return "drifted"
+			}
+			if !strings.EqualFold(got, expected.SHA256) {
+				return "drifted"
+			}
+			seenFiles[relativePath] = struct{}{}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "drifted"
+		}
+	}
+
+	after, err := os.Lstat(dirPath)
+	if err != nil {
+		return fileStatusFromFilesystemErr(err)
+	}
+	if !after.IsDir() || after.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, after) {
+		return "drifted"
+	}
+	return "verified"
+}
+
+func inspectRegular(path string) (sum string, err error) {
+	before, err := os.Lstat(path)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	if !before.Mode().IsRegular() {
+		return "", errors.New("managed path is not a regular file")
+	}
+
+	f, err := openNoFollow(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			sum = ""
+			err = closeErr
+		}
+	}()
+
+	opened, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !os.SameFile(before, opened) {
+		return "", errors.New("managed file changed before hashing")
+	}
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", err
+	}
+
+	after, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return "", errors.New("managed file changed after hashing")
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func inspectSymlink(path string) (string, error) {
@@ -343,9 +554,6 @@ func statusFromReceiptOutcomeAndTargets(outcome Outcome, missingTargets, drifted
 	}
 }
 func cloneAffectedTargets(targets []AffectedTarget) []AffectedTarget {
-	if len(targets) == 0 {
-		return nil
-	}
 	cloned := make([]AffectedTarget, len(targets))
 	copy(cloned, targets)
 	sort.Slice(cloned, func(i, j int) bool {
@@ -355,13 +563,7 @@ func cloneAffectedTargets(targets []AffectedTarget) []AffectedTarget {
 }
 
 func shouldExposeGlobalRemove(r Receipt, missingTargets, driftedTargets []string) bool {
-	if r.Outcome != OutcomeBlocked {
-		return false
-	}
-	if len(r.Recovery) == 0 || len(r.AffectedTargets) == 0 {
-		return false
-	}
-	if len(missingTargets) > 0 || len(driftedTargets) > 0 {
+	if r.Outcome != OutcomeBlocked || len(missingTargets) > 0 || !isExactGlobalRecovery(r.Recovery) {
 		return false
 	}
 
@@ -370,33 +572,173 @@ func shouldExposeGlobalRemove(r Receipt, missingTargets, driftedTargets []string
 		targetPaths[filepath.Clean(target.Path)] = struct{}{}
 	}
 
-	for _, target := range r.AffectedTargets {
-		if len(target.Recovery) == 0 {
+	affectedDrifted := map[string]struct{}{}
+	for _, affected := range r.AffectedTargets {
+		switch affected.State {
+		case AffectedUnmanaged:
+			if filepath.Base(filepath.Clean(affected.Path)) != "pi-worker" || !hasValidSkillIdentity(affected.Path) || !hasExactPathRecovery(affected) {
+				return false
+			}
+		case AffectedDrifted:
+			cleanPath := filepath.Clean(affected.Path)
+			if _, ok := targetPaths[cleanPath]; !ok {
+				return false
+			}
+			if !hasExactPathRecovery(affected) {
+				return false
+			}
+			affectedDrifted[cleanPath] = struct{}{}
+		default:
 			return false
 		}
-		if target.State != AffectedUnmanaged && target.State != AffectedDrifted {
+	}
+	if len(affectedDrifted) != len(driftedTargets) {
+		return false
+	}
+	for _, drifted := range driftedTargets {
+		if _, ok := affectedDrifted[filepath.Clean(drifted)]; !ok {
 			return false
 		}
-		if target.State == AffectedDrifted {
-			if _, ok := targetPaths[filepath.Clean(target.Path)]; !ok {
-				return false
-			}
+	}
+	return true
+}
+
+func isExactGlobalRecovery(commands []string) bool {
+	return len(commands) == 2 &&
+		commands[0] == "npx --yes skills@"+PinnedSkillsVersion+" remove pi-worker -g -y" &&
+		commands[1] == SafeRecoveryCommand
+}
+
+func isExactSafeRecovery(commands []string) bool {
+	return len(commands) == 1 && commands[0] == SafeRecoveryCommand
+}
+
+func hasExactPathRecovery(affected AffectedTarget) bool {
+	return len(affected.Recovery) > 0 && affected.Recovery[0] == "Inspect and back up "+affected.Path+" before retrying."
+}
+
+func hasValidSkillIdentity(targetPath string) bool {
+	root, err := os.Lstat(targetPath)
+	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+
+	identity, err := readBoundedRegularFile(filepath.Join(targetPath, IdentityFile), int64(len(IdentityContent)))
+	if err != nil || string(identity) != IdentityContent {
+		return false
+	}
+
+	skill, err := readBoundedRegularFile(filepath.Join(targetPath, "SKILL.md"), maxReceiptBytes)
+	if err != nil {
+		return false
+	}
+	if !hasPiWorkerFrontMatter(skill) {
+		return false
+	}
+	after, err := os.Lstat(targetPath)
+	return err == nil && after.IsDir() && after.Mode()&os.ModeSymlink == 0 && os.SameFile(root, after)
+}
+
+func hasPiWorkerFrontMatter(data []byte) bool {
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 || strings.TrimSuffix(lines[0], "\r") != "---" {
+		return false
+	}
+
+	nameCount := 0
+	for _, rawLine := range lines[1:] {
+		line := strings.TrimSuffix(rawLine, "\r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			return nameCount == 1
 		}
-		if target.State == AffectedUnmanaged {
-			if filepath.Base(filepath.Clean(target.Path)) != "pi-worker" {
-				return false
-			}
-			identityPath := filepath.Join(target.Path, IdentityFile)
-			identity, err := os.ReadFile(identityPath)
-			if err != nil {
-				return false
-			}
-			if string(identity) != IdentityContent {
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		separator := strings.IndexByte(line, ':')
+		if separator < 0 {
+			return false
+		}
+		key := strings.TrimSpace(line[:separator])
+		value := strings.TrimSpace(line[separator+1:])
+		if !isFrontMatterKey(key) || value == "" {
+			return false
+		}
+		if key == "name" {
+			nameCount++
+			if nameCount != 1 || !frontMatterValueIsPiWorker(value) {
 				return false
 			}
 		}
 	}
+	return false
+}
+
+func isFrontMatterKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (i > 0 && r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
 	return true
+}
+
+func frontMatterValueIsPiWorker(value string) bool {
+	if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+		(value[0] == '\'' && value[len(value)-1] == '\'')) {
+		value = value[1 : len(value)-1]
+	}
+	return value == "pi-worker"
+}
+
+func hasVerifiedReceiptEvidence(r Receipt) bool {
+	if r.Outcome != OutcomeInstalled || r.SkillsVersion != PinnedSkillsVersion {
+		return false
+	}
+	canonicalTargets := []Target{}
+	for _, target := range r.Targets {
+		if target.Kind == targetKindCanonical {
+			canonicalTargets = append(canonicalTargets, target)
+		}
+	}
+	if len(canonicalTargets) != 1 {
+		return false
+	}
+	target := canonicalTargets[0]
+	if !hasValidSkillIdentity(target.Path) {
+		return false
+	}
+
+	identityHash := sha256.Sum256([]byte(IdentityContent))
+	wantIdentityHash := hex.EncodeToString(identityHash[:])
+	recordedIdentity := false
+	recordedSkill := false
+	for _, file := range target.Files {
+		switch filepath.Clean(file.Path) {
+		case IdentityFile:
+			if !strings.EqualFold(file.SHA256, wantIdentityHash) {
+				return false
+			}
+			recordedIdentity = true
+		case "SKILL.md":
+			recordedSkill = true
+		}
+	}
+	return recordedIdentity && recordedSkill
+}
+
+func rejectNULStrings(values []string, field string) error {
+	for _, value := range values {
+		if strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("%s must not contain NUL", field)
+		}
+	}
+	return nil
 }
 
 func isValidOutcome(outcome Outcome) bool {
@@ -437,21 +779,31 @@ func isValidSHA256(value string) bool {
 	return true
 }
 
-func containsTraversalOrDot(path string) bool {
-	if path == "." {
-		return true
+func joinReceiptPath(root, filePath string) string {
+	parts := append([]string{root}, strings.Split(filePath, "/")...)
+	return filepath.Join(parts...)
+}
+
+func isValidReceiptFilePath(filePath string) bool {
+	if filePath == "" || strings.ContainsRune(filePath, '\\') || posixpath.IsAbs(filePath) {
+		return false
 	}
-	parts := strings.Split(filepath.ToSlash(path), "/")
-	for _, part := range parts {
+	if filePath == "." || posixpath.Clean(filePath) != filePath {
+		return false
+	}
+	for _, part := range strings.Split(filePath, "/") {
 		if part == "" || part == "." || part == ".." {
-			return true
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func validateRecoveryCommands(commands []string, field string) error {
 	for i, command := range commands {
+		if strings.ContainsRune(command, '\x00') {
+			return fmt.Errorf("%s[%d] must not contain NUL", field, i)
+		}
 		if strings.TrimSpace(command) == "" {
 			return fmt.Errorf("%s[%d] must not be empty", field, i)
 		}

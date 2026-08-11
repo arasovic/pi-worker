@@ -14,6 +14,11 @@ import (
 	"pi-worker/internal/skillinstall"
 )
 
+const (
+	globalSkillRemoveCommand    = "npx --yes skills@1.5.22 remove pi-worker -g -y"
+	globalSkillReinstallCommand = "npm install -g --foreground-scripts pi-worker"
+)
+
 func TestSkillReceiptPathOutputsPathForHumanAndJSON(t *testing.T) {
 	receiptPath := filepath.Join(t.TempDir(), "skill-install.json")
 	installSkillReceiptPath(t, receiptPath)
@@ -111,26 +116,26 @@ func TestSkillReceiptPathCancellationAfterResolutionDoesNotRenderResult(t *testi
 	}
 }
 
-func TestSkillStatusVerifiedOutputsExit0AndSortedTargets(t *testing.T) {
+func TestSkillStatusVerifiedOutputsExit0AndCanonicalTarget(t *testing.T) {
 	root := t.TempDir()
-	first := filepath.Join(root, "zzz")
-	second := filepath.Join(root, "aaa")
-	writeFileForSkillTest(t, filepath.Join(first, "one.txt"), "one")
-	writeFileForSkillTest(t, filepath.Join(second, "two.txt"), "two")
+	target := filepath.Join(root, "canonical")
+	writeFileForSkillTest(t, filepath.Join(target, "one.txt"), "one")
+	writeFileForSkillTest(t, filepath.Join(target, skillinstall.IdentityFile), skillinstall.IdentityContent)
+	writeFileForSkillTest(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
 
 	receipt := skillinstall.Receipt{
 		SchemaVersion:    skillinstall.SchemaVersion,
 		InstallerVersion: "1",
-		SkillsVersion:    "1",
+		SkillsVersion:    skillinstall.PinnedSkillsVersion,
 		Outcome:          skillinstall.OutcomeInstalled,
 		Targets: []skillinstall.Target{{
-			Path:  first,
-			Kind:  "canonical",
-			Files: []skillinstall.FileHash{{Path: "one.txt", SHA256: hashString(t, "one")}},
-		}, {
-			Path:  second,
-			Kind:  "canonical",
-			Files: []skillinstall.FileHash{{Path: "two.txt", SHA256: hashString(t, "two")}},
+			Path: target,
+			Kind: "canonical",
+			Files: []skillinstall.FileHash{
+				{Path: "one.txt", SHA256: hashString(t, "one")},
+				{Path: skillinstall.IdentityFile, SHA256: hashString(t, skillinstall.IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString(t, "---\nname: pi-worker\n---\n")},
+			},
 		}},
 	}
 	path := filepath.Join(root, "skill-install.json")
@@ -148,7 +153,7 @@ func TestSkillStatusVerifiedOutputsExit0AndSortedTargets(t *testing.T) {
 	if got.Status != skillinstall.StatusVerified {
 		t.Fatalf("status = %s, want %s", got.Status, skillinstall.StatusVerified)
 	}
-	if got.VerifiedTargets[0] != filepath.Clean(second) || got.VerifiedTargets[1] != filepath.Clean(first) {
+	if len(got.VerifiedTargets) != 1 || got.VerifiedTargets[0] != filepath.Clean(target) {
 		t.Fatalf("verified targets = %v", got.VerifiedTargets)
 	}
 
@@ -179,6 +184,12 @@ func TestSkillStatusMissingReceiptPathIsNotReady(t *testing.T) {
 	if got.Status != skillinstall.StatusMissing || got.ReceiptPath != path {
 		t.Fatalf("missing-receipt output = %#v", got)
 	}
+	if got.VerifiedTargets == nil || got.AffectedTargets == nil || got.Recovery == nil {
+		t.Fatalf("missing-receipt arrays must be non-null: %#v", got)
+	}
+	if len(got.Recovery) != 1 || got.Recovery[0] != skillinstall.SafeRecoveryCommand {
+		t.Fatalf("missing-receipt recovery = %v", got.Recovery)
+	}
 }
 
 func TestSkillStatusMissingOrDriftedTargetsReturnExit3(t *testing.T) {
@@ -205,6 +216,17 @@ func TestSkillStatusMissingOrDriftedTargetsReturnExit3(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "status: missing") {
 			t.Fatalf("status output = %q", stdout)
+		}
+		code, stdout, stderr = runCLI(t, []string{"skill", "status", "--json"}, "")
+		if code != 3 || stderr != "" {
+			t.Fatalf("status missing target json = (%d, %q, %q)", code, stdout, stderr)
+		}
+		var got skillinstall.Inspection
+		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+			t.Fatalf("decode missing target JSON %q: %v", stdout, err)
+		}
+		if len(got.Recovery) != 1 || got.Recovery[0] != skillinstall.SafeRecoveryCommand {
+			t.Fatalf("missing target recovery = %v", got.Recovery)
 		}
 	})
 
@@ -248,22 +270,27 @@ func TestSkillStatusBlockedUnmanagedIncludesPathSpecificRecovery(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, skillinstall.IdentityFile), []byte(skillinstall.IdentityContent), 0o600); err != nil {
 		t.Fatalf("write identity: %v", err)
 	}
+	writeFileForSkillTest(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
 	receipt := skillinstall.Receipt{
 		SchemaVersion:    skillinstall.SchemaVersion,
 		InstallerVersion: "1",
 		SkillsVersion:    "1",
 		Outcome:          skillinstall.OutcomeBlocked,
 		Targets: []skillinstall.Target{{
-			Path:  target,
-			Kind:  "canonical",
-			Files: []skillinstall.FileHash{{Path: "tool.txt", SHA256: hashString(t, "tool")}},
+			Path: target,
+			Kind: "canonical",
+			Files: []skillinstall.FileHash{
+				{Path: "tool.txt", SHA256: hashString(t, "tool")},
+				{Path: skillinstall.IdentityFile, SHA256: hashString(t, skillinstall.IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString(t, "---\nname: pi-worker\n---\n")},
+			},
 		}},
 		AffectedTargets: []skillinstall.AffectedTarget{{
 			Path:     target,
 			State:    skillinstall.AffectedUnmanaged,
-			Recovery: []string{"backup managed"},
+			Recovery: []string{"Inspect and back up " + target + " before retrying.", "backup managed"},
 		}},
-		Recovery: []string{"global remove all"},
+		Recovery: []string{globalSkillRemoveCommand, globalSkillReinstallCommand},
 	}
 	path := filepath.Join(root, "skill-install.json")
 	writeReceiptForSkillTest(t, path, receipt)
@@ -291,7 +318,7 @@ func TestSkillStatusBlockedUnmanagedIncludesPathSpecificRecovery(t *testing.T) {
 	if got.Status != skillinstall.StatusBlocked {
 		t.Fatalf("status = %s", got.Status)
 	}
-	if !containsRecovery(got.Recovery, "global remove all") {
+	if !containsRecovery(got.Recovery, globalSkillRemoveCommand) || !containsRecovery(got.Recovery, globalSkillReinstallCommand) {
 		t.Fatalf("recovery = %v", got.Recovery)
 	}
 }
@@ -314,9 +341,12 @@ func TestSkillStatusBlockedDriftedConflictingAndMixedTargetStates(t *testing.T) 
 		SkillsVersion:    "1",
 		Outcome:          skillinstall.OutcomeBlocked,
 		Targets: []skillinstall.Target{{
-			Path:  managed,
-			Kind:  "canonical",
-			Files: []skillinstall.FileHash{{Path: "tool.txt", SHA256: hashString(t, "managed")}},
+			Path: managed,
+			Kind: "canonical",
+			Files: []skillinstall.FileHash{
+				{Path: "tool.txt", SHA256: hashString(t, "managed")},
+				{Path: skillinstall.IdentityFile, SHA256: hashString(t, skillinstall.IdentityContent)},
+			},
 		}, {
 			Path:  drifted,
 			Kind:  "canonical",
@@ -419,6 +449,40 @@ func TestSkillStatusMarkerlessUnmanagedConflictingPathOmitsGlobalRecovery(t *tes
 	}
 	if containsRecovery(got.Recovery, "global remove all") {
 		t.Fatalf("global recovery unexpectedly exposed: %v", got.Recovery)
+	}
+}
+
+func TestSkillStatusFailedReceiptExposesOnlyExactSafeRecovery(t *testing.T) {
+	for _, recovery := range [][]string{{skillinstall.SafeRecoveryCommand}, {"arbitrary"}, {skillinstall.SafeRecoveryCommand, "arbitrary"}} {
+		t.Run(strings.Join(recovery, "+"), func(t *testing.T) {
+			root := t.TempDir()
+			receipt := skillinstall.Receipt{
+				SchemaVersion:    skillinstall.SchemaVersion,
+				InstallerVersion: "1",
+				SkillsVersion:    "1",
+				Outcome:          skillinstall.OutcomeFailed,
+				Recovery:         recovery,
+			}
+			path := filepath.Join(root, "skill-install.json")
+			writeReceiptForSkillTest(t, path, receipt)
+			installSkillReceiptPath(t, path)
+
+			code, stdout, stderr := runCLI(t, []string{"skill", "status", "--json"}, "")
+			if code != 3 || stderr != "" {
+				t.Fatalf("status failed = (%d, %q, %q)", code, stdout, stderr)
+			}
+			var got skillinstall.Inspection
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("decode status JSON %q: %v", stdout, err)
+			}
+			want := []string{}
+			if len(recovery) == 1 && recovery[0] == skillinstall.SafeRecoveryCommand {
+				want = []string{skillinstall.SafeRecoveryCommand}
+			}
+			if !equalStringSlice(got.Recovery, want) {
+				t.Fatalf("recovery = %v, want %v", got.Recovery, want)
+			}
+		})
 	}
 }
 
@@ -532,6 +596,15 @@ func installSkillInspector(t *testing.T, inspect func(string) (skillinstall.Insp
 
 func writeReceiptForSkillTest(t *testing.T, path string, receipt skillinstall.Receipt) {
 	t.Helper()
+	if receipt.Targets == nil {
+		receipt.Targets = []skillinstall.Target{}
+	}
+	if receipt.AffectedTargets == nil {
+		receipt.AffectedTargets = []skillinstall.AffectedTarget{}
+	}
+	if receipt.Recovery == nil {
+		receipt.Recovery = []string{}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatalf("mkdir %q: %v", filepath.Dir(path), err)
 	}
@@ -558,6 +631,18 @@ func hashString(t *testing.T, value string) string {
 	t.Helper()
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+func equalStringSlice(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsRecovery(recovery []string, want string) bool {

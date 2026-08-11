@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import process from "node:process";
@@ -12,6 +12,8 @@ import {
   resolvePinnedSource,
 } from "../scripts/extract-skills-rules.mjs";
 import {
+  detectInstalledAgents,
+  evaluateDetector,
   loadRules,
   resolveAllTargets,
   resolveRule,
@@ -50,9 +52,10 @@ function validDocument(rules) {
   const agents = [...globalRules, ...noGlobalRules].map((rule, index) => ({
     id: `agent-${index}`,
     rule,
+    detector: { kind: "never" },
   }));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     skillsVersion: "1.5.22",
     agentCount: 76,
     globalTargetCount: 74,
@@ -75,7 +78,7 @@ describe("pinned skills target-rule extraction contract", () => {
     const ids = document.agents.map((agent) => agent.id);
     const rules = document.agents.map((agent) => agent.rule);
 
-    assert.equal(document.schemaVersion, 1);
+    assert.equal(document.schemaVersion, 2);
     assert.equal(document.skillsVersion, "1.5.22");
     assert.equal(document.agentCount, 76);
     assert.equal(document.globalTargetCount, 74);
@@ -92,6 +95,7 @@ describe("pinned skills target-rule extraction contract", () => {
       "first-existing-home-relative",
       "no-global-target",
     ].includes(rule.kind)));
+    assert.ok(document.agents.every((agent) => agent.detector));
   });
 
   test("checked-in JSON exactly matches the pinned source", () => {
@@ -124,7 +128,7 @@ describe("pinned skills target-rule extraction contract", () => {
       /const agents = \{[\s\S]*?\n\};\nasync function detectInstalledAgents/,
       "const agents = {};\nasync function detectInstalledAgents"
     );
-    expectExtractionFailure(source, /empty|count|agent/i);
+    expectExtractionFailure(source, /empty|count|agent|anchor/i);
   });
 
   test("rejects a bundle version mismatch", () => {
@@ -267,6 +271,63 @@ describe("runtime target resolution", () => {
     );
   });
 
+  test("evaluates every pinned detector path expression kind", () => {
+    const existing = new Set([
+      `${home}/.home-marker`,
+      "/xdg/marker",
+      "/cwd/marker",
+      "/absolute/marker",
+      "/custom/app/marker",
+      "/cwd/relative-codex",
+      `${home}/.codex`,
+    ]);
+    const exists = (candidate) => existing.has(candidate);
+    const base = { ...runtime, cwd: "/cwd", exists };
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "home-relative", path: ".home-marker" }] }, base), true);
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "config-home-relative", path: "marker" }] }, { ...base, env: { XDG_CONFIG_HOME: "/xdg" } }), true);
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "cwd-relative", path: "marker" }] }, base), true);
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "absolute", path: "/absolute/marker" }] }, base), true);
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "environment-relative", variable: "APPDATA", suffix: "marker" }] }, { ...base, env: { APPDATA: "  /custom/app  " } }), true);
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "environment-or-home", variable: "CODEX_HOME", fallback: ".codex" }] }, { ...base, env: { CODEX_HOME: " \t" } }), true);
+    assert.equal(evaluateDetector({ kind: "any-existing", paths: [{ kind: "environment-or-home", variable: "CODEX_HOME", fallback: ".codex" }] }, { ...base, env: { CODEX_HOME: "relative-codex" } }), true);
+  });
+
+  test("detects Eve projects only for valid bounded package JSON", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "pi-worker-eve-test-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "agent"));
+    const detector = {
+      kind: "eve-project",
+      agentPath: { kind: "cwd-relative", path: "agent" },
+      packageJsonPath: { kind: "cwd-relative", path: "package.json" },
+      dependency: "eve",
+    };
+    const runtimeValue = { ...runtime, cwd: root, exists: (candidate) => candidate === join(root, "agent") };
+    writeFileSync(join(root, "package.json"), JSON.stringify({ devDependencies: { eve: "1" } }));
+    assert.equal(evaluateDetector(detector, runtimeValue), true);
+    writeFileSync(join(root, "package.json"), "{not-json");
+    assert.equal(evaluateDetector(detector, runtimeValue), false);
+    writeFileSync(join(root, "package.json"), "x".repeat(1024 * 1024 + 1));
+    assert.equal(evaluateDetector(detector, runtimeValue), false);
+  });
+
+  test("filters no-global detections and preserves generated order", () => {
+    const document = {
+      schemaVersion: 2,
+      skillsVersion: "1.5.22",
+      agentCount: 3,
+      globalTargetCount: 2,
+      noGlobalTargetCount: 1,
+      agents: [
+        { id: "first", rule: { kind: "home-relative", path: ".first" }, detector: { kind: "never" } },
+        { id: "second", rule: { kind: "home-relative", path: ".second" }, detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".second" }] } },
+        { id: "eve", rule: { kind: "no-global-target" }, detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".eve" }] } },
+      ],
+    };
+    const detected = detectInstalledAgents(document, { ...runtime, exists: (candidate) => candidate === `${home}/.second` || candidate === `${home}/.eve` });
+    assert.deepEqual(detected, ["second", "eve"]);
+  });
+
   test("resolves no-global markers to no target", () => {
     assert.equal(resolveRule({ kind: "no-global-target" }, runtime), null);
   });
@@ -304,6 +365,47 @@ describe("runtime target resolution", () => {
     t.after(() => rmSync(temporaryDirectory, { recursive: true, force: true }));
     writeFileSync(documentPath, JSON.stringify(validDocument([unsafeRules[0]])), "utf8");
     assert.throws(() => loadRules(documentPath), /relative|unsafe|path|traversal/i);
+  });
+
+  test("rejects unknown fields at the document, agent, and every rule level", (t) => {
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), "pi-worker-rules-schema-test-"));
+    t.after(() => rmSync(temporaryDirectory, { recursive: true, force: true }));
+    let serial = 0;
+    const assertRejected = (document) => {
+      const documentPath = join(temporaryDirectory, `rules-${serial++}.json`);
+      writeFileSync(documentPath, JSON.stringify(document), "utf8");
+      assert.throws(() => loadRules(documentPath), /unknown field/i);
+    };
+
+    const topLevel = validDocument([]);
+    topLevel.unexpected = true;
+    assertRejected(topLevel);
+
+    const agent = validDocument([]);
+    agent.agents[0].unexpected = true;
+    assertRejected(agent);
+
+    for (const rule of [
+      { kind: "home-relative", path: ".skills" },
+      { kind: "config-home-relative", path: "skills" },
+      {
+        kind: "environment-or-home",
+        variable: "CODEX_HOME",
+        fallback: ".codex",
+        suffix: "skills",
+      },
+      {
+        kind: "first-existing-home-relative",
+        candidates: [".openclaw"],
+        fallback: ".openclaw",
+        suffix: "skills",
+      },
+      { kind: "no-global-target" },
+    ]) {
+      const ruleDocument = validDocument([rule]);
+      ruleDocument.agents[0].rule.unexpected = true;
+      assertRejected(ruleDocument);
+    }
   });
 
   test("requires an explicit filesystem predicate for first-existing rules", () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -196,6 +197,41 @@ describe("launcher process behavior", () => {
     assert.equal(child.signal, null);
     assert.equal(child.stdout, "");
     assert.equal(child.stderr, "");
+  });
+
+  test("entrypoint renders one sanitized unsupported-platform diagnostic without spawning", () => {
+    const packageRoot = join(fixturesDir, "package-unsupported-platform");
+    const binDir = join(packageRoot, "npm", "bin");
+    const libDir = join(packageRoot, "npm", "lib");
+    const marker = join(packageRoot, "spawned");
+
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(libDir, { recursive: true });
+    copyFileSync(new URL("../bin/pi-worker.mjs", import.meta.url), join(binDir, "pi-worker.mjs"));
+    writeFileSync(join(libDir, "native.mjs"), [
+      "import { writeFileSync } from \"node:fs\";",
+      "export class UnsupportedPlatformError extends Error {",
+      "  constructor() {",
+      "    super(\"Unsupported platform/architecture: freebsd/x64\");",
+      "    this.name = \"UnsupportedPlatformError\";",
+      "  }",
+      "}",
+      "export function nativeTarget() { throw new UnsupportedPlatformError(); }",
+      `export function nativePath() { writeFileSync(${JSON.stringify(marker)}, \"spawned\"); }`,
+      `export function runNative() { writeFileSync(${JSON.stringify(marker)}, \"spawned\"); }`,
+      "",
+    ].join("\n"));
+
+    const child = spawnSync(bin, [join(binDir, "pi-worker.mjs")], {
+      encoding: "utf8",
+    });
+
+    assert.equal(child.status, 1);
+    assert.equal(child.signal, null);
+    assert.equal(child.stdout, "");
+    assert.equal(child.stderr, "Unsupported platform/architecture: freebsd/x64\n");
+    assert.equal(existsSync(marker), false);
+    assert.doesNotMatch(child.stderr, /stack|at /i);
   });
 
   test("preserves argument boundaries", () => {

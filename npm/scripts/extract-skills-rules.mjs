@@ -40,6 +40,31 @@ const OPENCLAW_RULE = Object.freeze({
   suffix: "skills",
 });
 
+const DETECTOR_ENVIRONMENT_SPECS = Object.freeze({
+  codexHome: { variable: "CODEX_HOME", fallback: ".codex" },
+  claudeHome: { variable: "CLAUDE_CONFIG_DIR", fallback: ".claude" },
+  vibeHome: { variable: "VIBE_HOME", fallback: ".vibe" },
+  hermesHome: { variable: "HERMES_HOME", fallback: ".hermes" },
+  autohandHome: { variable: "AUTOHAND_HOME", fallback: ".autohand" },
+  grokHome: { variable: "GROK_HOME", fallback: ".grok" },
+  zedAppDataHome: { variable: "APPDATA" },
+  zedFlatpakConfigHome: { variable: "FLATPAK_XDG_CONFIG_HOME" },
+});
+
+const DETECTOR_HELPERS = Object.freeze({
+  isZCodeInstalled: Object.freeze([
+    { kind: "home-relative", path: ".zcode" },
+    { kind: "absolute", path: "/Applications/ZCode.app" },
+  ]),
+  isKimchiInstalled: Object.freeze([
+    { kind: "home-relative", path: ".config/kimchi" },
+  ]),
+  isMiniMaxCodeInstalled: Object.freeze([
+    { kind: "home-relative", path: ".minimax" },
+    { kind: "absolute", path: "/Applications/MiniMax Code.app" },
+  ]),
+});
+
 function extractionError(message) {
   throw new Error(`Unable to extract pinned skills target rules: ${message}`);
 }
@@ -288,6 +313,195 @@ function parseCallExpression(source, start, end) {
   extractionError(`unrecognized join base: ${base}`);
 }
 
+function splitTopLevelOperator(source, start, end, operator) {
+  const matches = [];
+  const stack = [];
+  const pairs = { "{": "}", "(": ")", "[": "]" };
+  for (let index = start; index < end; index += 1) {
+    const character = source[index];
+    if (character === "\"" || character === "'") {
+      index = skipQuoted(source, index, end) - 1;
+      continue;
+    }
+    if (character === "`") {
+      index = skipTemplate(source, index, end) - 1;
+      continue;
+    }
+    if (character === "/" && (source[index + 1] === "/" || source[index + 1] === "*")) {
+      index = skipComment(source, index, end) - 1;
+      continue;
+    }
+    if (pairs[character]) {
+      stack.push(character);
+      continue;
+    }
+    if (character === "}" || character === ")" || character === "]") {
+      const open = stack.pop();
+      if (!open || pairs[open] !== character) extractionError("mismatched detector delimiters");
+      continue;
+    }
+    if (stack.length === 0 && source.startsWith(operator, index)) {
+      matches.push(index);
+      index += operator.length - 1;
+    }
+  }
+  if (stack.length !== 0) extractionError("unterminated detector expression");
+  return matches;
+}
+
+function detectorPathExpression(source, start, end) {
+  const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
+  const expression = source.slice(trimmedStart, trimmedEnd);
+  if (expression.startsWith("join")) {
+    const openIndex = trimmedStart + 4;
+    if (source[openIndex] !== "(") extractionError("unrecognized detector join expression");
+    const closeIndex = scanBalanced(source, openIndex, trimmedEnd);
+    if (closeIndex !== trimmedEnd - 1) extractionError("ambiguous detector join expression");
+    const argumentsList = topLevelSegments(source, openIndex + 1, closeIndex);
+    if (argumentsList.length < 2) extractionError("empty detector join expression");
+    const baseText = source.slice(...trimRange(source, argumentsList[0][0], argumentsList[0][1]));
+    const base = baseText === "process.cwd()"
+      ? "cwd"
+      : parseIdentifier(source, argumentsList[0][0], argumentsList[0][1]);
+    const literals = argumentsList.slice(1).map(([argumentStart, argumentEnd]) => (
+      parseStringLiteral(source, argumentStart, argumentEnd)
+    ));
+    if (base === "home") return { kind: "home-relative", path: pathFromSegments(literals) };
+    if (base === "configHome") return { kind: "config-home-relative", path: pathFromSegments(literals) };
+    if (base === "cwd") return { kind: "cwd-relative", path: pathFromSegments(literals) };
+    if (base === "process") extractionError("unrecognized detector process path expression");
+    if (Object.hasOwn(DETECTOR_ENVIRONMENT_SPECS, base)) {
+      const specification = DETECTOR_ENVIRONMENT_SPECS[base];
+      if (!specification.variable || literals.length !== 1) extractionError("unrecognized detector environment path");
+      return { kind: "environment-relative", variable: specification.variable, suffix: pathFromSegments(literals) };
+    }
+    extractionError(`unrecognized detector join base: ${base}`);
+  }
+  if (expression === "process.cwd()") extractionError("cwd detector must include a relative suffix");
+  if (Object.hasOwn(DETECTOR_ENVIRONMENT_SPECS, expression)) {
+    const specification = DETECTOR_ENVIRONMENT_SPECS[expression];
+    if (!specification.fallback) {
+      return { kind: "environment-relative", variable: specification.variable, suffix: "" };
+    }
+    return {
+      kind: "environment-or-home",
+      variable: specification.variable,
+      fallback: specification.fallback,
+    };
+  }
+  const literal = parseStringLiteral(source, trimmedStart, trimmedEnd);
+  if (!literal.startsWith("/")) extractionError("detector absolute path must be absolute");
+  return { kind: "absolute", path: literal };
+}
+
+function parseExistsDetector(source, start, end) {
+  const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
+  if (!source.slice(trimmedStart, trimmedEnd).startsWith("existsSync")) {
+    extractionError("unrecognized detector predicate");
+  }
+  const openIndex = trimmedStart + "existsSync".length;
+  if (source[openIndex] !== "(") extractionError("unrecognized existsSync detector");
+  const closeIndex = scanBalanced(source, openIndex, trimmedEnd);
+  if (closeIndex !== trimmedEnd - 1) extractionError("ambiguous existsSync detector");
+  return detectorPathExpression(source, openIndex + 1, closeIndex);
+}
+
+function parseDependencyDetector(source, start, end) {
+  const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
+  const text = source.slice(trimmedStart, trimmedEnd);
+  const prefix = "packageJsonHasDependency(";
+  if (!text.startsWith(prefix)) extractionError("unrecognized Eve detector predicate");
+  const openIndex = trimmedStart + prefix.length - 1;
+  const closeIndex = scanBalanced(source, openIndex, trimmedEnd);
+  if (closeIndex !== trimmedEnd - 1) extractionError("ambiguous Eve detector predicate");
+  const argumentsList = topLevelSegments(source, openIndex + 1, closeIndex);
+  if (argumentsList.length !== 2) extractionError("invalid Eve dependency detector");
+  const packagePath = detectorPathExpression(source, argumentsList[0][0], argumentsList[0][1]);
+  const dependency = parseStringLiteral(source, argumentsList[1][0], argumentsList[1][1]);
+  if (packagePath.kind !== "cwd-relative" || packagePath.path !== "package.json" || dependency !== "eve") {
+    extractionError("unrecognized Eve dependency detector");
+  }
+  return true;
+}
+
+function parseDetectorExpression(source, start, end) {
+  const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
+  const expression = source.slice(trimmedStart, trimmedEnd);
+  if (expression === "false") return { kind: "never" };
+  if (expression === "isZCodeInstalled()" || expression === "isKimchiInstalled()" || expression === "isMiniMaxCodeInstalled()") {
+    const paths = DETECTOR_HELPERS[expression.slice(0, -2)];
+    return { kind: "any-existing", paths: paths.map((path) => ({ ...path })) };
+  }
+  const orOperators = splitTopLevelOperator(source, trimmedStart, trimmedEnd, "||");
+  if (orOperators.length > 0) {
+    const paths = [];
+    let partStart = trimmedStart;
+    for (const operatorIndex of [...orOperators, trimmedEnd]) {
+      const partEnd = operatorIndex;
+      const andOperators = splitTopLevelOperator(source, partStart, partEnd, "&&");
+      if (andOperators.length === 0) {
+        paths.push(parseExistsDetector(source, partStart, partEnd));
+      } else {
+        if (andOperators.length !== 1) extractionError("unrecognized detector helper conjunction");
+        const leftEnd = andOperators[0];
+        const left = source.slice(...trimRange(source, partStart, leftEnd));
+        if (!left.startsWith("!!")) extractionError("unrecognized detector helper guard");
+        const variable = parseIdentifier(left, 2, left.length);
+        const pathExpression = parseExistsDetector(source, leftEnd + 2, partEnd);
+        if (pathExpression.kind !== "environment-relative" || pathExpression.variable !== DETECTOR_ENVIRONMENT_SPECS[variable]?.variable) {
+          extractionError("unrecognized detector helper path");
+        }
+        paths.push(pathExpression);
+      }
+      partStart = operatorIndex + 2;
+    }
+    return { kind: "any-existing", paths };
+  }
+  const andOperators = splitTopLevelOperator(source, trimmedStart, trimmedEnd, "&&");
+  if (andOperators.length > 0) {
+    if (andOperators.length !== 1) extractionError("unrecognized detector conjunction");
+    const leftEnd = andOperators[0];
+    const rightStart = leftEnd + 2;
+    const agentPath = parseExistsDetector(source, trimmedStart, leftEnd);
+    const dependency = parseDependencyDetector(source, rightStart, trimmedEnd);
+    if (dependency !== true || agentPath.kind !== "cwd-relative" || agentPath.path !== "agent") {
+      extractionError("unrecognized detector conjunction");
+    }
+    return {
+      kind: "eve-project",
+      agentPath,
+      packageJsonPath: { kind: "cwd-relative", path: "package.json" },
+      dependency: "eve",
+    };
+  }
+  return { kind: "any-existing", paths: [parseExistsDetector(source, trimmedStart, trimmedEnd)] };
+}
+
+function parseDetectorFunction(source, start, end) {
+  const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
+  const prefix = "async () =>";
+  if (!source.slice(trimmedStart, trimmedEnd).startsWith(prefix)) extractionError("unrecognized detector function");
+  const bodyStart = trimmedStart + prefix.length;
+  const [bodyTrimmedStart, bodyTrimmedEnd] = trimRange(source, bodyStart, trimmedEnd);
+  if (source[bodyTrimmedStart] === "{") {
+    const bodyEnd = scanBalanced(source, bodyTrimmedStart, trimmedEnd);
+    if (bodyEnd !== trimmedEnd - 1) extractionError("ambiguous detector function");
+    const bodyStartText = bodyTrimmedStart + 1;
+    const cwdPrelude = "const cwd = process.cwd();";
+    let statementStart = bodyStartText;
+    const [preludeStart, preludeEnd] = trimRange(source, statementStart, bodyEnd);
+    if (source.slice(preludeStart, preludeEnd).startsWith(cwdPrelude)) statementStart = preludeStart + cwdPrelude.length;
+    const returnPrefix = "return ";
+    [statementStart] = trimRange(source, statementStart, bodyEnd);
+    const [returnStart, statementEnd] = trimRange(source, statementStart, bodyEnd);
+    if (!source.slice(returnStart, statementEnd).startsWith(returnPrefix) || source[statementEnd - 1] !== ";") {
+      extractionError("unrecognized detector return form");
+    }
+    return parseDetectorExpression(source, returnStart + returnPrefix.length, statementEnd - 1);
+  }
+  return parseDetectorExpression(source, bodyTrimmedStart, bodyTrimmedEnd);
+}
+
 function parseRuleExpression(source, start, end) {
   const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
   const expression = source.slice(trimmedStart, trimmedEnd);
@@ -307,6 +521,7 @@ function parseAgent(source, start, end) {
 
   let name;
   let rule;
+  let detector;
   for (const [propertyStart, propertyEnd] of topLevelSegments(source, valueStart + 1, objectEnd)) {
     const propertyColon = topLevelColon(source, propertyStart, propertyEnd);
     const property = parsePropertyKey(source, propertyStart, propertyColon);
@@ -316,13 +531,17 @@ function parseAgent(source, start, end) {
     } else if (property === "globalSkillsDir") {
       if (rule !== undefined) extractionError(`duplicate globalSkillsDir in agent ${id}`);
       rule = parseRuleExpression(source, propertyColon + 1, propertyEnd);
+    } else if (property === "detectInstalled") {
+      if (detector !== undefined) extractionError(`duplicate detector in agent ${id}`);
+      detector = parseDetectorFunction(source, propertyColon + 1, propertyEnd);
     }
   }
 
   if (name === undefined) extractionError(`missing agent name for ${id}`);
   if (name !== id) extractionError(`agent key/name mismatch for ${id}`);
   if (rule === undefined) extractionError(`missing globalSkillsDir for ${id}`);
-  return { id, rule };
+  if (detector === undefined) extractionError(`missing detector for ${id}`);
+  return { id, rule, detector };
 }
 
 function normalizeWhitespace(value) {
@@ -341,6 +560,8 @@ function assertRecognizedAnchors(source, expectedVersion) {
     'const hermesHome = process.env.HERMES_HOME?.trim() || join(home, ".hermes");',
     'const autohandHome = process.env.AUTOHAND_HOME?.trim() || join(home, ".autohand");',
     'const grokHome = process.env.GROK_HOME?.trim() || join(home, ".grok");',
+    'const zedAppDataHome = process.env.APPDATA?.trim();',
+    'const zedFlatpakConfigHome = process.env.FLATPAK_XDG_CONFIG_HOME?.trim();',
   ];
   for (const declaration of declarations) uniqueAnchor(source, declaration, "environment-home");
   if (configIndex < homeIndex) extractionError("ambiguous home declaration order");
@@ -356,6 +577,27 @@ function assertRecognizedAnchors(source, expectedVersion) {
   const openclawIndex = uniqueAnchor(source, openclawAnchorText, "OpenClaw resolver");
   const openclawOpen = openclawIndex + openclawAnchorText.length - 1;
   const openclawEnd = scanBalanced(source, openclawOpen);
+  const helperAnchors = [
+    ["ZCode helper", "function isZCodeInstalled(homeDir = home, pathExists = existsSync) {", [
+      'return pathExists(join(homeDir, ".zcode")) || pathExists("/Applications/ZCode.app");',
+    ]],
+    ["Kimchi helper", "function isKimchiInstalled(homeDir = home, pathExists = existsSync) {", [
+      'return pathExists(join(homeDir, ".config", "kimchi"));',
+    ]],
+    ["MiniMax Code helper", "function isMiniMaxCodeInstalled(homeDir = home, pathExists = existsSync) {", [
+      'return pathExists(join(homeDir, ".minimax")) || pathExists("/Applications/MiniMax Code.app");',
+    ]],
+  ];
+  for (const [name, anchor, expectedLines] of helperAnchors) {
+    const helperIndex = uniqueAnchor(source, anchor, name);
+    const helperOpen = helperIndex + anchor.length - 1;
+    const helperEnd = scanBalanced(source, helperOpen);
+    const helperBody = normalizeWhitespace(source.slice(helperOpen + 1, helperEnd));
+    if (helperBody !== normalizeWhitespace(expectedLines.join(" "))) {
+      extractionError(`unrecognized ${name} source form`);
+    }
+  }
+
   const openclawBody = normalizeWhitespace(source.slice(openclawOpen + 1, openclawEnd));
   const expectedOpenclawBody = normalizeWhitespace([
     'if (pathExists(join(homeDir, ".openclaw"))) return join(homeDir, ".openclaw/skills");',
@@ -364,6 +606,15 @@ function assertRecognizedAnchors(source, expectedVersion) {
     'return join(homeDir, ".openclaw/skills");',
   ].join(" "));
   if (openclawBody !== expectedOpenclawBody) extractionError("unrecognized OpenClaw resolver source form");
+
+  const detectorAnchors = [
+    'return existsSync(join(home, ".openclaw")) || existsSync(join(home, ".clawdbot")) || existsSync(join(home, ".moltbot"));',
+    'return existsSync(codexHome) || existsSync("/etc/codex");',
+    'return existsSync(join(process.cwd(), ".promptscript")) || existsSync(join(process.cwd(), "promptscript.yaml"));',
+    'return existsSync(join(configHome, "zed")) || !!zedAppDataHome && existsSync(join(zedAppDataHome, "Zed")) || !!zedFlatpakConfigHome && existsSync(join(zedFlatpakConfigHome, "zed"));',
+    'return existsSync(join(cwd, "agent")) && packageJsonHasDependency(join(cwd, "package.json"), "eve");',
+  ];
+  for (const [index, anchor] of detectorAnchors.entries()) uniqueAnchor(source, anchor, `detector ${index + 1}`);
 
   return { homeIndex };
 }
@@ -397,6 +648,7 @@ function extractDocument(source, expectedVersion = PINNED_SKILLS_VERSION) {
 
   const globalTargetCount = agents.filter((agent) => agent.rule.kind !== "no-global-target").length;
   const noGlobalTargetCount = agents.length - globalTargetCount;
+  if (agents.some((agent) => !agent.detector)) extractionError("partial detector extraction");
   if (
     agents.length !== EXPECTED_AGENT_COUNT ||
     globalTargetCount !== EXPECTED_GLOBAL_TARGET_COUNT ||

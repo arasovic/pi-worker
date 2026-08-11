@@ -104,11 +104,27 @@ func skillStatusCommand(parent context.Context, opts skillOptions, stdout, stder
 	}
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			inspection = skillinstall.Inspection{SchemaVersion: skillinstall.SchemaVersion, ReceiptPath: path, Status: skillinstall.StatusMissing}
+			inspection = skillinstall.Inspection{
+				SchemaVersion:   skillinstall.SchemaVersion,
+				ReceiptPath:     path,
+				Status:          skillinstall.StatusMissing,
+				VerifiedTargets: []string{},
+				AffectedTargets: []skillinstall.AffectedTarget{},
+				Recovery:        []string{skillinstall.SafeRecoveryCommand},
+			}
 		} else {
 			fmt.Fprintf(stderr, "pi-worker: inspect skill status: %v\n", err)
 			return 9
 		}
+	}
+	if inspection.VerifiedTargets == nil {
+		inspection.VerifiedTargets = []string{}
+	}
+	if inspection.AffectedTargets == nil {
+		inspection.AffectedTargets = []skillinstall.AffectedTarget{}
+	}
+	if inspection.Recovery == nil {
+		inspection.Recovery = []string{}
 	}
 
 	code := 0

@@ -1,8 +1,16 @@
-import { readFileSync } from "node:fs";
+import {
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  readFileSync,
+} from "node:fs";
 import { posix, win32 } from "node:path";
 
 export const PINNED_SKILLS_VERSION = "1.5.22";
-export const RULE_SCHEMA_VERSION = 1;
+export const RULE_SCHEMA_VERSION = 2;
+const MAX_EVE_PACKAGE_BYTES = 1024 * 1024;
 export const EXPECTED_AGENT_COUNT = 76;
 export const EXPECTED_GLOBAL_TARGET_COUNT = 74;
 export const EXPECTED_NO_GLOBAL_TARGET_COUNT = 2;
@@ -14,8 +22,27 @@ const RULE_KINDS = new Set([
   "first-existing-home-relative",
   "no-global-target",
 ]);
+const DETECTOR_KINDS = new Set(["any-existing", "eve-project", "never"]);
+const DETECTOR_PATH_KINDS = new Set([
+  "home-relative",
+  "config-home-relative",
+  "cwd-relative",
+  "absolute",
+  "environment-relative",
+  "environment-or-home",
+]);
 
 const ENVIRONMENT_VARIABLES = new Set([
+  "APPDATA",
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "FLATPAK_XDG_CONFIG_HOME",
+  "HERMES_HOME",
+  "GROK_HOME",
+  "VIBE_HOME",
+  "AUTOHAND_HOME",
+]);
+const ENVIRONMENT_HOME_VARIABLES = new Set([
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
   "HERMES_HOME",
@@ -32,7 +59,12 @@ function requireString(value, name) {
   if (typeof value !== "string" || value.length === 0) invalid(`${name} must be a non-empty string`);
 }
 
-function requireRelativePath(value, name) {
+function requireOnly(value, allowed, name) {
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) invalid(`${name} has an unknown field: ${key}`);
+}
+
+function requireRelativePath(value, name, { allowEmpty = false } = {}) {
+  if (allowEmpty && value === "") return;
   requireString(value, name);
   const segments = value.split("/");
   if (
@@ -49,11 +81,98 @@ function requireRelativePath(value, name) {
   }
 }
 
+function validatePathExpression(expression, index = "path") {
+  if (!expression || typeof expression !== "object" || Array.isArray(expression)) {
+    invalid(`${index} must be an object`);
+  }
+  if (!DETECTOR_PATH_KINDS.has(expression.kind)) invalid(`${index} has an unknown kind`);
+  const fields = {
+    "home-relative": ["kind", "path"],
+    "config-home-relative": ["kind", "path"],
+    "cwd-relative": ["kind", "path"],
+    absolute: ["kind", "path"],
+    "environment-relative": ["kind", "variable", "suffix"],
+    "environment-or-home": ["kind", "variable", "fallback"],
+  }[expression.kind];
+  requireOnly(expression, fields, index);
+  switch (expression.kind) {
+    case "home-relative":
+    case "config-home-relative":
+    case "cwd-relative":
+      requireRelativePath(expression.path, `${index}.path`);
+      break;
+    case "absolute":
+      requireString(expression.path, `${index}.path`);
+      if (!expression.path.startsWith("/") || expression.path.includes("\\") || expression.path.includes("\0")) {
+        invalid(`${index}.path must be an absolute POSIX path`);
+      }
+      break;
+    case "environment-relative":
+      if (!ENVIRONMENT_VARIABLES.has(expression.variable)) {
+        invalid(`${index}.variable is not a recognized environment variable`);
+      }
+      requireRelativePath(expression.suffix, `${index}.suffix`);
+      break;
+    case "environment-or-home":
+      if (!ENVIRONMENT_HOME_VARIABLES.has(expression.variable)) {
+        invalid(`${index}.variable is not a recognized environment-home variable`);
+      }
+      requireRelativePath(expression.fallback, `${index}.fallback`);
+      break;
+    default:
+      invalid(`${index} has an unsupported kind`);
+  }
+}
+
+function validateDetector(detector, index = "detector") {
+  if (!detector || typeof detector !== "object" || Array.isArray(detector)) {
+    invalid(`${index} must be an object`);
+  }
+  if (!DETECTOR_KINDS.has(detector.kind)) invalid(`${index} has an unknown kind`);
+  const fields = {
+    "any-existing": ["kind", "paths"],
+    "eve-project": ["kind", "agentPath", "packageJsonPath", "dependency"],
+    never: ["kind"],
+  }[detector.kind];
+  requireOnly(detector, fields, index);
+  switch (detector.kind) {
+    case "any-existing":
+      if (!Array.isArray(detector.paths) || detector.paths.length === 0) {
+        invalid(`${index}.paths must be a non-empty array`);
+      }
+      detector.paths.forEach((pathExpression, pathIndex) => {
+        validatePathExpression(pathExpression, `${index}.paths[${pathIndex}]`);
+      });
+      break;
+    case "eve-project":
+      validatePathExpression(detector.agentPath, `${index}.agentPath`);
+      validatePathExpression(detector.packageJsonPath, `${index}.packageJsonPath`);
+      if (detector.agentPath.kind !== "cwd-relative" || detector.agentPath.path !== "agent" ||
+        detector.packageJsonPath.kind !== "cwd-relative" || detector.packageJsonPath.path !== "package.json" ||
+        detector.dependency !== "eve") {
+        invalid(`${index} is not the pinned Eve detector`);
+      }
+      break;
+    case "never":
+      break;
+    default:
+      invalid(`${index} has an unsupported kind`);
+  }
+}
+
 function validateRule(rule, index = "rule") {
   if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
     invalid(`${index} must be an object`);
   }
   if (!RULE_KINDS.has(rule.kind)) invalid(`${index} has an unknown kind`);
+  const fields = {
+    "home-relative": ["kind", "path"],
+    "config-home-relative": ["kind", "path"],
+    "environment-or-home": ["kind", "variable", "fallback", "suffix"],
+    "first-existing-home-relative": ["kind", "candidates", "fallback", "suffix"],
+    "no-global-target": ["kind"],
+  }[rule.kind];
+  requireOnly(rule, fields, index);
 
   switch (rule.kind) {
     case "home-relative":
@@ -84,10 +203,18 @@ function validateRule(rule, index = "rule") {
   }
 }
 
-function validateDocument(document) {
+function validateDocument(document, enforcePinned = true) {
   if (!document || typeof document !== "object" || Array.isArray(document)) {
     invalid("document must be an object");
   }
+  requireOnly(document, [
+    "schemaVersion",
+    "skillsVersion",
+    "agentCount",
+    "globalTargetCount",
+    "noGlobalTargetCount",
+    "agents",
+  ], "document");
   if (document.schemaVersion !== RULE_SCHEMA_VERSION) invalid("schema version mismatch");
   if (document.skillsVersion !== PINNED_SKILLS_VERSION) invalid("skills version mismatch");
   if (!Array.isArray(document.agents)) invalid("agents must be an array");
@@ -100,6 +227,7 @@ function validateDocument(document) {
     if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
       invalid(`agent ${index} must be an object`);
     }
+    requireOnly(agent, ["id", "rule", "detector"], `agent ${index}`);
     requireString(agent.id, `agent ${index}.id`);
     if (ids.has(agent.id)) invalid(`duplicate agent id: ${agent.id}`);
     ids.add(agent.id);
@@ -107,6 +235,8 @@ function validateDocument(document) {
       invalid(`agent ${agent.id} must have exactly one rule`);
     }
     validateRule(agent.rule, `agent ${agent.id}.rule`);
+    if (!Object.hasOwn(agent, "detector")) invalid(`agent ${agent.id} must have exactly one detector`);
+    validateDetector(agent.detector, `agent ${agent.id}.detector`);
     if (agent.rule.kind === "no-global-target") noGlobalTargetCount += 1;
     else globalTargetCount += 1;
   }
@@ -114,11 +244,111 @@ function validateDocument(document) {
   if (document.globalTargetCount !== globalTargetCount) invalid("global target count mismatch");
   if (document.noGlobalTargetCount !== noGlobalTargetCount) invalid("no-global target count mismatch");
   if (document.agentCount !== globalTargetCount + noGlobalTargetCount) invalid("total target count mismatch");
-  if (document.agentCount !== EXPECTED_AGENT_COUNT) invalid("pinned agent count mismatch");
-  if (document.globalTargetCount !== EXPECTED_GLOBAL_TARGET_COUNT) invalid("pinned global target count mismatch");
-  if (document.noGlobalTargetCount !== EXPECTED_NO_GLOBAL_TARGET_COUNT) invalid("pinned no-global target count mismatch");
+  if (enforcePinned) {
+    if (document.agentCount !== EXPECTED_AGENT_COUNT) invalid("pinned agent count mismatch");
+    if (document.globalTargetCount !== EXPECTED_GLOBAL_TARGET_COUNT) invalid("pinned global target count mismatch");
+    if (document.noGlobalTargetCount !== EXPECTED_NO_GLOBAL_TARGET_COUNT) invalid("pinned no-global target count mismatch");
+  }
 
   return document;
+}
+
+function runtimePath(runtime) {
+  return runtime?.platform === "win32" ? win32 : posix;
+}
+
+function runtimeCwd(runtime) {
+  if (runtime?.cwd === undefined) return process.cwd();
+  if (typeof runtime.cwd !== "string" || runtime.cwd.length === 0) {
+    throw new TypeError("skills detector evaluation requires a non-empty cwd path");
+  }
+  return runtime.cwd;
+}
+
+function environmentValue(environment, variable) {
+  return typeof environment[variable] === "string" ? environment[variable].trim() : "";
+}
+
+function resolveDetectorPath(expression, runtime) {
+  validatePathExpression(expression);
+  const path = runtimePath(runtime);
+  const home = runtimeHome(runtime);
+  const cwd = runtimeCwd(runtime);
+  const environment = runtime?.env && typeof runtime.env === "object" ? runtime.env : {};
+  const fromCwd = (candidate) => path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate);
+  switch (expression.kind) {
+    case "home-relative": return fromCwd(path.join(home, expression.path));
+    case "config-home-relative": {
+      const configHome = environment.XDG_CONFIG_HOME || path.join(home, ".config");
+      return fromCwd(path.join(configHome, expression.path));
+    }
+    case "cwd-relative": return fromCwd(path.join(cwd, expression.path));
+    case "absolute": return expression.path;
+    case "environment-relative": {
+      const configured = environmentValue(environment, expression.variable);
+      return configured ? fromCwd(path.join(configured, expression.suffix)) : null;
+    }
+    case "environment-or-home": {
+      const configured = environmentValue(environment, expression.variable);
+      return fromCwd(configured || path.join(home, expression.fallback));
+    }
+    default: throw new TypeError(`unknown detector path kind: ${expression.kind}`);
+  }
+}
+
+function readBoundedJsonDependency(packagePath, dependency) {
+  let descriptor;
+  try {
+    const stat = lstatSync(packagePath);
+    if (!stat.isFile() || stat.size > MAX_EVE_PACKAGE_BYTES) return false;
+    descriptor = openSync(packagePath, "r");
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile() || opened.size > MAX_EVE_PACKAGE_BYTES) return false;
+    const bytes = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < opened.size) {
+      const count = readSync(descriptor, bytes, offset, opened.size - offset, offset);
+      if (count <= 0) return false;
+      offset += count;
+    }
+    const value = JSON.parse(bytes.toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const hasDependency = (section) => section && typeof section === "object" && !Array.isArray(section) &&
+      Object.prototype.hasOwnProperty.call(section, dependency) && Boolean(section[dependency]);
+    return hasDependency(value.dependencies) || hasDependency(value.devDependencies);
+  } catch {
+    return false;
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* best effort */ }
+    }
+  }
+}
+
+export function evaluateDetector(detector, runtime = {}) {
+  validateDetector(detector);
+  const exists = runtime.exists;
+  if (typeof exists !== "function") throw new TypeError("skills detector evaluation requires an exists function");
+  switch (detector.kind) {
+    case "never": return false;
+    case "any-existing":
+      return detector.paths.some((expression) => {
+        const resolved = resolveDetectorPath(expression, runtime);
+        return resolved !== null && Boolean(exists(resolved));
+      });
+    case "eve-project": {
+      const agentPath = resolveDetectorPath(detector.agentPath, runtime);
+      if (!exists(agentPath)) return false;
+      const packagePath = resolveDetectorPath(detector.packageJsonPath, runtime);
+      return readBoundedJsonDependency(packagePath, detector.dependency);
+    }
+    default: throw new TypeError(`unknown skills detector kind: ${detector.kind}`);
+  }
+}
+
+export function detectInstalledAgents(document, runtime) {
+  validateDocument(document, false);
+  return document.agents.filter((agent) => evaluateDetector(agent.detector, runtime)).map((agent) => agent.id);
 }
 
 export function loadRules(jsonPath) {
