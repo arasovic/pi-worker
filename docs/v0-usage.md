@@ -51,7 +51,8 @@ pi-worker models [--timeout <duration>] [--json] [--debug]
 - `--json` emits one object with `schemaVersion: 1` and sorted `models`, each
   containing `provider`, `id`, and `selector`.
 - The default timeout is `30s`. An empty catalog is a readiness failure (exit
-  code `3`), malformed Pi data is a protocol/internal failure (exit code `9`).
+  code `3`), as is a missing or unavailable Pi executable. Malformed Pi data is
+  a protocol/internal failure (exit code `9`).
 
 ## Local readiness doctor
 
@@ -96,7 +97,9 @@ pi-worker config set default-model <provider/model> [--debug] [--timeout <durati
 - `config show` reads the local document only. It never launches Pi.
 - `config set` requires an exact `provider/model` selector, queries Pi's model
   catalog once, and writes the default only when that exact selector is
-  available. There is no fallback.
+  available. A missing or unavailable Pi executable is a readiness failure
+  (exit code `3`); protocol/internal failures use exit code `9`. There is no
+  fallback.
 - Configuration writes use a same-directory temporary file, file sync, atomic
   replacement, and owner-only permissions where supported.
 - Model precedence is explicit `run --model`, then the configured

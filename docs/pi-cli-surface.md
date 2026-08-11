@@ -2,13 +2,13 @@
 
 ## Scope and evidence
 
-Observed binary: `pi` at `/opt/homebrew/bin/pi`.
+Observed binary: a local `pi` executable resolved from `PATH`.
 
 Observed version: `0.84.1`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
-were inspected at `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent`.
+were also inspected.
 No authentication command that reads credentials was run. No model catalog,
 prompt, or other billable operation was run.
 
