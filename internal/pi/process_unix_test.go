@@ -209,6 +209,12 @@ func TestProcessCloseSkipsDescendantSnapshotAfterReapedChild(t *testing.T) {
 	if err := proc.Wait(); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
+	proc.mu.Lock()
+	reaped := proc.reaped
+	proc.mu.Unlock()
+	if !reaped {
+		t.Fatal("Wait returned before publishing the reaped process identity")
+	}
 	if err := proc.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}

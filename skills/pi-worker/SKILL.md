@@ -5,6 +5,13 @@ description: Use when an agent delegates work through Pi, needs cheaper or separ
 
 # Pi Worker
 
+## Safety boundary
+
+Pi workers operate in the current writable workspace and may execute `bash`
+with the current user's host permissions. Pi Worker is not a sandbox or
+worktree isolation layer. Delegate only trusted, bounded work; keep product and
+architecture decisions with the orchestrating agent.
+
 1. Confirm `pi-worker` is on `PATH` before proposing or running work.
 2. Resolve an informal model name with `pi-worker models --json --debug --timeout 30s`. Select one unambiguous exact `provider/model`; report ambiguity and stop.
 3. Pass an exact model unchanged with `--model`. If it is unavailable or unauthenticated, report the setup action and stop. Never substitute another model or provider.

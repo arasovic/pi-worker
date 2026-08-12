@@ -30,6 +30,10 @@ then run a bounded task in your current workspace.
 - An available exact model selector from `pi-worker models`.
 - Go 1.26.1 for source builds and release snapshots; the module language baseline is Go 1.25.0.
 
+The npm package supports only macOS and Linux on arm64 and x64. Windows users
+must build from source; Windows is compile-checked but not runtime-tested in
+the current release gates.
+
 ## Install with npm
 
 Pi Worker is not published to npm yet. The following commands are the intended

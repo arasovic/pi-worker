@@ -25,6 +25,10 @@ const catalogToolAllowlist = "read,grep,find,ls"
 // EOF before killing it. Tests shorten it.
 var processCloseGrace = 5 * time.Second
 
+var terminateProcess = func(cont *childContainment, pid int) error {
+	return cont.terminate(pid)
+}
+
 // Process launches the host pi executable in RPC mode in a workspace with a
 // fresh private per-worker session directory and the exact disabling flags
 // from docs/pi-cli-surface.md. The child inherits the host environment
@@ -51,6 +55,7 @@ type Process struct {
 	stdout io.ReadCloser
 
 	started bool
+	reaped  bool
 	waitCh  chan struct{}
 	waitErr error
 
@@ -228,6 +233,12 @@ func (p *Process) Start(ctx context.Context) error {
 	})
 	go func() {
 		p.waitErr = cmd.Wait()
+		// The numeric PID/process-group identity is unsafe after Wait reaps the
+		// root: it may already refer to an unrelated process. Publish that state
+		// before joining a cancellation callback that has not acquired the lock.
+		p.mu.Lock()
+		p.reaped = true
+		p.mu.Unlock()
 		// stop returns true only when the callback can never run; false
 		// means it has started or is scheduled, so join it here. Either way
 		// waitCh closes only after terminate is provably finished.
@@ -273,10 +284,10 @@ func (p *Process) Wait() error {
 func (p *Process) killTree() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.started || p.cmd == nil || p.cmd.Process == nil {
+	if !p.started || p.reaped || p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	if err := p.cont.terminate(p.cmd.Process.Pid); err != nil {
+	if err := terminateProcess(p.cont, p.cmd.Process.Pid); err != nil {
 		_ = p.cmd.Process.Kill()
 	}
 }

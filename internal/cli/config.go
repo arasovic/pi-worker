@@ -73,9 +73,15 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 	if err != nil {
 		return modelsErrorCode(ctx, err, stderr)
 	}
+	if err := ctx.Err(); err != nil {
+		return modelsErrorCode(ctx, err, stderr)
+	}
 	if !catalogContains(models, opts.model) {
 		fmt.Fprintf(stderr, "pi-worker: model %q is not in the available catalog; no fallback attempted\n", opts.model)
 		return 3
+	}
+	if err := ctx.Err(); err != nil {
+		return modelsErrorCode(ctx, err, stderr)
 	}
 	if err := configpkg.Save(path, configpkg.Config{SchemaVersion: 1, DefaultModel: opts.model}); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: save config: %v\n", err)

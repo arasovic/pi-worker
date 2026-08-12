@@ -10,10 +10,12 @@ const readmePath = join(repository, "README.md");
 const usagePath = join(repository, "docs", "v0-usage.md");
 const contributingPath = join(repository, "CONTRIBUTING.md");
 const securityPath = join(repository, "SECURITY.md");
+const skillPath = join(repository, "skills", "pi-worker", "SKILL.md");
 const readme = readFileSync(readmePath, "utf8");
 const usage = readFileSync(usagePath, "utf8");
 const contributing = existsSync(contributingPath) ? readFileSync(contributingPath, "utf8") : "";
 const security = existsSync(securityPath) ? readFileSync(securityPath, "utf8") : "";
+const skill = readFileSync(skillPath, "utf8");
 const normalizedSecurity = security.replace(/\s+/g, " ");
 const packageManifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
 const npmReadmeTargets = ["CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES"];
@@ -107,6 +109,8 @@ test("README is the concise public entry point with the approved contract", () =
   assert.match(readme, /source-build instructions.*docs\/v0-usage\.md/s);
   assert.match(readme, /use\s+`\.\/bin\/pi-worker` after a source build/i);
   assert.match(readme, /four native binaries for macOS\/Linux arm64\/x64/i);
+  assert.match(readme, /npm package supports only macOS and Linux on arm64 and x64/i);
+  assert.match(readme, /Windows[\s\S]*build from source[\s\S]*compile-checked[\s\S]*not runtime-tested/i);
   assert.match(readme, /launcher selects the matching binary at runtime/i);
   assert.match(readme, /installation does not remove\s+the others/i);
   assert.match(readme, /canonical provider-neutral.*skill/s);
@@ -118,6 +122,8 @@ test("README is the concise public entry point with the approved contract", () =
   assert.match(usage, /Node\.js 22\.20\.0 or newer/);
   assert.match(usage, /source build/i);
   assert.match(usage, /`\.\/bin\/pi-worker`/);
+  assert.match(usage, /human version output is `pi-worker dev`/i);
+  assert.match(usage, /unsupported npm platform[\s\S]*skip before[\s\S]*receipt/i);
   assert.match(readme, /not published yet/i);
   assert.match(readme, /release links will be added when available/i);
   assert.doesNotMatch(readme, /branding\/publication gate/i);
@@ -152,6 +158,13 @@ test("README is the concise public entry point with the approved contract", () =
   const selectorInstruction = /Replace `provider\/model` with one exact selector\s+printed by `pi-worker models` before config set/;
   assert.match(readme, selectorInstruction, "README explains selector replacement");
   assert.ok(readme.search(selectorInstruction) < readme.indexOf("pi-worker config set default-model provider/model"));
+});
+
+test("installed skill states the worker authority boundary before delegation", () => {
+  const normalizedSkill = skill.replace(/\s+/g, " ");
+  assert.match(normalizedSkill, /current writable workspace/i);
+  assert.match(normalizedSkill, /bash.*current user's host permissions/i);
+  assert.match(normalizedSkill, /not a sandbox or worktree/i);
 });
 
 test("README links resolve and the npm tarball has one root README", () => {

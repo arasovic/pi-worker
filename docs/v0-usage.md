@@ -21,6 +21,10 @@ or raw protocol output.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
   - Open Pi interactively and use Pi's own authentication flow.
 
+The npm package supports macOS and Linux on arm64 and x64. Windows requires a
+source build and is compile-checked, but it is not runtime-tested in the current
+release gates.
+
 Pi Worker is not published to npm yet. These are the intended post-publication
 install commands; they are not currently usable from the registry:
 
@@ -41,9 +45,9 @@ go build -o ./bin/pi-worker ./cmd/pi-worker
 After a source build, use `./bin/pi-worker` in place of `pi-worker` for the
 commands in this document.
 
-> Source builds report `version=dev`, `commit=unknown`, and
-> `build date=unknown`. Release artifacts inject all three values at build time
-> and print the full 40-hex commit in version output.
+> Source-build metadata defaults to `version=dev`, `commit=unknown`, and
+> `build date=unknown`; the human version output is `pi-worker dev`. Release
+> artifacts inject all three values and print the full 40-hex commit.
 
 ## npm postinstall
 
@@ -51,6 +55,9 @@ During `npm install`, npm attempts to install the bundled provider-neutral
 `pi-worker` skill for detected agent targets via pinned `skills@1.5.22`. It
 records an `installed`, `blocked`, `skipped`, or `failed` outcome in the durable
 receipt. Existing conflicts may block, skip, or fail without overwriting them.
+On an unsupported npm platform or architecture, setup can skip before the
+native CLI creates a receipt; `pi-worker skill status` is unavailable when the
+launcher itself is unsupported.
 
 ## Supported commands
 

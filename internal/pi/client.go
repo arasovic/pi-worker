@@ -493,6 +493,9 @@ func (c *Client) handleFrame(frame []byte) (isResponse bool, resp *wireResponse,
 	if err := json.Unmarshal(frame, &head); err != nil {
 		return false, nil, newProtocolError("malformed frame: %v", err)
 	}
+	if head.Type == "" {
+		return false, nil, newProtocolError("frame missing type")
+	}
 	if head.Type != "response" {
 		event := Event{Type: head.Type, Raw: append(json.RawMessage(nil), frame...)}
 		if head.Type == eventAgentSettled {

@@ -286,6 +286,30 @@ func TestClientMalformedFrameFails(t *testing.T) {
 	}
 }
 
+func TestClientFrameWithoutTypeFails(t *testing.T) {
+	for _, raw := range []string{`{}`, `null`, `{"success":true}`} {
+		t.Run(raw, func(t *testing.T) {
+			script := &script.Script{Triggers: map[string][]script.Step{
+				"get_available_models": {
+					{Raw: raw},
+					{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[]}`)}},
+				},
+			}}
+			proc := startScriptedPi(t, script)
+			client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+			_, err := client.GetAvailableModels(context.Background())
+			var protocolErr *ProtocolError
+			if !errors.As(err, &protocolErr) {
+				t.Fatalf("err = %v, want *ProtocolError", err)
+			}
+			if !strings.Contains(err.Error(), "missing type") {
+				t.Fatalf("error = %q", err)
+			}
+		})
+	}
+}
+
 func TestClientEmptyFrameFails(t *testing.T) {
 	script := &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {{Raw: ""}},

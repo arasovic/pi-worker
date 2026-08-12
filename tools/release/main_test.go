@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,15 +178,24 @@ func TestRunBuildsWithVerifiedOptions(t *testing.T) {
 	oldVerify := verifyNotices
 	oldBuild := runReleaseBuild
 	var got releaseartifact.Options
+	moduleVerified := false
 
 	runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name == "go" && len(args) == 4 && args[0] == "-C" && args[2] == "mod" && args[3] == "verify" {
+			moduleVerified = true
+			return []byte("all modules verified\n"), nil
+		}
 		if name == "go" && len(args) > 0 && args[0] == "env" {
 			return []byte(filepath.Join(temp, "modcache")), nil
 		}
+		t.Fatalf("unexpected command: %s %v", name, args)
 		return nil, nil
 	}
 	verifyNotices = func(_ []byte, _ string) error { return nil }
 	runReleaseBuild = func(_ context.Context, options releaseartifact.Options) error {
+		if !moduleVerified {
+			t.Fatal("release build ran before go mod verify")
+		}
 		got = options
 		return nil
 	}
@@ -207,6 +217,24 @@ func TestRunBuildsWithVerifiedOptions(t *testing.T) {
 	wantDate := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
 	if got.Version != "v0.1.0" || got.Commit != testCommit || !got.BuildDate.Equal(wantDate) || got.OutputDir != filepath.Join(temp, "dist") {
 		t.Fatalf("unexpected build options: %#v", got)
+	}
+}
+
+func TestVerifyModulesUsesRepositoryRootAndPropagatesFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	wantErr := errors.New("verification failed")
+	oldRunCommand := runCommand
+	runCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "go" || !reflect.DeepEqual(args, []string{"-C", root, "mod", "verify"}) {
+			t.Fatalf("command = %s %v", name, args)
+		}
+		return nil, wantErr
+	}
+	t.Cleanup(func() { runCommand = oldRunCommand })
+
+	err := verifyModules(context.Background(), root)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("verifyModules() error = %v, want wrapped failure", err)
 	}
 }
 
@@ -252,6 +280,9 @@ func TestRunUsesRepositoryRootFromNestedWorkingDirectory(t *testing.T) {
 		}
 	}
 	runCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "go" && len(args) == 4 && args[0] == "-C" && filepath.Clean(args[1]) == repoRoot && args[2] == "mod" && args[3] == "verify" {
+			return []byte("all modules verified\n"), nil
+		}
 		if name == "go" && len(args) == 2 && args[0] == "env" && args[1] == "GOMODCACHE" {
 			return []byte(filepath.Join(t.TempDir(), "modcache")), nil
 		}

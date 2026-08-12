@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -164,6 +165,28 @@ func TestProcessCancellationTerminatesChild(t *testing.T) {
 	}
 	if _, err := os.Stat(proc.SessionDir()); !os.IsNotExist(err) {
 		t.Fatalf("session directory left behind: %v", err)
+	}
+}
+
+func TestProcessKillTreeSkipsAReapedChildIdentity(t *testing.T) {
+	originalTerminate := terminateProcess
+	called := false
+	terminateProcess = func(*childContainment, int) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { terminateProcess = originalTerminate })
+
+	proc := &Process{
+		started: true,
+		reaped:  true,
+		cmd:     &exec.Cmd{Process: &os.Process{Pid: 4242}},
+		cont:    &childContainment{},
+	}
+	proc.killTree()
+
+	if called {
+		t.Fatal("killTree reused the process-group identity after the child was reaped")
 	}
 }
 

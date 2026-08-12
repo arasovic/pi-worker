@@ -84,6 +84,9 @@ func run(args []string) error {
 	if head != *commit {
 		return fmt.Errorf("release commit %q does not match repository HEAD %q", *commit, head)
 	}
+	if err := verifyModules(context.Background(), root); err != nil {
+		return err
+	}
 
 	moduleCache, err := queryGomodcache(context.Background())
 	if err != nil {
@@ -104,6 +107,13 @@ func run(args []string) error {
 		OutputDir: *output,
 	}); err != nil {
 		return err
+	}
+	return nil
+}
+
+func verifyModules(ctx context.Context, root string) error {
+	if _, err := runCommand(ctx, "go", "-C", root, "mod", "verify"); err != nil {
+		return fmt.Errorf("verify Go modules: %w", err)
 	}
 	return nil
 }

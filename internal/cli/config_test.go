@@ -23,6 +23,16 @@ type countingCatalog struct {
 	req    pi.CatalogRequest
 }
 
+type cancellingCatalog struct {
+	cancel context.CancelFunc
+	models []pi.ModelProjection
+}
+
+func (c *cancellingCatalog) List(_ context.Context, _ pi.CatalogRequest) ([]pi.ModelProjection, error) {
+	c.cancel()
+	return append([]pi.ModelProjection(nil), c.models...), nil
+}
+
 func (c *countingCatalog) List(_ context.Context, req pi.CatalogRequest) ([]pi.ModelProjection, error) {
 	c.calls++
 	c.req = req
@@ -145,6 +155,31 @@ func TestConfigSetUnavailableDoesNotChangeConfig(t *testing.T) {
 	got, err := config.Load(path)
 	if err != nil || got != before {
 		t.Fatalf("config after unavailable set = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetCancellationAfterCatalogDoesNotChangeConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	if err := config.Save(path, before); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	ctx, cancel := context.WithCancel(context.Background())
+	installFakeCatalog(t, &cancellingCatalog{
+		cancel: cancel,
+		models: []pi.ModelProjection{{Provider: "acme", ID: "model"}},
+	})
+	var stdout, stderr bytes.Buffer
+
+	code := mainWithContext(ctx, []string{"config", "set", "default-model", "acme/model"}, strings.NewReader(""), &stdout, &stderr)
+
+	if code != 8 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "cancelled") {
+		t.Fatalf("cancelled config set = (%d, %q, %q)", code, stdout.String(), stderr.String())
+	}
+	got, err := config.Load(path)
+	if err != nil || got != before {
+		t.Fatalf("config after cancelled set = %#v, %v", got, err)
 	}
 }
 
