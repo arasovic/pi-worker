@@ -16,7 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 // readPIDFile polls path until it holds a positive pid and returns it.

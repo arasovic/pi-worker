@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"pi-worker/internal/skillinstall"
+	"github.com/arasovic/pi-worker/internal/skillinstall"
 )
 
 var resolveSkillReceiptPath = skillinstall.UserReceiptPath

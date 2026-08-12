@@ -24,16 +24,9 @@ const sections = [
   "What is it?",
   "Why does it exist?",
   "How do I use it?",
-  "Requirements",
-  "Install with npm",
-  "First run",
-  "Use from a coding agent",
-  "Run independent tasks in parallel",
-  "What gets installed",
   "Safety",
-  "Install from GitHub Releases",
   "Troubleshooting",
-  "Advanced documentation",
+  "Documentation",
   "License",
 ];
 
@@ -77,6 +70,7 @@ test("README is the concise public entry point with the approved contract", () =
     "pi-worker skill receipt-path",
     "npx --yes skills@1.5.22 list -g",
     "npx --yes skills@1.5.22 remove pi-worker -g -y",
+    "go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.1.0",
   ]) {
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
   }
@@ -101,33 +95,33 @@ test("README is the concise public entry point with the approved contract", () =
   ]) {
     assert.match(readme, new RegExp(safetyStatement.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
-  assert.equal(packageManifest.private, true, "package remains private");
+  assert.equal(packageManifest.name, "pi-worker");
+  assert.equal(packageManifest.version, "0.1.0");
+  assert.notEqual(packageManifest.private, true, "package is publishable");
+  assert.equal(packageManifest.license, "MIT");
+  assert.deepEqual(packageManifest.repository, {
+    type: "git",
+    url: "git+https://github.com/arasovic/pi-worker.git",
+  });
+  assert.equal(packageManifest.homepage, "https://github.com/arasovic/pi-worker#readme");
+  assert.deepEqual(packageManifest.bugs, { url: "https://github.com/arasovic/pi-worker/issues" });
   assert.equal(packageManifest.engines.node, ">=22.20.0", "README requirement matches package lower bound");
-  assert.match(readme, /not published to npm yet/i);
-  assert.match(readme, /intended\s+post-publication install path/i);
-  assert.match(readme, /not currently usable from the registry/i);
-  assert.match(readme, /source-build instructions.*docs\/v0-usage\.md/s);
-  assert.match(readme, /use\s+`\.\/bin\/pi-worker` after a source build/i);
-  assert.match(readme, /four native binaries for macOS\/Linux arm64\/x64/i);
+  assert.doesNotMatch(readme, /not published|not currently usable|intended\s+post-publication/i);
+  assert.match(readme, /source builds.*docs\/v0-usage\.md/is);
   assert.match(readme, /npm package supports only macOS and Linux on arm64 and x64/i);
   assert.match(readme, /Windows[\s\S]*build from source[\s\S]*compile-checked[\s\S]*not runtime-tested/i);
-  assert.match(readme, /launcher selects the matching binary at runtime/i);
-  assert.match(readme, /installation does not remove\s+the others/i);
-  assert.match(readme, /canonical provider-neutral.*skill/s);
-  assert.match(readme, /npm install attempts to install.*detected\s+agent targets/s);
+  assert.match(readme, /native binary.*provider-neutral.*skill/is);
+  assert.match(readme, /npm install attempts to install.*detected\s+coding agents/is);
   assert.match(readme, /pinned `skills@1\.5\.22`/);
-  assert.match(readme, /installed,\s*blocked,\s*skipped,\s*or failed outcome.*durable receipt/s);
-  assert.match(readme, /existing conflicts\s+may block,\s*skip,\s*or fail.*without overwriting/is);
+  assert.match(readme, /never\s+overwrites.*unrecognized.*skill/is);
   assert.match(readme, /Node\.js 22\.20\.0 or newer/);
   assert.match(usage, /Node\.js 22\.20\.0 or newer/);
   assert.match(usage, /source build/i);
   assert.match(usage, /`\.\/bin\/pi-worker`/);
   assert.match(usage, /human version output is `pi-worker dev`/i);
   assert.match(usage, /unsupported npm platform[\s\S]*skip before[\s\S]*receipt/i);
-  assert.match(readme, /not published yet/i);
-  assert.match(readme, /release links will be added when available/i);
   assert.doesNotMatch(readme, /branding\/publication gate/i);
-  assert.match(readme, /durable receipt/);
+  assert.match(readme, /durable\s+receipt/);
   assert.match(readme, /identity\s+marker/);
   assert.match(readme, /externally managed/);
   assert.match(readme, /markerless|foreign|mixed/i);
@@ -139,23 +133,20 @@ test("README is the concise public entry point with the approved contract", () =
   assert.doesNotMatch(readme, /(?:npm|package-manager) distribution is deferred|packaging is source-only/i);
 
   const firstTaskCommand = readme.indexOf('pi-worker run --thinking high --task "Review this module and explain the main risks"');
-  const earlySafetyStart = readme.indexOf("> **Safety before running a worker task:**");
-  assert.ok(earlySafetyStart >= 0 && earlySafetyStart < firstTaskCommand, "early safety callout precedes the first task command");
-  const earlySafety = readme
-    .slice(earlySafetyStart, firstTaskCommand)
-    .replace(/^>\s?/gm, "")
-    .replace(/\s+/g, " ");
+  const earlySafetyStart = readme.indexOf("> **Safety:**");
+  assert.ok(earlySafetyStart >= 0 && earlySafetyStart < firstTaskCommand, "safety callout precedes the first task command");
+  const earlySafety = readme.slice(earlySafetyStart, firstTaskCommand).replace(/^>\s?/gm, "").replace(/\s+/g, " ");
   for (const safetyPhrase of [
     "modify the current writable workspace",
-    "execute `bash` with the user's host permissions",
+    "execute `bash` with the current user's host permissions",
     "not a sandbox or worktree layer",
-    "trusted workspace only",
+    "use a trusted workspace",
     "parallel tasks must be disjoint",
   ]) {
     assert.match(earlySafety, new RegExp(safetyPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
 
-  const selectorInstruction = /Replace `provider\/model` with one exact selector\s+printed by `pi-worker models` before config set/;
+  const selectorInstruction = /Replace `provider\/model` with one exact selector\s+printed by `pi-worker models`\s+before config set/;
   assert.match(readme, selectorInstruction, "README explains selector replacement");
   assert.ok(readme.search(selectorInstruction) < readme.indexOf("pi-worker config set default-model provider/model"));
 });
@@ -223,18 +214,20 @@ test("security guidance states the current public reporting boundary", () => {
     assert.match(normalizedSecurity, new RegExp(escapeRegex(warning), "i"), `SECURITY.md mentions ${warning}`);
   }
   assert.match(normalizedSecurity, /do not.*(?:post|disclose).*public issues/i);
-  assert.match(normalizedSecurity, /no public security[- ]reporting channel is active/i);
   assert.match(normalizedSecurity, /GitHub private vulnerability reporting/i);
-  assert.match(normalizedSecurity, /after.*public.*(?:repository|feature).*exists/i);
-  assert.match(normalizedSecurity, /public release must not be made until.*channel is enabled/i);
+  assert.match(security, /https:\/\/github\.com\/arasovic\/pi-worker\/security\/advisories\/new/);
+  assert.match(normalizedSecurity, /if.*channel.*unavailable.*do not.*public/i);
   assert.match(normalizedSecurity, /v0\.1/i);
   assert.match(normalizedSecurity, /workers?.*execute.*bash.*current user.*permissions/i);
   assert.match(normalizedSecurity, /current writable workspace/i);
   assert.match(normalizedSecurity, /not a sandbox/i);
   assert.match(normalizedSecurity, /do not disclose publicly/i);
-  assert.doesNotMatch(security, /https?:\/\/|mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
+  assert.doesNotMatch(security, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
 
   const publicDocs = `${readme}\n${contributing}\n${security}`;
-  assert.doesNotMatch(publicDocs, /https?:\/\/|mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
+  for (const [, url] of publicDocs.matchAll(/(https?:\/\/[^)\s]+)/g)) {
+    assert.match(url, /^https:\/\/github\.com\/arasovic\/pi-worker(?:\/|$)/);
+  }
+  assert.doesNotMatch(publicDocs, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
   assert.doesNotMatch(publicDocs, /(?:\.github\/workflows|private plan|work log|review metadata|\/Users\/|\/home\/|\/tmp\/)/i);
 });

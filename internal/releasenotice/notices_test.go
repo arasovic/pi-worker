@@ -271,6 +271,7 @@ func modulesForTarget(t *testing.T, goos, goarch string) map[string]string {
 	type moduleDesc struct {
 		Path    string `json:"Path"`
 		Version string `json:"Version"`
+		Main    bool   `json:"Main"`
 	}
 	type packageJSON struct {
 		Module *moduleDesc `json:"Module"`
@@ -286,7 +287,7 @@ func modulesForTarget(t *testing.T, goos, goarch string) map[string]string {
 		if err != nil {
 			t.Fatalf("decode go list JSON: %v", err)
 		}
-		if data.Module == nil || data.Module.Path == "" || data.Module.Path == "pi-worker" {
+		if data.Module == nil || data.Module.Main || data.Module.Path == "" {
 			continue
 		}
 		deps[data.Module.Path] = data.Module.Version

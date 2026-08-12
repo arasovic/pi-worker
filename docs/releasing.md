@@ -34,7 +34,7 @@ npm run stage -- --dist dist
 PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm/test/package.test.mjs
 npm pack --json | tee dist/npm-pack.json
 export NPM_TARBALL="$(node -p "JSON.parse(require('fs').readFileSync('dist/npm-pack.json','utf8'))[0].filename")"
-test "$NPM_TARBALL" = "pi-worker-0.0.0-private.tgz"
+test "$NPM_TARBALL" = "pi-worker-0.1.0.tgz"
 mv "$NPM_TARBALL" "dist/$NPM_TARBALL"
 ```
 
@@ -45,7 +45,7 @@ mv "$NPM_TARBALL" "dist/$NPM_TARBALL"
 - `dist/pi-worker_v0.1.0_linux_arm64.tar.gz`
 - `dist/pi-worker_v0.1.0_linux_amd64.tar.gz`
 - `dist/checksums.txt`
-- `dist/pi-worker-0.0.0-private.tgz`
+- `dist/pi-worker-0.1.0.tgz`
 - `dist/npm-pack.json`
 
 ## Checksum verification
@@ -62,20 +62,22 @@ Linux:
 (cd dist && sha256sum -c checksums.txt)
 ```
 
-## Package inventory inspection and private guard
+## Package inventory and public metadata inspection
 
 ```sh
-tar -tzf dist/pi-worker-0.0.0-private.tgz
+tar -tzf dist/pi-worker-0.1.0.tgz
 node -e "const fs=require('fs');const data=JSON.parse(fs.readFileSync('dist/npm-pack.json','utf8'));if(data.length!==1||!data[0].filename){process.exit(1)}"
-node -e "const fs=require('fs');const manifest=JSON.parse(fs.readFileSync('package.json','utf8'));if(!manifest.private){process.exit(1);}"
+node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));if(p.name!=='pi-worker'||p.version!=='0.1.0'||p.private===true||!p.repository.url.endsWith('github.com/arasovic/pi-worker.git')){process.exit(1)}"
 npm pack --dry-run --json
 ```
 
-Inspect the package entry list and ensure expected release contents, then confirm `"private": true` before any publication step.
+Inspect the package entry list and confirm the public name, version, repository,
+license, homepage, and issue URL before any publication step.
 
-## Stop before branding and publication
+## Stop before remote actions and publication
 
-This runbook is a snapshot gate only. Do not run a publication command.
+This runbook is a local snapshot gate only. Do not create a remote, push, tag,
+create a GitHub Release, configure credentials, or run a publication command.
 The first future npm publication requires a user-approved single-use granular bootstrap
 credential with provenance; then configure trusted publishing, and revoke that bootstrap
 credential immediately.

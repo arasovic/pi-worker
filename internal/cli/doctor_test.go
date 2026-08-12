@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/config"
-	"pi-worker/internal/doctor"
-	"pi-worker/internal/pi"
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/config"
+	"github.com/arasovic/pi-worker/internal/doctor"
+	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 func readyDoctorDependencies() doctor.Dependencies {

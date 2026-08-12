@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"pi-worker/internal/buildinfo"
-	"pi-worker/internal/contracts"
-	"pi-worker/internal/pi"
-	"pi-worker/internal/piversion"
-	"pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/buildinfo"
+	"github.com/arasovic/pi-worker/internal/contracts"
+	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/piversion"
+	"github.com/arasovic/pi-worker/internal/run"
 )
 
 // defaultRunTimeout bounds one foreground worker run.

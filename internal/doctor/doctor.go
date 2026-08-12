@@ -6,9 +6,9 @@ import (
 	"errors"
 	"io/fs"
 
-	"pi-worker/internal/config"
-	"pi-worker/internal/pi"
-	"pi-worker/internal/piversion"
+	"github.com/arasovic/pi-worker/internal/config"
+	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/piversion"
 )
 
 type CheckStatus string

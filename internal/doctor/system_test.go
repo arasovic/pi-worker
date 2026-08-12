@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/piversion"
+	"github.com/arasovic/pi-worker/internal/piversion"
 )
 
 func TestSystemVersionTrimsBoundedStdoutAndDiscardsStderr(t *testing.T) {

@@ -285,13 +285,14 @@ test("release runbook stays reproducible and stops before publication", () => {
   assert.match(releaseRunbook, /Go 1\.26\.1/);
   assert.match(releaseRunbook, /git show -s --format=%ct/);
   assert.match(releaseRunbook, /PI_WORKER_ASSERT_STAGED=1/);
-  assert.match(releaseRunbook, /test "\$NPM_TARBALL" = "pi-worker-0\.0\.0-private\.tgz"/);
+  assert.match(releaseRunbook, /test "\$NPM_TARBALL" = "pi-worker-0\.1\.0\.tgz"/);
   for (const target of ["darwin_arm64", "darwin_amd64", "linux_arm64", "linux_amd64"]) {
     assert.match(releaseRunbook, new RegExp(`dist/pi-worker_v0\\.1\\.0_${target}\\.tar\\.gz`));
   }
   assert.match(releaseRunbook, /shasum -a 256 -c checksums\.txt/);
   assert.match(releaseRunbook, /sha256sum -c checksums\.txt/);
-  assert.match(releaseRunbook, /"private": true/);
+  assert.match(releaseRunbook, /p\.version!=='0\.1\.0'/);
+  assert.match(releaseRunbook, /github\.com\/arasovic\/pi-worker/);
   assert.match(releaseRunbook, /single-use granular bootstrap[\s\S]*provenance[\s\S]*trusted publishing[\s\S]*revoke/i);
   assert.doesNotMatch(releaseRunbook, /npm publish|NPM_TOKEN|https?:\/\//i);
 });

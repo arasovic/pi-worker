@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 // lineBodyRe splits one debug line into its elapsed segment and the event

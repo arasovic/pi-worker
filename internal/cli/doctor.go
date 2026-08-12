@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"pi-worker/internal/doctor"
-	"pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/doctor"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 const defaultDoctorTimeout = 30 * time.Second

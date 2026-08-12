@@ -52,7 +52,7 @@ function receiptFor(path, tree, kind = "canonical", files = tree.files) {
 function receiptWithTargets(targets) {
   return {
     schemaVersion: 1,
-    installerVersion: "0.0.0-private",
+    installerVersion: "0.1.0",
     skillsVersion: "1.5.22",
     outcome: "installed",
     targets: targets.map(({ path, kind, files }) => ({

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"pi-worker/internal/config"
-	"pi-worker/internal/pi"
-	"pi-worker/internal/skillinstall"
+	"github.com/arasovic/pi-worker/internal/config"
+	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/skillinstall"
 )
 
 func decodeJSONObject(t *testing.T, text string) map[string]any {

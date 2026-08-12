@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/releaseartifact"
+	"github.com/arasovic/pi-worker/internal/releaseartifact"
 )
 
 const testCommit = "0123456789abcdef0123456789abcdef01234567"

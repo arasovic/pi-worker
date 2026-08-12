@@ -1,186 +1,123 @@
 # Pi Worker
 
-Pi Worker lets a primary coding agent delegate work to models available
-through your local Pi installation.
+Delegate bounded coding tasks to exact models available through your local Pi
+installation.
 
 ## What is it?
 
-Keep your preferred coding agent as the orchestrator and send a bounded task
-to an exact model configured in Pi. Pi Worker starts the worker, waits for it,
-and returns its status and final explanation. It can run up to three independent
-tasks in parallel.
+Pi Worker is a small CLI and coding-agent skill. Your primary agent remains the
+orchestrator; Pi Worker starts one to three workers in parallel, keeps results
+in request order, and returns each worker's status and final explanation.
 
 ## Why does it exist?
 
 Using the primary agent for every subtask can consume an expensive or limited
-quota. Pi may already expose a lower-cost API model or a model billed through a
-separate account. Pi Worker removes the manual prompt-and-result copying from
-that workflow.
+quota. Pi may already expose a lower-cost model or a model billed through a
+separate account. Pi Worker removes the manual prompt-and-result copying while
+enforcing an exact provider/model choice and reporting the effective thinking
+level.
 
 ## How do I use it?
 
-Pi is a local coding-agent CLI that provides the model catalog and worker
-runtime used by Pi Worker. Choose an exact `provider/model` selector from Pi,
-then run a bounded task in your current workspace.
+You need Node.js 22.20.0 or newer and a Pi CLI with provider authentication.
+Pi `0.84.1` is verified; other semantic versions run with an explicit warning.
 
-## Requirements
-
-- Node.js 22.20.0 or newer and npm.
-- Pi CLI with provider authentication configured in Pi. Version 0.84.1 is the
-  verified compatibility surface; other semantic versions run with an explicit
-  unverified-version warning.
-- An available exact model selector from `pi-worker models`.
-- Go 1.26.1 for source builds and release snapshots; the module language baseline is Go 1.25.0.
-
-The npm package supports only macOS and Linux on arm64 and x64. Windows users
-must build from source; Windows is compile-checked but not runtime-tested in
-the current release gates.
-
-## Install with npm
-
-Pi Worker is not published to npm yet. The following commands are the intended
-post-publication install path; they are not currently usable from the registry:
+Install the npm package:
 
 ```sh
 npm install -g pi-worker
 ```
 
-For foreground installer diagnostics, use:
+The npm package supports only macOS and Linux on arm64 and x64. It includes the
+native binary and provider-neutral skill. npm install attempts to install the
+skill for detected coding agents through pinned `skills@1.5.22`; it never
+overwrites an unrecognized existing skill.
+
+Native archives are available from
+[GitHub Releases](https://github.com/arasovic/pi-worker/releases). Windows users
+must build from source; Windows is compile-checked but not runtime-tested.
+Source builds are documented in [detailed usage](./docs/v0-usage.md). The Go
+binary can also be installed directly without the bundled skill:
 
 ```sh
-npm install -g --foreground-scripts pi-worker
+go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.1.0
 ```
 
-For the current checkout, follow the
-[source-build instructions](./docs/v0-usage.md#source-build). Commands use
-`./bin/pi-worker` after a source build.
+> **Safety:** Workers can modify the current writable workspace and execute
+> `bash` with the current user's host permissions. Pi Worker is not a sandbox
+> or worktree layer. Use a trusted workspace; parallel tasks must be disjoint.
 
-## First run
-
-> **Safety before running a worker task:** Workers can modify the current
-> writable workspace and execute `bash` with the user's host permissions; they
-> are not a sandbox or worktree layer. Use a trusted workspace only; parallel
-> tasks must be disjoint.
-
-Inspect available exact selectors and local readiness, then save one exact
-selector and run a task. Replace `provider/model` with one exact selector
-printed by `pi-worker models` before config set:
+Choose an exact selector, check readiness, save a default, and run a task.
+Replace `provider/model` with one exact selector printed by `pi-worker models`
+before config set:
 
 ```sh
-pi-worker doctor
 pi-worker models
+pi-worker doctor
 pi-worker config set default-model provider/model
 pi-worker run --thinking high --task "Review this module and explain the main risks"
 ```
 
-`doctor` is inspection-only. Its five checks, in order, are
-`pi-executable`, `pi-version`, `config`, `model-catalog`, and `default-model`.
-Skill installation status is separate.
+Doctor is read-only. Its five checks, in order, are `pi-executable`,
+`pi-version`, `config`, `model-catalog`, and `default-model`.
 
-Thinking effort is separate from model identity. Use `off`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, or `max` with `--thinking`. If an explicit effort is
-unsupported, Pi Worker keeps the same selected model, uses that model's
-confirmed Pi default effort, and reports the fallback.
+Thinking is separate from model identity. Accepted values are `off`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, and `max`. An unsupported explicit effort
+keeps the same model, uses Pi's confirmed default, and reports the fallback.
+The requested model/provider never silently changes.
 
-## Use from a coding agent
-
-Give the coding agent an exact model and effort instruction:
+From a coding agent, a request can be as short as:
 
 ```text
 Use pi-worker with provider/model at high effort to complete this task.
 ```
 
-The agent should report the selected model, effective effort, status, and final
-explanation. An explicit model or the configured exact default is required;
-Pi Worker does not infer a replacement.
-
-## Run independent tasks in parallel
-
-Run one to three independent tasks with disjoint file ownership:
-
-```sh
-pi-worker run --model provider/model \
-  --thinking high \
-  --task-file ./task-a.txt --task-file ./task-b.txt --task-file ./task-c.txt
-```
-
-Use one task for overlapping work. Parallel workers share the workspace, so
-parallel writes must target disjoint files.
-
-## What gets installed
-
-- The package contains four native binaries for macOS/Linux arm64/x64. The
-  launcher selects the matching binary at runtime; installation does not remove
-  the others.
-- It contains the canonical provider-neutral `pi-worker` skill.
-- npm install attempts to install the bundled provider-neutral skill for detected
-  agent targets via pinned `skills@1.5.22` and records an installed,
-  blocked, skipped, or failed outcome in the durable receipt. Existing conflicts
-  may block, skip, or fail without overwriting.
+Run up to three independent tasks by repeating `--task` or `--task-file`.
+Parallel writes must target disjoint files because every worker shares the
+current writable workspace.
 
 ## Safety
 
-Workers use the current writable workspace. Parallel writes must target
-disjoint files. bash has the current user's host permissions, and Pi Worker
-is not a sandbox or worktree isolation layer.
+Pi Worker is not a sandbox. bash has the current user's host permissions, and
+workers can edit the current workspace. Use one worker for overlapping work.
 
-An exact requested model/provider never silently changes. An explicit effort
-fallback stays on the same model and is reported.
-
-## Install from GitHub Releases
-
-Pi Worker is not published yet. Release links will be added when available.
+An exact requested model never silently changes. Thinking fallback stays on the
+same model and reports the fallback. Installer state is recorded in a durable
+receipt; the stable identity marker distinguishes recognized Pi Worker content.
 
 ## Troubleshooting
 
-Check skill installation separately from the five doctor checks:
+Show foreground installer diagnostics and inspect skill state:
 
 ```sh
+npm install -g --foreground-scripts pi-worker
 pi-worker skill status
 pi-worker skill status --json
 pi-worker skill receipt-path
 npx --yes skills@1.5.22 list -g
 ```
 
-`skill status --json` reports managed targets, recovery information, and live
-external-skill inspection when invoked through the npm launcher;
-`skill receipt-path` reports the durable receipt location. If npm installation
-is otherwise unclear, rerun it in the foreground:
-
-```sh
-npm install -g --foreground-scripts pi-worker
-```
-
-For identity-verified unmanaged or drifted Pi Worker content only: inspect
-every affected path and make a backup first. Only after every affected path is
-verified as Pi Worker content may you run:
+A separately installed recognized skill is externally managed and may be stale.
+Markerless, foreign, or mixed content is never overwritten automatically. After
+backing up and verifying every affected path as Pi Worker content, recovery may
+require:
 
 ```sh
 npx --yes skills@1.5.22 remove pi-worker -g -y
 npm install -g --foreground-scripts pi-worker
 ```
 
-Never use that global remove command for markerless, foreign, or mixed
-conflicts. Preserve those paths, inspect them, and resolve them separately.
-A direct GitHub skill installation includes the stable Pi Worker identity
-marker. A later npm install recognizes it as externally managed, never adopts
-or overwrites it, and reports that it may be stale. Markerless content remains
-a manual conflict. An unknown marker may belong to a newer Pi Worker version;
-inspect it without automatic removal or reinstall.
+Do not use the global remove command for unrecognized content.
 
-## Advanced documentation
+## Documentation
 
-- [Architecture and evaluated alternatives](./ARCHITECTURE.md)
-- [Detailed v0 usage](./docs/v0-usage.md)
+- [Detailed usage](./docs/v0-usage.md)
 - [Versioned JSON contracts](./docs/json-contracts.md)
-- [Pi CLI compatibility and RPC surface](./docs/pi-cli-surface.md)
+- [Architecture](./ARCHITECTURE.md)
+- [Pi compatibility surface](./docs/pi-cli-surface.md)
 - [Release snapshot runbook](./docs/releasing.md)
 - [Contributing](./CONTRIBUTING.md)
 - [Security](./SECURITY.md)
-
-The detailed documents contain exit-code tables, RPC details, compatibility
-evidence, lifecycle boundaries, and source-build information. Run `npm run verify`
-for the complete local Node/package verification.
 
 ## License
 

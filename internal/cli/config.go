@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	configpkg "pi-worker/internal/config"
-	"pi-worker/internal/pi"
+	configpkg "github.com/arasovic/pi-worker/internal/config"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 const defaultConfigTimeout = 30 * time.Second

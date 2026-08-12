@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 // happyPathScript drives fakepi through the full worker lifecycle.

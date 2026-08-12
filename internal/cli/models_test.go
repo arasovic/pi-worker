@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 type fakeCatalog struct {

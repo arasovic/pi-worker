@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"pi-worker/internal/releasenotice"
+	"github.com/arasovic/pi-worker/internal/releasenotice"
 )
 
 func main() {

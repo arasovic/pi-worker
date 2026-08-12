@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"pi-worker/internal/cli"
+	"github.com/arasovic/pi-worker/internal/cli"
 )
 
 func main() {

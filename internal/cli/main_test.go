@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/buildinfo"
-	"pi-worker/internal/pi"
-	"pi-worker/internal/skillinstall"
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/buildinfo"
+	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/skillinstall"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 // fakePiBin is the path of the fakepi helper binary built once per test run.
@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	fakePiBin = filepath.Join(dir, "fakepi")
-	build := exec.Command("go", "build", "-o", fakePiBin, "pi-worker/internal/testutil/fakepi")
+	build := exec.Command("go", "build", "-o", fakePiBin, "github.com/arasovic/pi-worker/internal/testutil/fakepi")
 	if out, err := build.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build fakepi: %v\n%s", err, out)
 		os.RemoveAll(dir)

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"pi-worker/internal/contracts"
-	"pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/contracts"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 // maxTasks is the absolute cap on accepted tasks per run.

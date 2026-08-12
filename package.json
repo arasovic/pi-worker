@@ -1,7 +1,22 @@
 {
   "name": "pi-worker",
-  "version": "0.0.0-private",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Run exact Pi models as bounded workers for coding agents.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arasovic/pi-worker.git"
+  },
+  "homepage": "https://github.com/arasovic/pi-worker#readme",
+  "bugs": {
+    "url": "https://github.com/arasovic/pi-worker/issues"
+  },
+  "keywords": [
+    "ai-agent",
+    "coding-agent",
+    "pi",
+    "subagent"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.20.0"

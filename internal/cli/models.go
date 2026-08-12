@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 const defaultModelsTimeout = 30 * time.Second

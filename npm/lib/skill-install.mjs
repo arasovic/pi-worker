@@ -48,9 +48,9 @@ function packageVersion(root) {
     const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
     return typeof packageJson.version === "string" && packageJson.version.length > 0
       ? packageJson.version
-      : "0.0.0-private";
+      : "dev";
   } catch {
-    return "0.0.0-private";
+    return "dev";
   }
 }
 

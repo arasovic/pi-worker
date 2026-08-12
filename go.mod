@@ -1,4 +1,4 @@
-module pi-worker
+module github.com/arasovic/pi-worker
 
 go 1.25.0
 

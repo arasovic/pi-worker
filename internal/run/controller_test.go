@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/contracts"
-	"pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/contracts"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 // scriptedWorker is a concurrency-safe scripted Worker for controller

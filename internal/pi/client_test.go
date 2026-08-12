@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 // recordingHandler records every delivered event.

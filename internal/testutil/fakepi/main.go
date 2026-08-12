@@ -17,7 +17,7 @@ import (
 	"strconv"
 	"time"
 
-	"pi-worker/internal/testutil/fakepi/script"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 func main() {

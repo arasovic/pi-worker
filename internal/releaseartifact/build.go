@@ -148,9 +148,9 @@ func runGoBuild(ctx context.Context, root string, target Target, options Options
 	ldflags := []string{
 		"-s",
 		"-w",
-		"-X", "pi-worker/internal/buildinfo.Version=" + options.Version,
-		"-X", "pi-worker/internal/buildinfo.Commit=" + options.Commit,
-		"-X", "pi-worker/internal/buildinfo.BuildDate=" + options.BuildDate.Format(time.RFC3339),
+		"-X", "github.com/arasovic/pi-worker/internal/buildinfo.Version=" + options.Version,
+		"-X", "github.com/arasovic/pi-worker/internal/buildinfo.Commit=" + options.Commit,
+		"-X", "github.com/arasovic/pi-worker/internal/buildinfo.BuildDate=" + options.BuildDate.Format(time.RFC3339),
 	}
 	args := []string{
 		cmdGoBuild,

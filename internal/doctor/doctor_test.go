@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"pi-worker/internal/config"
-	"pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/config"
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 const seededSecret = "seeded-credential-value"

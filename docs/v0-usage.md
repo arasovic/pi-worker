@@ -26,12 +26,17 @@ The npm package supports macOS and Linux on arm64 and x64. Windows requires a
 source build and is compile-checked, but it is not runtime-tested in the current
 release gates.
 
-Pi Worker is not published to npm yet. These are the intended post-publication
-install commands; they are not currently usable from the registry:
+Install the public package normally, or keep installer diagnostics visible:
 
 ```sh
 npm install -g pi-worker
 npm install -g --foreground-scripts pi-worker
+```
+
+The binary alone can be installed from the public Go module:
+
+```sh
+go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.1.0
 ```
 
 ## Source build

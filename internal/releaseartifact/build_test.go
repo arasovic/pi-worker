@@ -348,9 +348,9 @@ func TestBuildInvokesGoBuildAndWritesArchives(t *testing.T) {
 		for _, expected := range []string{
 			"-s",
 			"-w",
-			"-X pi-worker/internal/buildinfo.Version=v0.1.0",
-			"-X pi-worker/internal/buildinfo.Commit=0123456789abcdef0123456789abcdef01234567",
-			"-X pi-worker/internal/buildinfo.BuildDate=2026-08-11T00:00:00Z",
+			"-X github.com/arasovic/pi-worker/internal/buildinfo.Version=v0.1.0",
+			"-X github.com/arasovic/pi-worker/internal/buildinfo.Commit=0123456789abcdef0123456789abcdef01234567",
+			"-X github.com/arasovic/pi-worker/internal/buildinfo.BuildDate=2026-08-11T00:00:00Z",
 		} {
 			if !strings.Contains(ldflags, expected) {
 				t.Fatalf("ldflags %q missing %q", ldflags, expected)

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"pi-worker/internal/releaseartifact"
-	"pi-worker/internal/releasenotice"
+	"github.com/arasovic/pi-worker/internal/releaseartifact"
+	"github.com/arasovic/pi-worker/internal/releasenotice"
 )
 
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {

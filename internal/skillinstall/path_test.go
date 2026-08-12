@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"pi-worker/internal/config"
+	"github.com/arasovic/pi-worker/internal/config"
 )
 
 func TestUserReceiptPath(t *testing.T) {

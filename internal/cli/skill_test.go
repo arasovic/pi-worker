@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"pi-worker/internal/skillinstall"
+	"github.com/arasovic/pi-worker/internal/skillinstall"
 )
 
 const (

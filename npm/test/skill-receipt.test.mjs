@@ -40,7 +40,7 @@ function nativeSpawn({ stdout = "", stderr = "", code = 0, signal = null }) {
 function validReceipt(targetPath) {
   return {
     schemaVersion: 1,
-    installerVersion: "0.0.0-private",
+    installerVersion: "0.1.0",
     skillsVersion: "1.5.22",
     outcome: "installed",
     targets: [{
