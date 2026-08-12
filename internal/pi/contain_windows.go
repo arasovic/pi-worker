@@ -65,8 +65,9 @@ func (c *childContainment) assign(proc *os.Process) error {
 }
 
 // terminate kills every process in the job, including the child and all
-// descendants. The pid is not needed: job membership identifies the tree.
-func (c *childContainment) terminate(_ int) error {
+// descendants. The process handle is not needed: job membership identifies
+// the tree without a reusable numeric pid.
+func (c *childContainment) terminate(_ *os.Process) error {
 	return windows.TerminateJobObject(c.job, 1)
 }
 
@@ -75,8 +76,8 @@ func (c *childContainment) terminate(_ int) error {
 // the job by construction.
 func (c *childContainment) snapshotDescendants(_ int) any { return nil }
 
-// terminateDescendants is a no-op on Windows: process-group leakage is handled
-// by the job object boundary.
+// terminateDescendants is a no-op on Windows: descendant cleanup is handled by
+// the job object boundary.
 func (c *childContainment) terminateDescendants(_ any) {}
 
 // close releases the job handle; kill-on-close terminates any process still

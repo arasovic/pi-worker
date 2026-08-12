@@ -67,11 +67,11 @@ does not prevent parallel workers from colliding on the same workspace files,
 session directory, or other mutable resources.
 
 Pi-worker's process cleanup terminates Pi and its descendants. On Windows it
-uses an assigned Job Object; on macOS/Linux it kills Pi's process group and
-also best-effort sweeps ordinary descendants that moved to another process
-group, such as commands started by Pi's built-in bash tool. The sweep
-snapshots Pi's descendant lineage at teardown and identity-checks each target
-by process creation time to protect against pid reuse. This is lifecycle
+uses an assigned Job Object; on macOS/Linux it kills Pi through Go's
+reaped-aware process handle and best-effort sweeps its descendant lineage,
+including ordinary descendants that moved to another process group. The sweep
+records Pi's creation-time identity at startup and identity-checks the root and
+each target to protect against pid reuse. This is lifecycle
 recovery, not a sandbox or a no-escape guarantee: a deliberately daemonized
 or reparented Unix process, a descendant spawned during the teardown sweep
 itself, a surviving descendant after Pi exits and is reaped before cleanup can

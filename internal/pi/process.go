@@ -25,19 +25,18 @@ const catalogToolAllowlist = "read,grep,find,ls"
 // EOF before killing it. Tests shorten it.
 var processCloseGrace = 5 * time.Second
 
-var terminateProcess = func(cont *childContainment, pid int) error {
-	return cont.terminate(pid)
+var terminateProcess = func(cont *childContainment, proc *os.Process) error {
+	return cont.terminate(proc)
 }
 
 // Process launches the host pi executable in RPC mode in a workspace with a
 // fresh private per-worker session directory and the exact disabling flags
 // from docs/pi-cli-surface.md. The child inherits the host environment
 // verbatim; credentials never appear in argv. The child runs inside a
-// platform lifecycle boundary (process group on Unix, job object on Windows)
-// so cancellation, timeout, and forced Close terminate the direct child and
-// descendants in that boundary; on Unix an additional sweep terminates
-// ordinary descendants that moved to another process group, such as commands
-// started by Pi's built-in bash tool. This is best-effort lifecycle
+// platform lifecycle boundary (creation-time-verified lineage on Unix, job
+// object on Windows) so cancellation, timeout, and forced Close terminate the
+// direct child and attributable descendants, including ordinary Unix
+// descendants that moved to another process group. This is best-effort lifecycle
 // recovery, not a sandbox: descendants spawned after the pre-close snapshot
 // or deliberately reparented before it may escape, and a process spawned
 // during the cleanup sweep itself may too. If Pi exits and is reaped before
@@ -131,8 +130,8 @@ func (p *Process) argv() []string {
 
 // Start launches the child with the workspace as working directory and the
 // inherited host environment, inside the platform lifecycle boundary.
-// Cancellation or timeout terminates the direct child, descendants in its
-// process group/job, and ordinary descendants that left the group on Unix.
+// Cancellation or timeout terminates the direct child and attributable
+// descendants through a creation-time-verified Unix lineage or Windows job.
 // An already-cancelled or expired context fails Start
 // before any child spawns. Every failure after containment creation
 // releases the containment and any created pipes exactly once: ownership
@@ -233,9 +232,9 @@ func (p *Process) Start(ctx context.Context) error {
 	})
 	go func() {
 		p.waitErr = cmd.Wait()
-		// The numeric PID/process-group identity is unsafe after Wait reaps the
-		// root: it may already refer to an unrelated process. Publish that state
-		// before joining a cancellation callback that has not acquired the lock.
+		// Publish the reaped state before joining a cancellation callback. Unix
+		// teardown also uses the reaped-aware os.Process handle and the root's
+		// recorded creation time, so this scheduling window cannot redirect a kill.
 		p.mu.Lock()
 		p.reaped = true
 		p.mu.Unlock()
@@ -275,9 +274,8 @@ func (p *Process) Wait() error {
 	return p.waitErr
 }
 
-// killTree terminates the child and descendants in the inherited process
-// group/job, and on Unix ordinary descendants that moved to another process
-// group (identified by a creation-time-verified lineage snapshot). It is the
+// killTree terminates the child and attributable descendants through the
+// platform lifecycle boundary. It is the
 // primary termination path for cancellation, timeout, and forced Close while
 // the child is still alive. On failure it falls back to killing the direct
 // child.
@@ -287,7 +285,7 @@ func (p *Process) killTree() {
 	if !p.started || p.reaped || p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	if err := terminateProcess(p.cont, p.cmd.Process.Pid); err != nil {
+	if err := terminateProcess(p.cont, p.cmd.Process); err != nil {
 		_ = p.cmd.Process.Kill()
 	}
 }

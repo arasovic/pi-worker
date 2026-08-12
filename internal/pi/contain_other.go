@@ -24,7 +24,7 @@ func (c *childContainment) preStart(cmd *exec.Cmd) error {
 
 func (c *childContainment) assign(*os.Process) error { return nil }
 
-func (c *childContainment) terminate(pid int) error {
+func (c *childContainment) terminate(_ *os.Process) error {
 	return fmt.Errorf("process-tree containment unsupported on this platform")
 }
 

@@ -191,7 +191,7 @@ func TestProcessCloseSkipsDescendantSnapshotAfterReapedChild(t *testing.T) {
 
 	originalInspect := inspectDescendantTargets
 	inspectCalled := false
-	inspectDescendantTargets = func(_ int32) []descendantTarget {
+	inspectDescendantTargets = func(_ descendantTarget) []descendantTarget {
 		inspectCalled = true
 		return nil
 	}

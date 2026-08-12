@@ -31,12 +31,12 @@ type procRow struct {
 // inspectDescendantTargets returns the (pid, creation-time) identities of
 // every live descendant of root, captured from one process-table snapshot.
 // It is a package variable so tests can force inspection failures and prove
-// cleanup stays fail-safe. On any inspection error it returns nothing: the
-// caller's process-group kill still runs, so a failed sweep never weakens
-// the primary termination path.
+// cleanup stays fail-safe. On any inspection error or root identity mismatch
+// it returns nothing; the direct child is still terminated through its
+// reaped-aware os.Process handle.
 var inspectDescendantTargets = inspectDescendantTargetsImpl
 
-func inspectDescendantTargetsImpl(root int32) []descendantTarget {
+func inspectDescendantTargetsImpl(root descendantTarget) []descendantTarget {
 	procs, err := process.Processes()
 	if err != nil {
 		return nil
@@ -64,16 +64,20 @@ func inspectDescendantTargetsImpl(root int32) []descendantTarget {
 // only through parents present in the snapshot: a child whose parent pid is
 // absent belongs to a dead-or-reused pid, not to a live lineage, and is not
 // attributable to root.
-func buildDescendantTargets(root int32, table []procRow) []descendantTarget {
+func buildDescendantTargets(root descendantTarget, table []procRow) []descendantTarget {
 	children := make(map[int32][]int32, len(table))
 	byPID := make(map[int32]procRow, len(table))
 	for _, row := range table {
 		children[row.ppid] = append(children[row.ppid], row.pid)
 		byPID[row.pid] = row
 	}
+	rootRow, ok := byPID[root.pid]
+	if !ok || root.pid <= 1 || rootRow.createTime != root.createTime {
+		return nil
+	}
 	var targets []descendantTarget
-	seen := map[int32]bool{root: true}
-	queue := []int32{root}
+	seen := map[int32]bool{root.pid: true}
+	queue := []int32{root.pid}
 	for len(queue) > 0 {
 		pid := queue[0]
 		queue = queue[1:]

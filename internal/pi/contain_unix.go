@@ -7,18 +7,21 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/shirou/gopsutil/v4/process"
 )
 
-// childContainment places the pi child in its own process group. Terminating
-// the group removes descendants that retain the inherited group, and a
-// descendant sweep (descendants_unix.go) additionally terminates ordinary
-// descendants that moved to another process group, such as commands started
-// by Pi's built-in bash tool. The group is created atomically by the exec
-// path (Setpgid), so there is no post-start setup window. This is best-effort
-// lifecycle recovery, not containment: a process that deliberately calls
-// setsid and reparents itself away can escape, and a descendant spawned
-// during the teardown sweep itself may too; both are outside v0's guarantee.
-type childContainment struct{}
+// childContainment records the Pi root's creation-time identity and starts it
+// in a separate process group. Teardown never signals that numeric group:
+// after Wait reaps the root, the group id can be reused by an unrelated
+// process. Instead it kills the direct child through os.Process and performs a
+// creation-time-verified descendant sweep. This is best-effort lifecycle
+// recovery, not containment: a process that deliberately reparents itself
+// before the snapshot can escape, and a descendant spawned during the sweep
+// may too; both are outside v0's guarantee.
+type childContainment struct {
+	root descendantTarget
+}
 
 func newChildContainment() (*childContainment, error) {
 	return &childContainment{}, nil
@@ -31,29 +34,35 @@ func (c *childContainment) preStart(cmd *exec.Cmd) error {
 	return nil
 }
 
-// assign is a no-op on Unix: the process group is established by the exec
-// path before the child runs any code.
-func (c *childContainment) assign(*os.Process) error { return nil }
-
-// terminate kills the child's entire process group and then best-effort
-// terminates ordinary descendants that left the group. The pid must never be
-// <= 1: a non-positive pid would signal the caller's own group (0) or every
-// process on the system (-1), so the caller's fallback kills the direct
-// child instead.
-//
-// The descendant tree is snapshotted before the group kill: once the direct
-// child dies, surviving descendants are reparented away and their lineage to
-// it is no longer visible to any sweep. Every snapshot target is killed with
-// a creation-time identity check, so pid reuse cannot redirect a kill. A
-// failure to inspect the table is swallowed (the sweep degrades to the group
-// kill alone), and a descendant that spawns its own child after the snapshot
-// is outside the sweep.
-func (c *childContainment) terminate(pid int) error {
-	if pid <= 1 {
-		return fmt.Errorf("refusing to signal the process group of pid %d", pid)
+// assign records the stable root identity before Start reports success. If it
+// cannot be proven, descendant cleanup cannot safely attribute a future pid
+// to this child, so startup fails closed.
+func (c *childContainment) assign(proc *os.Process) error {
+	if proc == nil || proc.Pid <= 1 {
+		return fmt.Errorf("invalid child pid")
 	}
-	targets := inspectDescendantTargets(int32(pid))
-	err := syscall.Kill(-pid, syscall.SIGKILL)
+	root, err := process.NewProcess(int32(proc.Pid))
+	if err != nil {
+		return fmt.Errorf("inspect child %d: %w", proc.Pid, err)
+	}
+	created, err := root.CreateTime()
+	if err != nil {
+		return fmt.Errorf("inspect child %d creation time: %w", proc.Pid, err)
+	}
+	c.root = descendantTarget{pid: int32(proc.Pid), createTime: created}
+	return nil
+}
+
+// terminate snapshots descendants only when the process table still contains
+// the exact root identity recorded at startup. os.Process.Kill is safe after a
+// concurrent Wait: it returns os.ErrProcessDone instead of signalling a reused
+// pid. Every descendant kill is independently creation-time verified.
+func (c *childContainment) terminate(proc *os.Process) error {
+	if proc == nil || proc.Pid <= 1 || c.root.pid != int32(proc.Pid) {
+		return fmt.Errorf("refusing to terminate invalid child identity")
+	}
+	targets := inspectDescendantTargets(c.root)
+	err := proc.Kill()
 	killDescendantTargets(targets)
 	return err
 }
@@ -61,10 +70,10 @@ func (c *childContainment) terminate(pid int) error {
 // snapshotDescendants captures the best-effort Unix-only lineage identity for
 // descendants of pid, before the descendant can be reparented away.
 func (c *childContainment) snapshotDescendants(pid int) any {
-	if pid <= 1 {
+	if pid <= 1 || c.root.pid != int32(pid) {
 		return nil
 	}
-	return inspectDescendantTargets(int32(pid))
+	return inspectDescendantTargets(c.root)
 }
 
 // terminateDescendants applies the pre-close lineage-based sweep for best-effort

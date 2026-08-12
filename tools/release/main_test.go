@@ -178,11 +178,11 @@ func TestRunBuildsWithVerifiedOptions(t *testing.T) {
 	oldVerify := verifyNotices
 	oldBuild := runReleaseBuild
 	var got releaseartifact.Options
-	moduleVerified := false
+	var events []string
 
 	runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		if name == "go" && len(args) == 4 && args[0] == "-C" && args[2] == "mod" && args[3] == "verify" {
-			moduleVerified = true
+			events = append(events, "modules")
 			return []byte("all modules verified\n"), nil
 		}
 		if name == "go" && len(args) > 0 && args[0] == "env" {
@@ -191,11 +191,12 @@ func TestRunBuildsWithVerifiedOptions(t *testing.T) {
 		t.Fatalf("unexpected command: %s %v", name, args)
 		return nil, nil
 	}
-	verifyNotices = func(_ []byte, _ string) error { return nil }
+	verifyNotices = func(_ []byte, _ string) error {
+		events = append(events, "notices")
+		return nil
+	}
 	runReleaseBuild = func(_ context.Context, options releaseartifact.Options) error {
-		if !moduleVerified {
-			t.Fatal("release build ran before go mod verify")
-		}
+		events = append(events, "build")
 		got = options
 		return nil
 	}
@@ -217,6 +218,9 @@ func TestRunBuildsWithVerifiedOptions(t *testing.T) {
 	wantDate := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
 	if got.Version != "v0.1.0" || got.Commit != testCommit || !got.BuildDate.Equal(wantDate) || got.OutputDir != filepath.Join(temp, "dist") {
 		t.Fatalf("unexpected build options: %#v", got)
+	}
+	if !reflect.DeepEqual(events, []string{"modules", "notices", "build"}) {
+		t.Fatalf("release events = %v", events)
 	}
 }
 

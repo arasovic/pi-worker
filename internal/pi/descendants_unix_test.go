@@ -3,6 +3,7 @@
 package pi
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"sync"
@@ -43,7 +44,7 @@ func TestBuildDescendantTargetsWalksWholeTree(t *testing.T) {
 		{pid: 500, ppid: 99, createTime: 5000},  // unrelated
 		{pid: 600, ppid: 500, createTime: 6000}, // unrelated subtree
 	}
-	got := buildDescendantTargets(100, table)
+	got := buildDescendantTargets(descendantTarget{pid: 100, createTime: 1000}, table)
 	want := map[int32]int64{200: 2000, 300: 3000, 400: 4000, 250: 2500}
 	if len(got) != len(want) {
 		t.Fatalf("targets = %+v, want %+v", got, want)
@@ -66,7 +67,7 @@ func TestBuildDescendantTargetsToleratesCorruptTables(t *testing.T) {
 		{pid: 12, ppid: 11, createTime: 3},
 		{pid: 11, ppid: 12, createTime: 4}, // duplicate pid closes a cycle
 	}
-	got := buildDescendantTargets(10, table)
+	got := buildDescendantTargets(descendantTarget{pid: 10, createTime: 1}, table)
 	if len(got) != 2 {
 		t.Fatalf("targets = %+v, want the two distinct descendants exactly once", got)
 	}
@@ -82,11 +83,23 @@ func TestBuildDescendantTargetsToleratesCorruptTables(t *testing.T) {
 // TestBuildDescendantTargetsWithMissingRoot covers the degenerate tables:
 // an absent root and an empty table must both yield no targets.
 func TestBuildDescendantTargetsWithMissingRoot(t *testing.T) {
-	if got := buildDescendantTargets(100, []procRow{{pid: 200, ppid: 100, createTime: 2}}); len(got) != 0 {
+	if got := buildDescendantTargets(descendantTarget{pid: 100, createTime: 1}, []procRow{{pid: 200, ppid: 100, createTime: 2}}); len(got) != 0 {
 		t.Fatalf("targets = %+v, want none when the root is absent", got)
 	}
-	if got := buildDescendantTargets(1, nil); len(got) != 0 {
+	if got := buildDescendantTargets(descendantTarget{pid: 1, createTime: 1}, nil); len(got) != 0 {
 		t.Fatalf("targets = %+v, want none for an empty table", got)
+	}
+}
+
+func TestBuildDescendantTargetsRejectsReusedRootIdentity(t *testing.T) {
+	root := descendantTarget{pid: 100, createTime: 1000}
+	table := []procRow{
+		{pid: 100, ppid: 99, createTime: 9000},
+		{pid: 200, ppid: 100, createTime: 2000},
+	}
+
+	if got := buildDescendantTargets(root, table); len(got) != 0 {
+		t.Fatalf("targets = %+v, want none for a reused root pid", got)
 	}
 }
 
@@ -124,14 +137,13 @@ func TestDescendantKillRejectsReusedPID(t *testing.T) {
 	killDescendantTarget(descendantTarget{pid: pid, createTime: created})
 }
 
-// TestTerminateKillsGroupWhenInspectionFails is the fail-safe regression:
-// when descendant inspection errors out (or returns garbage), terminate
-// must still kill the process group, must not panic, and must return the
-// group-kill result rather than an inspection error.
-func TestTerminateKillsGroupWhenInspectionFails(t *testing.T) {
+// TestTerminateKillsRootWhenInspectionFails is the fail-safe regression:
+// when descendant inspection errors out, terminate must still kill the root
+// through its os.Process handle and must not panic.
+func TestTerminateKillsRootWhenInspectionFails(t *testing.T) {
 	original := inspectDescendantTargets
-	inspectDescendantTargets = func(int32) []descendantTarget {
-		// Inspection failure: degrade to the group kill alone.
+	inspectDescendantTargets = func(descendantTarget) []descendantTarget {
+		// Inspection failure: degrade to the direct root kill alone.
 		return nil
 	}
 	t.Cleanup(func() { inspectDescendantTargets = original })
@@ -141,7 +153,10 @@ func TestTerminateKillsGroupWhenInspectionFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new containment: %v", err)
 	}
-	if err := cont.terminate(cmd.Process.Pid); err != nil {
+	if err := cont.assign(cmd.Process); err != nil {
+		t.Fatalf("assign containment: %v", err)
+	}
+	if err := cont.terminate(cmd.Process); err != nil {
 		t.Fatalf("terminate with failing inspection: %v", err)
 	}
 	_ = cmd.Wait()
@@ -150,11 +165,11 @@ func TestTerminateKillsGroupWhenInspectionFails(t *testing.T) {
 
 // TestTerminateIgnoresGarbageTargets covers the other fail-safe half: a
 // broken inspector returning nonexistent or non-positive identities must not
-// panic, must not kill anything it cannot verify, and the group kill still
-// lands.
+// panic, must not kill anything it cannot verify, and the direct root kill
+// still lands.
 func TestTerminateIgnoresGarbageTargets(t *testing.T) {
 	original := inspectDescendantTargets
-	inspectDescendantTargets = func(int32) []descendantTarget {
+	inspectDescendantTargets = func(descendantTarget) []descendantTarget {
 		return []descendantTarget{
 			{pid: 1, createTime: 1},       // init: never a descendant
 			{pid: -5, createTime: 1},      // invalid pid
@@ -168,11 +183,35 @@ func TestTerminateIgnoresGarbageTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new containment: %v", err)
 	}
-	if err := cont.terminate(cmd.Process.Pid); err != nil {
+	if err := cont.assign(cmd.Process); err != nil {
+		t.Fatalf("assign containment: %v", err)
+	}
+	if err := cont.terminate(cmd.Process); err != nil {
 		t.Fatalf("terminate with garbage targets: %v", err)
 	}
 	_ = cmd.Wait()
 	waitProcessGone(t, cmd.Process.Pid)
+}
+
+func TestTerminateUsesReapedAwareProcessHandle(t *testing.T) {
+	cmd := spawnHold(t)
+	cont, err := newChildContainment()
+	if err != nil {
+		t.Fatalf("new containment: %v", err)
+	}
+	if err := cont.assign(cmd.Process); err != nil {
+		t.Fatalf("assign containment: %v", err)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill child: %v", err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("Wait after kill returned nil")
+	}
+
+	if err := cont.terminate(cmd.Process); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("terminate after reap = %v, want os.ErrProcessDone", err)
+	}
 }
 
 // TestTerminateRefusesNonPositivePIDWithoutInspection covers the guard that
@@ -182,7 +221,7 @@ func TestTerminateIgnoresGarbageTargets(t *testing.T) {
 func TestTerminateRefusesNonPositivePIDWithoutInspection(t *testing.T) {
 	called := false
 	original := inspectDescendantTargets
-	inspectDescendantTargets = func(int32) []descendantTarget {
+	inspectDescendantTargets = func(descendantTarget) []descendantTarget {
 		called = true
 		return nil
 	}
@@ -193,7 +232,7 @@ func TestTerminateRefusesNonPositivePIDWithoutInspection(t *testing.T) {
 		t.Fatalf("new containment: %v", err)
 	}
 	for _, pid := range []int{-1, 0, 1} {
-		if err := cont.terminate(pid); err == nil {
+		if err := cont.terminate(&os.Process{Pid: pid}); err == nil {
 			t.Fatalf("terminate(%d) succeeded, want refusal", pid)
 		}
 	}
@@ -219,7 +258,15 @@ func TestDescendantInspectionUnderProcessChurn(t *testing.T) {
 				return
 			default:
 			}
-			_ = inspectDescendantTargets(int32(os.Getpid()))
+			self, err := process.NewProcess(int32(os.Getpid()))
+			if err != nil {
+				continue
+			}
+			created, err := self.CreateTime()
+			if err != nil {
+				continue
+			}
+			_ = inspectDescendantTargets(descendantTarget{pid: int32(os.Getpid()), createTime: created})
 		}
 	}()
 
@@ -229,7 +276,15 @@ func TestDescendantInspectionUnderProcessChurn(t *testing.T) {
 		found := false
 		deadline := time.Now().Add(3 * time.Second)
 		for !found && time.Now().Before(deadline) {
-			for _, target := range inspectDescendantTargets(int32(os.Getpid())) {
+			self, err := process.NewProcess(int32(os.Getpid()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := self.CreateTime()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, target := range inspectDescendantTargets(descendantTarget{pid: int32(os.Getpid()), createTime: created}) {
 				if target.pid == pid {
 					found = true
 					break

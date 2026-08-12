@@ -165,6 +165,8 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /current writable workspace/i);
   assert.match(normalizedSkill, /bash.*current user's host permissions/i);
   assert.match(normalizedSkill, /not a sandbox or worktree/i);
+  assert.match(normalizedSkill, /Luna Max.*--thinking max/i);
+  assert.doesNotMatch(normalizedSkill, /Spark Max/i);
 });
 
 test("README links resolve and the npm tarball has one root README", () => {

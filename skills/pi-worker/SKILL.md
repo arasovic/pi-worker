@@ -15,7 +15,7 @@ architecture decisions with the orchestrating agent.
 1. Confirm `pi-worker` is on `PATH` before proposing or running work.
 2. Resolve an informal model name with `pi-worker models --json --debug --timeout 30s`. Select one unambiguous exact `provider/model`; report ambiguity and stop.
 3. Pass an exact model unchanged with `--model`. If it is unavailable or unauthenticated, report the setup action and stop. Never substitute another model or provider.
-4. Treat reasoning effort separately. Map an explicit `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` request to `--thinking <level>`. “Spark Max” means exact Spark plus `--thinking max`. If effort is omitted, omit `--thinking`; never guess it or encode it in the model selector.
+4. Treat reasoning effort separately. Map an explicit `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` request to `--thinking <level>`. “Luna Max” means exact Luna plus `--thinking max`. If effort is omitted, omit `--thinking`; never guess it or encode it in the model selector.
 5. If no model is named, omit `--model` so the configured personal default applies. If it is missing, stop with the CLI guidance.
 6. Put each requested task in an external task file. Create one to three files only. Run parallel workers only for disjoint tasks; serialize overlapping writes or combine them into one worker.
 7. Run `pi-worker run` with `--task-file`, a bounded `--timeout`, `--json`, and `--debug`.

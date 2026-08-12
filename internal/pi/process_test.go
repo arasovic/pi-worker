@@ -171,7 +171,7 @@ func TestProcessCancellationTerminatesChild(t *testing.T) {
 func TestProcessKillTreeSkipsAReapedChildIdentity(t *testing.T) {
 	originalTerminate := terminateProcess
 	called := false
-	terminateProcess = func(*childContainment, int) error {
+	terminateProcess = func(*childContainment, *os.Process) error {
 		called = true
 		return nil
 	}
