@@ -1,0 +1,32 @@
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Block newly introduced moderate-or-higher vulnerabilities. Development
+      # and unknown scopes matter too: this repository ships prebuilt binaries,
+      # so a build-time dependency can affect what users install.
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: moderate
+          fail-on-scopes: "runtime, development, unknown"
+          license-check: false
+          show-openssf-scorecard: false
+          show-patched-versions: true

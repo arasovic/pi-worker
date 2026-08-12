@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a change to what pi-worker does
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        pi-worker delegates bounded execution and is deliberately not a general
+        subagent platform. Agent personas, chains, long-lived pools, planning,
+        nested delegation, and workflow engines belong in Pi or its extension
+        ecosystem. See ARCHITECTURE.md before opening this.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you were trying to do
+      description: >
+        The delegation you were running, and where it stopped being possible.
+        Describe the situation rather than the fix, so a different solution
+        stays on the table.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do today instead
+      description: >
+        The parent-agent workaround, if there is one, and what it costs you.
+        No workaround at all is also an answer worth stating.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would change
+      description: >
+        A flag, an output field, a behavior. If it changes the JSON result or
+        an exit code, say so: those are a public contract.
+    validations:
+      required: true

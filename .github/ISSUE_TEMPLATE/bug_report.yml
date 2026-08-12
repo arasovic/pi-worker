@@ -1,0 +1,67 @@
+name: Bug report
+description: A command produces the wrong result, or does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Debug output can carry prompts, workspace contents, and provider
+        configuration. Please read what you paste and remove anything private
+        first: this issue is public. See SECURITY.md.
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - Running a delegation (pi-worker run)
+        - Model or thinking selection (pi-worker models)
+        - Environment checks (pi-worker doctor)
+        - Configuration (pi-worker config)
+        - Skill installation (npm install, pi-worker skill)
+        - Somewhere else
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: >
+        The command you ran, with the model and thinking level as you passed
+        them. Replace the task file contents with a description if they are
+        not shareable.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened, and what you expected instead
+      description: >
+        For a failed run, the status and explanation from the JSON result are
+        usually enough. Raw debug frames are rarely needed; if you include
+        them, trim them to the lines around the failure.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: pi-worker doctor
+      description: >
+        Paste the output. It reports check names and status only, no paths and
+        no credentials.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Versions and platform
+      description: Output of `pi-worker version`, plus your OS and how you installed it.
+      placeholder: 0.1.0, macOS 15 arm64, npm
+    validations:
+      required: true
