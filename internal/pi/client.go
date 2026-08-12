@@ -9,7 +9,6 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -21,8 +20,8 @@ type EventHandler interface {
 	OnEvent(Event) error
 }
 
-// debugHeartbeatInterval bounds repeated model-phase updates and host-clock
-// no-event diagnostics, independent of frame count.
+// debugHeartbeatInterval is the visible-line silence interval for the
+// worker-scoped lifecycle heartbeat.
 const debugHeartbeatInterval = 30 * time.Second
 
 // toolStartCap bounds the tool-execution start timings the client retains
@@ -57,20 +56,15 @@ type Client struct {
 	// from the prompt lifecycle become terminal and log "agent settled".
 	awaitingSettled bool
 	debug           *WorkerScope
-	// modelPhase is the last projected assistant message phase. lastBeat is
-	// the run elapsed time of its last emitted line. Only the single driving
-	// goroutine touches them.
+	// modelPhase is the last projected assistant message phase. Only the
+	// single driving goroutine touches it.
 	modelPhase string
-	lastBeat   time.Duration
 	// toolStarts correlates tool_execution_start/end timings by the
 	// internal tool-call identifier, bounded by toolStartCap. The
 	// identifier is Pi-controlled untrusted input and is only ever used
 	// as this map key, never logged. Only the single driving goroutine
 	// touches it.
 	toolStarts map[string]time.Duration
-	// newIdleTimer is the testable host-clock boundary for no-event
-	// heartbeats while WaitSettled is blocked in the JSONL reader.
-	newIdleTimer func(time.Duration) (<-chan time.Time, func(time.Duration), func())
 }
 
 func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *WorkerScope) *Client {
@@ -79,10 +73,6 @@ func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *W
 		out:     NewFrameWriter(stdin),
 		handler: handler,
 		debug:   debug,
-		newIdleTimer: func(interval time.Duration) (<-chan time.Time, func(time.Duration), func()) {
-			timer := time.NewTimer(interval)
-			return timer.C, func(next time.Duration) { timer.Reset(next) }, func() { timer.Stop() }
-		},
 	}
 }
 
@@ -355,8 +345,6 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 		c.awaitingSettled = false
 		return nil
 	}
-	markActivity, stopIdleHeartbeat := c.startIdleHeartbeat(ctx)
-	defer stopIdleHeartbeat()
 	for {
 		if err := ctx.Err(); err != nil {
 			c.awaitingSettled = false
@@ -367,7 +355,6 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 			c.awaitingSettled = false
 			return c.frameError(err)
 		}
-		markActivity()
 		isResponse, _, err := c.handleFrame(frame)
 		if err != nil {
 			c.awaitingSettled = false
@@ -382,51 +369,6 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 			return nil
 		}
 	}
-}
-
-// startIdleHeartbeat reports host-observed silence while WaitSettled is
-// blocked. It does not claim that the model is thinking: no event can also
-// mean Pi is compacting, running internal work, or stalled. Only elapsed idle
-// time is logged, with no frame content or upstream metadata.
-func (c *Client) startIdleHeartbeat(ctx context.Context) (markActivity func(), stop func()) {
-	if !c.debug.enabled() {
-		return func() {}, func() {}
-	}
-
-	var lastActivity atomic.Int64
-	lastActivity.Store(int64(c.debug.Elapsed()))
-	ticks, resetTimer, stopTimer := c.newIdleTimer(debugHeartbeatInterval)
-	stopping := make(chan struct{})
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-stopping:
-				return
-			case <-ticks:
-				elapsed := c.debug.Elapsed()
-				idle := elapsed - time.Duration(lastActivity.Load())
-				if idle >= debugHeartbeatInterval {
-					c.debug.Log(debugWaiting, "no-event-for="+idle.Round(time.Second).String())
-					resetTimer(debugHeartbeatInterval)
-					continue
-				}
-				resetTimer(debugHeartbeatInterval - idle)
-			}
-		}
-	}()
-
-	return func() {
-			lastActivity.Store(int64(c.debug.Elapsed()))
-		}, func() {
-			close(stopping)
-			<-done
-			stopTimer()
-		}
 }
 
 // roundTrip sends one request and waits for its correlated response,
@@ -542,7 +484,7 @@ var allowedToolNames = map[string]bool{
 
 // debugEvent projects one inbound event into the worker debug stream. The
 // switch below is the fixed event vocabulary: message_update inspects only
-// assistantMessageEvent.type and drives the model phase heartbeat;
+// assistantMessageEvent.type and updates the fixed model phase;
 // tool_execution_start and tool_execution_end report only the allowlisted
 // tool name, fixed status, duration, and the fixed bash failure cause
 // projection; agent_settled reports settlement. agent_start/end,
@@ -617,7 +559,7 @@ func (c *Client) debugEvent(eventType string, frame []byte) {
 		}
 		c.debug.Log("tool="+toolName(projection.ToolName), fields...)
 	case "agent_settled":
-		c.debug.Log(debugSettled)
+		c.debug.LogTerminal(debugSettled)
 	case "tool_execution_update":
 		// Suppressed: one line per output chunk would flood --debug.
 	default:
@@ -654,20 +596,14 @@ func modelPhase(subtype string) string {
 }
 
 // modelUpdate emits immediately when the fixed model phase changes. Repeated
-// events in that phase are heartbeated by elapsed run time, never by frame
-// count.
+// events in the same phase are suppressed; the lifecycle heartbeat is the
+// only repeated liveness clock.
 func (c *Client) modelUpdate(phase string) {
-	elapsed := c.debug.Elapsed().Round(time.Millisecond)
-	if phase != c.modelPhase {
-		c.modelPhase = phase
-		c.lastBeat = elapsed
-		c.debug.Log(phase, "elapsed="+elapsed.String())
+	if phase == c.modelPhase {
 		return
 	}
-	if elapsed-c.lastBeat >= debugHeartbeatInterval {
-		c.lastBeat = elapsed
-		c.debug.Log(phase, "elapsed="+elapsed.String())
-	}
+	c.modelPhase = phase
+	c.debug.Log(phase, "elapsed="+c.debug.Elapsed().Round(time.Millisecond).String())
 }
 
 // bashFailureCause projects only the final text entry of result.content for

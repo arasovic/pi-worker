@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,6 +35,53 @@ func readMeta(t *testing.T, path string) fakePiMeta {
 			t.Fatalf("fakepi meta file %s never became readable: %v", path, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestProcessRunningTracksPublishedLifecycle(t *testing.T) {
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if proc.Running() {
+		t.Fatal("process reported running before Start")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !proc.Running() {
+		t.Fatal("process did not report running after Start publication")
+	}
+	const polls = 32
+	done := make(chan struct{})
+	var pollers sync.WaitGroup
+	pollers.Add(polls)
+	for i := 0; i < polls; i++ {
+		go func() {
+			defer pollers.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					_ = proc.Running()
+				}
+			}
+		}()
+	}
+	cancel()
+	if err := proc.Wait(); err == nil {
+		t.Fatal("wait after cancellation returned nil")
+	}
+	close(done)
+	pollers.Wait()
+	if proc.Running() {
+		t.Fatal("process reported running after reap publication")
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
 	}
 }
 

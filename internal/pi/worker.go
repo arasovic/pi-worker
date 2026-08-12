@@ -97,8 +97,10 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusCancelled, Error: fmt.Sprintf("cancelled: %v", err)})
 	}
 	debug := req.Debug.Worker(workerID(req.WorkerID))
+	stopHeartbeat := func() {}
 	defer func() {
-		debug.Log("status="+result.Status, "total="+debug.Elapsed().Round(time.Millisecond).String())
+		stopHeartbeat()
+		debug.LogTerminal("status="+result.Status, "total="+debug.Elapsed().Round(time.Millisecond).String())
 	}()
 	requestedDebug := "default"
 	if req.ThinkingLevel != "" {
@@ -123,6 +125,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		}
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("start pi: %v", err)})
 	}
+	stopHeartbeat = debug.startHeartbeat(proc.Running)
 
 	client := NewClient(proc.Stdin(), proc.Stdout(), nil, debug)
 

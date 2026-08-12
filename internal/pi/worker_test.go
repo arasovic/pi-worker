@@ -51,6 +51,93 @@ func TestWorkerIDZeroDefaultsToOne(t *testing.T) {
 	}
 }
 
+func TestWorkerDebugHeartbeatCoversSlowSetupAndStopsBeforeFinalStatus(t *testing.T) {
+	scriptConfig := happyPathScript("slow setup answer")
+	scriptConfig.Triggers["get_available_models"] = []script.Step{
+		{SleepMS: 250},
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+	}
+	requestLog := setupFakePiEnv(t, scriptConfig)
+
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	writes := make(chan string, 32)
+	writer := &notifyingWriter{writes: writes}
+	sink := newDebugSinkWithClock(writer, clock.t, clock.now)
+	timerReady := make(chan *deterministicHeartbeatTimer, 1)
+	timer := &deterministicHeartbeatTimer{
+		ticks:  make(chan time.Time, 4),
+		resets: make(chan time.Duration, 32),
+		stops:  make(chan struct{}, 1),
+	}
+	sink.newHeartbeatTimer = func(time.Duration) debugTimer {
+		timerReady <- timer
+		return timer
+	}
+
+	done := make(chan WorkerResult, 1)
+	go func() {
+		done <- New(fakePiBin).Run(context.Background(), WorkerRequest{
+			Model:     "acme/m-1",
+			Prompt:    "go",
+			Workspace: t.TempDir(),
+			Debug:     sink,
+		})
+	}()
+
+	select {
+	case <-timerReady:
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle heartbeat did not start after process start")
+	}
+	_ = waitRequestLog(t, requestLog, 1)
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	foundHeartbeat := false
+	deadline := time.After(time.Second)
+	for !foundHeartbeat {
+		select {
+		case line := <-writes:
+			if strings.Contains(line, "phase=waiting-for-pi") {
+				foundHeartbeat = true
+			}
+		case <-deadline:
+			t.Fatal("no lifecycle heartbeat during slow setup RPC")
+		}
+	}
+	if types := readRequestLog(requestLog); slices.Contains(types, "prompt") {
+		t.Fatalf("heartbeat arrived after prompt instead of during setup: %v", types)
+	}
+
+	result := <-done
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	bodies := debugBodies(t, writer.buf.String())
+	if !strings.HasPrefix(bodies[len(bodies)-1], "worker=1 status=completed total=") {
+		t.Fatalf("final status was not the last debug line: %q", bodies[len(bodies)-1])
+	}
+	before := len(bodies)
+	for {
+		select {
+		case <-writes:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	select {
+	case line := <-writes:
+		t.Fatalf("debug line emitted after final status: %q", line)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := len(debugBodies(t, writer.buf.String())); got != before {
+		t.Fatalf("debug output changed after final status: %d lines, want %d", got, before)
+	}
+}
+
 func TestWorkerDebugLinesCarryRequestedIdentity(t *testing.T) {
 	// The worker identity in the request labels every debug line; it is
 	// operational metadata only and never appears in results.

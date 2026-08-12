@@ -100,7 +100,7 @@ func TestWorkerScopeHeartbeatLifecycle(t *testing.T) {
 	sink.newHeartbeatTimer = func(time.Duration) debugTimer { return timer }
 	scope := sink.Worker(1)
 
-	scope.Log(debugModelThinking, "upstream-secret=must-not-appear")
+	scope.Log(debugModelThinking, "upstream-sensitive=must-not-appear")
 	stop := scope.startHeartbeat(func() bool { return true })
 	clock.advance(debugHeartbeatInterval)
 	timer.ticks <- clock.now()
@@ -113,7 +113,7 @@ func TestWorkerScopeHeartbeatLifecycle(t *testing.T) {
 	if got := bodies[len(bodies)-1]; got != "worker=1 phase=waiting-for-pi last-phase=model-thinking silence=30s process=alive" {
 		t.Fatalf("heartbeat = %q", got)
 	}
-	if strings.Contains(bodies[len(bodies)-1], "upstream-secret") {
+	if strings.Contains(bodies[len(bodies)-1], "upstream-sensitive") {
 		t.Fatal("heartbeat included upstream data")
 	}
 
@@ -130,7 +130,7 @@ func TestWorkerScopeHeartbeatLifecycle(t *testing.T) {
 	}
 
 	clock.advance(5 * time.Second)
-	scope.Log(debugModelOutput, "upstream-secret=still-hidden")
+	scope.Log(debugModelOutput, "upstream-sensitive=still-hidden")
 	select {
 	case reset := <-timer.resets:
 		if reset != debugHeartbeatInterval {
@@ -223,82 +223,6 @@ func TestDebugBudgetHeartbeatAndTerminalLanes(t *testing.T) {
 	}
 	if got := strings.Count(buf.String(), debugBudgetExhausted); got != 1 {
 		t.Fatalf("budget exhaustion notice count = %d, want 1", got)
-	}
-}
-
-func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
-	clock := &fakeClock{t: time.Unix(0, 0)}
-	writes := make(chan string, 4)
-	writer := &notifyingWriter{writes: writes}
-	scope := newDebugSinkWithClock(writer, clock.t, clock.now).Worker(1)
-	events := make(chan string, 2)
-	stdout, piOutput := io.Pipe()
-	t.Cleanup(func() {
-		_ = stdout.Close()
-		_ = piOutput.Close()
-	})
-
-	ticks := make(chan time.Time, 1)
-	timerStarts := make(chan time.Duration, 1)
-	timerResets := make(chan time.Duration, 4)
-	client := NewClient(io.Discard, stdout, eventSignalHandler{events: events}, scope)
-	client.newIdleTimer = func(interval time.Duration) (<-chan time.Time, func(time.Duration), func()) {
-		timerStarts <- interval
-		return ticks, func(next time.Duration) { timerResets <- next }, func() {}
-	}
-	client.awaitingSettled = true
-
-	done := make(chan error, 1)
-	go func() { done <- client.WaitSettled(context.Background()) }()
-	if interval := <-timerStarts; interval != debugHeartbeatInterval {
-		t.Fatalf("timer interval = %v, want %v", interval, debugHeartbeatInterval)
-	}
-	clock.advance(debugHeartbeatInterval)
-	ticks <- clock.now()
-
-	select {
-	case line := <-writes:
-		if !strings.Contains(line, "worker=1 phase=waiting-for-pi no-event-for=30s") {
-			t.Fatalf("idle heartbeat = %q", line)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("no idle heartbeat while Pi emitted no frames")
-	}
-	if next := <-timerResets; next != debugHeartbeatInterval {
-		t.Fatalf("timer reset after heartbeat = %v, want %v", next, debugHeartbeatInterval)
-	}
-
-	clock.advance(5 * time.Second)
-	if _, err := io.WriteString(piOutput, `{"type":"agent_start"}`+"\n"); err != nil {
-		t.Fatalf("write activity event: %v", err)
-	}
-	if eventType := <-events; eventType != "agent_start" {
-		t.Fatalf("event = %q, want agent_start", eventType)
-	}
-	clock.advance(debugHeartbeatInterval - 5*time.Second)
-	ticks <- clock.now()
-	if next := <-timerResets; next != 5*time.Second {
-		t.Fatalf("timer reset after recent activity = %v, want 5s", next)
-	}
-	clock.advance(5 * time.Second)
-	ticks <- clock.now()
-	select {
-	case line := <-writes:
-		if !strings.Contains(line, "worker=1 phase=waiting-for-pi no-event-for=30s") {
-			t.Fatalf("reset idle heartbeat = %q", line)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("no idle heartbeat after the next no-event interval")
-	}
-	if next := <-timerResets; next != debugHeartbeatInterval {
-		t.Fatalf("timer reset after second heartbeat = %v, want %v", next, debugHeartbeatInterval)
-	}
-
-	if _, err := io.WriteString(piOutput, `{"type":"agent_settled"}`+"\n"); err != nil {
-		t.Fatalf("write settlement: %v", err)
-	}
-	if err := <-done; err != nil {
-		t.Fatalf("WaitSettled(): %v", err)
 	}
 }
 
@@ -514,11 +438,10 @@ func TestDebugSinkScopedWorkersShareSynchronizationAndBudget(t *testing.T) {
 	}
 }
 
-// TestClientDebugStreamingHeartbeatIsTimeBased proves the model-output
-// heartbeat is driven by elapsed run time, never by frame count: 10,000
-// output updates inside 30 seconds emit only the first activity line,
-// and later heartbeats occur at most once per 30-second interval.
-func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
+// TestClientDebugRepeatedModelUpdatesDoNotCreateHeartbeat proves that 10,000
+// repeated output updates emit only the first phase transition; lifecycle
+// heartbeat timing is owned by WorkerScope, not by Client.
+func TestClientDebugRepeatedModelUpdatesDoNotCreateHeartbeat(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
@@ -545,32 +468,25 @@ func TestClientDebugStreamingHeartbeatIsTimeBased(t *testing.T) {
 		t.Fatalf("update 29s after the first emitted %d lines, want 1:\n%s", got, buf.String())
 	}
 
-	// At exactly 30 seconds the first heartbeat fires.
+	// At exactly 30 seconds a repeated phase event still emits nothing.
 	clock.advance(1 * time.Second)
 	client.debugEvent("message_update", update)
-	bodies := debugBodies(t, buf.String())
-	if got := streaming(); got != 2 {
-		t.Fatalf("update at 30s emitted %d lines, want 2:\n%s", got, buf.String())
-	}
-	if !slices.Contains(bodies, "worker=1 phase=model-output elapsed="+(30*time.Second).String()) {
-		t.Fatalf("heartbeat at 30s missing from:\n%s", buf.String())
+	if got := streaming(); got != 1 {
+		t.Fatalf("repeated phase update at 30s emitted %d lines, want 1:\n%s", got, buf.String())
 	}
 
 	// 29 seconds after that heartbeat: still inside the interval.
 	clock.advance(29 * time.Second)
 	client.debugEvent("message_update", update)
-	if got := streaming(); got != 2 {
-		t.Fatalf("update 29s after the heartbeat emitted %d lines, want 2:\n%s", got, buf.String())
+	if got := streaming(); got != 1 {
+		t.Fatalf("repeated phase update after 59s emitted %d lines, want 1:\n%s", got, buf.String())
 	}
 
-	// At 60 seconds the second heartbeat fires; no frame count is involved.
+	// At 60 seconds repeated events still do not create a phase heartbeat.
 	clock.advance(1 * time.Second)
 	client.debugEvent("message_update", update)
-	if got := streaming(); got != 3 {
-		t.Fatalf("update at 60s emitted %d lines, want 3:\n%s", got, buf.String())
-	}
-	if !slices.Contains(debugBodies(t, buf.String()), "worker=1 phase=model-output elapsed="+(60*time.Second).String()) {
-		t.Fatalf("heartbeat at 60s missing from:\n%s", buf.String())
+	if got := streaming(); got != 1 {
+		t.Fatalf("repeated phase update at 60s emitted %d lines, want 1:\n%s", got, buf.String())
 	}
 }
 
@@ -621,7 +537,7 @@ func TestClientDebugMessageUpdateUsesFixedPhases(t *testing.T) {
 	}
 }
 
-func TestClientDebugMessageUpdateHeartbeatsPerPhase(t *testing.T) {
+func TestClientDebugMessageUpdateHasNoDuplicatePhaseHeartbeat(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
@@ -646,9 +562,7 @@ func TestClientDebugMessageUpdateHeartbeatsPerPhase(t *testing.T) {
 	bodies := debugBodies(t, buf.String())
 	want := []string{
 		"worker=1 phase=model-thinking elapsed=0s",
-		"worker=1 phase=model-thinking elapsed=30s",
 		"worker=1 phase=model-output elapsed=30s",
-		"worker=1 phase=model-output elapsed=1m0s",
 	}
 	if !slices.Equal(bodies, want) {
 		t.Fatalf("phase heartbeat lines = %q, want %q", bodies, want)
@@ -1422,9 +1336,9 @@ func TestWorkerDebugRedactsUnknownEventTypesAndToolNames(t *testing.T) {
 
 // TestWorkerDebugBudgetBoundsToolEventFlood is the regression test for the
 // run-level debug line budget under the real worker path: a flood of
-// allowed tool start/end frames cannot exceed the fixed budget plus the
-// single fixed budget-exhausted notice, and normal tool/settlement lines
-// remain before the exhaustion point.
+// allowed tool start/end frames cannot exceed the regular lane plus the
+// single fixed budget-exhausted notice, while reserved settlement and final
+// status lines remain visible after the exhaustion point.
 func TestWorkerDebugBudgetBoundsToolEventFlood(t *testing.T) {
 	const floodPairs = 2000 // 4000 lines, far beyond the 512-line budget
 	steps := []script.Step{
@@ -1471,9 +1385,10 @@ func TestWorkerDebugBudgetBoundsToolEventFlood(t *testing.T) {
 
 	out := debugOut.String()
 	bodies := debugBodies(t, out)
-	if len(bodies) != debugRegularLineBudget+1 {
-		t.Fatalf("debug emitted %d lines for %d flood frames, want regular budget %d plus one notice",
-			len(bodies), floodPairs*2, debugRegularLineBudget+1)
+	wantLines := debugRegularLineBudget + debugBudgetNoticeLines + 2 // settlement and final status
+	if len(bodies) != wantLines {
+		t.Fatalf("debug emitted %d lines for %d flood frames, want regular budget %d, one notice, and two terminal lines",
+			len(bodies), floodPairs*2, debugRegularLineBudget)
 	}
 	if n := strings.Count(out, debugBudgetExhausted); n != 1 {
 		t.Fatalf("budget notice must appear exactly once:\n%s", out)
@@ -1495,6 +1410,9 @@ func TestWorkerDebugBudgetBoundsToolEventFlood(t *testing.T) {
 	}
 	if noticeIdx < 0 || noticeIdx < settledIdx {
 		t.Fatalf("budget notice must follow the settlement line (settled at %d, notice at %d)", settledIdx, noticeIdx)
+	}
+	if !strings.HasPrefix(bodies[len(bodies)-1], "worker=1 status=completed total=") {
+		t.Fatalf("final status was displaced by the flood: %q", bodies[len(bodies)-1])
 	}
 	// The single normal tool pair appears before settlement; the flood of
 	// pairs after settlement is what exhausts the budget.

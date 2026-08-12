@@ -26,6 +26,13 @@ architecture decisions with the orchestrating agent.
 pi-worker run --model <provider/model> --thinking <level> --task-file <task-a.txt> --task-file <task-b.txt> --timeout <duration> --json --debug
 ```
 
+`--debug` is stderr-only and reports one bounded lifecycle stream. Its heartbeat
+starts after the Pi child starts, covers setup silence, resets after each emitted
+line, and stops before the final worker status. A heartbeat's fixed
+`last-phase` is a pi-worker phase projection; `process=alive` means the managed
+Pi root has not been reaped and does not claim model progress. The stream is
+bounded to 512 lines with separate regular, heartbeat, and terminal capacity.
+
 ## Common mistakes
 
 - Do not invent `pi-worker` subcommands or infer a model from a nickname.

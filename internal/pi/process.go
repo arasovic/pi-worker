@@ -110,6 +110,15 @@ func (p *Process) SessionDir() string {
 	return p.sessionDir
 }
 
+// Running reports the synchronized lifecycle state of the managed root. It
+// becomes true only after Start publishes the child state and false when Wait
+// publishes that the child has been reaped.
+func (p *Process) Running() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.started && !p.reaped
+}
+
 // argv is the exact launch from docs/pi-cli-surface.md with the process
 // profile's tool allowlist.
 func (p *Process) argv() []string {

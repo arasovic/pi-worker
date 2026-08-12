@@ -225,16 +225,26 @@ so it bypasses the CLI `--tools` allowlist.
 The v0 debug projection uses fixed model phases: `model-thinking`,
 `model-output`, `model-tool-call`, and `model-activity`. A `message_update`
 frame is classified only from `assistantMessageEvent.type`; transitions are
-reported immediately and repeated events are heartbeated at most once per 30
-seconds. Host-clock silence remains `phase=waiting-for-pi` with
-`no-event-for=<duration>` and does not imply model thinking.
+reported immediately and repeated same-phase events do not create a second
+heartbeat clock. One lifecycle heartbeat starts after the managed Pi child
+starts successfully and continues through setup and model activity until the
+terminal worker result. After 30 seconds without an emitted debug line it
+reports the fixed projection
+`phase=waiting-for-pi last-phase=<fixed-phase> silence=30s process=alive`.
+Any emitted debug line resets this visible-line silence interval. `last-phase`
+is pi-worker's fixed phase projection; `process=alive` means the managed Pi
+root has started and has not been reaped, not that model or provider progress
+is occurring. This heartbeat reports observed silence and may cover a slow
+setup RPC.
 
 For failed tools, only an exact `bash` tool name is eligible for a cause
 projection from the final `result.content` text entry: nonzero exits report
 `cause=nonzero-exit exit-code=N`, timeouts report `cause=timeout`, and aborts
 report `cause=cancelled`. Other and malformed forms, and all non-bash failures,
 report `cause=unknown`. Debug output never includes command, result, argument,
-identifier, path, or credential data.
+identifier, path, or credential data. The run-level debug stream is bounded to
+512 lines: 315 regular lifecycle/tool/RPC lines, 180 heartbeat lines, 16
+reserved terminal lines, and one fixed budget notice.
 
 ### Completion and final text
 

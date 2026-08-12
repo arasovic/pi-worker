@@ -283,16 +283,26 @@ Example:
   `get_state`, `get_available_thinking_levels`, `set_thinking_level`, `prompt`,
   `get_last_assistant_text`)
 - requested and confirmed effective thinking; fallback is a fixed boolean field
-- model phase heartbeat (`phase=model-thinking`, `phase=model-output`,
-  `phase=model-tool-call`, or `phase=model-activity`; transitions are immediate
-  and repeated events heartbeat at most once every 30s)
-- host-clock idle heartbeat (`phase=waiting-for-pi`) after every 30 seconds
-  without an inbound frame; this reports observed silence and does not prove
-  the model is thinking rather than compacting, doing internal work, or stalled
+- fixed model-phase transitions (`phase=model-thinking`, `phase=model-output`,
+  `phase=model-tool-call`, or `phase=model-activity`); transitions are immediate
+  and repeated same-phase events do not create a second heartbeat clock
+- one lifecycle heartbeat from successful Pi child start until the terminal
+  worker result: after 30 seconds without an emitted debug line it reports
+  `phase=waiting-for-pi last-phase=<fixed-phase> silence=30s process=alive`;
+  any emitted debug line resets the visible-line silence interval
+- `last-phase` is pi-worker's latest fixed phase projection. `process=alive`
+  means the managed Pi root has started and has not been reaped; it does not
+  claim model or provider progress. The heartbeat reports observed silence and
+  may also cover setup RPC waits.
 - tool start/end status and duration; failed tools include a fixed `cause`, and
   bash nonzero exits also include `exit-code`
 - settlement line
 - worker completion and total duration
+
+The debug stream is bounded to 512 lines per run: 315 regular lifecycle/tool/RPC
+lines, 180 heartbeat lines, 16 reserved terminal lines, and one fixed budget
+notice. The heartbeat is disabled, including its timer and goroutine, when
+`--debug` is not enabled.
 
 It does **not** print:
 - prompts
