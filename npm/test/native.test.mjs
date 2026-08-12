@@ -55,18 +55,25 @@ writeExecutable(
     "process.exit(Number.isFinite(code) ? code : 0);"
 );
 
+// `ready` must be the last thing this fixture does before idling: it is the
+// signal the tests wait on before killing the launcher, so anything printed
+// before the handlers exist lets a forwarded signal land on the default
+// disposition and kill the fixture silently. Exiting by clearing the idle
+// timer instead of process.exit keeps the pending stdout write from being
+// discarded, while the delay still leaves a window to observe a second
+// delivery.
 writeExecutable(
   signalFixture,
   "let count = 0;\n" +
-    "process.stdout.write('ready\\n');\n" +
+    "const idle = setInterval(() => {}, 1_000_000);\n" +
     "for (const signal of ['SIGINT', 'SIGTERM']) {\n" +
     "  process.on(signal, () => {\n" +
     "    count += 1;\n" +
     "    process.stdout.write(`${signal}:${count}\\n`);\n" +
-    "    setTimeout(() => process.exit(0), 100);\n" +
+    "    setTimeout(() => clearInterval(idle), 100);\n" +
     "  });\n" +
     "}\n" +
-    "setInterval(() => {}, 1_000_000);"
+    "process.stdout.write('ready\\n');"
 );
 
 writeExecutable(optionFixture, "process.stdout.write('native\\n');");
