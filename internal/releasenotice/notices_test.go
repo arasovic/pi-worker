@@ -3,6 +3,7 @@ package releasenotice
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -262,9 +263,16 @@ func modulesForTarget(t *testing.T, goos, goarch string) map[string]string {
 	cmd := exec.Command("go", "list", "-deps", "-json", "./cmd/pi-worker")
 	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
 	cmd.Dir = filepath.Join("..", "..")
-	stdout, err := cmd.CombinedOutput()
+	// Keep stderr off stdout: a cold module cache makes `go list` report
+	// "go: downloading ..." progress, which would corrupt the JSON stream below.
+	stdout, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("go list failed for %s/%s: %v\n%s", goos, goarch, err, string(stdout))
+		var exitErr *exec.ExitError
+		stderr := ""
+		if errors.As(err, &exitErr) {
+			stderr = string(exitErr.Stderr)
+		}
+		t.Fatalf("go list failed for %s/%s: %v\n%s", goos, goarch, err, stderr)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(stdout))
