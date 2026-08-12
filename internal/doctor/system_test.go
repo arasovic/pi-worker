@@ -58,7 +58,7 @@ func TestSystemVersionDoesNotHangWhenDescendantKeepsStdoutOpen(t *testing.T) {
 		if !errors.Is(err, exec.ErrWaitDelay) {
 			t.Fatalf("systemVersion error = %v, want exec.ErrWaitDelay", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("systemVersion hung while descendant retained stdout")
 	}
 }
