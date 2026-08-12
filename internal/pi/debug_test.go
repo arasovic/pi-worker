@@ -375,12 +375,20 @@ func TestDebugSinkEmitsBudgetNoticeOnceAndSuppresses(t *testing.T) {
 // every line stays whole under concurrency.
 func TestDebugSinkScopedWorkersShareSynchronizationAndBudget(t *testing.T) {
 	const workerCount = 3
-	const linesPerWorker = 300 // 3*300 = 900 > shared budget 512
+	const linesPerWorker = 300 // 3*300 overruns the shared regular lane many times over
 	var buf bytes.Buffer
 	sink := NewDebugSink(&buf)
 	scopes := make([]*WorkerScope, workerCount)
 	for i := range scopes {
 		scopes[i] = sink.Worker(i + 1)
+	}
+
+	// Every scope writes once before the flood starts. The shared budget is
+	// smaller than what two scopes alone emit, so under the concurrent flood
+	// alone it is scheduling order, not the seam under test, that decides
+	// whether the third scope ever reaches the sink.
+	for _, scope := range scopes {
+		scope.Log("phase=model-output", "elapsed=0s")
 	}
 
 	var wg sync.WaitGroup
