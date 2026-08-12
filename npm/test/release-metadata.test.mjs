@@ -33,12 +33,14 @@ test("emits one canonical release identity from a matching tag and package versi
   ].join("\n"));
 });
 
-test("rejects a branch dispatch and any tag-package version mismatch", (t) => {
+test("rejects branch dispatches, unstable versions, and tag-package mismatches", (t) => {
   for (const fixture of [
     { refType: "branch" },
     { tag: "v0.1.1" },
     { tag: "0.1.0" },
     { version: "0.1.1" },
+    { tag: "v0.2.0-rc.1", version: "0.2.0-rc.1" },
+    { tag: "v0.2.0+build.1", version: "0.2.0+build.1" },
   ]) {
     const { result } = run(t, fixture);
     assert.notEqual(result.status, 0, JSON.stringify(fixture));

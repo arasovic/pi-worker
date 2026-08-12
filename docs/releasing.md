@@ -113,7 +113,8 @@ initial `v0.1.0` publication therefore uses the isolated
 7. Revoke the granular token immediately and delete the
    `NPM_BOOTSTRAP_TOKEN` repository secret.
 8. Delete `.github/workflows/bootstrap-publish.yml` and its bootstrap-only test
-   assertions in the next commit. Do not add token authentication to
+   assertions, then remove the `github.ref_name != 'v0.1.0'` bootstrap guard
+   from `release.yml` in the next commit. Do not add token authentication to
    `release.yml`.
 
 After the OIDC release succeeds, set package publishing access to require 2FA

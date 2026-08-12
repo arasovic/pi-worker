@@ -3,7 +3,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function parseArguments(args) {
   const options = {
@@ -30,7 +30,7 @@ function resolveReleaseMetadata(tag, refType, manifest) {
   if (manifest?.name !== "pi-worker") throw new Error("package name must be pi-worker");
   const version = manifest?.version;
   if (typeof version !== "string" || version.length > 128 || !VERSION_PATTERN.test(version)) {
-    throw new Error("package version must be a bounded semantic version");
+    throw new Error("package version must be a stable semantic version");
   }
   if (tag !== `v${version}`) throw new Error("release tag does not match package version");
   return Object.freeze({

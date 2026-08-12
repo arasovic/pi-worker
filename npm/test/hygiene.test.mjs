@@ -210,6 +210,7 @@ function assertReleasePreparation(workflow) {
   const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)\s*$/gm)].map(([, action]) => action);
   assert.deepEqual([...new Set(actionUsages)].sort(), requiredActions);
   assert.match(workflow, /persist-credentials:\s*false/);
+  assert.match(workflow, /^    timeout-minutes:\s*30$/m);
   assert.match(workflow, /node-version:\s*24/);
   assert.match(workflow, /npm[^\n]*11\.5\.1/);
   assert.match(workflow, /node npm\/scripts\/release-metadata\.mjs/);
@@ -259,7 +260,7 @@ test("bootstrap workflow is a manual one-release token boundary", () => {
   assert.match(workflow, /^on:\n\s*workflow_dispatch:\s*$/m);
   assert.doesNotMatch(workflow, /^\s*push:\s*$/m);
   assert.match(workflow, /^\s*id-token:\s*write$/m);
-  assert.match(workflow, /github\.ref_type == 'tag' && github\.ref_name == 'v0\.1\.0'/);
+  assert.doesNotMatch(workflow, /^    if:/m);
   assert.match(workflow, /registry-url:\s*https:\/\/registry\.npmjs\.org/);
   assert.match(workflow, /NODE_AUTH_TOKEN:\s*\$\{\{ secrets\.NPM_BOOTSTRAP_TOKEN \}\}/);
   assert.match(workflow, /npm publish "dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
@@ -284,5 +285,6 @@ test("release runbook keeps the local gate and defines the remote bootstrap boun
   assert.match(releaseRunbook, /shortest\s+practical\s+expiry/i);
   assert.match(releaseRunbook, /NPM_BOOTSTRAP_TOKEN[\s\S]*revoke/i);
   assert.match(releaseRunbook, /trusted publisher[\s\S]*release\.yml[\s\S]*delete[\s\S]*bootstrap-publish\.yml/i);
+  assert.match(releaseRunbook, /remove[\s\S]*github\.ref_name != 'v0\.1\.0'/i);
   assert.match(releaseRunbook, /bypass 2FA/i);
 });
