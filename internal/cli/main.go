@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/buildinfo"
@@ -41,6 +42,20 @@ func defaultRunVersionProbe(parent context.Context) (string, error) {
 // model catalog command.
 var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
 
+// shutdownSignals are the signals that request an orderly shutdown. SIGINT
+// is the interactive Ctrl-C; SIGTERM is what process supervisors, container
+// runtimes, and agent harness timeouts send first. Both must reach the run
+// context, because an unhandled SIGTERM terminates the process immediately,
+// skipping child termination and session directory removal.
+var shutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+
+// interruptContext installs the shutdown signal interception for one command
+// and returns its context with the matching stop function. Commands share it
+// so a new command cannot silently observe a narrower signal set.
+func interruptContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), shutdownSignals...)
+}
+
 // Main runs the pi-worker command. Signal interception is installed only
 // after the run arguments and the tasks are resolved: while pi-worker
 // reads the task from stdin there is no child process and no
@@ -56,15 +71,15 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "version":
 		return versionCommand(args[1:], stdout, stderr)
 	case "models":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := interruptContext()
 		defer stop()
 		return modelsCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := interruptContext()
 		defer stop()
 		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "config":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := interruptContext()
 		defer stop()
 		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
@@ -74,11 +89,11 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			printUsage(stderr)
 			return 2
 		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := interruptContext()
 		defer stop()
 		return runCommand(ctx, opts, tasks, stdout, stderr)
 	case "skill":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := interruptContext()
 		defer stop()
 		return skillCommand(ctx, args[1:], stdout, stderr)
 	default:
