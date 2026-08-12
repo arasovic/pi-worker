@@ -1,3 +1,13 @@
+# Third-Party Notices
+
+Pi Worker release archives bundle the modules listed below. Every `###` block
+reproduces an upstream license file verbatim. Placeholder text inside those
+blocks, such as the `[yyyy] [name of copyright owner]` line in an Apache-2.0
+appendix, is part of the upstream file and is intentionally left unchanged.
+
+This file is generated. Run `go run ./tools/notices --write THIRD_PARTY_NOTICES`
+instead of editing it by hand.
+
 ## github.com/shirou/gopsutil/v4 v4.26.6
 Targets: darwin, linux
 

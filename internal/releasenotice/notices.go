@@ -36,9 +36,18 @@ func Inventory() []Dependency {
 	return inv
 }
 
+const preamble = "# Third-Party Notices\n\n" +
+	"Pi Worker release archives bundle the modules listed below. Every `###` block\n" +
+	"reproduces an upstream license file verbatim. Placeholder text inside those\n" +
+	"blocks, such as the `[yyyy] [name of copyright owner]` line in an Apache-2.0\n" +
+	"appendix, is part of the upstream file and is intentionally left unchanged.\n\n" +
+	"This file is generated. Run `go run ./tools/notices --write THIRD_PARTY_NOTICES`\n" +
+	"instead of editing it by hand.\n\n"
+
 // Render renders the third-party notice document from a module cache path.
 func Render(moduleCache string) ([]byte, error) {
 	var b strings.Builder
+	b.WriteString(preamble)
 	inventory := Inventory()
 	for i, dep := range inventory {
 		b.WriteString("## ")

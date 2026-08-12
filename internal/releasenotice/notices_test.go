@@ -132,6 +132,36 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 	}
 }
 
+func TestRenderStartsWithGeneratedPreamble(t *testing.T) {
+	t.Helper()
+
+	moduleCache := t.TempDir()
+	writeNoticeFixtureFiles(t, moduleCache)
+
+	raw, err := Render(moduleCache)
+	if err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
+	}
+	content := string(raw)
+
+	firstModule := "## github.com/shirou/gopsutil/v4 v4.26.6"
+	if !strings.HasPrefix(content, preamble) {
+		t.Fatalf("rendered notices do not start with the generated preamble")
+	}
+	if !strings.HasPrefix(content, "# Third-Party Notices\n") {
+		t.Fatalf("rendered notices do not start with the top-level title")
+	}
+	if !strings.Contains(content, "`[yyyy] [name of copyright owner]`") {
+		t.Fatalf("preamble missing Apache placeholder explanation")
+	}
+	if !strings.Contains(content, "go run ./tools/notices --write THIRD_PARTY_NOTICES") {
+		t.Fatalf("preamble missing generation instruction")
+	}
+	if !strings.HasPrefix(content[len(preamble):], firstModule) {
+		t.Fatalf("first module header must immediately follow the preamble")
+	}
+}
+
 func TestRenderRejectsMissingFixtureFiles(t *testing.T) {
 	t.Helper()
 
