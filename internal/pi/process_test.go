@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 type fakePiMeta struct {
@@ -403,5 +406,60 @@ func TestProcessStartFailureReleasesResources(t *testing.T) {
 	after := openFDCount(t)
 	if after > before+2 {
 		t.Fatalf("file descriptors leaked across failed starts: before=%d after=%d", before, after)
+	}
+}
+
+// TestProcessStdoutSurvivesDelayedReadAfterExit is the stdout pipe close
+// race regression. With the old cmd.StdoutPipe, the concurrent cmd.Wait
+// closed the parent read end the moment the child exited, truncating the
+// child's still-unread final frame with a "file already closed" error. The
+// manual os.Pipe fix hands EOF to the reader only once every writer has
+// closed the pipe, so a frame written just before the child exits must stay
+// readable even after the child has exited and been reaped. The sleep is
+// deliberate: it lets the child fully exit and be reaped before the first
+// read, which is exactly the window that made the pre-fix code fail
+// deterministically, while being timing-irrelevant for the fixed code.
+func TestProcessStdoutSurvivesDelayedReadAfterExit(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Exit: true},
+		},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+
+	// Write a single prompt request; fakepi emits the response frame and
+	// then exits immediately.
+	if err := NewFrameWriter(proc.Stdin()).WriteFrame(request{Type: requestPrompt, Message: "hello"}); err != nil {
+		t.Fatalf("write prompt frame: %v", err)
+	}
+
+	// Sleep so the child has certainly written its last frame, exited, and
+	// been reaped before we read anything from stdout.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait after child exit = %v, want nil", err)
+	}
+
+	in := NewFrameReader(proc.Stdout(), MaxFrameBytes)
+	frame, err := in.ReadFrame()
+	if err != nil {
+		t.Fatalf("read response frame after child exited: %v", err)
+	}
+	var resp struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+	}
+	if err := json.Unmarshal(frame, &resp); err != nil {
+		t.Fatalf("decode response frame: %v", err)
+	}
+	if resp.Type != "response" || resp.Command != requestPrompt || !resp.Success {
+		t.Fatalf("response frame = %s, want a successful prompt response", frame)
+	}
+
+	if _, err := in.ReadFrame(); !errors.Is(err, io.EOF) {
+		t.Fatalf("read after the response = %v, want clean io.EOF", err)
 	}
 }

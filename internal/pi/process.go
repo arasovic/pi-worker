@@ -167,13 +167,18 @@ func (p *Process) Start(ctx context.Context) error {
 	// os.DevNull, whereas a non-nil io.Writer creates an OS pipe and a copy
 	// goroutine whose lifetime can be extended by descendant fd inheritance.
 
-	// stdin and stdout own the caller ends of the child pipes created
-	// below. release is the single cleanup path for every failure after
-	// containment creation: it returns the containment (the Windows job
-	// handle) and any created pipes to the OS exactly once, and Close never
-	// releases again because ownership transfers only on success.
+	// stdin owns the caller end of the child stdin pipe created below;
+	// stdout is the caller read end of the manual stdout pipe, and stdoutW is
+	// its child write end. release is the single cleanup path for every
+	// failure after containment creation: it returns the containment (the
+	// Windows job handle) and any created pipes to the OS exactly once, and
+	// Close never releases again because ownership transfers only on
+	// success. Both stdout ends must be releasable here: the write end is
+	// closed explicitly only after a successful Start, so the pre-Start
+	// failure paths rely on release to return it to the OS.
 	var stdin io.WriteCloser
 	var stdout io.ReadCloser
+	var stdoutW *os.File
 	released := false
 	release := func() {
 		if released {
@@ -185,6 +190,9 @@ func (p *Process) Start(ctx context.Context) error {
 		}
 		if stdout != nil {
 			_ = stdout.Close()
+		}
+		if stdoutW != nil {
+			_ = stdoutW.Close()
 		}
 		_ = cont.close()
 	}
@@ -201,13 +209,37 @@ func (p *Process) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create stdin pipe: %w", err)
 	}
-	stdout, err = cmd.StdoutPipe()
+	// A manual os.Pipe replaces cmd.StdoutPipe. StdoutPipe registers the
+	// parent read end in c.parentIOPipes, and cmd.Wait closes every such end
+	// the moment it sees the child exit — even while the child's final bytes
+	// are still buffered in the kernel pipe — so a concurrent Wait can cut
+	// the stream short with "file already closed" before the last frame is
+	// read. A manual pipe is invisible to os/exec: Wait neither closes nor
+	// drains it, so EOF is delivered only when every writer closes its end.
+	// cmd.Stdout takes the child write end directly (an *os.File is passed
+	// to the child fd with no copy goroutine).
+	var stdoutR *os.File
+	stdoutR, stdoutW, err = os.Pipe()
 	if err != nil {
 		return fmt.Errorf("create stdout pipe: %w", err)
 	}
+	stdout = stdoutR
+	cmd.Stdout = stdoutW
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", p.executable, err)
 	}
+	// Close the parent's copy of the write end now that the child owns the
+	// fd. Keeping it open here would make the reader block forever waiting
+	// for EOF: even after the child (and any descendant that inherited the
+	// fd) exits, the parent's own write end would still hold the pipe open.
+	// This is deliberately handled here rather than by release(): on the
+	// success path ownership has already transferred to Process and the
+	// deferred release never runs, while a cmd.Start failure is still
+	// covered by release, which closes both ends. cmd.Wait no longer closes
+	// the pipe (it was never a parentIOPipe), so closing in Close after
+	// the child is reaped is the sole remaining close of the read end.
+	_ = stdoutW.Close()
+	stdoutW = nil
 	if err := cont.assign(cmd.Process); err != nil {
 		// Assignment is required before Start may report success. Kill and
 		// reap the direct child immediately; the Windows implementation
@@ -300,11 +332,14 @@ func (p *Process) killTree() {
 }
 
 // Close closes the child stdin, waits for exit (killing the tree after
-// processCloseGrace if needed), then cleans up residual descendants captured
-// while the root is still live, releases containment, and removes the session
-// directory. A root already reaped before Close has no safe lineage identity
-// to snapshot. Close is idempotent and safe to call after a failed Start: a
-// process that never started has no containment to release.
+// processCloseGrace if needed), then closes the parent-owned stdout read end
+// (EOF is fully delivered only once every writer of that pipe, including
+// descendants that inherited the fd, has closed it), cleans up residual
+// descendants captured while the root is still live, releases containment,
+// and removes the session directory. A root already reaped before Close has
+// no safe lineage identity to snapshot. Close is idempotent and safe to call
+// after a failed Start: a process that never started has no containment to
+// release.
 func (p *Process) Close() error {
 	p.mu.Lock()
 	if p.closed {
@@ -316,6 +351,7 @@ func (p *Process) Close() error {
 	started := p.started
 	var residualDescendants any
 	var stdin io.WriteCloser
+	var stdout io.ReadCloser
 	var waitCh chan struct{}
 	var cont *childContainment
 	if started && p.cmd != nil && p.cmd.Process != nil && p.cont != nil {
@@ -328,6 +364,7 @@ func (p *Process) Close() error {
 			residualDescendants = p.cont.snapshotDescendants(p.cmd.Process.Pid)
 		}
 		stdin = p.stdin
+		stdout = p.stdout
 		waitCh = p.waitCh
 		cont = p.cont
 	}
@@ -348,6 +385,15 @@ func (p *Process) Close() error {
 		case <-time.After(processCloseGrace):
 			p.killTree()
 			<-waitCh
+		}
+		// stdout is parent-owned and closed only here, after waitCh proves the
+		// child is reaped. Closing it from the reap goroutine (as cmd.Wait did
+		// for StdoutPipe) cut the stream off while final bytes were still
+		// buffered in the kernel pipe; closing here, after reap, lets EOF
+		// arrive only once every writer of the pipe, including any descendant
+		// that inherited the fd, has gone away.
+		if stdout != nil {
+			_ = stdout.Close()
 		}
 		// Root exit can obscure detached descendants from a fresh process-table
 		// snapshot. Finish by terminating pre-close lineage-verified targets,
