@@ -26,3 +26,8 @@ The font binary is not distributed with Pi Worker.
 
 README and npm surfaces use the opaque social preview rather than a transparent
 lockup so the identity remains stable across light and dark themes.
+
+The published README references the social preview from the `main` branch.
+Treat `assets/brand/github-social-preview.png` as a stable public path: replace
+its contents in place when the artwork changes, and do not move or remove the
+file while published npm versions depend on it.

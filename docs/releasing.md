@@ -74,6 +74,20 @@ npm pack --dry-run --json
 Inspect the package entry list and confirm the public name, version, repository,
 license, homepage, and issue URL before any publication step.
 
+## Required publication order
+
+The README image is served from the public repository. A future authorized
+release must use this order:
+
+1. Create the GitHub repository and push `main`.
+2. Make the repository public if it was created privately.
+3. Verify the README image loads without authentication from its
+   `raw.githubusercontent.com` URL.
+4. Only then publish the npm package.
+
+Do not publish while the repository is private or before the pushed `main`
+contains `assets/brand/github-social-preview.png`.
+
 ## Stop before remote actions and publication
 
 This runbook is a local snapshot gate only. Do not create a remote, push, tag,
