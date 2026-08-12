@@ -168,6 +168,7 @@ up.
 
 ## Advanced documentation
 
+- [Architecture and evaluated alternatives](./ARCHITECTURE.md)
 - [Detailed v0 usage](./docs/v0-usage.md)
 - [Pi CLI compatibility and RPC surface](./docs/pi-cli-surface.md)
 - [Release snapshot runbook](./docs/releasing.md)
