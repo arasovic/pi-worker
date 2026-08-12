@@ -26,6 +26,13 @@ const releaseWorkflow = (() => {
     return null;
   }
 })();
+const bootstrapWorkflow = (() => {
+  try {
+    return readFileSync(join(repository, ".github", "workflows", "bootstrap-publish.yml"), "utf8");
+  } catch {
+    return null;
+  }
+})();
 const joinParts = (...parts) => parts.join("");
 const machineHome = joinParts("/Us", "ers/");
 const codexMarker = joinParts(".", "cod", "ex");
@@ -192,67 +199,33 @@ test("CI keeps read-only reproducible source and snapshot gates", () => {
   assert.doesNotMatch(ciWorkflow, /npm publish|NPM_TOKEN|id-token:\s*write|contents:\s*write|packages:\s*write|secrets\.|upload-artifact|create.?release/i);
 });
 
-test("release workflow is a non-publishing, verification-first snapshot policy", () => {
-  assert.ok(releaseWorkflow, "missing .github/workflows/release.yml for snapshot policy assertions");
-  const workflow = releaseWorkflow;
-  const requiredActions = Object.freeze([
+function assertReleasePreparation(workflow) {
+  const requiredActions = [
     "actions/checkout@v7",
+    "actions/download-artifact@v7",
     "actions/setup-go@v7",
     "actions/setup-node@v7",
     "actions/upload-artifact@v7",
-  ]);
-
-  assert.ok(workflow.includes("on:"));
-  const onStart = workflow.indexOf("on:");
-  const permissionsStart = workflow.indexOf("\npermissions:", onStart);
-  assert.ok(onStart >= 0 && permissionsStart > onStart);
-  const onSection = workflow.slice(onStart, permissionsStart);
-  assert.match(onSection, /^\s*on:\n/m);
-  assert.match(onSection, /^\s{2}workflow_dispatch:\s*$/m);
-  const onTriggers = [...onSection.matchAll(/^\s{2}(?:"([^"]+)"|'([^']+)'|([A-Za-z_][\w-]*))\s*:/gm)]
-    .map(([, doubleQuoted, singleQuoted, plain]) => doubleQuoted ?? singleQuoted ?? plain);
-  const normalizedTriggers = [...new Set(onTriggers)];
-  assert.deepEqual(normalizedTriggers, ["workflow_dispatch"], "release workflow has workflow_dispatch trigger only");
-
-  assert.match(workflow, /^permissions:\n\s*contents:\s*read$/m);
-  assert.doesNotMatch(workflow, /^\s*id-token:\s*write$/m);
-  assert.doesNotMatch(workflow, /^\s*(?:contents|packages|issues|pull-requests|attestations):\s*write$/m);
-
+  ];
+  const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)\s*$/gm)].map(([, action]) => action);
+  assert.deepEqual([...new Set(actionUsages)].sort(), requiredActions);
+  assert.match(workflow, /persist-credentials:\s*false/);
+  assert.match(workflow, /node-version:\s*24/);
+  assert.match(workflow, /npm[^\n]*11\.5\.1/);
+  assert.match(workflow, /node npm\/scripts\/release-metadata\.mjs/);
   assert.match(workflow, /npm run verify/);
   assert.match(workflow, /go run \.\/tools\/release/);
   assert.match(workflow, /npm run stage -- --dist dist/);
   assert.match(workflow, /PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm\/test\/package\.test\.mjs/);
-  assert.match(workflow, /npm pack/);
-  assert.match(workflow, /upload-artifact@v7/);
-
-  const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)\s*$/gm)].map(([, action]) => action);
-  assert.ok(actionUsages.length > 0, "release workflow references GitHub actions");
-  for (const action of actionUsages) {
-    assert.ok(action.endsWith("@v7"), `action pinning to v7 required: ${action}`);
-  }
-  const uniqueActions = [...new Set(actionUsages)].sort();
-  assert.deepEqual(uniqueActions, [...requiredActions].sort(), "release workflow uses exact required actions");
-
-  const uploadStart = workflow.indexOf("uses: actions/upload-artifact@v7");
-  assert.ok(uploadStart >= 0, "release workflow uploads one snapshot artifact");
-  const uploadBlock = workflow.slice(uploadStart);
-  const pathMarker = "          path: |\n";
-  const pathStart = uploadBlock.indexOf(pathMarker);
-  assert.ok(pathStart >= 0, "upload action has a multiline path contract");
-  const uploadedPaths = [];
-  for (const line of uploadBlock.slice(pathStart + pathMarker.length).split("\n")) {
-    if (!line.startsWith("            ")) break;
-    uploadedPaths.push(line.slice(12));
-  }
-  assert.deepEqual(uploadedPaths, [
-    "dist/pi-worker_v0.1.0_darwin_arm64.tar.gz",
-    "dist/pi-worker_v0.1.0_darwin_amd64.tar.gz",
-    "dist/pi-worker_v0.1.0_linux_arm64.tar.gz",
-    "dist/pi-worker_v0.1.0_linux_amd64.tar.gz",
-    "dist/checksums.txt",
-    "dist/${{ steps.npm_pack.outputs.npm_tarball }}",
-    "dist/npm-pack.json",
-  ]);
+  assert.match(workflow, /npm pack --json/);
+  assert.match(workflow, /actions\/upload-artifact@v7/);
+  assert.match(workflow, /actions\/download-artifact@v7/);
+  assert.match(workflow, /gh release create/);
+  assert.match(workflow, /dist\/checksums\.txt/);
+  assert.match(workflow, /darwin_arm64/);
+  assert.match(workflow, /darwin_amd64/);
+  assert.match(workflow, /linux_arm64/);
+  assert.match(workflow, /linux_amd64/);
 
   const shellBlocks = [...workflow.matchAll(/^ {8}run: \|\n((?:^ {10}.*(?:\n|$))+)/gm)];
   assert.ok(shellBlocks.length > 0, "release workflow has multiline shell blocks");
@@ -261,26 +234,39 @@ test("release workflow is a non-publishing, verification-first snapshot policy",
     const syntax = spawnSync("bash", ["-n"], { input: script, encoding: "utf8" });
     assert.equal(syntax.status, 0, syntax.stderr);
   }
+}
 
-  assert.doesNotMatch(workflow, /^\s*push:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*pull_request:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*pull_request_target:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*schedule:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*workflow_run:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*repository_dispatch:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*release:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*workflow_call:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*tags:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*workflow_dispatch:\s*release\s*$/m);
+test("trusted release workflow publishes tagged staged artifacts through OIDC", () => {
+  assert.ok(releaseWorkflow, "missing .github/workflows/release.yml");
+  const workflow = releaseWorkflow;
+  assertReleasePreparation(workflow);
 
-  assert.doesNotMatch(workflow, /\bnpm publish\b/);
-  assert.doesNotMatch(workflow, /\bNPM_TOKEN\b/);
-  assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.[^}]+\}\}/);
-  assert.doesNotMatch(workflow, /git\s+(?:push|tag)|gh\s+release\s+(?:create|upload|edit|delete)|npm\s+dist-tag|softprops\/action-gh-release|ncipollo\/release-action/i);
-  assert.doesNotMatch(workflow, /rm\s+-rf|npm pack[^\n]*--ignore-scripts/);
+  assert.match(workflow, /^on:\n\s*push:\n\s*tags:\s*\['v\*'\]$/m);
+  assert.match(workflow, /^\s*id-token:\s*write$/m);
+  assert.match(workflow, /^\s*contents:\s*read$/m);
+  assert.match(workflow, /^\s*contents:\s*write$/m);
+  assert.match(workflow, /github\.ref_name != 'v0\.1\.0'/);
+  assert.match(workflow, /npm publish "dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
+  assert.doesNotMatch(workflow, /registry-url|NPM_TOKEN|NPM_BOOTSTRAP_TOKEN|\$\{\{\s*secrets\./);
+  assert.doesNotMatch(workflow, /RELEASE_VERSION:\s*v0\.1\.0/);
 });
 
-test("release runbook stays reproducible and stops before publication", () => {
+test("bootstrap workflow is a manual one-release token boundary", () => {
+  assert.ok(bootstrapWorkflow, "missing .github/workflows/bootstrap-publish.yml");
+  const workflow = bootstrapWorkflow;
+  assertReleasePreparation(workflow);
+
+  assert.match(workflow, /^on:\n\s*workflow_dispatch:\s*$/m);
+  assert.doesNotMatch(workflow, /^\s*push:\s*$/m);
+  assert.match(workflow, /^\s*id-token:\s*write$/m);
+  assert.match(workflow, /github\.ref_type == 'tag' && github\.ref_name == 'v0\.1\.0'/);
+  assert.match(workflow, /registry-url:\s*https:\/\/registry\.npmjs\.org/);
+  assert.match(workflow, /NODE_AUTH_TOKEN:\s*\$\{\{ secrets\.NPM_BOOTSTRAP_TOKEN \}\}/);
+  assert.match(workflow, /npm publish "dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
+  assert.equal((workflow.match(/NPM_BOOTSTRAP_TOKEN/g) ?? []).length, 1, "bootstrap token is exposed to one step only");
+});
+
+test("release runbook keeps the local gate and defines the remote bootstrap boundary", () => {
   assert.match(releaseRunbook, /npm run verify/);
   assert.match(releaseRunbook, /Go 1\.26\.1/);
   assert.match(releaseRunbook, /git show -s --format=%ct/);
@@ -293,6 +279,10 @@ test("release runbook stays reproducible and stops before publication", () => {
   assert.match(releaseRunbook, /sha256sum -c checksums\.txt/);
   assert.match(releaseRunbook, /p\.version!=='0\.1\.0'/);
   assert.match(releaseRunbook, /github\.com\/arasovic\/pi-worker/);
-  assert.match(releaseRunbook, /single-use granular bootstrap[\s\S]*provenance[\s\S]*trusted publishing[\s\S]*revoke/i);
-  assert.doesNotMatch(releaseRunbook, /npm publish|NPM_TOKEN|https?:\/\//i);
+  assert.match(releaseRunbook, /repository public[\s\S]*raw\.githubusercontent\.com[\s\S]*npm/i);
+  assert.match(releaseRunbook, /bootstrap-publish\.yml/i);
+  assert.match(releaseRunbook, /shortest\s+practical\s+expiry/i);
+  assert.match(releaseRunbook, /NPM_BOOTSTRAP_TOKEN[\s\S]*revoke/i);
+  assert.match(releaseRunbook, /trusted publisher[\s\S]*release\.yml[\s\S]*delete[\s\S]*bootstrap-publish\.yml/i);
+  assert.match(releaseRunbook, /bypass 2FA/i);
 });
