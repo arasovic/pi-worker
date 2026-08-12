@@ -181,6 +181,42 @@ func TestSkillStatusVerifiedOutputsExit0AndCanonicalTarget(t *testing.T) {
 	}
 }
 
+func TestSkillStatusHumanOutputBoundsAndFlattensDynamicValues(t *testing.T) {
+	inspection := skillinstall.Inspection{
+		SchemaVersion:   skillinstall.SchemaVersion,
+		ReceiptPath:     "/receipt\ninjected-" + strings.Repeat("x", 2000),
+		Status:          skillinstall.StatusVerified,
+		VerifiedTargets: []string{"/verified\nforged"},
+		TrackedTargets:  []string{},
+		AffectedTargets: []skillinstall.AffectedTarget{},
+		Recovery:        []string{},
+		ExternalInspection: skillinstall.ExternalInspection{
+			State: skillinstall.ExternalInspectionUnavailable,
+			Targets: []skillinstall.ExternalTarget{{
+				Path:     "/external\nforged",
+				Identity: skillinstall.ExternalIdentityCurrent,
+			}},
+		},
+	}
+	original := inspectSkillReceipt
+	inspectSkillReceipt = func(string) (skillinstall.Inspection, error) { return inspection, nil }
+	t.Cleanup(func() { inspectSkillReceipt = original })
+	installSkillReceiptPath(t, filepath.Join(t.TempDir(), "skill-install.json"))
+
+	code, stdout, stderr := runCLI(t, []string{"skill", "status"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("skill status = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "\ninjected-") || strings.Contains(stdout, "\nforged") {
+		t.Fatalf("dynamic value created a forged line: %q", stdout)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
+		if len([]rune(line)) > 1100 {
+			t.Fatalf("human status line is unbounded: %d runes", len([]rune(line)))
+		}
+	}
+}
+
 func TestSkillStatusMissingReceiptPathIsNotReady(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "skill-install.json")
 	installSkillReceiptPath(t, path)

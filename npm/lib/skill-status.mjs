@@ -5,15 +5,54 @@ import { runNativeCaptured } from "./native.mjs";
 
 const CAPTURE_LIMIT = 1024 * 1024;
 const NORMAL_STATUS_CODES = new Set([0, 3]);
+const HUMAN_VALUE_LIMIT = 1024;
+const STATUS_VALUES = new Set(["verified", "missing", "blocked", "drifted", "skipped", "failed"]);
+const AFFECTED_STATE_VALUES = new Set(["unmanaged", "drifted", "conflicting"]);
+const EXTERNAL_STATE_VALUES = new Set(["performed", "unavailable"]);
+const EXTERNAL_IDENTITY_VALUES = new Set(["current", "legacy", "unknown", "none"]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasExactKeys(value, keys) {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isAffectedTarget(value) {
+  return isObject(value) && hasExactKeys(value, ["path", "state", "recovery"]) &&
+    typeof value.path === "string" && AFFECTED_STATE_VALUES.has(value.state) &&
+    isStringArray(value.recovery);
+}
+
+function isExternalTarget(value) {
+  return isObject(value) && hasExactKeys(value, ["path", "identity"]) &&
+    typeof value.path === "string" && EXTERNAL_IDENTITY_VALUES.has(value.identity);
+}
+
+function isExternalInspection(value) {
+  return isObject(value) && hasExactKeys(value, ["state", "targets"]) &&
+    EXTERNAL_STATE_VALUES.has(value.state) && Array.isArray(value.targets) &&
+    value.targets.every(isExternalTarget) &&
+    (value.state !== "unavailable" || value.targets.length === 0);
+}
+
 function parseNativeStatus(text) {
   const value = JSON.parse(text);
-  if (!isObject(value) || value.schemaVersion !== 1 || !Array.isArray(value.verifiedTargets) ||
-    !Array.isArray(value.trackedTargets)) {
+  if (!isObject(value) || !hasExactKeys(value, [
+    "schemaVersion", "receiptPath", "status", "verifiedTargets", "trackedTargets",
+    "affectedTargets", "recovery", "externalInspection",
+  ]) || value.schemaVersion !== 1 || typeof value.receiptPath !== "string" ||
+    !STATUS_VALUES.has(value.status) || !isStringArray(value.verifiedTargets) ||
+    !isStringArray(value.trackedTargets) || !Array.isArray(value.affectedTargets) ||
+    !value.affectedTargets.every(isAffectedTarget) || !isStringArray(value.recovery) ||
+    !isExternalInspection(value.externalInspection)) {
     throw new Error("native skill status document is invalid");
   }
   return value;
@@ -35,25 +74,30 @@ function normalizedInspection(value) {
   return { state: "performed", targets };
 }
 
+function humanValue(value) {
+  const flat = value.replace(/[\u0000-\u001f\u007f]/gu, " ");
+  return flat.length <= HUMAN_VALUE_LIMIT ? flat : `${flat.slice(0, HUMAN_VALUE_LIMIT - 1)}…`;
+}
+
 function renderHuman(document) {
   const lines = [
-    `status: ${document.status}`,
-    `receipt-path: ${document.receiptPath}`,
+    `status: ${humanValue(document.status)}`,
+    `receipt-path: ${humanValue(document.receiptPath)}`,
   ];
   if (document.verifiedTargets.length > 0) {
-    lines.push("verified-targets:", ...document.verifiedTargets.map((target) => `- ${target}`));
+    lines.push("verified-targets:", ...document.verifiedTargets.map((target) => `- ${humanValue(target)}`));
   }
   if (document.affectedTargets.length > 0) {
     lines.push("affected-targets:");
     for (const target of document.affectedTargets) {
-      lines.push(`- ${target.path} (${target.state})`);
-      for (const recovery of target.recovery) lines.push(`  - ${recovery}`);
+      lines.push(`- ${humanValue(target.path)} (${humanValue(target.state)})`);
+      for (const recovery of target.recovery) lines.push(`  - ${humanValue(recovery)}`);
     }
   }
   if (document.recovery.length > 0) {
-    lines.push("recovery:", ...document.recovery.map((recovery) => `- ${recovery}`));
+    lines.push("recovery:", ...document.recovery.map((recovery) => `- ${humanValue(recovery)}`));
   }
-  lines.push(`external-inspection: ${document.externalInspection.state}`);
+  lines.push(`external-inspection: ${humanValue(document.externalInspection.state)}`);
   if (document.externalInspection.targets.length > 0) {
     lines.push("external-targets:");
     for (const target of document.externalInspection.targets) {
@@ -63,7 +107,7 @@ function renderHuman(document) {
         unknown: "unknown; possibly newer version; inspect manually",
         none: "no recognized identity; inspect manually",
       }[target.identity];
-      lines.push(`- ${target.path} (${detail})`);
+      lines.push(`- ${humanValue(target.path)} (${detail})`);
     }
   }
   return `${lines.join("\n")}\n`;

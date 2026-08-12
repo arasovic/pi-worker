@@ -16,6 +16,8 @@ import (
 var resolveSkillReceiptPath = skillinstall.UserReceiptPath
 var inspectSkillReceipt = skillinstall.Inspect
 
+const humanSkillValueLimit = 1024
+
 type skillOptions struct {
 	command string
 	json    bool
@@ -208,34 +210,48 @@ func skillContextExit(ctx context.Context, stderr io.Writer) (int, bool) {
 }
 
 func writeSkillStatusHuman(inspection skillinstall.Inspection, stdout io.Writer) {
-	fmt.Fprintf(stdout, "status: %s\n", inspection.Status)
-	fmt.Fprintf(stdout, "receipt-path: %s\n", inspection.ReceiptPath)
+	fmt.Fprintf(stdout, "status: %s\n", humanSkillValue(string(inspection.Status)))
+	fmt.Fprintf(stdout, "receipt-path: %s\n", humanSkillValue(inspection.ReceiptPath))
 	if len(inspection.VerifiedTargets) > 0 {
 		fmt.Fprintln(stdout, "verified-targets:")
 		for _, target := range inspection.VerifiedTargets {
-			fmt.Fprintf(stdout, "- %s\n", target)
+			fmt.Fprintf(stdout, "- %s\n", humanSkillValue(target))
 		}
 	}
 	if len(inspection.AffectedTargets) > 0 {
 		fmt.Fprintln(stdout, "affected-targets:")
 		for _, target := range inspection.AffectedTargets {
-			fmt.Fprintf(stdout, "- %s (%s)\n", target.Path, target.State)
+			fmt.Fprintf(stdout, "- %s (%s)\n", humanSkillValue(target.Path), humanSkillValue(string(target.State)))
 			for _, recovery := range target.Recovery {
-				fmt.Fprintf(stdout, "  - %s\n", recovery)
+				fmt.Fprintf(stdout, "  - %s\n", humanSkillValue(recovery))
 			}
 		}
 	}
 	if len(inspection.Recovery) > 0 {
 		fmt.Fprintln(stdout, "recovery:")
 		for _, recovery := range inspection.Recovery {
-			fmt.Fprintf(stdout, "- %s\n", recovery)
+			fmt.Fprintf(stdout, "- %s\n", humanSkillValue(recovery))
 		}
 	}
-	fmt.Fprintf(stdout, "external-inspection: %s\n", inspection.ExternalInspection.State)
+	fmt.Fprintf(stdout, "external-inspection: %s\n", humanSkillValue(string(inspection.ExternalInspection.State)))
 	if len(inspection.ExternalInspection.Targets) > 0 {
 		fmt.Fprintln(stdout, "external-targets:")
 		for _, target := range inspection.ExternalInspection.Targets {
-			fmt.Fprintf(stdout, "- %s (%s)\n", target.Path, target.Identity)
+			fmt.Fprintf(stdout, "- %s (%s)\n", humanSkillValue(target.Path), humanSkillValue(string(target.Identity)))
 		}
 	}
+}
+
+func humanSkillValue(value string) string {
+	flat := strings.Map(func(r rune) rune {
+		if r < ' ' || r == '\x7f' {
+			return ' '
+		}
+		return r
+	}, value)
+	runes := []rune(flat)
+	if len(runes) <= humanSkillValueLimit {
+		return flat
+	}
+	return string(runes[:humanSkillValueLimit-1]) + "…"
 }
