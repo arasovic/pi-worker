@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-labelledby="title">
+  <title id="title">Pi Worker</title>
+  <path fill="#0e9b4e" d="M9.5 8h5l2 9h-9l2-9Z"/>
+  <path fill="#111111" fill-rule="evenodd" d="M7 3h10l4 18H3L7 3Zm2.5 5h5l2 9h-9l2-9Z"/>
+</svg>

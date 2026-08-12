@@ -776,7 +776,10 @@ export async function installSkill(options = {}) {
   };
   try {
     await persist(writer, receiptPath, document, options.receiptWriteOptions);
-    return result("installed", "Skill installed.");
+    return {
+      ...result("installed", "Skill installed."),
+      targetCount: verifiedTargets.length,
+    };
   } catch {
     return failAfterGuard("Unable to record the installed skill.", verifiedTargets);
   }

@@ -8,7 +8,7 @@ import {
   runPostinstall,
 } from "../scripts/postinstall.mjs";
 
-test("postinstall renders one concise diagnostic for every product outcome", async () => {
+test("non-interactive postinstall renders one concise diagnostic for every product outcome", async () => {
   const cases = [
     ["installed", "pi-worker: skill installed"],
     ["blocked", "pi-worker: skill installation blocked; run pi-worker skill status"],
@@ -18,12 +18,63 @@ test("postinstall renders one concise diagnostic for every product outcome", asy
 
   for (const [outcome, expected] of cases) {
     const lines = [];
-    assert.equal(postinstallDiagnostic(outcome), expected);
+    assert.equal(postinstallDiagnostic({ outcome, interactive: false, version: "0.1.0" }), expected);
     assert.equal(await runPostinstall({
       install: async () => ({ outcome }),
+      isTTY: false,
       write: (line) => lines.push(line),
     }), outcome);
     assert.deepEqual(lines, [expected]);
+  }
+});
+
+test("interactive installed postinstall renders an aligned status block", async () => {
+  const lines = [];
+  const outcome = await runPostinstall({
+    install: async () => ({ outcome: "installed", targetCount: 3 }),
+    env: {},
+    isTTY: true,
+    version: "0.1.0",
+    write: (line) => lines.push(line),
+  });
+
+  assert.equal(outcome, "installed");
+  assert.deepEqual(lines, [
+    "Pi Worker 0.1.0\n" +
+    "  skill   \u001b[32minstalled\u001b[0m · 3 targets\n" +
+    "  next    pi-worker doctor",
+  ]);
+});
+
+test("interactive unsuccessful postinstall keeps status and recovery aligned", () => {
+  const cases = [
+    ["blocked", 33],
+    ["skipped", 33],
+    ["failed", 31],
+  ];
+
+  for (const [outcome, color] of cases) {
+    assert.equal(
+      postinstallDiagnostic({ outcome, interactive: true, version: "0.1.0" }),
+      "Pi Worker 0.1.0\n" +
+      `  skill   \u001b[${color}m${outcome}\u001b[0m\n` +
+      "  next    pi-worker skill status",
+    );
+  }
+});
+
+test("NO_COLOR and CI suppress the interactive status block", async () => {
+  for (const env of [{ NO_COLOR: "" }, { CI: "1" }]) {
+    const lines = [];
+    await runPostinstall({
+      install: async () => ({ outcome: "installed", targetCount: 2 }),
+      env,
+      isTTY: true,
+      version: "0.1.0",
+      write: (line) => lines.push(line),
+    });
+
+    assert.deepEqual(lines, ["pi-worker: skill installed"]);
   }
 });
 
@@ -32,6 +83,7 @@ test("postinstall soft-fails thrown product errors without leaking their message
   const lines = [];
   const outcome = await runPostinstall({
     install: async () => { throw new Error(`${upstreamDetail} raw upstream output`); },
+    isTTY: false,
     write: (line) => lines.push(line),
   });
 

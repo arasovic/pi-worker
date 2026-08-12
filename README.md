@@ -1,5 +1,7 @@
 # Pi Worker
 
+![Pi Worker](https://raw.githubusercontent.com/arasovic/pi-worker/main/assets/brand/github-social-preview.png)
+
 Delegate bounded coding tasks to exact models available through your local Pi
 installation.
 

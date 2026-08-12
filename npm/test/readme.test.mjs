@@ -129,7 +129,11 @@ test("README is the concise public entry point with the approved contract", () =
   assert.doesNotMatch(readme, /<repository-url>|<owner>|<repo>|<package-name>/i);
   assert.doesNotMatch(readme, /\/(?:Users|home|tmp)\//);
   assert.doesNotMatch(readme, /(?:openai|anthropic|google|gemini|claude|gpt-[\w-]+)/i);
-  assert.doesNotMatch(readme, /!\[/, "no badge wall");
+  assert.deepEqual(
+    [...readme.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(([, target]) => target),
+    ["https://raw.githubusercontent.com/arasovic/pi-worker/main/assets/brand/github-social-preview.png"],
+    "README has one opaque project image and no badge wall",
+  );
   assert.doesNotMatch(readme, /(?:npm|package-manager) distribution is deferred|packaging is source-only/i);
 
   const firstTaskCommand = readme.indexOf('pi-worker run --thinking high --task "Review this module and explain the main risks"');
@@ -226,7 +230,10 @@ test("security guidance states the current public reporting boundary", () => {
 
   const publicDocs = `${readme}\n${contributing}\n${security}`;
   for (const [, url] of publicDocs.matchAll(/(https?:\/\/[^)\s]+)/g)) {
-    assert.match(url, /^https:\/\/github\.com\/arasovic\/pi-worker(?:\/|$)/);
+    assert.match(
+      url,
+      /^(?:https:\/\/github\.com\/arasovic\/pi-worker(?:\/|$)|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$)/,
+    );
   }
   assert.doesNotMatch(publicDocs, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
   assert.doesNotMatch(publicDocs, /(?:\.github\/workflows|private plan|work log|review metadata|\/Users\/|\/home\/|\/tmp\/)/i);

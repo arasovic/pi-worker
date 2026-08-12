@@ -87,6 +87,7 @@ test("installs an absent skill with the exact package-local CLI invocation", asy
   const result = await installSkill(options(f, child));
 
   assert.equal(result.outcome, "installed");
+  assert.equal(result.targetCount, 2);
   assert.equal(child.calls.length, 1);
   assert.match(child.calls[0].args[0], /node_modules\/skills\/bin\/cli\.mjs$/);
   assert.deepEqual(child.calls[0].args.slice(1), [

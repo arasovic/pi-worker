@@ -65,6 +65,11 @@ On an unsupported npm platform or architecture, setup can skip before the
 native CLI creates a receipt; `pi-worker skill status` is unavailable when the
 launcher itself is unsupported.
 
+Interactive terminals show a compact status block with the package version,
+skill outcome, installed target count, and next command. The outcome word is
+the only colored element. CI, `NO_COLOR`, and non-interactive installs retain
+one plain diagnostic line.
+
 ## Supported commands
 
 - `pi-worker version [--json]`
