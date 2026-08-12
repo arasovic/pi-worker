@@ -17,6 +17,7 @@ export const IDENTITY_CONTENT = "pi-worker-skill/v1\n";
 export const IDENTITY_SHA256 = createHash("sha256")
   .update(Buffer.from(IDENTITY_CONTENT, "utf8"))
   .digest("hex");
+const LEGACY_IDENTITY_SHA256 = new Set([]);
 
 const FILE_HASH_PATTERN = /^[0-9a-f]{64}$/i;
 const MAX_TREE_DEPTH = 32;
@@ -559,6 +560,47 @@ async function hasIdentityEvidence(targetPath, currentMap) {
   } catch {
     return false;
   }
+}
+
+// Inspect public identity without conferring ownership. The marker identifies
+// the Pi Worker product family; only a validated receipt can authorize writes.
+export async function inspectSkillIdentity(targetPath) {
+  const normalized = normalizedAbsolutePath(targetPath, "target path");
+  if (normalized === null) throw new TypeError("target path must be absolute");
+
+  const state = await existingTargetState(normalized);
+  if (state.kind === "absent") return "absent";
+  if (state.kind === "non-directory" || state.kind === "unreadable") {
+    fail(`external skill target is not safely readable: ${normalized}`, { cause: state.error });
+  }
+
+  let root = normalized;
+  if (state.kind === "symlink") {
+    try {
+      root = path.normalize(await realpath(normalized));
+    } catch (error) {
+      fail(`external skill target cannot be resolved: ${normalized}`, { cause: error });
+    }
+    const resolved = await existingTargetState(root);
+    if (resolved.kind !== "directory") {
+      fail(`external skill target does not resolve to a directory: ${normalized}`);
+    }
+  }
+
+  const tree = normalizeTree(await hashSkillTree(root), "external skill tree");
+  let declaresIdentity = false;
+  try {
+    declaresIdentity = declaresPiWorkerSkill(await readRegularFile(path.join(root, "SKILL.md")));
+  } catch {
+    declaresIdentity = false;
+  }
+  if (!declaresIdentity) return "none";
+
+  const markerDigest = tree.map.get(IDENTITY_FILE);
+  if (markerDigest === undefined) return "none";
+  if (markerDigest === IDENTITY_SHA256) return "current";
+  if (LEGACY_IDENTITY_SHA256.has(markerDigest)) return "legacy";
+  return "unknown";
 }
 
 function validatedOwnershipReceipt(value) {

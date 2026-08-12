@@ -142,7 +142,8 @@ pi-worker skill receipt-path
 npx --yes skills@1.5.22 list -g
 ```
 
-`skill status --json` reports affected targets and recovery information;
+`skill status --json` reports managed targets, recovery information, and live
+external-skill inspection when invoked through the npm launcher;
 `skill receipt-path` reports the durable receipt location. If npm installation
 is otherwise unclear, rerun it in the foreground:
 
@@ -162,9 +163,10 @@ npm install -g --foreground-scripts pi-worker
 Never use that global remove command for markerless, foreign, or mixed
 conflicts. Preserve those paths, inspect them, and resolve them separately.
 A direct GitHub skill installation includes the stable Pi Worker identity
-marker, but it is receipt-untracked; a later npm install stops before adopting
-it. Do not remove receipt-untracked content without inspecting and backing it
-up.
+marker. A later npm install recognizes it as externally managed, never adopts
+or overwrites it, and reports that it may be stale. Markerless content remains
+a manual conflict. An unknown marker may belong to a newer Pi Worker version;
+inspect it without automatic removal or reinstall.
 
 ## Advanced documentation
 

@@ -137,11 +137,21 @@ pi-worker skill status [--json]
 - `skill receipt-path` reports the absolute path where the installer receipt is
   stored.
 - `skill status` reads and verifies that receipt, including managed/affected
-  target status and recovery instructions.
+  target status and recovery instructions. The npm launcher also probes live
+  global skill targets without adopting or changing them.
 - The command is read-only: it never installs, repairs, removes, or adopts a
   skill.
 - `--json` emits one complete `schemaVersion: 1` document with `status`,
-  `receiptPath`, verified targets, affected targets, and recovery instructions.
+  `receiptPath`, verified and receipt-tracked targets, affected targets,
+  recovery instructions, and `externalInspection`.
+- `externalInspection.state` is always `performed` or `unavailable`, and
+  `targets` is always an array. Standalone native binaries report
+  `unavailable`; the npm launcher reports `performed` only after every global
+  target was resolved and inspected. Any partial failure discards all external
+  findings. Missing paths are successful absence.
+- External findings are informational and never change the receipt-derived
+  exit code. Known identity markers are externally managed and may be stale;
+  unknown or absent markers require manual inspection.
 - Exit code `0` means all managed targets verified. Completion results for blocked,
   missing target, drifted target, skipped, and failed outcomes exit `3`.
 - A missing receipt file reports `status: "missing"` and exits `3` with a complete JSON document.

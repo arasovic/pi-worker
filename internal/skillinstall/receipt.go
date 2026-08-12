@@ -81,6 +81,32 @@ type AffectedTarget struct {
 	Recovery []string      `json:"recovery"`
 }
 
+type ExternalInspectionState string
+
+const (
+	ExternalInspectionPerformed   ExternalInspectionState = "performed"
+	ExternalInspectionUnavailable ExternalInspectionState = "unavailable"
+)
+
+type ExternalIdentity string
+
+const (
+	ExternalIdentityCurrent ExternalIdentity = "current"
+	ExternalIdentityLegacy  ExternalIdentity = "legacy"
+	ExternalIdentityUnknown ExternalIdentity = "unknown"
+	ExternalIdentityNone    ExternalIdentity = "none"
+)
+
+type ExternalTarget struct {
+	Path     string           `json:"path"`
+	Identity ExternalIdentity `json:"identity"`
+}
+
+type ExternalInspection struct {
+	State   ExternalInspectionState `json:"state"`
+	Targets []ExternalTarget        `json:"targets"`
+}
+
 type Receipt struct {
 	SchemaVersion    int              `json:"schemaVersion"`
 	InstallerVersion string           `json:"installerVersion"`
@@ -92,12 +118,14 @@ type Receipt struct {
 }
 
 type Inspection struct {
-	SchemaVersion   int              `json:"schemaVersion"`
-	ReceiptPath     string           `json:"receiptPath"`
-	Status          InspectionStatus `json:"status"`
-	VerifiedTargets []string         `json:"verifiedTargets"`
-	AffectedTargets []AffectedTarget `json:"affectedTargets"`
-	Recovery        []string         `json:"recovery"`
+	SchemaVersion      int                `json:"schemaVersion"`
+	ReceiptPath        string             `json:"receiptPath"`
+	Status             InspectionStatus   `json:"status"`
+	VerifiedTargets    []string           `json:"verifiedTargets"`
+	TrackedTargets     []string           `json:"trackedTargets"`
+	AffectedTargets    []AffectedTarget   `json:"affectedTargets"`
+	Recovery           []string           `json:"recovery"`
+	ExternalInspection ExternalInspection `json:"externalInspection"`
 }
 
 // Load decodes a receipt file and validates it structurally.
@@ -150,8 +178,13 @@ func Inspect(path string) (Inspection, error) {
 		ReceiptPath:     path,
 		Status:          status,
 		VerifiedTargets: append([]string{}, verifiedTargets...),
+		TrackedTargets:  trackedTargetPaths(receipt.Targets),
 		AffectedTargets: cloneAffectedTargets(receipt.AffectedTargets),
 		Recovery:        []string{},
+		ExternalInspection: ExternalInspection{
+			State:   ExternalInspectionUnavailable,
+			Targets: []ExternalTarget{},
+		},
 	}
 	sort.Strings(insp.VerifiedTargets)
 
@@ -164,6 +197,30 @@ func Inspect(path string) (Inspection, error) {
 		insp.Recovery = append([]string{}, receipt.Recovery...)
 	}
 	return insp, nil
+}
+
+func trackedTargetPaths(targets []Target) []string {
+	seen := map[string]struct{}{}
+	paths := []string{}
+	for _, target := range targets {
+		if target.Kind == targetKindSymlink {
+			for _, file := range target.Files {
+				candidate := filepath.Clean(filepath.Join(target.Path, filepath.FromSlash(file.Path)))
+				if _, ok := seen[candidate]; !ok {
+					seen[candidate] = struct{}{}
+					paths = append(paths, candidate)
+				}
+			}
+			continue
+		}
+		candidate := filepath.Clean(target.Path)
+		if _, ok := seen[candidate]; !ok {
+			seen[candidate] = struct{}{}
+			paths = append(paths, candidate)
+		}
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func validateReceipt(r Receipt) error {

@@ -13,7 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 import { describe, test } from "node:test";
 
-import { nativePath, nativeTarget, runNative } from "../lib/native.mjs";
+import { nativePath, nativeTarget, runNative, runNativeCaptured } from "../lib/native.mjs";
 
 const fixturesDir = mkdtempSync(join(tmpdir(), "pi-worker-native-test-"));
 const bin = process.execPath;
@@ -175,6 +175,23 @@ describe("native target selection", () => {
 });
 
 describe("launcher process behavior", () => {
+	// Captured mode is reserved for the bounded skill-status projection.
+	test("captures bounded native status output without changing exit code", async () => {
+		const result = await runNativeCaptured(argsFixture, ["one", "two"], { maxOutputBytes: 1024 });
+
+		assert.equal(result.code, 0);
+		assert.equal(result.signal, null);
+		assert.equal(result.stdout, '["one","two"]');
+		assert.equal(result.stderr, "");
+	});
+
+	test("rejects oversized captured status output", async () => {
+		await assert.rejects(
+			runNativeCaptured(argsFixture, ["x".repeat(2048)], { maxOutputBytes: 64 }),
+			/capture limit/,
+		);
+	});
+
   test("entrypoint preserves the native child exit code", () => {
     const packageRoot = join(fixturesDir, "package-exit-code");
     const binDir = join(packageRoot, "npm", "bin");

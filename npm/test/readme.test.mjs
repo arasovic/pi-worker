@@ -129,7 +129,7 @@ test("README is the concise public entry point with the approved contract", () =
   assert.doesNotMatch(readme, /branding\/publication gate/i);
   assert.match(readme, /durable receipt/);
   assert.match(readme, /identity\s+marker/);
-  assert.match(readme, /receipt-untracked/);
+  assert.match(readme, /externally managed/);
   assert.match(readme, /markerless|foreign|mixed/i);
 
   assert.doesNotMatch(readme, /<repository-url>|<owner>|<repo>|<package-name>/i);

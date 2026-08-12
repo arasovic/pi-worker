@@ -341,6 +341,45 @@ test("blocks a markerless same-name tree without spawning or changing it", async
   assert.equal(receipt.recovery.length, 0);
 });
 
+test("preserves a recognized external skill without spawning or persisting ownership", async (t) => {
+  const f = fixture(t);
+  const external = join(f.home, ".agents", "skills", "pi-worker");
+  mkdirSync(external, { recursive: true });
+  writeFileSync(join(external, "PI_WORKER_IDENTITY"), "pi-worker-skill/v1\n");
+  writeFileSync(join(external, "SKILL.md"), "---\nname: pi-worker\n---\nexternal contract\n");
+  const before = readFileSync(join(external, "SKILL.md"));
+  const child = childFor();
+
+  const result = await installSkill(options(f, child));
+
+  assert.equal(result.outcome, "skipped");
+  assert.equal(child.calls.length, 0);
+  assert.deepEqual(readFileSync(join(external, "SKILL.md")), before);
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.outcome, "skipped");
+  assert.deepEqual(receipt.targets, []);
+  assert.deepEqual(receipt.affectedTargets, []);
+});
+
+test("blocks an unknown identity marker as possibly newer content without overwriting it", async (t) => {
+  const f = fixture(t);
+  const conflict = join(f.home, ".agents", "skills", "pi-worker");
+  mkdirSync(conflict, { recursive: true });
+  writeFileSync(join(conflict, "PI_WORKER_IDENTITY"), "pi-worker-skill/v99\n");
+  writeFileSync(join(conflict, "SKILL.md"), "---\nname: pi-worker\n---\npossibly newer\n");
+  const before = readFileSync(join(conflict, "SKILL.md"));
+  const child = childFor();
+
+  const result = await installSkill(options(f, child));
+
+  assert.equal(result.outcome, "blocked");
+  assert.equal(child.calls.length, 0);
+  assert.deepEqual(readFileSync(join(conflict, "SKILL.md")), before);
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.affectedTargets[0].state, "conflicting");
+  assert.deepEqual(receipt.recovery, []);
+});
+
 test("ignores verified PromptScript-only aggregate failure prose", async (t) => {
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
@@ -461,21 +500,10 @@ test("soft-fails spawn errors, signal exits, and unverifiable postconditions", a
   }
 });
 
-test("records unmanaged and drifted Pi Worker targets with exact global recovery", async (t) => {
+test("records receipt-tracked drifted Pi Worker targets with exact global recovery", async (t) => {
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const copy = join(f.home, ".test", "skills", "pi-worker");
-  mkdirSync(join(canonical, ".."), { recursive: true });
-  cpSync(f.skill, canonical, { recursive: true });
-  const unmanaged = await installSkill(options(f, childFor()));
-  assert.equal(unmanaged.outcome, "blocked");
-  assert.deepEqual(JSON.parse(readFileSync(f.receipt, "utf8")).recovery, [
-    "npx --yes skills@1.5.22 remove pi-worker -g -y",
-    "npm install -g --foreground-scripts pi-worker",
-  ]);
-
-  rmSync(canonical, { recursive: true, force: true });
-  rmSync(f.receipt, { force: true });
   const first = childFor(() => {
     mkdirSync(join(canonical, ".."), { recursive: true });
     cpSync(f.skill, canonical, { recursive: true });
@@ -606,7 +634,7 @@ test("retries a one-shot blocked receipt failure as a failed receipt", async (t)
   assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "failed");
 });
 
-test("rejects a symlinked prior receipt as ownership evidence", async (t) => {
+test("a symlinked prior receipt never confers ownership on a recognized external skill", async (t) => {
   if (process.platform === "win32") t.skip("symlink permissions vary on windows");
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
@@ -625,11 +653,14 @@ test("rejects a symlinked prior receipt as ownership evidence", async (t) => {
   const child = childFor();
 
   const result = await installSkill(options(f, child));
-  assert.equal(result.outcome, "blocked");
+  assert.equal(result.outcome, "skipped");
   assert.equal(child.calls.length, 0);
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.outcome, "skipped");
+  assert.deepEqual(receipt.targets, []);
 });
 
-test("malformed and oversized prior receipts never confer ownership", async (t) => {
+test("malformed and oversized prior receipts never confer ownership on recognized external skills", async (t) => {
   for (const [name, prior] of [
     ["malformed", "{not-json"],
     ["oversized", "x".repeat(1024 * 1024 + 1)],
@@ -644,9 +675,12 @@ test("malformed and oversized prior receipts never confer ownership", async (t) 
       const child = childFor();
 
       const result = await installSkill(options(f, child));
-      assert.equal(result.outcome, "blocked");
+      assert.equal(result.outcome, "skipped");
       assert.equal(child.calls.length, 0);
-      assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).affectedTargets[0].state, "unmanaged");
+      const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+      assert.equal(receipt.outcome, "skipped");
+      assert.deepEqual(receipt.targets, []);
+      assert.deepEqual(receipt.affectedTargets, []);
     });
   }
 });

@@ -84,3 +84,81 @@ export function runNative(binary, args, options = {}) {
     });
   });
 }
+
+export function runNativeCaptured(binary, args, options = {}) {
+  const maxOutputBytes = options.maxOutputBytes ?? 1024 * 1024;
+  if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) {
+    return Promise.reject(new TypeError("maxOutputBytes must be a positive safe integer"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, args, {
+      detached: process.platform !== "win32",
+      shell: false,
+      stdio: ["inherit", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let signal = null;
+    let captureError = null;
+    let settled = false;
+
+    const handleSignal = (signalName) => {
+      if (signal) return;
+      signal = signalName;
+      child.kill(signalName);
+    };
+    process.on("SIGINT", handleSignal);
+    process.on("SIGTERM", handleSignal);
+
+    const cleanup = () => {
+      process.off("SIGINT", handleSignal);
+      process.off("SIGTERM", handleSignal);
+    };
+    const capture = (chunks, chunk, streamName) => {
+      if (captureError) return;
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const next = (streamName === "stdout" ? stdoutBytes : stderrBytes) + data.length;
+      if (next > maxOutputBytes) {
+        captureError = new Error(`${streamName} exceeded the native capture limit`);
+        child.kill("SIGKILL");
+        return;
+      }
+      if (streamName === "stdout") stdoutBytes = next;
+      else stderrBytes = next;
+      chunks.push(data);
+    };
+
+    child.stdout.on("data", (chunk) => capture(stdout, chunk, "stdout"));
+    child.stderr.on("data", (chunk) => capture(stderr, chunk, "stderr"));
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (code, childSignal) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (captureError) {
+        reject(captureError);
+        return;
+      }
+      const exitSignal = childSignal ?? signal;
+      if (exitSignal) {
+        process.kill(process.pid, exitSignal);
+        return;
+      }
+      resolve({
+        code,
+        signal: null,
+        stdout: Buffer.concat(stdout, stdoutBytes).toString("utf8"),
+        stderr: Buffer.concat(stderr, stderrBytes).toString("utf8"),
+      });
+    });
+  });
+}

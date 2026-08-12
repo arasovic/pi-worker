@@ -23,6 +23,7 @@ import {
   hashSkillTree,
   IDENTITY_CONTENT,
   IDENTITY_FILE,
+  inspectSkillIdentity,
 } from "./skill-tree.mjs";
 import {
   detectInstalledAgents,
@@ -72,6 +73,16 @@ function pathKey(value, platform) {
 
 function samePath(left, right, platform) {
   return pathKey(left, platform) === pathKey(right, platform);
+}
+
+function receiptTracksPath(receipt, targetPath, platform) {
+  if (!receipt) return false;
+  return receipt.targets.some((target) => {
+    if (target.kind === "symlink") {
+      return target.files.some((file) => samePath(path.join(target.path, file.path), targetPath, platform));
+    }
+    return samePath(target.path, targetPath, platform);
+  });
 }
 
 function treeFiles(tree) {
@@ -512,6 +523,7 @@ export async function installSkill(options = {}) {
   const writer = options.writeReceipt ?? writeReceipt;
   const classify = options.classifyTarget ?? classifyTarget;
   const hash = options.hashSkillTree ?? hashSkillTree;
+  const inspectIdentity = options.inspectSkillIdentity ?? inspectSkillIdentity;
   const load = options.loadRules ?? loadRules;
   const resolveTargets = options.resolveAllTargets ?? resolveAllTargets;
   const spawn = options.spawn ?? childProcessSpawn;
@@ -576,11 +588,22 @@ export async function installSkill(options = {}) {
   try {
     for (const target of targets) {
       const expectedKind = await expectedTargetKind(target, canonical, platform);
-      const state = await classify({
+      let state = await classify({
         target: { path: target, expectedKind },
         bundledTree,
         receipt: priorReceipt,
       });
+      if (state !== "owned" && !receiptTracksPath(priorReceipt, target, platform)) {
+        try {
+          const identity = await inspectIdentity(target);
+          if (identity === "current" || identity === "legacy") {
+            state = `external-${identity}`;
+          }
+        } catch {
+          // The conservative classifier already marks unreadable or unsafe
+          // content as conflicting; identity inspection cannot weaken it.
+        }
+      }
       const entry = { path: target, state, expectedKind };
       states.push(entry);
       initialStates.set(target, entry);
@@ -589,7 +612,9 @@ export async function installSkill(options = {}) {
     return failAfterGuard("Unable to inspect existing skill targets.");
   }
   const persistBlocked = async (currentStates) => {
-    const affected = currentStates.filter(({ state }) => state !== "absent" && state !== "owned");
+    const affected = currentStates.filter(({ state }) => (
+      state !== "absent" && state !== "owned" && !state.startsWith("external-")
+    ));
     if (affected.length === 0) return failAfterGuard("Skill installation preflight changed.");
     const document = blockedReceipt(version, priorReceipt, affected);
     try {
@@ -599,8 +624,23 @@ export async function installSkill(options = {}) {
     }
     return { ...result("blocked", "Skill installation is blocked."), affectedTargets: document.affectedTargets };
   };
-  if (states.some(({ state }) => state !== "absent" && state !== "owned")) {
+  if (states.some(({ state }) => (
+    state !== "absent" && state !== "owned" && !state.startsWith("external-")
+  ))) {
     return persistBlocked(states);
+  }
+  if (states.some(({ state }) => state.startsWith("external-"))) {
+    try {
+      await persist(
+        writer,
+        receiptPath,
+        priorReceipt ?? temporaryReceipt(version),
+        options.receiptWriteOptions,
+      );
+    } catch {
+      return failAfterGuard("Unable to preserve external skill ownership.");
+    }
+    return result("skipped", "Recognized external skill preserved.");
   }
 
   let cli;

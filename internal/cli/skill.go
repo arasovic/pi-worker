@@ -109,8 +109,13 @@ func skillStatusCommand(parent context.Context, opts skillOptions, stdout, stder
 				ReceiptPath:     path,
 				Status:          skillinstall.StatusMissing,
 				VerifiedTargets: []string{},
+				TrackedTargets:  []string{},
 				AffectedTargets: []skillinstall.AffectedTarget{},
 				Recovery:        []string{skillinstall.SafeRecoveryCommand},
+				ExternalInspection: skillinstall.ExternalInspection{
+					State:   skillinstall.ExternalInspectionUnavailable,
+					Targets: []skillinstall.ExternalTarget{},
+				},
 			}
 		} else {
 			fmt.Fprintf(stderr, "pi-worker: inspect skill status: %v\n", err)
@@ -120,11 +125,20 @@ func skillStatusCommand(parent context.Context, opts skillOptions, stdout, stder
 	if inspection.VerifiedTargets == nil {
 		inspection.VerifiedTargets = []string{}
 	}
+	if inspection.TrackedTargets == nil {
+		inspection.TrackedTargets = []string{}
+	}
 	if inspection.AffectedTargets == nil {
 		inspection.AffectedTargets = []skillinstall.AffectedTarget{}
 	}
 	if inspection.Recovery == nil {
 		inspection.Recovery = []string{}
+	}
+	if inspection.ExternalInspection.State == "" {
+		inspection.ExternalInspection.State = skillinstall.ExternalInspectionUnavailable
+	}
+	if inspection.ExternalInspection.Targets == nil {
+		inspection.ExternalInspection.Targets = []skillinstall.ExternalTarget{}
 	}
 
 	code := 0
@@ -215,6 +229,13 @@ func writeSkillStatusHuman(inspection skillinstall.Inspection, stdout io.Writer)
 		fmt.Fprintln(stdout, "recovery:")
 		for _, recovery := range inspection.Recovery {
 			fmt.Fprintf(stdout, "- %s\n", recovery)
+		}
+	}
+	fmt.Fprintf(stdout, "external-inspection: %s\n", inspection.ExternalInspection.State)
+	if len(inspection.ExternalInspection.Targets) > 0 {
+		fmt.Fprintln(stdout, "external-targets:")
+		for _, target := range inspection.ExternalInspection.Targets {
+			fmt.Fprintf(stdout, "- %s (%s)\n", target.Path, target.Identity)
 		}
 	}
 }

@@ -156,12 +156,27 @@ func TestSkillStatusVerifiedOutputsExit0AndCanonicalTarget(t *testing.T) {
 	if len(got.VerifiedTargets) != 1 || got.VerifiedTargets[0] != filepath.Clean(target) {
 		t.Fatalf("verified targets = %v", got.VerifiedTargets)
 	}
+	if len(got.TrackedTargets) != 1 || got.TrackedTargets[0] != filepath.Clean(target) {
+		t.Fatalf("tracked targets = %v", got.TrackedTargets)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode status document %q: %v", stdout, err)
+	}
+	external, ok := document["externalInspection"].(map[string]any)
+	if !ok || external["state"] != "unavailable" {
+		t.Fatalf("external inspection = %#v", document["externalInspection"])
+	}
+	if targets, ok := external["targets"].([]any); !ok || len(targets) != 0 {
+		t.Fatalf("external targets = %#v", external["targets"])
+	}
 
 	code, stdout, stderr = runCLI(t, []string{"skill", "status"}, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("status verified human = (%d, %q, %q)", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "status: verified") || !strings.Contains(stdout, "verified-targets:") {
+	if !strings.Contains(stdout, "status: verified") || !strings.Contains(stdout, "verified-targets:") ||
+		!strings.Contains(stdout, "external-inspection: unavailable") {
 		t.Fatalf("human status = %q", stdout)
 	}
 }
@@ -184,8 +199,16 @@ func TestSkillStatusMissingReceiptPathIsNotReady(t *testing.T) {
 	if got.Status != skillinstall.StatusMissing || got.ReceiptPath != path {
 		t.Fatalf("missing-receipt output = %#v", got)
 	}
-	if got.VerifiedTargets == nil || got.AffectedTargets == nil || got.Recovery == nil {
+	if got.VerifiedTargets == nil || got.TrackedTargets == nil || got.AffectedTargets == nil || got.Recovery == nil {
 		t.Fatalf("missing-receipt arrays must be non-null: %#v", got)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode missing status document %q: %v", stdout, err)
+	}
+	external, ok := document["externalInspection"].(map[string]any)
+	if !ok || external["state"] != "unavailable" {
+		t.Fatalf("missing external inspection = %#v", document["externalInspection"])
 	}
 	if len(got.Recovery) != 1 || got.Recovery[0] != skillinstall.SafeRecoveryCommand {
 		t.Fatalf("missing-receipt recovery = %v", got.Recovery)
