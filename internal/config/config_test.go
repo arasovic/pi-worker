@@ -43,13 +43,22 @@ func TestUserDir(t *testing.T) {
 				t.Setenv("XDG_CONFIG_HOME", tc.xdg)
 			}
 
+			// UserDir is a thin wrapper over os.UserConfigDir, so it must
+			// mirror the standard library exactly, including the rejection
+			// of a relative XDG_CONFIG_HOME.
+			root, rootErr := os.UserConfigDir()
 			got, err := UserDir()
+			if rootErr != nil {
+				if err == nil {
+					t.Fatalf("UserDir() = %q, want error %v", got, rootErr)
+				}
+				if err.Error() != rootErr.Error() {
+					t.Fatalf("UserDir() error = %v, want %v", err, rootErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("UserDir(): %v", err)
-			}
-			root, err := os.UserConfigDir()
-			if err != nil {
-				t.Fatalf("os.UserConfigDir(): %v", err)
 			}
 			want := filepath.Join(root, "pi-worker")
 			if got != want {
