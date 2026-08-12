@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,20 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
-)
 
-func TestBoundedBufferCapsIOCopyOutput(t *testing.T) {
-	buffer := &boundedBuffer{limit: 3}
-	if _, err := io.Copy(buffer, strings.NewReader("abcdef")); err != nil {
-		t.Fatalf("io.Copy error = %v", err)
-	}
-	if got := buffer.String(); got != "abc" {
-		t.Fatalf("stored output = %q, want %q", got, "abc")
-	}
-	if !buffer.exceeded {
-		t.Fatal("boundedBuffer did not record an exceeded limit")
-	}
-}
+	"pi-worker/internal/piversion"
+)
 
 func TestSystemVersionTrimsBoundedStdoutAndDiscardsStderr(t *testing.T) {
 	command := writeVersionCommand(t, "0.84.1\n", "child-stderr-must-not-leak")
@@ -36,7 +24,7 @@ func TestSystemVersionTrimsBoundedStdoutAndDiscardsStderr(t *testing.T) {
 }
 
 func TestSystemVersionRejectsOversizedStdout(t *testing.T) {
-	command := writeVersionCommand(t, strings.Repeat("x", maxVersionStdout*2), "")
+	command := writeVersionCommand(t, strings.Repeat("x", piversion.MaxOutputBytes*2), "")
 	if _, err := systemVersion(context.Background(), command); err == nil {
 		t.Fatal("systemVersion accepted oversized stdout")
 	}

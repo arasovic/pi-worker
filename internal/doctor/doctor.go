@@ -8,6 +8,7 @@ import (
 
 	"pi-worker/internal/config"
 	"pi-worker/internal/pi"
+	"pi-worker/internal/piversion"
 )
 
 type CheckStatus string
@@ -79,10 +80,15 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 			return result, contextFailure(ctxErr)
 		}
 		add(&result, "pi-version", CheckFailed, "Pi version could not be checked")
-	} else if version != "0.84.1" {
-		add(&result, "pi-version", CheckFailed, "Pi version is unsupported")
 	} else {
-		add(&result, "pi-version", CheckOK, "Pi version 0.84.1 is supported")
+		switch piversion.Classify(version).Status {
+		case piversion.StatusVerified:
+			add(&result, "pi-version", CheckOK, "Pi version "+piversion.VerifiedVersion+" is supported")
+		case piversion.StatusUnverified:
+			add(&result, "pi-version", CheckWarning, "Pi version "+version+" is unverified; verified version is "+piversion.VerifiedVersion)
+		default:
+			add(&result, "pi-version", CheckFailed, "Pi version is unsupported")
+		}
 	}
 
 	cfg, configErr := deps.LoadConfig()

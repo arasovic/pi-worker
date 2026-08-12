@@ -13,6 +13,7 @@ import (
 	"pi-worker/internal/buildinfo"
 	"pi-worker/internal/contracts"
 	"pi-worker/internal/pi"
+	"pi-worker/internal/piversion"
 	"pi-worker/internal/run"
 )
 
@@ -22,6 +23,19 @@ const defaultRunTimeout = 30 * time.Minute
 // newWorker is a private dependency-injection seam. Tests replace it with a
 // scripted fake so CLI tests never launch the user's real Pi profile.
 var newWorker = func() pi.Worker { return pi.New("pi") }
+
+const runVersionProbeTimeout = 5 * time.Second
+
+// runVersionProbe is called once for each run, before any worker starts.
+// Tests replace it with a deterministic result; the production probe never
+// exposes child output or stderr to callers.
+var runVersionProbe = defaultRunVersionProbe
+
+func defaultRunVersionProbe(parent context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, runVersionProbeTimeout)
+	defer cancel()
+	return piversion.Probe(ctx, "pi")
+}
 
 // newCatalog is the private dependency-injection seam for the read-only
 // model catalog command.
@@ -40,8 +54,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Current())
-		return 0
+		return versionCommand(args[1:], stdout, stderr)
 	case "models":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
@@ -84,8 +97,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintf(stdout, "pi-worker %s\n", buildinfo.Current())
-		return 0
+		return versionCommand(args[1:], stdout, stderr)
 	case "models":
 		return modelsCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
@@ -130,7 +142,7 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: pi-worker version")
+	fmt.Fprintln(w, "usage: pi-worker version [--json]")
 	fmt.Fprintln(w, "       pi-worker models [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker doctor [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker config show [--json]")
@@ -138,6 +150,44 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
+}
+
+type versionOutput struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Version       string `json:"version"`
+	Commit        string `json:"commit"`
+	BuildDate     string `json:"buildDate"`
+}
+
+func versionCommand(args []string, stdout, stderr io.Writer) int {
+	jsonOutput := false
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && args[0] == "--json":
+		jsonOutput = true
+	default:
+		fmt.Fprintln(stderr, "pi-worker: invalid version syntax")
+		printUsage(stderr)
+		return 2
+	}
+
+	info := buildinfo.Current()
+	if !jsonOutput {
+		fmt.Fprintf(stdout, "pi-worker %s\n", info)
+		return 0
+	}
+	data, err := json.Marshal(versionOutput{
+		SchemaVersion: contracts.SchemaVersion,
+		Version:       info.Version,
+		Commit:        info.Commit,
+		BuildDate:     info.BuildDate,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: encode version: %v\n", err)
+		return 9
+	}
+	fmt.Fprintln(stdout, string(data))
+	return 0
 }
 
 // runOptions holds the parsed run command surface.
@@ -171,6 +221,8 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	if opts.debug {
 		debug = pi.NewDebugSink(stderr)
 	}
+
+	preflightPiVersion(ctx, stderr)
 
 	if len(tasks) > 1 {
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
@@ -230,6 +282,23 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		fmt.Fprintf(stderr, "pi-worker: %s: %s\n", label, message)
 	}
 	return code
+}
+
+func preflightPiVersion(ctx context.Context, stderr io.Writer) {
+	output, err := runVersionProbe(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, "pi-worker: warning: Pi version could not be verified; continuing")
+		return
+	}
+	classification := piversion.Classify(output)
+	switch classification.Status {
+	case piversion.StatusVerified:
+		return
+	case piversion.StatusUnverified:
+		fmt.Fprintf(stderr, "pi-worker: warning: Pi version %s is unverified; verified version is %s; continuing\n", classification.Version, piversion.VerifiedVersion)
+	default:
+		fmt.Fprintln(stderr, "pi-worker: warning: Pi version output could not be verified; continuing")
+	}
 }
 
 func workerOutputLabel(index int, worker pi.WorkerResult) string {

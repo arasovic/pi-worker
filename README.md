@@ -26,7 +26,9 @@ then run a bounded task in your current workspace.
 ## Requirements
 
 - Node.js 22.20.0 or newer and npm.
-- Pi CLI 0.84.1, with provider authentication configured in Pi.
+- Pi CLI with provider authentication configured in Pi. Version 0.84.1 is the
+  verified compatibility surface; other semantic versions run with an explicit
+  unverified-version warning.
 - An available exact model selector from `pi-worker models`.
 - Go 1.26.1 for source builds and release snapshots; the module language baseline is Go 1.25.0.
 

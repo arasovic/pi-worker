@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -44,7 +45,10 @@ func TestMain(m *testing.M) {
 		os.RemoveAll(dir)
 		os.Exit(1)
 	}
+	originalRunVersionProbe := runVersionProbe
+	runVersionProbe = func(context.Context) (string, error) { return "0.84.1", nil }
 	code := m.Run()
+	runVersionProbe = originalRunVersionProbe
 	os.RemoveAll(dir)
 	os.Exit(code)
 }
@@ -67,6 +71,7 @@ type fakeWorker struct {
 	releaseByPrompt map[string]chan struct{}
 	completed       chan int
 	ignoreContext   bool
+	runHook         func()
 	mu              sync.Mutex
 }
 
@@ -89,6 +94,10 @@ func (f *fakeWorker) Run(ctx context.Context, req pi.WorkerRequest) (result pi.W
 		f.startGateClosed = true
 	}
 	f.mu.Unlock()
+
+	if f.runHook != nil {
+		f.runHook()
+	}
 
 	if req.Debug != nil {
 		scope = req.Debug.Worker(req.WorkerID)
@@ -233,6 +242,43 @@ func installRealFakePiWorker(t *testing.T) {
 	original := newWorker
 	newWorker = func() pi.Worker { return pi.New(fakePiBin) }
 	t.Cleanup(func() { newWorker = original })
+}
+
+func installProcessVersionProbe(t *testing.T, output, childStderr string, exitCode int) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "version.log")
+	command := filepath.Join(dir, "pi")
+	scriptText := "#!/bin/sh\nprintf '%s\\n' version >> \"$PI_WORKER_VERSION_LOG\"\nif [ -n \"${PI_WORKER_VERSION_MARKER:-}\" ]; then touch \"$PI_WORKER_VERSION_MARKER\"; fi\nprintf '%s' \"$PI_WORKER_VERSION_OUTPUT\"\nprintf '%s' \"${PI_WORKER_VERSION_STDERR:-}\" >&2\nexit \"$PI_WORKER_VERSION_EXIT\"\n"
+	if err := os.WriteFile(command, []byte(scriptText), 0o700); err != nil {
+		t.Fatalf("write version command: %v", err)
+	}
+	t.Setenv("PI_WORKER_VERSION_LOG", logPath)
+	t.Setenv("PI_WORKER_VERSION_OUTPUT", output)
+	t.Setenv("PI_WORKER_VERSION_STDERR", childStderr)
+	t.Setenv("PI_WORKER_VERSION_EXIT", fmt.Sprintf("%d", exitCode))
+	oldPath := os.Getenv("PATH")
+	if oldPath == "" {
+		t.Setenv("PATH", dir)
+	} else {
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	}
+	original := runVersionProbe
+	runVersionProbe = defaultRunVersionProbe
+	t.Cleanup(func() { runVersionProbe = original })
+	return logPath
+}
+
+func versionProbeCount(t *testing.T, logPath string) int {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read version probe log: %v", err)
+	}
+	return strings.Count(string(data), "version\n")
 }
 
 // setupFakePiScript writes a fakepi script and points FAKEPI_SCRIPT and
@@ -387,6 +433,53 @@ func TestVersionCommandWithContextUsesInjectedIdentity(t *testing.T) {
 	const want = "pi-worker v0.1.0 (commit 0123456789abcdef0123456789abcdef01234567, built 2026-08-11T00:00:00Z)\n"
 	if got := stdout; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestVersionJSONIsOneCompleteDocument(t *testing.T) {
+	withBuildInfo(t, "v0.1.0", "0123456789abcdef0123456789abcdef01234567", "2026-08-11T00:00:00Z")
+	code, stdout, stderr := runCLI(t, []string{"version", "--json"}, "")
+	if code != 0 || stderr != "" || strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	var output struct {
+		SchemaVersion int    `json:"schemaVersion"`
+		Version       string `json:"version"`
+		Commit        string `json:"commit"`
+		BuildDate     string `json:"buildDate"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(stdout))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&output); err != nil {
+		t.Fatalf("decode version JSON: %v (%q)", err, stdout)
+	}
+	if output.SchemaVersion != 1 || output.Version != "v0.1.0" || output.Commit != "0123456789abcdef0123456789abcdef01234567" || output.BuildDate != "2026-08-11T00:00:00Z" {
+		t.Fatalf("output = %#v", output)
+	}
+}
+
+func TestVersionJSONRepresentsSourceBuildExplicitly(t *testing.T) {
+	code, stdout, stderr := runCLIWithContext(t, context.Background(), []string{"version", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	const want = "{\"schemaVersion\":1,\"version\":\"dev\",\"commit\":\"unknown\",\"buildDate\":\"unknown\"}\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestVersionRejectsInvalidArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"version", "--unknown"},
+		{"version", "--json", "--json"},
+		{"version", "--json=true"},
+		{"version", "extra"},
+	} {
+		code, stdout, stderr := runCLI(t, args, "")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "pi-worker:") {
+			t.Fatalf("args = %v, exit = %d, stdout = %q, stderr = %q", args, code, stdout, stderr)
+		}
 	}
 }
 
@@ -580,6 +673,81 @@ func TestRunSuccessJSON(t *testing.T) {
 		t.Fatalf("worker = %#v", output.Workers[0])
 	}
 	_ = fake
+}
+
+func TestRunVerifiedPiVersionProbesOnceBeforeWorkers(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "version-probed")
+	logPath := installProcessVersionProbe(t, "0.84.1\n", "", 0)
+	t.Setenv("PI_WORKER_VERSION_MARKER", marker)
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
+	fake.runHook = func() {
+		if _, err := os.Stat(marker); err != nil {
+			t.Errorf("worker started before version probe: %v", err)
+		}
+	}
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two", "--task", "three"}, "")
+	if code != 0 || stdout == "" || strings.Contains(stderr, "Pi version") {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := versionProbeCount(t, logPath); got != 1 {
+		t.Fatalf("version probe count = %d, want 1", got)
+	}
+	if fake.callCount() != 3 {
+		t.Fatalf("worker calls = %d, want 3", fake.callCount())
+	}
+}
+
+func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
+	logPath := installProcessVersionProbe(t, "0.99.0\n", "child-secret-must-not-leak", 0)
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "JSON answer"})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if got := versionProbeCount(t, logPath); got != 1 {
+		t.Fatalf("version probe count = %d, want 1", got)
+	}
+	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is 0.84.1; continuing\n"
+	if stderr != wantWarning || strings.Contains(stderr, "child-secret-must-not-leak") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	_ = decodeRunOutput(t, stdout)
+	if strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
+		t.Fatalf("stdout has multiple JSON documents: %q", stdout)
+	}
+}
+
+func TestRunMalformedPiVersionWarnsAndKeepsJSONClean(t *testing.T) {
+	installProcessVersionProbe(t, "pi 0.84.1\n", "", 0)
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
+	if code != 0 || strings.Count(stderr, "pi-worker: warning: Pi version") != 1 {
+		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	_ = decodeRunOutput(t, stdout)
+	if strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
+		t.Fatalf("stdout has multiple JSON documents: %q", stdout)
+	}
+}
+
+func TestRunPiVersionProbeFailureKeepsExistingExitCode(t *testing.T) {
+	installProcessVersionProbe(t, "probe-output-secret", "child-stderr-secret", 7)
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model unavailable"})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
+	if code != 3 {
+		t.Fatalf("exit = %d, want existing readiness exit 3; stderr = %q", code, stderr)
+	}
+	_ = decodeRunOutput(t, stdout)
+	if !strings.Contains(stderr, "pi-worker: warning: Pi version") || !strings.Contains(stderr, "model unavailable") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if strings.Contains(stderr, "probe-output-secret") || strings.Contains(stderr, "child-stderr-secret") {
+		t.Fatalf("stderr leaked probe output: %q", stderr)
+	}
 }
 
 func TestRunTaskFile(t *testing.T) {

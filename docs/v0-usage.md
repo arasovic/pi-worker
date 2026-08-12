@@ -17,7 +17,8 @@ or raw protocol output.
 ## Prerequisites
 
 - Node.js 22.20.0 or newer and npm.
-- Installed Pi CLI compatible with the **Pi 0.84.1** verified surface.
+- Installed Pi CLI. Version **0.84.1** is the verified compatibility surface;
+  other semantic versions remain usable with an explicit warning.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
   - Open Pi interactively and use Pi's own authentication flow.
 
@@ -61,7 +62,7 @@ launcher itself is unsupported.
 
 ## Supported commands
 
-- `pi-worker version`
+- `pi-worker version [--json]`
 - `pi-worker models ...`
 - `pi-worker doctor [--timeout <duration>] [--json] [--debug]`
 - `pi-worker config show [--json]`
@@ -69,6 +70,18 @@ launcher itself is unsupported.
 - `pi-worker skill status [--json]`
 - `pi-worker skill receipt-path [--json]`
 - `pi-worker run ...`
+
+## Version
+
+```text
+pi-worker version [--json]
+```
+
+- Human output identifies the build as `pi-worker <version>` and includes the
+  release commit and build date when injected.
+- `--json` emits one complete `schemaVersion: 1` document with `version`,
+  `commit`, and `buildDate`. Source builds report `dev`, `unknown`, and
+  `unknown` explicitly.
 
 ## Model catalog
 
@@ -98,9 +111,10 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   or submits a prompt.
 - It performs these checks in this exact order: `pi-executable`, `pi-version`,
   `config`, `model-catalog`, and `default-model`.
-- The Pi version check accepts exactly `0.84.1`. A missing configuration is a
-  warning; warnings leave the environment ready. A failed check makes it not
-  ready.
+- Pi `0.84.1` is verified and reports `ok`. A different valid semantic version
+  reports `warning` and leaves the environment ready. Unreadable or malformed
+  version output reports `failed`. A missing configuration is a warning;
+  warnings leave the environment ready. A failed check makes it not ready.
 - Skill installation status is reported separately by `pi-worker skill status`.
 - `model-catalog` sends only `get_available_models`; it does not activate a
   model or send a prompt. An empty catalog is failed.
@@ -169,6 +183,12 @@ Replace the provider/model placeholder with one exact selector printed by
 ## Behavior
 
 ### Model selection
+
+- Before starting workers, `run` probes `pi --version` once for the whole run.
+  An unverified, unreadable, timed-out, or otherwise failed probe writes one
+  bounded warning to stderr and execution continues. It never changes JSON
+  stdout or creates a new exit path; the RPC lifecycle still validates the
+  effective model and thinking state fail-closed.
 
 - `--model` must be an exact `provider/model` string.
 - An explicit `--model` always wins over the configured default and does not
@@ -323,6 +343,8 @@ cat prompt.txt | pi-worker run --model provider/model-id
 
 ## Compatibility note
 
-v0 is pinned/probed against Pi **0.84.1**. Re-probe before any unpinned Pi upgrade:
+v0 is verified against Pi **0.84.1**. Other semantic versions are explicitly
+reported as unverified while the runtime continues through its fail-closed RPC
+validation. Re-probe before expanding the verified compatibility surface:
 
 - [docs/pi-cli-surface.md](./pi-cli-surface.md)

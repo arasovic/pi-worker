@@ -7,9 +7,9 @@ var Commit = "unknown"
 var BuildDate = "unknown"
 
 type Info struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	BuildDate string `json:"buildDate"`
+	Version   string
+	Commit    string
+	BuildDate string
 }
 
 func Current() Info {

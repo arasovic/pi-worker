@@ -70,9 +70,21 @@ func TestRunReportsMissingExecutableAsFailed(t *testing.T) {
 	assertRedacted(t, result)
 }
 
-func TestRunReportsUnsupportedVersionAsFailed(t *testing.T) {
+func TestRunReportsValidUnverifiedVersionAsWarningAndReady(t *testing.T) {
 	deps := readyDependencies()
 	deps.Version = func(context.Context, string) (string, error) { return "0.99.0", nil }
+	result, err := Run(context.Background(), deps)
+	if err != nil || !result.Ready || result.Checks[1].Status != CheckWarning {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	if got, want := result.Checks[1].Message, "Pi version 0.99.0 is unverified; verified version is 0.84.1"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestRunReportsMalformedVersionAsFailed(t *testing.T) {
+	deps := readyDependencies()
+	deps.Version = func(context.Context, string) (string, error) { return "pi 0.84.1", nil }
 	result, err := Run(context.Background(), deps)
 	if err != nil || result.Ready || result.Checks[1].Status != CheckFailed {
 		t.Fatalf("result = %#v, err = %v", result, err)
