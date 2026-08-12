@@ -9,7 +9,7 @@ import {
 import { posix, win32 } from "node:path";
 
 export const PINNED_SKILLS_VERSION = "1.5.22";
-export const RULE_SCHEMA_VERSION = 2;
+export const RULE_SCHEMA_VERSION = 3;
 const MAX_EVE_PACKAGE_BYTES = 1024 * 1024;
 export const EXPECTED_AGENT_COUNT = 76;
 export const EXPECTED_GLOBAL_TARGET_COUNT = 74;
@@ -227,8 +227,11 @@ function validateDocument(document, enforcePinned = true) {
     if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
       invalid(`agent ${index} must be an object`);
     }
-    requireOnly(agent, ["id", "rule", "detector"], `agent ${index}`);
+    requireOnly(agent, ["id", "usesUniversalTarget", "rule", "detector"], `agent ${index}`);
     requireString(agent.id, `agent ${index}.id`);
+    if (typeof agent.usesUniversalTarget !== "boolean") {
+      invalid(`agent ${agent.id} must declare universal target behavior`);
+    }
     if (ids.has(agent.id)) invalid(`duplicate agent id: ${agent.id}`);
     ids.add(agent.id);
     if (!agent.rule || typeof agent.rule !== "object" || Array.isArray(agent.rule)) {
@@ -418,6 +421,20 @@ export function resolveRule(rule, { env = {}, home, platform, exists } = {}) {
   }
 }
 
+export function resolveAgentTarget(agent, runtime) {
+  if (!agent || typeof agent !== "object" || Array.isArray(agent)) {
+    throw new TypeError("skills target resolution requires an agent");
+  }
+  if (typeof agent.usesUniversalTarget !== "boolean") {
+    throw new TypeError("skills target resolution requires universal target behavior");
+  }
+  if (agent.usesUniversalTarget) {
+    const path = runtimePath(runtime);
+    return path.join(runtimeHome(runtime), ".agents", "skills");
+  }
+  return resolveRule(agent.rule, runtime);
+}
+
 export function resolveAllTargets(document, runtime) {
   validateDocument(document);
 
@@ -427,7 +444,7 @@ export function resolveAllTargets(document, runtime) {
     if (!agent || typeof agent !== "object" || !agent.rule) {
       throw new TypeError("skills target document contains an invalid agent");
     }
-    const target = resolveRule(agent.rule, runtime);
+    const target = resolveAgentTarget(agent, runtime);
     const key = runtime?.platform === "win32" && target !== null ? target.toLowerCase() : target;
     if (target === null || resolved.has(key)) continue;
     resolved.add(key);

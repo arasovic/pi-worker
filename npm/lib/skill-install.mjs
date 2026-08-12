@@ -28,8 +28,8 @@ import {
   detectInstalledAgents,
   loadRules,
   PINNED_SKILLS_VERSION,
+  resolveAgentTarget,
   resolveAllTargets,
-  resolveRule,
 } from "./skill-rules.mjs";
 
 const SKILL_NAME = "pi-worker";
@@ -220,7 +220,7 @@ function requiredTargetList({ rules, agentIds, runtime, cwd, platform }) {
   const resolved = agentIds.map((id) => {
     const agent = agentsById.get(id);
     if (!agent) throw new Error("detected agent is missing from the rules");
-    return resolveRule(agent.rule, runtime);
+    return resolveAgentTarget(agent, runtime);
   });
   return targetsFromResolved(resolved, cwd, platform);
 }

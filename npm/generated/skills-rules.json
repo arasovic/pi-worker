@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "skillsVersion": "1.5.22",
   "agentCount": 76,
   "globalTargetCount": 74,
@@ -7,6 +7,7 @@
   "agents": [
     {
       "id": "aider-desk",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".aider-desk/skills"
@@ -23,6 +24,7 @@
     },
     {
       "id": "amp",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "config-home-relative",
         "path": "agents/skills"
@@ -39,6 +41,7 @@
     },
     {
       "id": "antigravity",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".gemini/antigravity/skills"
@@ -55,6 +58,7 @@
     },
     {
       "id": "antigravity-cli",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".gemini/antigravity-cli/skills"
@@ -71,6 +75,7 @@
     },
     {
       "id": "astrbot",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".astrbot/data/skills"
@@ -91,6 +96,7 @@
     },
     {
       "id": "autohand-code",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "environment-or-home",
         "variable": "AUTOHAND_HOME",
@@ -110,6 +116,7 @@
     },
     {
       "id": "augment",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".augment/skills"
@@ -126,6 +133,7 @@
     },
     {
       "id": "bob",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".bob/skills"
@@ -142,6 +150,7 @@
     },
     {
       "id": "claude-code",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "environment-or-home",
         "variable": "CLAUDE_CONFIG_DIR",
@@ -161,6 +170,7 @@
     },
     {
       "id": "openclaw",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "first-existing-home-relative",
         "candidates": [
@@ -191,6 +201,7 @@
     },
     {
       "id": "cline",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
@@ -207,6 +218,7 @@
     },
     {
       "id": "codearts-agent",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".codeartsdoer/skills"
@@ -223,6 +235,7 @@
     },
     {
       "id": "codebuddy",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".codebuddy/skills"
@@ -243,6 +256,7 @@
     },
     {
       "id": "codemaker",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".codemaker/skills"
@@ -259,6 +273,7 @@
     },
     {
       "id": "codestudio",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".codestudio/skills"
@@ -275,6 +290,7 @@
     },
     {
       "id": "codex",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "environment-or-home",
         "variable": "CODEX_HOME",
@@ -298,6 +314,7 @@
     },
     {
       "id": "command-code",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".commandcode/skills"
@@ -314,6 +331,7 @@
     },
     {
       "id": "continue",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".continue/skills"
@@ -334,6 +352,7 @@
     },
     {
       "id": "cortex",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".snowflake/cortex/skills"
@@ -350,6 +369,7 @@
     },
     {
       "id": "crush",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".config/crush/skills"
@@ -366,6 +386,7 @@
     },
     {
       "id": "cursor",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".cursor/skills"
@@ -382,6 +403,7 @@
     },
     {
       "id": "deepagents",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".deepagents/agent/skills"
@@ -398,6 +420,7 @@
     },
     {
       "id": "devin",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "config-home-relative",
         "path": "devin/skills"
@@ -414,6 +437,7 @@
     },
     {
       "id": "dexto",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
@@ -430,6 +454,7 @@
     },
     {
       "id": "droid",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".factory/skills"
@@ -446,6 +471,7 @@
     },
     {
       "id": "eve",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "no-global-target"
       },
@@ -464,6 +490,7 @@
     },
     {
       "id": "firebender",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".firebender/skills"
@@ -480,6 +507,7 @@
     },
     {
       "id": "forgecode",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".forge/skills"
@@ -496,6 +524,7 @@
     },
     {
       "id": "gemini-cli",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".gemini/skills"
@@ -512,6 +541,7 @@
     },
     {
       "id": "github-copilot",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".copilot/skills"
@@ -528,6 +558,7 @@
     },
     {
       "id": "goose",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "config-home-relative",
         "path": "goose/skills"
@@ -544,6 +575,7 @@
     },
     {
       "id": "grok",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "environment-or-home",
         "variable": "GROK_HOME",
@@ -563,6 +595,7 @@
     },
     {
       "id": "hermes-agent",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "environment-or-home",
         "variable": "HERMES_HOME",
@@ -582,6 +615,7 @@
     },
     {
       "id": "inference-sh",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".inferencesh/skills"
@@ -598,6 +632,7 @@
     },
     {
       "id": "jazz",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".jazz/skills"
@@ -618,6 +653,7 @@
     },
     {
       "id": "junie",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".junie/skills"
@@ -634,6 +670,7 @@
     },
     {
       "id": "iflow-cli",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".iflow/skills"
@@ -650,6 +687,7 @@
     },
     {
       "id": "kilo",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".kilocode/skills"
@@ -666,6 +704,7 @@
     },
     {
       "id": "kimchi",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".config/kimchi/harness/skills"
@@ -682,6 +721,7 @@
     },
     {
       "id": "kimi-code-cli",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
@@ -702,6 +742,7 @@
     },
     {
       "id": "kiro-cli",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".kiro/skills"
@@ -718,6 +759,7 @@
     },
     {
       "id": "kode",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".kode/skills"
@@ -734,6 +776,7 @@
     },
     {
       "id": "lingma",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".lingma/skills"
@@ -750,6 +793,7 @@
     },
     {
       "id": "loaf",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
@@ -766,6 +810,7 @@
     },
     {
       "id": "mcpjam",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".mcpjam/skills"
@@ -782,6 +827,7 @@
     },
     {
       "id": "minimax-code",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".minimax/skills"
@@ -802,6 +848,7 @@
     },
     {
       "id": "mistral-vibe",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "environment-or-home",
         "variable": "VIBE_HOME",
@@ -821,6 +868,7 @@
     },
     {
       "id": "moxby",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".moxby/skills"
@@ -837,6 +885,7 @@
     },
     {
       "id": "mux",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".mux/skills"
@@ -853,6 +902,7 @@
     },
     {
       "id": "opencode",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "config-home-relative",
         "path": "opencode/skills"
@@ -869,6 +919,7 @@
     },
     {
       "id": "openhands",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".openhands/skills"
@@ -885,6 +936,7 @@
     },
     {
       "id": "ona",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".ona/skills"
@@ -901,6 +953,7 @@
     },
     {
       "id": "pi",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".pi/agent/skills"
@@ -917,6 +970,7 @@
     },
     {
       "id": "qoder",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".qoder/skills"
@@ -933,6 +987,7 @@
     },
     {
       "id": "qoder-cn",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".qoder-cn/skills"
@@ -949,6 +1004,7 @@
     },
     {
       "id": "qwen-code",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".qwen/skills"
@@ -965,6 +1021,7 @@
     },
     {
       "id": "replit",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "config-home-relative",
         "path": "agents/skills"
@@ -981,6 +1038,7 @@
     },
     {
       "id": "reasonix",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".reasonix/skills"
@@ -997,6 +1055,7 @@
     },
     {
       "id": "rovodev",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".rovodev/skills"
@@ -1013,6 +1072,7 @@
     },
     {
       "id": "roo",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".roo/skills"
@@ -1029,6 +1089,7 @@
     },
     {
       "id": "tabnine-cli",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".tabnine/agent/skills"
@@ -1045,6 +1106,7 @@
     },
     {
       "id": "terramind",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".terramind/skills"
@@ -1061,6 +1123,7 @@
     },
     {
       "id": "tinycloud",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".tinycloud/skills"
@@ -1077,6 +1140,7 @@
     },
     {
       "id": "trae",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".trae/skills"
@@ -1093,6 +1157,7 @@
     },
     {
       "id": "trae-cn",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".trae-cn/skills"
@@ -1109,6 +1174,7 @@
     },
     {
       "id": "warp",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
@@ -1125,6 +1191,7 @@
     },
     {
       "id": "windsurf",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".codeium/windsurf/skills"
@@ -1141,6 +1208,7 @@
     },
     {
       "id": "zed",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".agents/skills"
@@ -1167,6 +1235,7 @@
     },
     {
       "id": "zcode",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".zcode/skills"
@@ -1187,6 +1256,7 @@
     },
     {
       "id": "zencoder",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".zencoder/skills"
@@ -1203,6 +1273,7 @@
     },
     {
       "id": "zenflow",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".zencoder/skills"
@@ -1219,6 +1290,7 @@
     },
     {
       "id": "neovate",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".neovate/skills"
@@ -1235,6 +1307,7 @@
     },
     {
       "id": "pochi",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".pochi/skills"
@@ -1251,6 +1324,7 @@
     },
     {
       "id": "promptscript",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "no-global-target"
       },
@@ -1270,6 +1344,7 @@
     },
     {
       "id": "adal",
+      "usesUniversalTarget": false,
       "rule": {
         "kind": "home-relative",
         "path": ".adal/skills"
@@ -1286,6 +1361,7 @@
     },
     {
       "id": "universal",
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "config-home-relative",
         "path": "agents/skills"

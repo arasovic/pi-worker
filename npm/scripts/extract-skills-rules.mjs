@@ -520,6 +520,7 @@ function parseAgent(source, start, end) {
   if (objectEnd !== valueEnd - 1) extractionError(`ambiguous agent ${id} object`);
 
   let name;
+  let skillsDir;
   let rule;
   let detector;
   for (const [propertyStart, propertyEnd] of topLevelSegments(source, valueStart + 1, objectEnd)) {
@@ -528,6 +529,9 @@ function parseAgent(source, start, end) {
     if (property === "name") {
       if (name !== undefined) extractionError(`duplicate name in agent ${id}`);
       name = parseStringLiteral(source, propertyColon + 1, propertyEnd);
+    } else if (property === "skillsDir") {
+      if (skillsDir !== undefined) extractionError(`duplicate skillsDir in agent ${id}`);
+      skillsDir = parseStringLiteral(source, propertyColon + 1, propertyEnd);
     } else if (property === "globalSkillsDir") {
       if (rule !== undefined) extractionError(`duplicate globalSkillsDir in agent ${id}`);
       rule = parseRuleExpression(source, propertyColon + 1, propertyEnd);
@@ -539,9 +543,10 @@ function parseAgent(source, start, end) {
 
   if (name === undefined) extractionError(`missing agent name for ${id}`);
   if (name !== id) extractionError(`agent key/name mismatch for ${id}`);
+  if (skillsDir === undefined) extractionError(`missing skillsDir for ${id}`);
   if (rule === undefined) extractionError(`missing globalSkillsDir for ${id}`);
   if (detector === undefined) extractionError(`missing detector for ${id}`);
-  return { id, rule, detector };
+  return { id, usesUniversalTarget: skillsDir === ".agents/skills", rule, detector };
 }
 
 function normalizeWhitespace(value) {
@@ -615,6 +620,11 @@ function assertRecognizedAnchors(source, expectedVersion) {
     'return existsSync(join(cwd, "agent")) && packageJsonHasDependency(join(cwd, "package.json"), "eve");',
   ];
   for (const [index, anchor] of detectorAnchors.entries()) uniqueAnchor(source, anchor, `detector ${index + 1}`);
+  uniqueAnchor(
+    source,
+    'return agents[type].skillsDir === ".agents/skills";',
+    "universal target behavior"
+  );
 
   return { homeIndex };
 }

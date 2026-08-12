@@ -11,16 +11,18 @@ import { installSkill } from "../lib/skill-install.mjs";
 import { writeReceipt } from "../lib/skill-receipt.mjs";
 
 const realRulesPath = fileURLToPath(new URL("../generated/skills-rules.json", import.meta.url));
+const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const SAFE_RETRY = "npm install -g --foreground-scripts pi-worker";
 
 const rules = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   skillsVersion: "1.5.22",
   agentCount: 1,
   globalTargetCount: 1,
   noGlobalTargetCount: 0,
   agents: [{
     id: "test",
+    usesUniversalTarget: false,
     rule: { kind: "home-relative", path: ".test/skills" },
     detector: { kind: "never" },
   }],
@@ -108,13 +110,34 @@ test("installs an absent skill with the exact package-local CLI invocation", asy
   assert.deepEqual(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "installed");
 });
 
+test("installs through the actual pinned skills CLI for a detected universal agent target", async (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.home, ".config", "amp"), { recursive: true });
+
+  const result = await installSkill({
+    packageRoot,
+    binary: "/native/pi-worker",
+    home: f.home,
+    cwd: f.root,
+    env: { HOME: f.home, PATH: process.env.PATH ?? "" },
+    receiptPathFromNative: async () => f.receipt,
+  });
+
+  assert.equal(result.outcome, "installed");
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.outcome, "installed");
+  assert.deepEqual(receipt.targets.map(({ path, kind }) => ({ path, kind })), [
+    { path: join(f.home, ".agents", "skills", "pi-worker"), kind: "canonical" },
+  ]);
+});
+
 test("passes only detected global-capable agent ids in generated order", async (t) => {
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const firstCopy = join(f.home, ".first", "skills", "pi-worker");
   const secondCopy = join(f.home, ".second", "skills", "pi-worker");
   const detectedRules = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     skillsVersion: "1.5.22",
     agentCount: 3,
     globalTargetCount: 2,
@@ -122,16 +145,19 @@ test("passes only detected global-capable agent ids in generated order", async (
     agents: [
       {
         id: "first",
+        usesUniversalTarget: false,
         rule: { kind: "home-relative", path: ".first/skills" },
         detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".first" }] },
       },
       {
         id: "promptscript",
+        usesUniversalTarget: false,
         rule: { kind: "no-global-target" },
         detector: { kind: "any-existing", paths: [{ kind: "cwd-relative", path: ".promptscript" }] },
       },
       {
         id: "second",
+        usesUniversalTarget: false,
         rule: { kind: "home-relative", path: ".second/skills" },
         detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".second" }] },
       },
@@ -169,13 +195,14 @@ test("fails when a detected global-capable agent target is absent despite a zero
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const detectedRules = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     skillsVersion: "1.5.22",
     agentCount: 1,
     globalTargetCount: 1,
     noGlobalTargetCount: 0,
     agents: [{
       id: "detected",
+      usesUniversalTarget: false,
       rule: { kind: "home-relative", path: ".detected/skills" },
       detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".detected" }] },
     }],
@@ -199,13 +226,14 @@ test("fails when a detected global-capable agent target is absent despite a zero
 test("does not spawn when a detected target is absent from the conservative preflight inventory", async (t) => {
   const f = fixture(t);
   const detectedRules = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     skillsVersion: "1.5.22",
     agentCount: 1,
     globalTargetCount: 1,
     noGlobalTargetCount: 0,
     agents: [{
       id: "detected",
+      usesUniversalTarget: false,
       rule: { kind: "home-relative", path: ".detected/skills" },
       detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".detected" }] },
     }],
@@ -227,13 +255,14 @@ test("falls back to universal when only no-global agents are detected", async (t
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const noGlobalRules = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     skillsVersion: "1.5.22",
     agentCount: 1,
     globalTargetCount: 0,
     noGlobalTargetCount: 1,
     agents: [{
       id: "promptscript",
+      usesUniversalTarget: false,
       rule: { kind: "no-global-target" },
       detector: { kind: "any-existing", paths: [{ kind: "cwd-relative", path: ".promptscript" }] },
     }],

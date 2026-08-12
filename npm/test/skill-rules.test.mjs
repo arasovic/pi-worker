@@ -51,11 +51,12 @@ function validDocument(rules) {
   assert.equal(noGlobalRules.length, 2);
   const agents = [...globalRules, ...noGlobalRules].map((rule, index) => ({
     id: `agent-${index}`,
+    usesUniversalTarget: false,
     rule,
     detector: { kind: "never" },
   }));
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     skillsVersion: "1.5.22",
     agentCount: 76,
     globalTargetCount: 74,
@@ -77,8 +78,10 @@ describe("pinned skills target-rule extraction contract", () => {
     const document = extractRulesFromSource(sourceFixture());
     const ids = document.agents.map((agent) => agent.id);
     const rules = document.agents.map((agent) => agent.rule);
+    const codex = document.agents.find((agent) => agent.id === "codex");
+    const claudeCode = document.agents.find((agent) => agent.id === "claude-code");
 
-    assert.equal(document.schemaVersion, 2);
+    assert.equal(document.schemaVersion, 3);
     assert.equal(document.skillsVersion, "1.5.22");
     assert.equal(document.agentCount, 76);
     assert.equal(document.globalTargetCount, 74);
@@ -96,6 +99,8 @@ describe("pinned skills target-rule extraction contract", () => {
       "no-global-target",
     ].includes(rule.kind)));
     assert.ok(document.agents.every((agent) => agent.detector));
+    assert.equal(codex.usesUniversalTarget, true);
+    assert.equal(claudeCode.usesUniversalTarget, false);
   });
 
   test("checked-in JSON exactly matches the pinned source", () => {
@@ -313,15 +318,15 @@ describe("runtime target resolution", () => {
 
   test("filters no-global detections and preserves generated order", () => {
     const document = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       skillsVersion: "1.5.22",
       agentCount: 3,
       globalTargetCount: 2,
       noGlobalTargetCount: 1,
       agents: [
-        { id: "first", rule: { kind: "home-relative", path: ".first" }, detector: { kind: "never" } },
-        { id: "second", rule: { kind: "home-relative", path: ".second" }, detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".second" }] } },
-        { id: "eve", rule: { kind: "no-global-target" }, detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".eve" }] } },
+        { id: "first", usesUniversalTarget: false, rule: { kind: "home-relative", path: ".first" }, detector: { kind: "never" } },
+        { id: "second", usesUniversalTarget: false, rule: { kind: "home-relative", path: ".second" }, detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".second" }] } },
+        { id: "eve", usesUniversalTarget: false, rule: { kind: "no-global-target" }, detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".eve" }] } },
       ],
     };
     const detected = detectInstalledAgents(document, { ...runtime, exists: (candidate) => candidate === `${home}/.second` || candidate === `${home}/.eve` });
