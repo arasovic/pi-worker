@@ -397,6 +397,108 @@ func TestProcessTreeTerminatedOnCancellationDetachedGroup(t *testing.T) {
 	}
 }
 
+// TestProcessCancellationReleasesStdoutHoldingDescendant is the regression
+// for a stdout-holding detached descendant delaying teardown after
+// cancellation: the fake Pi spawns a long-lived detached descendant that
+// inherits fakepi's fd 1, so the descendant keeps the worker's manual
+// stdout pipe open after fakepi itself exits. Cancellation must terminate
+// the tree and return from Wait and Close promptly: a descendant holding the
+// stdout pipe open must not make teardown hang.
+func TestProcessCancellationReleasesStdoutHoldingDescendant(t *testing.T) {
+	descendantPidFile := filepath.Join(t.TempDir(), "detached-stdout.pid")
+	t.Setenv("FAKEPI_SPAWN_DETACH_STDOUT_PIDFILE", descendantPidFile)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	parentPID := proc.cmd.Process.Pid
+	descendantPID := readPIDFile(t, descendantPidFile)
+	if !processAlive(descendantPID) {
+		t.Fatalf("descendant %d is not alive after start", descendantPID)
+	}
+	// Cleanup by exact pid even on failure: no fakepi or descendant survives
+	// the test.
+	t.Cleanup(func() {
+		if processAlive(descendantPID) {
+			_ = syscall.Kill(descendantPID, syscall.SIGKILL)
+		}
+		waitProcessGone(t, descendantPID)
+		waitProcessGone(t, parentPID)
+	})
+
+	cancel()
+	started := time.Now()
+	if err := proc.Wait(); err == nil {
+		t.Fatalf("Wait after cancel returned nil, want kill error")
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("teardown after cancel took %v, want prompt return despite stdout-holding descendant", elapsed)
+	}
+	waitProcessGone(t, descendantPID)
+}
+
+// TestProcessStdoutReadReleasedByTeardownDespiteHoldingDescendant is the
+// regression for a read on the child's stdout blocking on a detached
+// descendant that inherited the pipe: the manual os.Pipe delivers EOF only
+// once every writer has closed its end, and a detached descendant holding
+// fakepi's fd 1 is such a writer. Teardown kills the tree, which releases the
+// pipe, so a read started while the descendant holds fd 1 must return instead
+// of blocking forever.
+func TestProcessStdoutReadReleasedByTeardownDespiteHoldingDescendant(t *testing.T) {
+	descendantPidFile := filepath.Join(t.TempDir(), "detached-stdout.pid")
+	t.Setenv("FAKEPI_SPAWN_DETACH_STDOUT_PIDFILE", descendantPidFile)
+
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	descendantPID := readPIDFile(t, descendantPidFile)
+	if !processAlive(descendantPID) {
+		t.Fatalf("descendant %d is not alive after start", descendantPID)
+	}
+	// Cleanup by exact pid even on failure: no descendant survives the test.
+	t.Cleanup(func() {
+		if processAlive(descendantPID) {
+			_ = syscall.Kill(descendantPID, syscall.SIGKILL)
+		}
+		waitProcessGone(t, descendantPID)
+	})
+
+	// Start a read before teardown: fakepi has written nothing and the
+	// detached descendant still holds fakepi's fd 1, so the read blocks on
+	// the manual stdout pipe instead of returning EOF.
+	readDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := proc.Stdout().Read(buf)
+		readDone <- err
+	}()
+
+	// Teardown makes fakepi exit on stdin EOF while the descendant still
+	// holds fd 1, then kills the tree and closes the read end, releasing the
+	// pipe so the blocked read returns.
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case <-readDone:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("stdout read blocked after teardown: detached descendant %d kept the stdout pipe open", descendantPID)
+	}
+	waitProcessGone(t, descendantPID)
+}
+
 // TestWorkerTimeoutTerminatesDescendantTree is the real worker-level
 // timeout regression for inherited-group cleanup: a fake Pi that holds a
 // long-lived descendant while sleeping through the run deadline must lose

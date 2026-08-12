@@ -91,6 +91,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// stderr to fakepi's own stderr, so the descendant inherits fakepi's
 	// fd 2 and keeps it open after fakepi exits: the worker-side stderr
 	// pipe is not drained until the detached descendant dies.
+	// FAKEPI_SPAWN_DETACH_STDOUT_PIDFILE likewise binds the descendant's
+	// stdout to fakepi's own stdout, so the descendant inherits fakepi's
+	// fd 1 and keeps it open after fakepi exits: the manual stdout pipe
+	// the worker reads delivers EOF only once the detached descendant dies.
 	if pidPath := os.Getenv("FAKEPI_PIDFILE"); pidPath != "" {
 		writePIDFile(pidPath, os.Getpid())
 	}
@@ -102,6 +106,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if pidPath := os.Getenv("FAKEPI_SPAWN_DETACH_STDERR_PIDFILE"); pidPath != "" {
 		spawnDetachedStderrDescendant(pidPath)
+	}
+	if pidPath := os.Getenv("FAKEPI_SPAWN_DETACH_STDOUT_PIDFILE"); pidPath != "" {
+		spawnDetachedStdoutDescendant(pidPath)
 	}
 
 	// FAKEPI_STDERR lets tests place distinctive content on the child stderr
@@ -294,6 +301,25 @@ func spawnDetachedDescendant(pidPath string) {
 func spawnDetachedStderrDescendant(pidPath string) {
 	cmd := exec.Command(os.Args[0], "--hold")
 	cmd.Stderr = os.Stderr
+	detachProcess(cmd)
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	writePIDFile(pidPath, cmd.Process.Pid)
+}
+
+// spawnDetachedStdoutDescendant launches a long-lived child in its own
+// session (and therefore its own process group) with cmd.Stdout explicitly
+// set to os.Stdout, so the descendant inherits fakepi's fd 1 and keeps it
+// open after fakepi exits. From the worker's side that fd is the write end
+// of the manual stdout pipe created for the child, so a worker that waits
+// for EOF on the child's stdout cannot observe it while the detached
+// descendant lives. The descendant's pid is recorded in pidPath when the
+// spawn succeeds; it is intentionally never waited on. Test-only: it never
+// prints or logs environment values.
+func spawnDetachedStdoutDescendant(pidPath string) {
+	cmd := exec.Command(os.Args[0], "--hold")
+	cmd.Stdout = os.Stdout
 	detachProcess(cmd)
 	if err := cmd.Start(); err != nil {
 		return
