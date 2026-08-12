@@ -32,5 +32,6 @@ with Pi's confirmed default effort.
 
 - Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox or worktree layer.
 - Use trusted workspaces. Parallel writes must be disjoint.
+- Each run's Pi process and its descendants are terminated when the run ends, times out, or is cancelled. Background jobs the parent agent starts itself are outside that guarantee: reap every one it opens around a delegation, and keep the run bounded by `--timeout`.
 - Debug is bounded stderr lifecycle data, not the result. A heartbeat proves only that the managed Pi process is alive; it does not prove model progress.
 - Do not repeat raw debug frames, prompts, credentials, or assistant output unnecessarily.
