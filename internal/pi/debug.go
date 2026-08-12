@@ -136,11 +136,12 @@ type WorkerScope struct {
 // fields must be safe, caller-constructed key=value projections; Log adds
 // the worker label, replaces every control character so a hostile value
 // cannot forge extra lines, truncates the line to the fixed byte bound on
-// a UTF-8 boundary, and enforces the shared run-level line budget. When
-// the budget is first exhausted the sink emits at most one fixed notice,
-// labeled with the worker scope whose attempted line exhausted the shared
-// budget, and suppresses every later line. A nil scope, or one over a nil
-// sink, is a no-op.
+// a UTF-8 boundary, and enforces the regular lane budget within the shared
+// run-level bound. The first exhausted lane makes the sink emit at most one
+// fixed notice for the whole run, labeled with the worker scope whose
+// attempted line exhausted it, and suppresses every later line of that lane.
+// Lanes are independent, so heartbeat and terminal lines can still be
+// emitted after the notice. A nil scope, or one over a nil sink, is a no-op.
 func (w *WorkerScope) Log(event string, fields ...string) {
 	if w == nil || w.sink == nil {
 		return

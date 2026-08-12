@@ -244,7 +244,10 @@ report `cause=cancelled`. Other and malformed forms, and all non-bash failures,
 report `cause=unknown`. Debug output never includes command, result, argument,
 identifier, path, or credential data. The run-level debug stream is bounded to
 512 lines: 315 regular lifecycle/tool/RPC lines, 180 heartbeat lines, 16
-reserved terminal lines, and one fixed budget notice.
+reserved terminal lines, and one fixed budget notice. The lanes are
+independent. The single `debug budget exhausted` notice reports the first lane
+to fill and suppresses only that lane, so heartbeat and terminal lines can
+still follow it.
 
 ### Completion and final text
 
@@ -283,7 +286,7 @@ sandbox.
 `find` accepts `{ "pattern": string, "path"?: string, "limit"?: number }`.
 Its installed implementation searches files by glob pattern, returns paths
 relative to the search directory, respects `.gitignore`, and truncates at a
-default of 1,000 results or 100 KiB. Its default implementation resolves an
+default of 1,000 results or 50 KiB. Its default implementation resolves an
 `fd` executable, then spawns that subprocess with fixed glob-search arguments;
 the tool interface exposes no arbitrary command string, deletion, edit, or
 write operation.
