@@ -25,7 +25,7 @@ const (
 	debugModelOutput   = "phase=model-output"    // + elapsed=
 	debugModelToolCall = "phase=model-tool-call" // + elapsed=
 	debugModelActivity = "phase=model-activity"  // + elapsed=
-	debugWaiting       = "phase=waiting-for-pi"  // + no-event-for=
+	debugWaiting       = "phase=waiting-for-pi"  // + last-phase= silence= process=alive
 	debugSettled       = "phase=settled"
 	debugStarted       = "status=started"
 	debugCompleted     = "status=completed"
@@ -36,10 +36,13 @@ const (
 	// debugMaxLineBytes bounds one debug line in bytes. Truncation preserves
 	// valid UTF-8, so a hostile value cannot inflate a line or split a rune.
 	debugMaxLineBytes = 512
-	// debugLineBudget bounds the total debug lines per run (shared by all
-	// workers of one run). After it is exhausted, at most one fixed notice
-	// is emitted and every later line is suppressed.
-	debugLineBudget = 512
+	// The lane budgets sum to one less than the hard run-level bound; the
+	// remaining line is reserved for the single fixed exhaustion notice.
+	debugRegularLineBudget   = 315
+	debugHeartbeatLineBudget = 180
+	debugTerminalLineBudget  = 16
+	debugBudgetNoticeLines   = 1
+	debugLineBudget          = debugRegularLineBudget + debugHeartbeatLineBudget + debugTerminalLineBudget + debugBudgetNoticeLines
 )
 
 // debugBudgetExhausted is the fixed notice emitted once when the run-level
@@ -61,18 +64,21 @@ const debugBudgetExhausted = "debug budget exhausted"
 // DebugSink, or one created with a nil writer, is a no-op: disabled mode
 // emits nothing and preserves existing behavior.
 //
-// The CLI creates one sink per run; workers obtain a cheap worker-scoped
-// view with Worker. Scoping binds only the worker label that prefixes every
-// line and adds no writer, lock, clock, or line budget of its own, so a
-// later task can run workers 1..3 against this same sink with every write
-// serializing on the sink's mutex and lines never interleaving.
+// The CLI creates one sink per run; workers obtain a worker-scoped view with
+// Worker. A scope binds the worker label and owns only its liveness state;
+// the writer, clock, serialization lock, and lane budgets remain run-level,
+// so workers 1..3 never interleave writes or multiply the hard bound.
 type DebugSink struct {
-	mu       sync.Mutex
-	w        io.Writer
-	start    time.Time
-	now      func() time.Time
-	lines    int
-	notified bool
+	mu                sync.Mutex
+	w                 io.Writer
+	start             time.Time
+	now               func() time.Time
+	newHeartbeatTimer func(time.Duration) debugTimer
+	lines             int
+	regularLines      int
+	heartbeatLines    int
+	terminalLines     int
+	notified          bool
 }
 
 // NewDebugSink returns a run-level sink that writes sanitized lifecycle
@@ -90,13 +96,16 @@ func newDebugSink(w io.Writer, start time.Time) *DebugSink {
 // fixed clock and advance it explicitly, so elapsed time is deterministic
 // without sleeping.
 func newDebugSinkWithClock(w io.Writer, start time.Time, now func() time.Time) *DebugSink {
-	return &DebugSink{w: w, start: start, now: now}
+	return &DebugSink{
+		w: w, start: start, now: now,
+		newHeartbeatTimer: newStandardDebugTimer,
+	}
 }
 
 // Worker returns the worker-scoped view of the shared run-level sink for
 // the given worker id. A nil sink yields a no-op scope.
 func (s *DebugSink) Worker(id int) *WorkerScope {
-	return &WorkerScope{sink: s, id: id}
+	return &WorkerScope{sink: s, id: id, lastPhase: "starting"}
 }
 
 // Elapsed is the run elapsed time since the sink was created, on the sink
@@ -108,13 +117,19 @@ func (s *DebugSink) Elapsed() time.Duration {
 	return s.now().Sub(s.start)
 }
 
-// WorkerScope is one worker's view of the shared run-level DebugSink. It
-// exists only to bind the worker id that prefixes every line; the writer,
-// mutex, clock, and line budget remain the sink's and are shared by every
-// worker of the run.
+// WorkerScope is one worker's view of the shared run-level DebugSink. It binds
+// the worker id and owns that worker's heartbeat state; the writer, clock,
+// serialization lock, and lane budgets remain shared by the whole run.
 type WorkerScope struct {
 	sink *DebugSink
 	id   int
+
+	heartbeatMu       sync.Mutex
+	heartbeatRunning  bool
+	heartbeatStop     func()
+	heartbeatActivity chan<- struct{}
+	lastActivity      time.Duration
+	lastPhase         string
 }
 
 // Log writes one sanitized lifecycle line for the scoped worker. event and
@@ -130,8 +145,74 @@ func (w *WorkerScope) Log(event string, fields ...string) {
 	if w == nil || w.sink == nil {
 		return
 	}
+	if phase, ok := fixedDebugPhase(event); ok {
+		w.heartbeatMu.Lock()
+		w.lastPhase = phase
+		w.heartbeatMu.Unlock()
+	}
 	fields = append([]string{"worker=" + strconv.Itoa(w.id), event}, fields...)
-	w.sink.log(w, fields)
+	if w.sink.log(w, debugRegularLineKind, fields) {
+		w.recordDebugActivity()
+	}
+}
+
+// LogTerminal writes a settlement or final worker-status line in the
+// reserved terminal lane. Terminal lines cannot be displaced by regular or
+// heartbeat floods.
+func (w *WorkerScope) LogTerminal(event string, fields ...string) {
+	if w == nil || w.sink == nil {
+		return
+	}
+	if phase, ok := fixedDebugPhase(event); ok {
+		w.heartbeatMu.Lock()
+		w.lastPhase = phase
+		w.heartbeatMu.Unlock()
+	}
+	fields = append([]string{"worker=" + strconv.Itoa(w.id), event}, fields...)
+	if w.sink.log(w, debugTerminalLineKind, fields) {
+		w.recordDebugActivity()
+	}
+}
+
+func fixedDebugPhase(event string) (string, bool) {
+	switch event {
+	case debugStarting:
+		return "starting", true
+	case debugThinking:
+		return "thinking-confirmed", true
+	case debugModelThinking:
+		return "model-thinking", true
+	case debugModelOutput:
+		return "model-output", true
+	case debugModelToolCall:
+		return "model-tool-call", true
+	case debugModelActivity:
+		return "model-activity", true
+	case debugSettled:
+		return "settled", true
+	default:
+		return "", false
+	}
+}
+
+func (w *WorkerScope) recordDebugActivity() {
+	if w == nil || w.sink == nil {
+		return
+	}
+	w.heartbeatMu.Lock()
+	w.lastActivity = w.Elapsed()
+	activity := w.heartbeatActivity
+	w.heartbeatMu.Unlock()
+	if activity != nil {
+		select {
+		case activity <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *DebugSink) logHeartbeat(scope *WorkerScope, fields ...string) bool {
+	return s.log(scope, debugHeartbeatLineKind, append([]string{"worker=" + strconv.Itoa(scope.id)}, fields...))
 }
 
 // Elapsed is the run elapsed time on the shared sink clock. It is
@@ -149,29 +230,57 @@ func (w *WorkerScope) enabled() bool {
 	return w != nil && w.sink != nil && w.sink.w != nil
 }
 
-// log writes one sanitized line for the worker scope that attempted it.
-// Callers pass the complete field list including the worker label; the
-// scope supplies the label of the budget-exhausted notice. A nil writer is
-// a no-op: disabled mode emits nothing.
-func (s *DebugSink) log(scope *WorkerScope, fields []string) {
+type debugLineKind uint8
+
+const (
+	debugRegularLineKind debugLineKind = iota
+	debugHeartbeatLineKind
+	debugTerminalLineKind
+)
+
+// log writes one sanitized line and reports whether a line was actually
+// emitted. The report drives the worker activity signal, so suppressed lines
+// never postpone a heartbeat.
+func (s *DebugSink) log(scope *WorkerScope, kind debugLineKind, fields []string) bool {
 	if s.w == nil {
-		return
+		return false
 	}
 	line := "[pi-worker +" + s.elapsedString() + "] " + strings.Join(fields, " ")
 	line = truncateUTF8(sanitizeLine(line), debugMaxLineBytes)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lines >= debugLineBudget {
-		if !s.notified {
+
+	if kind == debugTerminalLineKind {
+		if s.terminalLines >= debugTerminalLineBudget || s.lines >= debugLineBudget {
+			return false
+		}
+		s.terminalLines++
+		s.lines++
+		s.writeLocked(line)
+		return true
+	}
+
+	laneLimit := debugRegularLineBudget
+	laneLines := &s.regularLines
+	if kind == debugHeartbeatLineKind {
+		laneLimit = debugHeartbeatLineBudget
+		laneLines = &s.heartbeatLines
+	}
+	if *laneLines >= laneLimit || s.lines >= debugLineBudget {
+		if !s.notified && s.lines < debugLineBudget {
 			s.notified = true
+			s.lines++
 			s.writeLocked("[pi-worker +" + s.elapsedString() + "] worker=" +
 				strconv.Itoa(scope.id) + " " + debugBudgetExhausted)
+			return true
 		}
-		return
+		return false
 	}
+	(*laneLines)++
 	s.lines++
 	s.writeLocked(line)
+	return true
 }
 
 // writeLocked writes one complete line. Callers hold the sink mutex.

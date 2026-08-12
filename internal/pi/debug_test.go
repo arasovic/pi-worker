@@ -69,6 +69,163 @@ func countBodiesWithPrefix(bodies []string, prefix string) int {
 	return n
 }
 
+type deterministicHeartbeatTimer struct {
+	ticks  chan time.Time
+	resets chan time.Duration
+	stops  chan struct{}
+}
+
+func (t *deterministicHeartbeatTimer) C() <-chan time.Time { return t.ticks }
+
+func (t *deterministicHeartbeatTimer) Reset(d time.Duration) {
+	t.resets <- d
+}
+
+func (t *deterministicHeartbeatTimer) Stop() {
+	select {
+	case t.stops <- struct{}{}:
+	default:
+	}
+}
+
+func TestWorkerScopeHeartbeatLifecycle(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	var buf bytes.Buffer
+	sink := newDebugSinkWithClock(&buf, clock.t, clock.now)
+	timer := &deterministicHeartbeatTimer{
+		ticks:  make(chan time.Time, 4),
+		resets: make(chan time.Duration, 8),
+		stops:  make(chan struct{}, 1),
+	}
+	sink.newHeartbeatTimer = func(time.Duration) debugTimer { return timer }
+	scope := sink.Worker(1)
+
+	scope.Log(debugModelThinking, "upstream-secret=must-not-appear")
+	stop := scope.startHeartbeat(func() bool { return true })
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	select {
+	case <-timer.resets:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat did not reset its timer")
+	}
+	bodies := debugBodies(t, buf.String())
+	if got := bodies[len(bodies)-1]; got != "worker=1 phase=waiting-for-pi last-phase=model-thinking silence=30s process=alive" {
+		t.Fatalf("heartbeat = %q", got)
+	}
+	if strings.Contains(bodies[len(bodies)-1], "upstream-secret") {
+		t.Fatal("heartbeat included upstream data")
+	}
+
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	select {
+	case <-timer.resets:
+	case <-time.After(time.Second):
+		t.Fatal("second heartbeat did not reset its timer")
+	}
+	bodies = debugBodies(t, buf.String())
+	if got := bodies[len(bodies)-1]; got != "worker=1 phase=waiting-for-pi last-phase=model-thinking silence=30s process=alive" {
+		t.Fatalf("second heartbeat = %q, want a fresh 30s visible-line silence interval", got)
+	}
+
+	clock.advance(5 * time.Second)
+	scope.Log(debugModelOutput, "upstream-secret=still-hidden")
+	select {
+	case reset := <-timer.resets:
+		if reset != debugHeartbeatInterval {
+			t.Fatalf("activity reset = %v, want %v", reset, debugHeartbeatInterval)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("visible line did not reset heartbeat")
+	}
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	select {
+	case <-timer.resets:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat after activity did not reset its timer")
+	}
+	bodies = debugBodies(t, buf.String())
+	if got := bodies[len(bodies)-1]; got != "worker=1 phase=waiting-for-pi last-phase=model-output silence=30s process=alive" {
+		t.Fatalf("heartbeat after activity = %q", got)
+	}
+
+	stop()
+	stop()
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	select {
+	case <-time.After(25 * time.Millisecond):
+		// stop joined the goroutine; this tick must not produce output.
+	case reset := <-timer.resets:
+		t.Fatalf("stopped heartbeat reset timer with %v", reset)
+	}
+	if got := len(debugBodies(t, buf.String())); got != 5 {
+		t.Fatalf("lines after stop = %d, want 5", got)
+	}
+}
+
+func TestWorkerScopeHeartbeatStopsWhenProcessIsNotAlive(t *testing.T) {
+	var buf bytes.Buffer
+	sink := NewDebugSink(&buf)
+	timer := &deterministicHeartbeatTimer{
+		ticks:  make(chan time.Time, 1),
+		resets: make(chan time.Duration, 1),
+		stops:  make(chan struct{}, 1),
+	}
+	sink.newHeartbeatTimer = func(time.Duration) debugTimer { return timer }
+	stop := sink.Worker(1).startHeartbeat(func() bool { return false })
+	timer.ticks <- time.Now()
+	stop()
+	if buf.Len() != 0 {
+		t.Fatalf("false alive callback produced output: %q", buf.String())
+	}
+}
+
+func TestDebugDisabledHeartbeatCreatesNoTimer(t *testing.T) {
+	called := false
+	var nilSink *DebugSink
+	scope := nilSink.Worker(1)
+	// A disabled scope must not even evaluate a timer factory.
+	scope.sink = &DebugSink{newHeartbeatTimer: func(time.Duration) debugTimer {
+		called = true
+		return nil
+	}}
+	scope.sink.w = nil
+	scope.startHeartbeat(func() bool { return true })()
+	if called {
+		t.Fatal("disabled heartbeat created a timer")
+	}
+}
+
+func TestDebugBudgetHeartbeatAndTerminalLanes(t *testing.T) {
+	var buf bytes.Buffer
+	sink := NewDebugSink(&buf)
+	scope := sink.Worker(1)
+	for i := 0; i < debugRegularLineBudget+1; i++ {
+		scope.Log(debugModelOutput, "elapsed=0s")
+	}
+	for i := 0; i < debugHeartbeatLineBudget+1; i++ {
+		sink.logHeartbeat(scope, debugWaiting, "last-phase=model-output", "silence=30s", "process=alive")
+	}
+	for i := 0; i < debugTerminalLineBudget; i++ {
+		scope.LogTerminal(debugSettled)
+	}
+	bodies := debugBodies(t, buf.String())
+	if len(bodies) != debugLineBudget {
+		t.Fatalf("line count = %d, want exact hard budget %d", len(bodies), debugLineBudget)
+	}
+	for i := 0; i < debugTerminalLineBudget; i++ {
+		if bodies[len(bodies)-debugTerminalLineBudget+i] != "worker=1 "+debugSettled {
+			t.Fatalf("terminal line %d was displaced: %q", i, bodies[len(bodies)-debugTerminalLineBudget+i])
+		}
+	}
+	if got := strings.Count(buf.String(), debugBudgetExhausted); got != 1 {
+		t.Fatalf("budget exhaustion notice count = %d, want 1", got)
+	}
+}
+
 func TestClientDebugReportsHostClockIdleWhileNoFramesArrive(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(0, 0)}
 	writes := make(chan string, 4)
@@ -203,7 +360,7 @@ func TestDebugSinkNilAndNilWriterAreNoop(t *testing.T) {
 
 func TestDebugSinkConcurrentWritesDoNotInterleave(t *testing.T) {
 	const scopes = 8
-	const linesPerScope = 50 // total 400 lines stays inside the run budget
+	const linesPerScope = 30 // total 240 lines stays inside the regular lane
 	var buf bytes.Buffer
 	sink := NewDebugSink(&buf)
 
@@ -263,8 +420,8 @@ func TestDebugSinkEmitsBudgetNoticeOnceAndSuppresses(t *testing.T) {
 
 	out := buf.String()
 	bodies := debugBodies(t, out)
-	if len(bodies) != debugLineBudget+1 {
-		t.Fatalf("line count = %d, want budget %d plus one notice", len(bodies), debugLineBudget+1)
+	if len(bodies) != debugRegularLineBudget+1 {
+		t.Fatalf("line count = %d, want regular budget %d plus one notice", len(bodies), debugRegularLineBudget+1)
 	}
 	if n := strings.Count(out, debugBudgetExhausted); n != 1 {
 		t.Fatalf("budget notice appears %d times, want exactly once", n)
@@ -318,8 +475,8 @@ func TestDebugSinkScopedWorkersShareSynchronizationAndBudget(t *testing.T) {
 	bodies := debugBodies(t, out)
 	// One shared budget: three separate budgets would have produced
 	// 3*(budget+1) lines instead.
-	if len(bodies) != debugLineBudget+1 {
-		t.Fatalf("line count = %d, want shared budget %d plus one notice", len(bodies), debugLineBudget+1)
+	if len(bodies) != debugRegularLineBudget+1 {
+		t.Fatalf("line count = %d, want regular budget %d plus one notice", len(bodies), debugRegularLineBudget+1)
 	}
 	if n := strings.Count(out, debugBudgetExhausted); n != 1 {
 		t.Fatalf("budget notice appears %d times, want exactly once", n)
@@ -1314,9 +1471,9 @@ func TestWorkerDebugBudgetBoundsToolEventFlood(t *testing.T) {
 
 	out := debugOut.String()
 	bodies := debugBodies(t, out)
-	if len(bodies) != debugLineBudget+1 {
-		t.Fatalf("debug emitted %d lines for %d flood frames, want budget %d plus one notice",
-			len(bodies), floodPairs*2, debugLineBudget+1)
+	if len(bodies) != debugRegularLineBudget+1 {
+		t.Fatalf("debug emitted %d lines for %d flood frames, want regular budget %d plus one notice",
+			len(bodies), floodPairs*2, debugRegularLineBudget+1)
 	}
 	if n := strings.Count(out, debugBudgetExhausted); n != 1 {
 		t.Fatalf("budget notice must appear exactly once:\n%s", out)
