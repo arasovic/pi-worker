@@ -70,7 +70,7 @@ test("README is the concise public entry point with the approved contract", () =
     "pi-worker skill receipt-path",
     "npx --yes skills@1.5.22 list -g",
     "npx --yes skills@1.5.22 remove pi-worker -g -y",
-    "go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.1.0",
+    "go install github.com/arasovic/pi-worker/cmd/pi-worker@latest",
   ]) {
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
   }
@@ -96,7 +96,11 @@ test("README is the concise public entry point with the approved contract", () =
     assert.match(readme, new RegExp(safetyStatement.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
   assert.equal(packageManifest.name, "pi-worker");
-  assert.equal(packageManifest.version, "0.1.0");
+  assert.match(
+    packageManifest.version,
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/,
+    "package version is a stable semver: three dot-separated numeric components, no prerelease or build suffix",
+  );
   assert.notEqual(packageManifest.private, true, "package is publishable");
   assert.equal(packageManifest.license, "MIT");
   assert.deepEqual(packageManifest.repository, {

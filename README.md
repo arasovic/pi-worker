@@ -42,7 +42,7 @@ Source builds are documented in [detailed usage](./docs/v0-usage.md). The Go
 binary can also be installed directly without the bundled skill:
 
 ```sh
-go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.1.0
+go install github.com/arasovic/pi-worker/cmd/pi-worker@latest
 ```
 
 The binary lands in `go env GOBIN`, or in `$(go env GOPATH)/bin` when GOBIN
