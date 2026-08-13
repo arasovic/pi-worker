@@ -47,6 +47,12 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function imageTargets(markdown) {
+  return [...markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)|<img\s+[^>]*src="([^"]+)"/g)].map(([, markdownTarget, htmlTarget]) =>
+    (markdownTarget ?? htmlTarget).replaceAll("&amp;", "&"),
+  );
+}
+
 test("README is the concise public entry point with the approved contract", () => {
   const positions = headingPositions(readme);
   assert.ok(positions.every((position) => position >= 0), "all required sections are present");
@@ -134,9 +140,19 @@ test("README is the concise public entry point with the approved contract", () =
   assert.doesNotMatch(readme, /\/(?:Users|home|tmp)\//);
   assert.doesNotMatch(readme, /(?:openai|anthropic|google|gemini|claude|gpt-[\w-]+)/i);
   assert.deepEqual(
-    [...readme.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(([, target]) => target),
-    ["https://raw.githubusercontent.com/arasovic/pi-worker/main/assets/brand/github-social-preview.png"],
-    "README has one opaque project image and no badge wall",
+    imageTargets(readme),
+    [
+      "https://raw.githubusercontent.com/arasovic/pi-worker/main/assets/brand/github-social-preview.png",
+      "https://github.com/arasovic/pi-worker/actions/workflows/ci.yml/badge.svg",
+      "https://img.shields.io/npm/v/pi-worker.svg",
+      "https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white",
+      "https://img.shields.io/badge/Node.js-22.20%2B-339933?logo=nodedotjs&logoColor=white",
+      "https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white",
+      "https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black",
+      "https://img.shields.io/badge/Windows-source%20build-0078D4",
+      "https://img.shields.io/badge/license-MIT-green.svg",
+    ],
+    "README has the approved badges and project image",
   );
   assert.doesNotMatch(readme, /(?:npm|package-manager) distribution is deferred|packaging is source-only/i);
 
@@ -233,10 +249,11 @@ test("security guidance states the current public reporting boundary", () => {
   assert.doesNotMatch(security, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
 
   const publicDocs = `${readme}\n${contributing}\n${security}`;
-  for (const [, url] of publicDocs.matchAll(/(https?:\/\/[^)\s]+)/g)) {
+  for (const [, rawUrl] of publicDocs.matchAll(/(https?:\/\/[^)"'\s>]+)/g)) {
+    const url = rawUrl.replaceAll("&amp;", "&");
     assert.match(
       url,
-      /^(?:https:\/\/github\.com\/arasovic\/pi-worker(?:\/|$)|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$)/,
+      /^(?:https:\/\/github\.com\/arasovic\/pi-worker\/(?:actions\/workflows\/ci\.yml(?:\/badge\.svg)?|releases|security\/advisories\/new)$|https:\/\/www\.npmjs\.com\/package\/pi-worker$|https:\/\/img\.shields\.io\/(?:npm\/v\/pi-worker\.svg|badge\/(?:Go-1\.25%2B-00ADD8\?logo=go&logoColor=white|Node\.js-22\.20%2B-339933\?logo=nodedotjs&logoColor=white|macOS-supported-000000\?logo=apple&logoColor=white|Linux-supported-FCC624\?logo=linux&logoColor=black|Windows-source%20build-0078D4|license-MIT-green\.svg))$|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$)/,
     );
   }
   assert.doesNotMatch(publicDocs, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);
