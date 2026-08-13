@@ -18,10 +18,10 @@ func TestInventoryMatchesFixedModuleSet(t *testing.T) {
 
 	got := Inventory()
 	want := []Dependency{
-		{Module: "github.com/shirou/gopsutil/v4", Version: "v4.26.6", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
-		{Module: "golang.org/x/sys", Version: "v0.41.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
+		{Module: "github.com/shirou/gopsutil/v4", Version: "v4.26.7", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
+		{Module: "golang.org/x/sys", Version: "v0.47.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
 		{Module: "github.com/tklauser/go-sysconf", Version: "v0.3.16", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
-		{Module: "github.com/ebitengine/purego", Version: "v0.10.0", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
+		{Module: "github.com/ebitengine/purego", Version: "v0.10.2", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
 		{Module: "github.com/tklauser/numcpus", Version: "v0.11.0", Targets: []string{"linux"}, LicenseFiles: []string{"LICENSE"}},
 	}
 
@@ -44,17 +44,17 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 
 	moduleCache := t.TempDir()
 	fixtures := map[string]map[string]string{
-		"github.com/shirou/gopsutil/v4@v4.26.6": {
+		"github.com/shirou/gopsutil/v4@v4.26.7": {
 			"LICENSE": "gopsutil license line A\nline B\n\n",
 		},
-		"golang.org/x/sys@v0.41.0": {
+		"golang.org/x/sys@v0.47.0": {
 			"LICENSE": "sys license\n\n",
 			"PATENTS": "sys patents\n",
 		},
 		"github.com/tklauser/go-sysconf@v0.3.16": {
 			"LICENSE": "sysconf license\n\n",
 		},
-		"github.com/ebitengine/purego@v0.10.0": {
+		"github.com/ebitengine/purego@v0.10.2": {
 			"LICENSE": "purego license\n\n",
 		},
 		"github.com/tklauser/numcpus@v0.11.0": {
@@ -87,10 +87,10 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 	}
 
 	order := []string{
-		"## github.com/shirou/gopsutil/v4 v4.26.6",
-		"## golang.org/x/sys v0.41.0",
+		"## github.com/shirou/gopsutil/v4 v4.26.7",
+		"## golang.org/x/sys v0.47.0",
 		"## github.com/tklauser/go-sysconf v0.3.16",
-		"## github.com/ebitengine/purego v0.10.0",
+		"## github.com/ebitengine/purego v0.10.2",
 		"## github.com/tklauser/numcpus v0.11.0",
 	}
 	last := -1
@@ -120,14 +120,14 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 		}
 	}
 
-	xsysSection := sectionForModule(content, "golang.org/x/sys v0.41.0")
+	xsysSection := sectionForModule(content, "golang.org/x/sys v0.47.0")
 	if !strings.Contains(xsysSection, "### LICENSE") || !strings.Contains(xsysSection, "### PATENTS") {
 		t.Fatalf("expected x/sys to contain separate LICENSE and PATENTS sections")
 	}
-	if !strings.Contains(xsysSection, fixtures["golang.org/x/sys@v0.41.0"]["LICENSE"]) {
+	if !strings.Contains(xsysSection, fixtures["golang.org/x/sys@v0.47.0"]["LICENSE"]) {
 		t.Fatalf("x/sys LICENSE content missing")
 	}
-	if !strings.Contains(xsysSection, fixtures["golang.org/x/sys@v0.41.0"]["PATENTS"]) {
+	if !strings.Contains(xsysSection, fixtures["golang.org/x/sys@v0.47.0"]["PATENTS"]) {
 		t.Fatalf("x/sys PATENTS content missing")
 	}
 }
@@ -144,7 +144,7 @@ func TestRenderStartsWithGeneratedPreamble(t *testing.T) {
 	}
 	content := string(raw)
 
-	firstModule := "## github.com/shirou/gopsutil/v4 v4.26.6"
+	firstModule := "## github.com/shirou/gopsutil/v4 v4.26.7"
 	if !strings.HasPrefix(content, preamble) {
 		t.Fatalf("rendered notices do not start with the generated preamble")
 	}
@@ -168,7 +168,7 @@ func TestRenderRejectsMissingFixtureFiles(t *testing.T) {
 	t.Run("missing license", func(t *testing.T) {
 		t.Helper()
 		moduleCache := t.TempDir()
-		module := "github.com/shirou/gopsutil/v4@v4.26.6"
+		module := "github.com/shirou/gopsutil/v4@v4.26.7"
 		dir := filepath.Join(moduleCache, filepath.FromSlash(module))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir module dir: %v", err)
@@ -181,7 +181,7 @@ func TestRenderRejectsMissingFixtureFiles(t *testing.T) {
 	t.Run("missing patents", func(t *testing.T) {
 		moduleCache := t.TempDir()
 		writeNoticeFixtureFiles(t, moduleCache)
-		if err := os.Remove(filepath.Join(moduleCache, filepath.FromSlash("golang.org/x/sys@v0.41.0"), "PATENTS")); err != nil {
+		if err := os.Remove(filepath.Join(moduleCache, filepath.FromSlash("golang.org/x/sys@v0.47.0"), "PATENTS")); err != nil {
 			t.Fatalf("remove fixture patents file: %v", err)
 		}
 		if _, err := Render(moduleCache); err == nil {
@@ -257,17 +257,17 @@ func TestInventoryMatchesTargetDependencyUnion(t *testing.T) {
 func writeNoticeFixtureFiles(t *testing.T, moduleCache string) {
 	t.Helper()
 	fixtures := map[string]map[string]string{
-		"github.com/shirou/gopsutil/v4@v4.26.6": {
+		"github.com/shirou/gopsutil/v4@v4.26.7": {
 			"LICENSE": "gopsutil license line A\nline B\n\n",
 		},
-		"golang.org/x/sys@v0.41.0": {
+		"golang.org/x/sys@v0.47.0": {
 			"LICENSE": "sys license\n\n",
 			"PATENTS": "sys patents\n",
 		},
 		"github.com/tklauser/go-sysconf@v0.3.16": {
 			"LICENSE": "sysconf license\n\n",
 		},
-		"github.com/ebitengine/purego@v0.10.0": {
+		"github.com/ebitengine/purego@v0.10.2": {
 			"LICENSE": "purego license\n\n",
 		},
 		"github.com/tklauser/numcpus@v0.11.0": {

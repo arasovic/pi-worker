@@ -8,7 +8,7 @@ appendix, is part of the upstream file and is intentionally left unchanged.
 This file is generated. Run `go run ./tools/notices --write THIRD_PARTY_NOTICES`
 instead of editing it by hand.
 
-## github.com/shirou/gopsutil/v4 v4.26.6
+## github.com/shirou/gopsutil/v4 v4.26.7
 Targets: darwin, linux
 
 ### LICENSE
@@ -75,7 +75,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## golang.org/x/sys v0.41.0
+## golang.org/x/sys v0.47.0
 Targets: darwin, linux
 
 ### LICENSE
@@ -168,7 +168,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## github.com/ebitengine/purego v0.10.0
+## github.com/ebitengine/purego v0.10.2
 Targets: darwin
 
 ### LICENSE
