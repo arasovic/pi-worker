@@ -244,6 +244,23 @@ test("trusted release workflow publishes tagged staged artifacts through OIDC", 
   assert.doesNotMatch(workflow, /RELEASE_VERSION:\s*v0\.1\.0/);
 });
 
+test("package Node floor is inherited from the pinned skills dependency, not chosen independently", () => {
+  const packageManifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
+  const installedSkills = JSON.parse(readFileSync(join(repository, "node_modules", "skills", "package.json"), "utf8"));
+  assert.equal(
+    installedSkills.version,
+    packageManifest.dependencies.skills,
+    "the installed skills version must be the exact version pinned in package.json dependencies.skills",
+  );
+  assert.equal(
+    packageManifest.engines.node,
+    installedSkills.engines.node,
+    "package.json engines.node is inherited from the exact pinned skills dependency, not chosen independently; " +
+      "when skills' Node floor moves, write the same number in package.json, README.md, docs/v0-usage.md, " +
+      "docs/releasing.md, and the literal in npm/test/readme.test.mjs",
+  );
+});
+
 test("release runbook keeps the local gate and documents the OIDC publication path", () => {
   assert.match(releaseRunbook, /npm run verify/);
   assert.match(releaseRunbook, /export PACKAGE_VERSION=.*require\('\.\/package\.json'\)\.version/);

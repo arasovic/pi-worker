@@ -53,7 +53,11 @@ on its own branch:
   action's release notes first: these pins guard the publication path.
 - `skills`: run `node npm/scripts/extract-skills-rules.mjs --write npm/generated/skills-rules.json`.
   The generated rules record the version they were extracted from, and
-  `check:rules` rejects a mismatch.
+  `check:rules` rejects a mismatch. If the `engines.node` derivation assertion in
+  `npm/test/hygiene.test.mjs` goes red, the package's Node floor has moved with
+  the dependency: read the new floor from the installed `skills` package and
+  write the same number in `package.json`, `README.md`, `docs/v0-usage.md`,
+  `docs/releasing.md`, and the literal in `npm/test/readme.test.mjs`.
 
 The red run is the intended signal, not a failure to work around. Do not relax
 a check to make the update merge.
