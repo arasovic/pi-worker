@@ -1,10 +1,12 @@
 version: 2
 
+# Every ecosystem here is pinned a second time somewhere the resolver does not
+# reach, so each pull request needs one companion commit before it can go green.
+# CONTRIBUTING.md lists the exact command per ecosystem. The red run is the
+# signal that the coupled artifact is now stale, not noise to silence.
 updates:
-  # The only runtime npm dependency is `skills`, pinned exactly because the
-  # generated target rules are validated against that version. A bump here also
-  # needs npm/generated/skills-rules.json regenerated, which is why its PR is
-  # expected to fail check:rules until that is done.
+  # `skills` is the only runtime npm dependency, and the generated target rules
+  # record the version they came from.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
