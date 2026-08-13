@@ -32,9 +32,15 @@ Every dependency is also pinned somewhere the version resolver does not reach,
 so a Dependabot pull request lands red by design and needs one companion commit
 on its own branch:
 
-- Go modules: run `go run ./tools/notices --write THIRD_PARTY_NOTICES`. Both
-  `check:notices` and `TestInventoryMatchesTargetDependencyUnion` compare that
-  file against the module graph, so a bump without it fails the Go jobs too.
+- Go modules: THIRD_PARTY_NOTICES is rendered from `fixedInventory` in
+  `internal/releasenotice/notices.go`, not from `go.mod`, so regenerating alone
+  is a no-op. Edit the versions in `fixedInventory` first, then replace the same
+  versions in `internal/releasenotice/notices_test.go`, whose fixture module
+  cache is keyed by `module@version`, and only then run
+  `go run ./tools/notices --write THIRD_PARTY_NOTICES`.
+  `TestInventoryMatchesTargetDependencyUnion` compares the inventory against the
+  real module graph for every release target, so transitive bumps must be
+  carried too: updating gopsutil also moves purego.
 - GitHub Actions: update the expected reference in `npm/test/hygiene.test.mjs`,
   which asserts the exact action versions the release workflows use. Read the
   action's release notes first: these pins guard the publication path.
