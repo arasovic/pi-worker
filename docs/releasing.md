@@ -74,48 +74,7 @@ npm pack --dry-run --json
 Inspect the package entry list and confirm the public name, version, repository,
 license, homepage, and issue URL before any publication step.
 
-## Required publication order
-
-The README image is served from the public repository. A future authorized
-release must use this order:
-
-1. Create the GitHub repository and push `main`.
-2. Make the repository public if it was created privately; the repository must
-   be public before npm publication and provenance generation.
-3. Verify the README image loads without authentication from its
-   `raw.githubusercontent.com` URL.
-4. Only then publish the npm package.
-
-Do not publish while the repository is private or before the pushed `main`
-contains `assets/brand/github-social-preview.png`.
-
-## Initial npm publication
-
-The package must exist before npm exposes its trusted-publisher settings. The
-initial `v0.1.0` publication therefore uses the isolated
-`.github/workflows/bootstrap-publish.yml` workflow. The permanent
-`.github/workflows/release.yml` never reads an npm token.
-
-1. Create a granular npm token with all-packages read/write access, the shortest
-   practical expiry, and `bypass 2FA` if the account requires 2FA for writes.
-   The new unscoped package cannot yet be selected as the token target, so keep
-   this broader credential alive only for the bootstrap run.
-2. Add it to the GitHub repository as the `NPM_BOOTSTRAP_TOKEN` Actions secret.
-3. Confirm `package.json` is version `0.1.0`, create tag `v0.1.0`, and push the
-   tag. The permanent release job intentionally skips this one bootstrap tag.
-4. Run `Bootstrap npm Publish` with the `v0.1.0` tag selected as the workflow
-   ref. A branch selection is rejected.
-5. Verify npm shows `pi-worker@0.1.0` with provenance and the GitHub Release has
-   four native archives plus `checksums.txt`.
-6. In the npm package settings, configure the GitHub Actions trusted publisher
-   for owner `arasovic`, repository `pi-worker`, workflow `release.yml`, and the
-   `npm publish` action.
-7. Revoke the granular token immediately and delete the
-   `NPM_BOOTSTRAP_TOKEN` repository secret.
-8. Delete `.github/workflows/bootstrap-publish.yml` and its bootstrap-only test
-   assertions, then remove the `github.ref_name != 'v0.1.0'` bootstrap guard
-   from `release.yml` in the next commit. Do not add token authentication to
-   `release.yml`.
+## Publishing access
 
 After the OIDC release succeeds, set package publishing access to require 2FA
 and disallow traditional tokens if that policy fits the account.

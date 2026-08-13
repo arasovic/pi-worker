@@ -26,13 +26,6 @@ const releaseWorkflow = (() => {
     return null;
   }
 })();
-const bootstrapWorkflow = (() => {
-  try {
-    return readFileSync(join(repository, ".github", "workflows", "bootstrap-publish.yml"), "utf8");
-  } catch {
-    return null;
-  }
-})();
 const joinParts = (...parts) => parts.join("");
 const machineHome = joinParts("/Us", "ers/");
 const codexMarker = joinParts(".", "cod", "ex");
@@ -246,28 +239,12 @@ test("trusted release workflow publishes tagged staged artifacts through OIDC", 
   assert.match(workflow, /^\s*id-token:\s*write$/m);
   assert.match(workflow, /^\s*contents:\s*read$/m);
   assert.match(workflow, /^\s*contents:\s*write$/m);
-  assert.match(workflow, /github\.ref_name != 'v0\.1\.0'/);
   assert.match(workflow, /npm publish "\.\/dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
-  assert.doesNotMatch(workflow, /registry-url|NPM_TOKEN|NPM_BOOTSTRAP_TOKEN|\$\{\{\s*secrets\./);
+  assert.doesNotMatch(workflow, /registry-url|NPM_TOKEN|\$\{\{\s*secrets\./);
   assert.doesNotMatch(workflow, /RELEASE_VERSION:\s*v0\.1\.0/);
 });
 
-test("bootstrap workflow is a manual one-release token boundary", () => {
-  assert.ok(bootstrapWorkflow, "missing .github/workflows/bootstrap-publish.yml");
-  const workflow = bootstrapWorkflow;
-  assertReleasePreparation(workflow);
-
-  assert.match(workflow, /^on:\n\s*workflow_dispatch:\s*$/m);
-  assert.doesNotMatch(workflow, /^\s*push:\s*$/m);
-  assert.match(workflow, /^\s*id-token:\s*write$/m);
-  assert.doesNotMatch(workflow, /^    if:/m);
-  assert.match(workflow, /registry-url:\s*https:\/\/registry\.npmjs\.org/);
-  assert.match(workflow, /NODE_AUTH_TOKEN:\s*\$\{\{ secrets\.NPM_BOOTSTRAP_TOKEN \}\}/);
-  assert.match(workflow, /npm publish "\.\/dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
-  assert.equal((workflow.match(/NPM_BOOTSTRAP_TOKEN/g) ?? []).length, 1, "bootstrap token is exposed to one step only");
-});
-
-test("release runbook keeps the local gate and defines the remote bootstrap boundary", () => {
+test("release runbook keeps the local gate and documents the OIDC publication path", () => {
   assert.match(releaseRunbook, /npm run verify/);
   assert.match(releaseRunbook, /Go 1\.26\.1/);
   assert.match(releaseRunbook, /git show -s --format=%ct/);
@@ -280,11 +257,5 @@ test("release runbook keeps the local gate and defines the remote bootstrap boun
   assert.match(releaseRunbook, /sha256sum -c checksums\.txt/);
   assert.match(releaseRunbook, /p\.version!=='0\.1\.0'/);
   assert.match(releaseRunbook, /github\.com\/arasovic\/pi-worker/);
-  assert.match(releaseRunbook, /repository public[\s\S]*raw\.githubusercontent\.com[\s\S]*npm/i);
-  assert.match(releaseRunbook, /bootstrap-publish\.yml/i);
-  assert.match(releaseRunbook, /shortest\s+practical\s+expiry/i);
-  assert.match(releaseRunbook, /NPM_BOOTSTRAP_TOKEN[\s\S]*revoke/i);
-  assert.match(releaseRunbook, /trusted publisher[\s\S]*release\.yml[\s\S]*delete[\s\S]*bootstrap-publish\.yml/i);
-  assert.match(releaseRunbook, /remove[\s\S]*github\.ref_name != 'v0\.1\.0'/i);
-  assert.match(releaseRunbook, /bypass 2FA/i);
+  assert.match(releaseRunbook, /workflow publishes through OIDC/i);
 });
