@@ -14,6 +14,10 @@ concurrency:
 jobs:
   review:
     name: Dependency Review
+    # The dependency graph this action reads is a public-repository feature, so
+    # the job would fail on every pull request until publication. Skipping keeps
+    # the signal honest now and turns itself on the moment the repository flips.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
