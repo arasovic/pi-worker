@@ -246,16 +246,17 @@ test("trusted release workflow publishes tagged staged artifacts through OIDC", 
 
 test("release runbook keeps the local gate and documents the OIDC publication path", () => {
   assert.match(releaseRunbook, /npm run verify/);
+  assert.match(releaseRunbook, /export PACKAGE_VERSION=.*require\('\.\/package\.json'\)\.version/);
   assert.match(releaseRunbook, /Go 1\.26\.1/);
   assert.match(releaseRunbook, /git show -s --format=%ct/);
   assert.match(releaseRunbook, /PI_WORKER_ASSERT_STAGED=1/);
-  assert.match(releaseRunbook, /test "\$NPM_TARBALL" = "pi-worker-0\.1\.0\.tgz"/);
+  assert.match(releaseRunbook, /test "\$NPM_TARBALL" = "pi-worker-\$PACKAGE_VERSION\.tgz"/);
   for (const target of ["darwin_arm64", "darwin_amd64", "linux_arm64", "linux_amd64"]) {
-    assert.match(releaseRunbook, new RegExp(`dist/pi-worker_v0\\.1\\.0_${target}\\.tar\\.gz`));
+    assert.match(releaseRunbook, new RegExp(`dist/pi-worker_\\$\\{RELEASE_VERSION\\}_${target}\\.tar\\.gz`));
   }
   assert.match(releaseRunbook, /shasum -a 256 -c checksums\.txt/);
   assert.match(releaseRunbook, /sha256sum -c checksums\.txt/);
-  assert.match(releaseRunbook, /p\.version!=='0\.1\.0'/);
+  assert.match(releaseRunbook, /p\.version!=='\$PACKAGE_VERSION'/);
   assert.match(releaseRunbook, /github\.com\/arasovic\/pi-worker/);
   assert.match(releaseRunbook, /workflow publishes through OIDC/i);
 });

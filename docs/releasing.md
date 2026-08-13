@@ -19,7 +19,8 @@ git status --short
 npm ci --ignore-scripts
 npm run verify
 
-export RELEASE_VERSION=v0.1.0
+export PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+export RELEASE_VERSION="v$PACKAGE_VERSION"
 export RELEASE_COMMIT="$(git rev-parse HEAD)"
 export RELEASE_TIMESTAMP="$(git show -s --format=%ct "$RELEASE_COMMIT")"
 export RELEASE_BUILD_DATE="$(node -e 'process.stdout.write(new Date(Number(process.argv[1]) * 1000).toISOString().replace(".000Z", "Z"))' "$RELEASE_TIMESTAMP")"
@@ -34,18 +35,23 @@ npm run stage -- --dist dist
 PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm/test/package.test.mjs
 npm pack --json | tee dist/npm-pack.json
 export NPM_TARBALL="$(node -p "JSON.parse(require('fs').readFileSync('dist/npm-pack.json','utf8'))[0].filename")"
-test "$NPM_TARBALL" = "pi-worker-0.1.0.tgz"
+test "$NPM_TARBALL" = "pi-worker-$PACKAGE_VERSION.tgz"
 mv "$NPM_TARBALL" "dist/$NPM_TARBALL"
 ```
 
 ## Exact artifact inventory
 
-- `dist/pi-worker_v0.1.0_darwin_arm64.tar.gz`
-- `dist/pi-worker_v0.1.0_darwin_amd64.tar.gz`
-- `dist/pi-worker_v0.1.0_linux_arm64.tar.gz`
-- `dist/pi-worker_v0.1.0_linux_amd64.tar.gz`
+The four native archives use the archive prefix `pi-worker_${RELEASE_VERSION}_`
+followed by the target tuple, and the npm tarball uses
+`pi-worker-${PACKAGE_VERSION}.tgz`. `$RELEASE_VERSION` and `$PACKAGE_VERSION`
+are exactly the variables the Local snapshot commands block exports.
+
+- `dist/pi-worker_${RELEASE_VERSION}_darwin_arm64.tar.gz`
+- `dist/pi-worker_${RELEASE_VERSION}_darwin_amd64.tar.gz`
+- `dist/pi-worker_${RELEASE_VERSION}_linux_arm64.tar.gz`
+- `dist/pi-worker_${RELEASE_VERSION}_linux_amd64.tar.gz`
 - `dist/checksums.txt`
-- `dist/pi-worker-0.1.0.tgz`
+- `dist/pi-worker-${PACKAGE_VERSION}.tgz`
 - `dist/npm-pack.json`
 
 ## Checksum verification
@@ -65,19 +71,14 @@ Linux:
 ## Package inventory and public metadata inspection
 
 ```sh
-tar -tzf dist/pi-worker-0.1.0.tgz
+tar -tzf dist/pi-worker-$PACKAGE_VERSION.tgz
 node -e "const fs=require('fs');const data=JSON.parse(fs.readFileSync('dist/npm-pack.json','utf8'));if(data.length!==1||!data[0].filename){process.exit(1)}"
-node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));if(p.name!=='pi-worker'||p.version!=='0.1.0'||p.private===true||!p.repository.url.endsWith('github.com/arasovic/pi-worker.git')){process.exit(1)}"
+node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));if(p.name!=='pi-worker'||p.version!=='$PACKAGE_VERSION'||p.private===true||!p.repository.url.endsWith('github.com/arasovic/pi-worker.git')){process.exit(1)}"
 npm pack --dry-run --json
 ```
 
 Inspect the package entry list and confirm the public name, version, repository,
 license, homepage, and issue URL before any publication step.
-
-## Publishing access
-
-After the OIDC release succeeds, set package publishing access to require 2FA
-and disallow traditional tokens if that policy fits the account.
 
 ## Subsequent releases
 
@@ -91,3 +92,8 @@ and disallow traditional tokens if that policy fits the account.
 The tag, package version, Go release version, npm tarball name, and native
 archive prefix are derived and checked as one release identity before builds or
 publication begin.
+
+## Publishing access
+
+After the OIDC release succeeds, set package publishing access to require 2FA
+and disallow traditional tokens if that policy fits the account.
