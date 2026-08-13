@@ -39,6 +39,16 @@ The binary alone can be installed from the public Go module:
 go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.1.0
 ```
 
+The binary lands in `go env GOBIN`, or in `$(go env GOPATH)/bin` when GOBIN
+is unset. That directory must be on PATH for the `pi-worker` command to
+resolve. Confirm the location with:
+
+```sh
+gobin=$(go env GOBIN)
+ls "${gobin:-$(go env GOPATH)/bin}/pi-worker"
+command -v pi-worker
+```
+
 ## Source build
 
 For the current checkout, the repository declares Go 1.25 language compatibility
