@@ -41,6 +41,13 @@ on its own branch:
   `TestInventoryMatchesTargetDependencyUnion` compares the inventory against the
   real module graph for every release target, so transitive bumps must be
   carried too: updating gopsutil also moves purego.
+
+  After changing modules, run `go mod download all` and commit any resulting
+  `go.sum` change. `go mod tidy` alone is not sufficient: the
+  `release-snapshot` job runs `go mod download all` on a clean checkout, which
+  re-adds `go.sum` entries that `go mod tidy` pruned, and `tools/release`
+  refuses to build a snapshot from a dirty tree. That job fails with
+  `working tree has uncommitted changes`.
 - GitHub Actions: update the expected reference in `npm/test/hygiene.test.mjs`,
   which asserts the exact action versions the release workflows use. Read the
   action's release notes first: these pins guard the publication path.
