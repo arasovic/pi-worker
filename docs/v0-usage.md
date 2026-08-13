@@ -198,7 +198,9 @@ pi-worker config set default-model <provider/model> [--debug] [--timeout <durati
 Replace the provider/model placeholder with one exact selector printed by
 `pi-worker models` before running `config set`.
 
-- `config show` reads the local document only. It never launches Pi.
+- `config show` reads the local document only. It never launches Pi. A missing
+  configuration is an empty default and exits `0`; an invalid configuration
+  exits `9`.
 - `config set` requires an exact `provider/model` selector, queries Pi's model
   catalog once, and writes the default only when that exact selector is
   available. A missing or unavailable Pi executable is a readiness failure

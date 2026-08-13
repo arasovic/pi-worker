@@ -20,6 +20,11 @@ type Config struct {
 	DefaultModel  string `json:"defaultModel"`
 }
 
+// Empty returns a valid configuration with no default model.
+func Empty() Config {
+	return Config{SchemaVersion: schemaVersion}
+}
+
 // UserDir returns the default configuration directory for pi-worker.
 func UserDir() (string, error) {
 	root, err := os.UserConfigDir()

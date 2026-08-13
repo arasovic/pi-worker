@@ -41,9 +41,11 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 	}
 	if opts.command == "show" {
 		cfg, err := configpkg.Load(path)
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			cfg = configpkg.Empty()
+		} else if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: load config: %v\n", err)
-			return 2
+			return 9
 		}
 		if opts.json {
 			data, err := json.Marshal(cfg)

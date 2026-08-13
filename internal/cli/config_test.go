@@ -90,9 +90,15 @@ func TestConfigShowReportsMissingAndMalformedConfig(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.json")
 		installConfigPath(t, path)
-		code, _, stderr := runCLI(t, []string{"config", "show"}, "")
-		if code != 2 || stderr == "" {
-			t.Fatalf("config show missing = (%d, %q)", code, stderr)
+
+		code, stdout, stderr := runCLI(t, []string{"config", "show"}, "")
+		if code != 0 || stdout != "default-model: \n" || stderr != "" {
+			t.Fatalf("config show missing = (%d, %q, %q)", code, stdout, stderr)
+		}
+
+		code, stdout, stderr = runCLI(t, []string{"config", "show", "--json"}, "")
+		if code != 0 || stdout != "{\"schemaVersion\":1,\"defaultModel\":\"\"}\n" || stderr != "" {
+			t.Fatalf("config show missing JSON = (%d, %q, %q)", code, stdout, stderr)
 		}
 	})
 	t.Run("malformed", func(t *testing.T) {
@@ -102,7 +108,7 @@ func TestConfigShowReportsMissingAndMalformedConfig(t *testing.T) {
 		}
 		installConfigPath(t, path)
 		code, _, stderr := runCLI(t, []string{"config", "show"}, "")
-		if code != 2 || stderr == "" {
+		if code != 9 || stderr == "" {
 			t.Fatalf("config show malformed = (%d, %q)", code, stderr)
 		}
 	})
