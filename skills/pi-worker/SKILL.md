@@ -33,6 +33,7 @@ with Pi's confirmed default effort.
 - Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox or worktree layer.
 - Use trusted workspaces. Parallel writes must be disjoint.
 - Each run's Pi process and its descendants are terminated when the run ends, times out, or is cancelled.
-- That guarantee covers pi-worker's own children. A delegation runs for minutes, so a background job the parent agent starts beside one is exposed to a harness timeout killing its shell before any trailing cleanup line runs: start those under `trap 'kill 0' EXIT INT TERM`, not a trailing `kill`.
+- That guarantee covers pi-worker's own children only. A delegation runs for minutes, so a background job the parent agent starts beside one is exposed to a harness timeout that can SIGKILL the shell. Make that job self-terminating: it must end on its own without any cleanup step running. Where `timeout` exists, use `timeout 60 <command>`; where it does not, use a loop with a fixed iteration count that cannot run forever.
+- Keep a `trap 'kill 0' EXIT INT TERM` as a secondary layer only. It does not run on SIGKILL, which a harness timeout can deliver, so it cannot substitute for the bounded command.
 - Debug is bounded stderr lifecycle data, not the result. A heartbeat proves only that the managed Pi process is alive; it does not prove model progress.
 - Do not repeat raw debug frames, prompts, credentials, or assistant output unnecessarily.
