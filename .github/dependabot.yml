@@ -4,6 +4,12 @@ version: 2
 # reach, so each pull request needs one companion commit before it can go green.
 # CONTRIBUTING.md lists the exact command per ecosystem. The red run is the
 # signal that the coupled artifact is now stale, not noise to silence.
+#
+# That companion commit is also why each ecosystem groups every update into a
+# single pull request: the coupled artifact has to be regenerated once per
+# branch, so one branch carrying the whole week costs one regeneration instead
+# of one per dependency. Security updates are not grouped and still arrive on
+# their own branch, which is the point of them.
 updates:
   # `skills` is the only runtime npm dependency, and the generated target rules
   # record the version they came from.
@@ -14,7 +20,10 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
+    groups:
+      npm:
+        patterns: ["*"]
 
   - package-ecosystem: "gomod"
     directory: "/"
@@ -23,7 +32,10 @@ updates:
       day: "monday"
       time: "06:15"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 1
+    groups:
+      go-modules:
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -32,4 +44,7 @@ updates:
       day: "monday"
       time: "06:30"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns: ["*"]
