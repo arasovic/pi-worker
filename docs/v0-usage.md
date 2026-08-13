@@ -240,9 +240,9 @@ Replace the provider/model placeholder with one exact selector printed by
 - With explicit `--thinking`, the worker queries
   `get_available_thinking_levels`, applies the exact level when supported, and
   confirms the effective value with a second `get_state`.
-- If the explicit level is unsupported or Pi returns a well-formed rejection,
-  the worker keeps the captured Pi default, emits a warning, and continues. A
-  successful task still exits `0`.
+- If the explicit level is unsupported or `set_thinking_level` returns a
+  well-formed rejection, the worker keeps the captured Pi default, emits a
+  warning, and continues. A successful task still exits `0`.
 - Malformed RPC data, transport failure, active-model mismatch, or a successful
   set that is not confirmed are hard failures; they never fall back.
 - When the flag is omitted, Pi's confirmed default is used and reported. The
@@ -299,7 +299,8 @@ Example:
 - `0` completed
 - `2` usage
 - `3` all workers unavailable / readiness path
-- `5` task failure or partial completion
+- `5` task failure or partial completion; top-level `--json` `status` is
+  `failed` for task failure and `partial` for partial completion.
 - `7` timeout
 - `8` cancellation
 - `9` protocol/internal
