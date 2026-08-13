@@ -305,7 +305,8 @@ Example:
   `failed` for task failure and `partial` for partial completion.
 - `7` timeout
 - `8` cancellation
-- `9` protocol/internal
+- `9` protocol/internal; for runs, no worker succeeded and any worker reported an
+  internal error
 - `4` (policy) and `6` (verification) are reserved and **not emitted by this v0 slice**.
 
 ### `--debug` debug stream
