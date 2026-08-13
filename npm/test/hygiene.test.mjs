@@ -195,7 +195,7 @@ test("CI keeps read-only reproducible source and snapshot gates", () => {
 function assertReleasePreparation(workflow) {
   const requiredActions = [
     "actions/checkout@v7",
-    "actions/download-artifact@v7",
+    "actions/download-artifact@v8",
     "actions/setup-go@v7",
     "actions/setup-node@v7",
     "actions/upload-artifact@v7",
@@ -213,7 +213,7 @@ function assertReleasePreparation(workflow) {
   assert.match(workflow, /PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm\/test\/package\.test\.mjs/);
   assert.match(workflow, /npm pack --json/);
   assert.match(workflow, /actions\/upload-artifact@v7/);
-  assert.match(workflow, /actions\/download-artifact@v7/);
+  assert.match(workflow, /actions\/download-artifact@v8/);
   assert.match(workflow, /gh release create/);
   assert.match(workflow, /dist\/checksums\.txt/);
   assert.match(workflow, /darwin_arm64/);
