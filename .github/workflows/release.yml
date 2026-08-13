@@ -108,7 +108,7 @@ jobs:
             dist/${{ steps.release.outputs.npm_tarball }}
             dist/npm-pack.json
       - name: Publish npm package with trusted publishing
-        run: npm publish "dist/${{ steps.release.outputs.npm_tarball }}" --provenance --access public
+        run: npm publish "./dist/${{ steps.release.outputs.npm_tarball }}" --provenance --access public
 
   github-release:
     needs: publish

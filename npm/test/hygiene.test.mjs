@@ -247,7 +247,7 @@ test("trusted release workflow publishes tagged staged artifacts through OIDC", 
   assert.match(workflow, /^\s*contents:\s*read$/m);
   assert.match(workflow, /^\s*contents:\s*write$/m);
   assert.match(workflow, /github\.ref_name != 'v0\.1\.0'/);
-  assert.match(workflow, /npm publish "dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
+  assert.match(workflow, /npm publish "\.\/dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
   assert.doesNotMatch(workflow, /registry-url|NPM_TOKEN|NPM_BOOTSTRAP_TOKEN|\$\{\{\s*secrets\./);
   assert.doesNotMatch(workflow, /RELEASE_VERSION:\s*v0\.1\.0/);
 });
@@ -263,7 +263,7 @@ test("bootstrap workflow is a manual one-release token boundary", () => {
   assert.doesNotMatch(workflow, /^    if:/m);
   assert.match(workflow, /registry-url:\s*https:\/\/registry\.npmjs\.org/);
   assert.match(workflow, /NODE_AUTH_TOKEN:\s*\$\{\{ secrets\.NPM_BOOTSTRAP_TOKEN \}\}/);
-  assert.match(workflow, /npm publish "dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
+  assert.match(workflow, /npm publish "\.\/dist\/\$\{\{ steps\.release\.outputs\.npm_tarball \}\}" --provenance --access public/);
   assert.equal((workflow.match(/NPM_BOOTSTRAP_TOKEN/g) ?? []).length, 1, "bootstrap token is exposed to one step only");
 });
 

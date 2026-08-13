@@ -112,7 +112,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Publish initial npm package
-        run: npm publish "dist/${{ steps.release.outputs.npm_tarball }}" --provenance --access public
+        run: npm publish "./dist/${{ steps.release.outputs.npm_tarball }}" --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
 
