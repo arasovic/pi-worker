@@ -1,5 +1,7 @@
 # Pi Worker
 
+[![CI](https://github.com/arasovic/pi-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/arasovic/pi-worker/actions/workflows/ci.yml) [![npm version](https://img.shields.io/npm/v/pi-worker.svg)](https://www.npmjs.com/package/pi-worker) ![Go 1.25+](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white) ![Node.js 22.20+](https://img.shields.io/badge/Node.js-22.20%2B-339933?logo=nodedotjs&logoColor=white) ![macOS](https://img.shields.io/badge/macOS-supported-000000?logo=apple&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&logoColor=black) ![Windows: source build](https://img.shields.io/badge/Windows-source%20build-0078D4) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
+
 ![Pi Worker](https://raw.githubusercontent.com/arasovic/pi-worker/main/assets/brand/github-social-preview.png)
 
 Delegate bounded coding tasks to exact models available through your local Pi
