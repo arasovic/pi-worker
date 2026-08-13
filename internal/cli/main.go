@@ -403,8 +403,8 @@ func parseRunArgs(args []string) (runOptions, error) {
 	if len(opts.tasks) > 0 && len(opts.taskFiles) > 0 {
 		return opts, fmt.Errorf("specify exactly one input source: --task or --task-file, not both")
 	}
-	if count := len(opts.tasks) + len(opts.taskFiles); count > 3 {
-		return opts, fmt.Errorf("at most 3 tasks per run, got %d", count)
+	if count := len(opts.tasks) + len(opts.taskFiles); count > run.MaxTasks {
+		return opts, fmt.Errorf("at most %d tasks per run, got %d", run.MaxTasks, count)
 	}
 	for i, task := range opts.tasks {
 		if strings.TrimSpace(task) == "" {

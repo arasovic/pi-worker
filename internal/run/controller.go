@@ -15,8 +15,8 @@ import (
 	"github.com/arasovic/pi-worker/internal/pi"
 )
 
-// maxTasks is the absolute cap on accepted tasks per run.
-const maxTasks = 3
+// MaxTasks is the absolute cap on accepted tasks per run.
+const MaxTasks = 3
 
 // Request describes one bounded parallel run: every accepted task runs
 // concurrently through the same worker with the same model and workspace.
@@ -82,7 +82,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 }
 
 // validate checks the request before any worker starts: a non-empty model,
-// a non-empty workspace, between 1 and maxTasks tasks, and no empty task
+// a non-empty workspace, between 1 and MaxTasks tasks, and no empty task
 // after trimming whitespace.
 func validate(req Request) error {
 	if req.Model == "" {
@@ -94,8 +94,8 @@ func validate(req Request) error {
 	if len(req.Tasks) == 0 {
 		return fmt.Errorf("at least one task is required")
 	}
-	if len(req.Tasks) > maxTasks {
-		return fmt.Errorf("at most %d tasks are supported, got %d", maxTasks, len(req.Tasks))
+	if len(req.Tasks) > MaxTasks {
+		return fmt.Errorf("at most %d tasks are supported, got %d", MaxTasks, len(req.Tasks))
 	}
 	for i, task := range req.Tasks {
 		if strings.TrimSpace(task) == "" {
