@@ -7,10 +7,10 @@
   <a href="https://www.npmjs.com/package/pi-worker"><img src="https://img.shields.io/npm/v/pi-worker.svg" alt="npm version"></a>
   <img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&amp;logoColor=white" alt="Go 1.25+">
   <img src="https://img.shields.io/badge/Node.js-22.20%2B-339933?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.20+">
-  <img src="https://img.shields.io/badge/macOS-supported-000000?logo=apple&amp;logoColor=white" alt="macOS supported">
-  <img src="https://img.shields.io/badge/Linux-supported-FCC624?logo=linux&amp;logoColor=black" alt="Linux supported">
-  <img src="https://img.shields.io/badge/Windows-source%20build-0078D4" alt="Windows source build">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/macOS-000000?logo=apple&amp;logoColor=white" alt="macOS">
+  <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&amp;logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/Windows-source-0078D4" alt="Windows source">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/MIT-green.svg" alt="MIT license"></a>
 </p>
 
 Delegate bounded coding tasks to exact models available through your local Pi
