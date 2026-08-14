@@ -327,6 +327,36 @@ func TestControllerWritesFindsUndeclaredBeyondManifestCap(t *testing.T) {
 	}
 }
 
+func TestControllerWritesSpellingsCleanThroughFullPipeline(t *testing.T) {
+	// The accepted spellings were only ever driven by calling checkWrites
+	// directly on a hand-built Changes; the trailing slash and the
+	// doubled separator must also travel the real route — validate, a
+	// real git workspace, the manifest, and then the check — with a path
+	// changed beneath the declaration coming back clean.
+	tests := []string{
+		"internal/run/", // trailing slash
+		"internal//run", // doubled separator
+	}
+	for _, declared := range tests {
+		t.Run(declared, func(t *testing.T) {
+			dir := newGitRepo(t)
+			result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+				if err := os.MkdirAll(filepath.Join(dir, "internal", "run"), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(dir, "internal", "run", "x.go"), []byte("package run\n"), 0o644)
+			}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths(declared)})
+			writes := result.Writes
+			if writes == nil || writes.Skipped != "" {
+				t.Fatalf("writes = %#v, want a verdict", writes)
+			}
+			if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
+				t.Fatalf("writes = %#v, want checked-clean for declared %q", writes, declared)
+			}
+		})
+	}
+}
+
 func TestControllerWritesUndeclaredListTruncatedAtCap(t *testing.T) {
 	// More than maxChangeFiles changed paths are outside the
 	// declaration: UndeclaredCount carries the true count and the list

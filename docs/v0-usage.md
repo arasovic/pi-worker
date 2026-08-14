@@ -329,8 +329,8 @@ Replace the provider/model placeholder with one exact selector printed by
   already done when the inspection ran, and a measurement that failed after
   the workspace was confirmed to be a git work tree, are omitted with a
   reason the same way. Only a workspace outside a git work tree, or git
-  missing entirely, carries no manifest at all — the same silent no-op the
-  git state makes.
+  missing entirely, reached with a live context when the inspection ran,
+  carries no manifest at all — the same silent no-op the git state makes.
 
 ### Exactly one input mechanism
 
@@ -368,8 +368,12 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   because the flag already trims. The empty string is the one spelling
   that cannot collide with a real path. A task that declared the empty
   set has declared: when every task in the run declared — the empty
-  declaration included — the post-run check runs, so a read-only round
-  can be proven to have written nothing rather than merely asserted to.
+  declaration included — and the change manifest was measured, the
+  post-run check runs, so a read-only round can be proven to have
+  written nothing rather than merely asserted to. Only a measured
+  manifest makes that proof: on a dirty before-state, an unborn HEAD, a
+  dead context, or a failed measurement the check skips with `change
+  manifest unavailable` and the run exits `0`, whatever was declared.
   Such a run that changed nothing reports a clean verdict; one that
   changed a path reports it undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:

@@ -161,11 +161,13 @@ a change.
 The change manifest is additive and optional, so `schemaVersion` stays `1`.
 Root `changes` is present when the workspace is inside a git work tree and the
 inspection of it succeeded. Only a workspace outside a git work tree, and an
-environment with no `git` at all, still carry no `changes` field — the same
-silent no-op `git` makes. Unlike `git` it is not gated by a state change: a
-run that only left modified files behind still carries it, because those files
-are what it names. It carries either a reason it could not be measured or the
-measurement, never both:
+environment with no `git` at all, reached with a live context at the
+inspection, still carry no `changes` field — the same silent no-op `git`
+makes; a dead context never reaches the guard, so the same directory carries
+the `context already done` omission instead. Unlike `git` it is not gated by a
+state change: a run that only left modified files behind still carries it,
+because those files are what it names. It carries either a reason it could
+not be measured or the measurement, never both:
 
 - `omitted`: present only when the manifest could not be measured; one of
   `dirty before-state`, `unborn head`, `context already done`, or

@@ -86,6 +86,32 @@ func TestRunJSONCarriesWritesForDeclaredRun(t *testing.T) {
 	}
 }
 
+func TestRunJSONDeclaredEmptyWritesCarriesCleanVerdict(t *testing.T) {
+	// The declared-empty verdict was only ever asserted at struct level;
+	// the marshaled document a caller actually parses must carry root
+	// writes with the clean verdict when the run declared --writes ""
+	// and changed nothing.
+	newGitWorkspace(t)
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers", "writes")
+	if document["status"] != "completed" {
+		t.Fatalf("status = %v, want completed", document["status"])
+	}
+	writes, ok := document["writes"].(map[string]any)
+	if !ok {
+		t.Fatalf("writes = %#v, want object", document["writes"])
+	}
+	assertExactJSONKeys(t, writes, "undeclaredCount")
+	if writes["undeclaredCount"] != float64(0) {
+		t.Fatalf("undeclaredCount = %v, want present 0", writes["undeclaredCount"])
+	}
+}
+
 func TestRunUndeclaredWriteExitsFourWithViolationOnStderr(t *testing.T) {
 	// runExitCode is unit-tested with a constructed result, but nothing
 	// drove an actual run whose worker writes an undeclared path and
@@ -226,6 +252,33 @@ func TestRunSkippedWriteCheckPrintsReadableReason(t *testing.T) {
 	}
 	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	const want = "worker 1: done\n" +
+		"changes: omitted: dirty before-state\n" +
+		"writes: skipped: change manifest unavailable\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
+	// --writes "" on a workspace whose before-state was dirty pairs the
+	// writes-nothing declaration with an unmeasured manifest: the
+	// read-only claim cannot be proven, so the check must skip with the
+	// manifest-unavailable reason and the run must exit 0, not 4. The
+	// caller who declared the empty set is exactly the one most likely
+	// to read a clean verdict as proof their round wrote nothing.
+	dir := newGitWorkspace(t)
+	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirt: %v", err)
+	}
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", ""}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}

@@ -338,6 +338,16 @@ func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
+			name:    "trailing slash unifies paths",
+			writes:  []WriteDeclaration{declaredPaths("src/a/"), declaredPaths("src/a")},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
+		},
+		{
+			name:    "doubled separator unifies paths",
+			writes:  []WriteDeclaration{declaredPaths("src//a"), declaredPaths("src/a")},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
+		},
+		{
 			name:    "overlap inside multi-path task",
 			writes:  []WriteDeclaration{declaredPaths("src/a", "src/b"), declaredPaths("src/a/c.go")},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/c.go"`,

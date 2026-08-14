@@ -717,12 +717,17 @@ func TestParseRunArgsEmptyWritesDeclaresEmptySet(t *testing.T) {
 	// apply here, so --writes "  " means the same thing. Every other
 	// parse failure keeps failing exactly as before.
 	for _, value := range []string{"", "   "} {
-		opts, err := parseRunArgs([]string{"--task", "a", "--writes", value})
-		if err != nil {
-			t.Fatalf("parseRunArgs(--writes %q): %v, want a declared empty set", value, err)
-		}
-		if len(opts.writes) != 1 || !opts.writes[0].Declared || len(opts.writes[0].Paths) != 0 {
-			t.Fatalf("writes = %#v, want one declared empty entry for --writes %q", opts.writes, value)
+		for _, args := range [][]string{
+			{"--task", "a", "--writes", value},
+			{"--task", "a", "--writes=" + value},
+		} {
+			opts, err := parseRunArgs(args)
+			if err != nil {
+				t.Fatalf("parseRunArgs(%q): %v, want a declared empty set", args, err)
+			}
+			if len(opts.writes) != 1 || !opts.writes[0].Declared || len(opts.writes[0].Paths) != 0 {
+				t.Fatalf("writes = %#v, want one declared empty entry for %q", opts.writes, args)
+			}
 		}
 	}
 	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "a,,b"}); err == nil {
@@ -730,6 +735,9 @@ func TestParseRunArgsEmptyWritesDeclaresEmptySet(t *testing.T) {
 	}
 	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "src/a", "--writes", "src/b"}); err == nil {
 		t.Fatalf("parseRunArgs accepted a repeated --writes, want the duplicate error")
+	}
+	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "", "--writes", "src/a"}); err == nil {
+		t.Fatalf("parseRunArgs accepted a repeated --writes after an empty declaration, want the duplicate error")
 	}
 	if _, err := parseRunArgs([]string{"--writes", "src/a"}); err == nil {
 		t.Fatalf("parseRunArgs accepted --writes before any task, want the ordering error")
