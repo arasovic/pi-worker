@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -448,6 +449,55 @@ func TestControllerDeadContextOmissionDistinctFromNonGitWorkspace(t *testing.T) 
 			t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
 		}
 	})
+}
+
+func TestControllerChangesBeforeInspectionErrorOmitted(t *testing.T) {
+	// An inspection error before any worker starts must omit the
+	// manifest with the measurement-failed reason — only a workspace
+	// that was never a git work tree is silent — and the reason string
+	// is what the caller reads, not the presence of the field.
+	worker := newScriptedWorker()
+	inspector := &scriptedGitInspector{
+		errs: []error{errors.New("git failure")},
+	}
+	result, err := New(worker, WithGitInspector(inspector)).Run(context.Background(), validRequest("a"))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	changes := result.Changes
+	if changes == nil {
+		t.Fatalf("changes = nil, want an omitted manifest on a before-inspection error")
+	}
+	if changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonMeasurementFail)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
+	}
+}
+
+func TestControllerChangesMeasurementFailureOmitted(t *testing.T) {
+	// measureChanges' own failure return: a real git command failure
+	// after the workspace was confirmed to be a git work tree must
+	// omit with the reason rather than leaving the field nil or
+	// guessing. The worker removes the workspace itself, so every
+	// manifest command fails to start; the after-state inspection is
+	// the one silent no-op, like a workspace that was never a git work
+	// tree.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.RemoveAll(dir)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil {
+		t.Fatalf("changes = nil, want an omitted manifest on a measurement failure")
+	}
+	if changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonMeasurementFail)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
+	}
 }
 
 func TestControllerChangesNotGatedByGitTripwire(t *testing.T) {

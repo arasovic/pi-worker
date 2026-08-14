@@ -190,11 +190,12 @@ The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
 it changed.
 
-The manifest covers the paths `git` tracks or would track. A path matched by
-a `.gitignore` rule is outside both the manifest and the write check: it
-cannot appear in `files`, it does not count toward `totalFiles` or
-`undeclaredCount`, and a run that wrote only ignored paths reports a clean
-write verdict.
+The manifest covers the paths `git` tracks or would track. Ignore rules
+exclude untracked paths only: an ignored path is outside both the manifest
+and the write check when it is untracked — it cannot appear in `files`, it
+does not count toward `totalFiles` or `undeclaredCount`, and a run that
+wrote only ignored untracked paths reports a clean write verdict. A tracked
+path is measured, and therefore checked, whether or not a rule matches it.
 
 The write check is additive and optional, so `schemaVersion` stays `1`.
 Root `writes` is present exactly when the request carried a write

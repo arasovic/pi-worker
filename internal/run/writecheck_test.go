@@ -377,6 +377,175 @@ func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
 	}
 }
 
+func TestControllerWritesIgnoredUntrackedPathOutsideManifest(t *testing.T) {
+	// The untracked pass (git ls-files --others --exclude-standard)
+	// honours ignore rules, so an ignored path a worker wrote is outside
+	// the manifest: it appears in no file entry and counts toward
+	// nothing, and the write check — which compares against the
+	// manifest — cannot see it either. A run that wrote only such a path
+	// reports a clean verdict even though the path was never declared:
+	// the documented false-clean, pinned so a future change to the
+	// untracked pass cannot make it silently different.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.txt\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("hidden\n"), 0o644)
+	}}, dir, []string{"a"}, [][]string{{"declared.txt"}})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want measured-zero: the ignored path is outside the manifest", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
+		t.Fatalf("writes = %#v, want checked-clean: the ignored path was never declared and never seen", writes)
+	}
+}
+
+func TestControllerWritesTrackedPathMatchedByIgnoreRuleStillChecked(t *testing.T) {
+	// Ignore rules do not apply to files git already tracks: the tracked
+	// pass (git diff against the before-state HEAD) lists every tracked
+	// change regardless of a matching rule, so a tracked path a rule
+	// matches is still measured and still checked. Modified and
+	// undeclared, it appears in the manifest and counts as undeclared.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("file.txt\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
+	}}, dir, []string{"a"}, [][]string{{"declared.txt"}})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	var found bool
+	for _, file := range changes.Files {
+		if file.Path == "file.txt" {
+			found = true
+			if file.Status != "modified" || file.Added != 1 || file.Deleted != 1 {
+				t.Fatalf("file = %#v, want file.txt modified +1/-1", file)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("file.txt missing from the manifest despite being tracked and matched by an ignore rule")
+	}
+	if changes.TotalFiles != 1 {
+		t.Fatalf("totalFiles = %d, want 1", changes.TotalFiles)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "file.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want exactly file.txt undeclared", writes)
+	}
+}
+
+func TestControllerWritesDeletedTrackedFileUndeclared(t *testing.T) {
+	// Deleting a file is writing to the workspace: a run that removed a
+	// tracked file it never declared must be told, with the deletion
+	// recorded in the manifest and the path reported undeclared.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.Remove(filepath.Join(dir, "file.txt"))
+	}}, dir, []string{"a"}, [][]string{{"declared.txt"}})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" || len(changes.Files) != 1 || changes.Files[0].Status != "deleted" {
+		t.Fatalf("changes = %#v, want file.txt deleted in the manifest", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "file.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want exactly file.txt undeclared", writes)
+	}
+}
+
+func TestControllerWritesDeletedTrackedFileDeclaredClean(t *testing.T) {
+	// A caller who declared the deleted file gets a clean verdict: the
+	// manifest gives a deletion the deleted status and checkWrites
+	// compares its path like any other.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.Remove(filepath.Join(dir, "file.txt"))
+	}}, dir, []string{"a"}, [][]string{{"file.txt"}})
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
+		t.Fatalf("writes = %#v, want checked-clean for the declared deletion", writes)
+	}
+}
+
+func TestControllerWritesTwoTasksPoolDeclaredPathsClean(t *testing.T) {
+	// checkWrites pools every task's declared paths into one set: two
+	// tasks declaring disjoint paths, each writing beneath its own
+	// declaration, come back clean because the pooled set covers every
+	// changed path.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "src", "b"), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644)
+	}}, dir, []string{"a", "b"}, [][]string{{"src/a"}, {"src/b"}})
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
+		t.Fatalf("writes = %#v, want checked-clean: both declarations pooled cover every changed path", writes)
+	}
+}
+
+func TestControllerWritesTwoTasksPoolReportsStrayPathOnce(t *testing.T) {
+	// A path outside both declarations is reported once, not once per
+	// task: the undeclared set belongs to the run, and pooling is the
+	// code that makes that true.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "src", "b"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "src", "stray.txt"), []byte("stray\n"), 0o644)
+	}}, dir, []string{"a", "b"}, [][]string{{"src/a"}, {"src/b"}})
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "src/stray.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want src/stray.txt reported exactly once", writes)
+	}
+}
+
 func TestValidateWritePathAcceptedFormsNeverCleanToDotOrEscape(t *testing.T) {
 	// The check relying on filepath.Clean of a declared path is safe
 	// only because no value validateWritePath accepts can clean to "."

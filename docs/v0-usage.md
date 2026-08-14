@@ -309,10 +309,11 @@ Replace the provider/model placeholder with one exact selector printed by
   clean before the run, `run` measures which paths the run changed and by
   how much, diffing against the git state recorded before the first worker
   started. This is pi-worker's own measurement, not the worker's account of
-  its work. The manifest covers the paths `git` tracks or would track: a
-  path matched by a `.gitignore` rule is outside both the manifest and the
-  write check, so a run that wrote only ignored paths reports a clean
-  verdict.
+  its work. The manifest covers the paths `git` tracks or would track:
+  ignore rules exclude untracked paths only, so an ignored path is outside
+  both the manifest and the write check when it is untracked and a run that
+  wrote only such paths reports a clean verdict; a tracked path is measured,
+  and therefore checked, whether or not a rule matches it.
 - Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
   the worker summaries, followed by up to five paths most churn first. It is
   information, not a warning, so it carries no `warning:` prefix.
