@@ -43,7 +43,7 @@ const (
 // whether it passed a Writes declaration. The comparison is pure over
 // two in-memory slices: it runs no commands, so it takes no context and
 // has no timeout of its own.
-func checkWrites(changes *Changes, writes [][]string) *WriteCheck {
+func checkWrites(changes *Changes, writes []WriteDeclaration) *WriteCheck {
 	if !writesDeclaredOnEveryTask(writes) {
 		return &WriteCheck{Skipped: reasonPartialDeclaration}
 	}
@@ -52,7 +52,7 @@ func checkWrites(changes *Changes, writes [][]string) *WriteCheck {
 	}
 	declared := make([]string, 0)
 	for _, task := range writes {
-		declared = append(declared, task...)
+		declared = append(declared, task.Paths...)
 	}
 	var undeclared []string
 	for _, path := range changes.allPaths {
@@ -71,17 +71,20 @@ func checkWrites(changes *Changes, writes [][]string) *WriteCheck {
 	return check
 }
 
-// writesDeclaredOnEveryTask reports whether every task carried a
-// non-empty write declaration, exactly the condition the CLI's
-// shared-workspace warning uses. A task that declared nothing may
-// legitimately have written any path, so no changed path in the run can
-// be called undeclared.
-func writesDeclaredOnEveryTask(writes [][]string) bool {
+// writesDeclaredOnEveryTask reports whether every task carried a write
+// declaration, exactly the condition the CLI's shared-workspace warning
+// uses. A task that declared nothing may legitimately have written any
+// path, so no changed path in the run can be called undeclared; a task
+// that declared an empty set has declared — the task bounded itself to
+// nothing — and the check runs. An empty declaration list, no task
+// declaring anything, is the same partial state as a task that said
+// nothing.
+func writesDeclaredOnEveryTask(writes []WriteDeclaration) bool {
 	if len(writes) == 0 {
 		return false
 	}
 	for _, task := range writes {
-		if len(task) == 0 {
+		if !task.Declared {
 			return false
 		}
 	}

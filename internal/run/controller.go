@@ -20,6 +20,20 @@ import (
 // MaxTasks is the absolute cap on accepted tasks per run.
 const MaxTasks = 3
 
+// WriteDeclaration is one task's write declaration: Declared reports
+// whether the task declared anything at all, and Paths are the
+// workspace-relative paths it declared it will write. The two are
+// independent statements: a task that said nothing carries Declared
+// false, and a task that declared it writes nothing carries Declared
+// true with an empty Paths. Only the declared-empty form can prove a
+// read-only task read-only, so the distinction must not be collapsed
+// into nil-versus-empty on a plain slice, where a later len(x) == 0
+// would silently erase it.
+type WriteDeclaration struct {
+	Declared bool
+	Paths    []string
+}
+
 // Request describes one bounded parallel run: every accepted task runs
 // concurrently through the same worker with the same model and workspace.
 type Request struct {
@@ -32,10 +46,12 @@ type Request struct {
 	// verification.
 	Verify []string
 	// Writes optionally declares, per task, the workspace-relative paths
-	// that task intends to write. A nil or empty entry declares nothing
-	// for that task. When two tasks declare overlapping paths the run is
-	// rejected before any worker starts.
-	Writes [][]string
+	// that task intends to write. A zero-value entry — Declared false —
+	// declares nothing for that task, and an entry with Declared true
+	// and an empty Paths declares the task writes nothing. When two
+	// tasks declare overlapping paths the run is rejected before any
+	// worker starts.
+	Writes []WriteDeclaration
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
@@ -267,19 +283,21 @@ func validate(req Request) error {
 		}
 	}
 	// Writes is either nil or exactly as long as Tasks; a shorter or
-	// longer slice is a validation error. An individual entry may be nil
-	// or empty, declaring nothing for that task.
+	// longer slice is a validation error. An entry with Declared false
+	// declares nothing for that task, as today; a Declared true entry
+	// with an empty Paths — the writes-nothing declaration — has no
+	// paths to reject and none to overlap with another task's.
 	if req.Writes != nil && len(req.Writes) != len(req.Tasks) {
 		return fmt.Errorf("writes must declare one entry per task: got %d entries for %d tasks", len(req.Writes), len(req.Tasks))
 	}
 	normalized := make([][]string, len(req.Tasks))
-	for i, declared := range req.Writes {
-		if len(declared) == 0 {
+	for i, entry := range req.Writes {
+		if !entry.Declared || len(entry.Paths) == 0 {
 			continue
 		}
-		seen := make(map[string]bool, len(declared))
-		normalized[i] = make([]string, 0, len(declared))
-		for _, value := range declared {
+		seen := make(map[string]bool, len(entry.Paths))
+		normalized[i] = make([]string, 0, len(entry.Paths))
+		for _, value := range entry.Paths {
 			clean, err := validateWritePath(value)
 			if err != nil {
 				return fmt.Errorf("task %d: %v", i+1, err)

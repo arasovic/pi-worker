@@ -567,8 +567,6 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "writes before any task", args: []string{"run", "--model", "acme/m-1", "--writes", "src/a"}, stdin: ""},
 		{name: "repeated writes for one task", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
 		{name: "repeated writes for one task file", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
-		{name: "empty writes", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", ""}, stdin: ""},
-		{name: "whitespace writes", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "  "}, stdin: ""},
 		{name: "empty writes element", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a,,src/b"}, stdin: ""},
 		{name: "writes without value", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes"}, stdin: ""},
 	}
@@ -710,6 +708,54 @@ func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) 
 		t.Fatalf("stderr reports the untrimmed path: %q", stderr)
 	}
 	_ = code
+}
+
+func TestParseRunArgsEmptyWritesDeclaresEmptySet(t *testing.T) {
+	// --writes "" is the one spelling that cannot collide with a real
+	// path: it is how a task declares that it writes nothing. The same
+	// whitespace trimming the flag already applies to real paths must
+	// apply here, so --writes "  " means the same thing. Every other
+	// parse failure keeps failing exactly as before.
+	for _, value := range []string{"", "   "} {
+		opts, err := parseRunArgs([]string{"--task", "a", "--writes", value})
+		if err != nil {
+			t.Fatalf("parseRunArgs(--writes %q): %v, want a declared empty set", value, err)
+		}
+		if len(opts.writes) != 1 || !opts.writes[0].Declared || len(opts.writes[0].Paths) != 0 {
+			t.Fatalf("writes = %#v, want one declared empty entry for --writes %q", opts.writes, value)
+		}
+	}
+	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "a,,b"}); err == nil {
+		t.Fatalf("parseRunArgs accepted --writes \"a,,b\", want the empty-element error")
+	}
+	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "src/a", "--writes", "src/b"}); err == nil {
+		t.Fatalf("parseRunArgs accepted a repeated --writes, want the duplicate error")
+	}
+	if _, err := parseRunArgs([]string{"--writes", "src/a"}); err == nil {
+		t.Fatalf("parseRunArgs accepted --writes before any task, want the ordering error")
+	}
+}
+
+func TestRunWritesEmptySetSuppressesSharedWorkspaceWarning(t *testing.T) {
+	// A task that declared --writes "" has declared: the run is fully
+	// contracted, so the shared-workspace warning must stay suppressed
+	// even though that task declared no paths at all.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", ""}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stderr, "share the writable current workspace") {
+		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
+	}
+	requireWritesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
+	if fake.callCount() != 2 {
+		t.Fatalf("worker calls = %d, want 2", fake.callCount())
+	}
 }
 
 func TestRunSuccessHuman(t *testing.T) {

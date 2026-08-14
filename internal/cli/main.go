@@ -156,11 +156,11 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 	}
 	// --writes entries pair with the task most recently introduced when
 	// they appeared; pad what was declared to the final task count so the
-	// controller sees one entry per task, with a nil entry for every task
-	// that declared nothing.
+	// controller sees one entry per task, with a zero-value entry —
+	// Declared false — for every task that declared nothing.
 	if opts.writes != nil {
 		for len(opts.writes) < len(tasks) {
-			opts.writes = append(opts.writes, nil)
+			opts.writes = append(opts.writes, run.WriteDeclaration{})
 		}
 	}
 	return opts, tasks, nil
@@ -227,9 +227,10 @@ type runOptions struct {
 	json           bool
 	debug          bool
 	// writes is the per-task declared write set in task order: nil when
-	// no --writes appeared, and a nil entry for a task that declared
-	// nothing.
-	writes [][]string
+	// no --writes appeared, and a zero-value entry — Declared false — for
+	// a task that declared nothing. --writes "" fills a Declared true
+	// entry with no paths, the writes-nothing declaration.
+	writes []run.WriteDeclaration
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
@@ -534,17 +535,18 @@ func gitValue(value string) string {
 	return value
 }
 
-// allWritesDeclared reports whether every task carried a non-empty
-// --writes declaration. Only then is the shared-workspace warning
-// suppressed: the caller stated the disjoint-file contract for the whole
-// run and the controller checked it before any worker started. When any
-// task declared nothing, the warning stays.
-func allWritesDeclared(writes [][]string) bool {
+// allWritesDeclared reports whether every task carried a --writes
+// declaration. Only then is the shared-workspace warning suppressed:
+// the caller stated the disjoint-file contract for the whole run and
+// the controller checked it before any worker started. A declared empty
+// set counts as declared — the task bounded itself to nothing — while
+// any task that did not declare keeps the warning.
+func allWritesDeclared(writes []run.WriteDeclaration) bool {
 	if len(writes) == 0 {
 		return false
 	}
 	for _, entry := range writes {
-		if len(entry) == 0 {
+		if !entry.Declared {
 			return false
 		}
 	}
@@ -647,27 +649,33 @@ func parseRunArgs(args []string) (runOptions, error) {
 			if index < 0 {
 				return opts, fmt.Errorf("--writes must follow a --task or --task-file")
 			}
-			if strings.TrimSpace(value) == "" {
-				return opts, fmt.Errorf("invalid writes %q: empty or whitespace-only", value)
-			}
-			paths := strings.Split(value, ",")
-			for i, path := range paths {
-				// Trim surrounding whitespace immediately, before every other
-				// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
-				// validation as the same paths. A trimmed-empty element still
-				// gets the existing empty-element error below.
-				paths[i] = strings.TrimSpace(path)
-				if paths[i] == "" {
-					return opts, fmt.Errorf("invalid writes %q: empty element between commas", value)
+			// A trimmed-empty value is the one spelling that cannot
+			// collide with a real path: it is how a task declares that it
+			// writes nothing. Only a non-empty value is split on commas,
+			// so an empty element between commas keeps failing below.
+			var declaration run.WriteDeclaration
+			if strings.TrimSpace(value) != "" {
+				paths := strings.Split(value, ",")
+				for i, path := range paths {
+					// Trim surrounding whitespace immediately, before every other
+					// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
+					// validation as the same paths. A trimmed-empty element still
+					// gets the existing empty-element error below.
+					paths[i] = strings.TrimSpace(path)
+					if paths[i] == "" {
+						return opts, fmt.Errorf("invalid writes %q: empty element between commas", value)
+					}
 				}
+				declaration.Paths = paths
 			}
 			for len(opts.writes) <= index {
-				opts.writes = append(opts.writes, nil)
+				opts.writes = append(opts.writes, run.WriteDeclaration{})
 			}
-			if opts.writes[index] != nil {
+			if opts.writes[index].Declared {
 				return opts, fmt.Errorf("--writes specified more than once for task %d", index+1)
 			}
-			opts.writes[index] = paths
+			declaration.Declared = true
+			opts.writes[index] = declaration
 		case "--json", "--debug":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)

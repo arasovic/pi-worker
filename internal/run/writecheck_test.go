@@ -18,7 +18,7 @@ import (
 // inspector and the given per-task write declarations, failing the test
 // on any controller error. Files the worker creates land inside the run
 // so the before-tree stays clean and the manifest gets measured.
-func runWithWrites(t *testing.T, worker pi.Worker, dir string, tasks []string, writes [][]string) Result {
+func runWithWrites(t *testing.T, worker pi.Worker, dir string, tasks []string, writes []WriteDeclaration) Result {
 	t.Helper()
 	req := validRequest(tasks...)
 	req.Workspace = dir
@@ -28,6 +28,13 @@ func runWithWrites(t *testing.T, worker pi.Worker, dir string, tasks []string, w
 		t.Fatalf("run: %v", err)
 	}
 	return result
+}
+
+// declaredPaths builds a task's write declaration with Declared set;
+// called with no paths it is the declaration that the task writes
+// nothing.
+func declaredPaths(paths ...string) WriteDeclaration {
+	return WriteDeclaration{Declared: true, Paths: paths}
 }
 
 // writeCheckDocument marshals check and returns the decoded document,
@@ -71,7 +78,7 @@ func TestControllerWritesInsideDeclarationClean(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{{"file.txt"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
 	writes := result.Writes
 	if writes == nil {
 		t.Fatalf("writes = nil, want a verdict on an in-declaration run")
@@ -99,7 +106,7 @@ func TestControllerWritesUndeclaredPathReported(t *testing.T) {
 			return err
 		}
 		return os.WriteFile(filepath.Join(dir, "src", "stray.txt"), []byte("stray\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{{"src/a.txt"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("src/a.txt")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -121,7 +128,7 @@ func TestControllerWritesDirectoryDeclarationCoversBeneath(t *testing.T) {
 			return err
 		}
 		return os.WriteFile(filepath.Join(dir, "src", "a", "b.go"), []byte("package a\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{{"src/a"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("src/a")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -138,7 +145,7 @@ func TestControllerWritesPrefixWithoutSegmentBoundaryUndeclared(t *testing.T) {
 			return err
 		}
 		return os.WriteFile(filepath.Join(dir, "src", "ab.go"), []byte("package ab\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{{"src/a"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("src/a")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -160,11 +167,70 @@ func TestControllerWritesAbsentWithoutDeclaration(t *testing.T) {
 	}
 }
 
+func TestControllerWritesDeclaredEmptySetCheckedCleanWhenNothingChanged(t *testing.T) {
+	// A task that declared it writes nothing, on a run that changed
+	// nothing, gets a clean verdict, not a skip: the read-only run is
+	// proven read-only, which is the whole point of the writes-nothing
+	// declaration.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return nil
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths()})
+	writes := result.Writes
+	if writes == nil {
+		t.Fatalf("writes = nil, want a verdict on a declared writes-nothing run")
+	}
+	if writes.Skipped != "" || writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
+		t.Fatalf("writes = %#v, want checked-clean", writes)
+	}
+}
+
+func TestControllerWritesDeclaredEmptySetReportsStrayPathUndeclared(t *testing.T) {
+	// A task that declared it writes nothing, on a run that changed one
+	// path: that path is undeclared. The empty set is a real declaration
+	// the check holds the run to, not an absence the check skips over.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths()})
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "file.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want exactly file.txt undeclared", writes)
+	}
+}
+
+func TestControllerWritesOneTaskDeclaresOneDeclaresWritesNothing(t *testing.T) {
+	// A run where one task declares paths and another declares the empty
+	// set: both declared, so the check runs, and only paths outside the
+	// pooled declaration are undeclared. The writes-nothing task's
+	// emptiness is a statement, not a gap in the declaration.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("stray\n"), 0o644)
+	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths()})
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict: the writes-nothing task declared, so the check runs", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "stray.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want exactly stray.txt undeclared", writes)
+	}
+}
+
 func TestControllerWritesPartialDeclarationSkips(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644)
-	}}, dir, []string{"a", "b"}, [][]string{{"file.txt"}, nil})
+	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("file.txt"), {}})
 	writes := result.Writes
 	if writes == nil {
 		t.Fatalf("writes = nil, want the partial-declaration skip reason")
@@ -196,7 +262,7 @@ func TestControllerWritesUnavailableWithoutManifest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	result := runWithWrites(t, newScriptedWorker(), dir, []string{"a"}, [][]string{{"file.txt"}})
+	result := runWithWrites(t, newScriptedWorker(), dir, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
 	if result.Changes == nil || result.Changes.Omitted != reasonDirtyBeforeState {
 		t.Fatalf("changes = %#v, want the dirty before-state omission", result.Changes)
 	}
@@ -244,7 +310,7 @@ func TestControllerWritesFindsUndeclaredBeyondManifestCap(t *testing.T) {
 			}
 		}
 		return os.WriteFile(filepath.Join(dir, "z000.txt"), []byte("stray\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{declared})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths(declared...)})
 	changes := result.Changes
 	if changes == nil || changes.Omitted != "" {
 		t.Fatalf("changes = %#v, want a measured manifest", changes)
@@ -287,7 +353,7 @@ func TestControllerWritesUndeclaredListTruncatedAtCap(t *testing.T) {
 			}
 		}
 		return nil
-	}}, dir, []string{"a"}, [][]string{declared})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths(declared...)})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -335,7 +401,7 @@ func TestControllerWritesCheckedOnTimedOutRun(t *testing.T) {
 	}}
 	req := validRequest("a")
 	req.Workspace = dir
-	req.Writes = [][]string{{"declared.txt"}}
+	req.Writes = []WriteDeclaration{declaredPaths("declared.txt")}
 	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(ctx, req)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -369,7 +435,7 @@ func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
 	}
 	for _, declared := range tests {
 		t.Run(declared, func(t *testing.T) {
-			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, [][]string{{declared}})
+			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, []WriteDeclaration{declaredPaths(declared)})
 			if check.Skipped != "" || check.UndeclaredCount != 0 || len(check.Undeclared) != 0 || check.Truncated {
 				t.Fatalf("writes = %#v, want checked-clean for declared %q", check, declared)
 			}
@@ -388,7 +454,7 @@ func TestWriteCheckUndeclaredListFullAtCapNotTruncated(t *testing.T) {
 	for i := range paths {
 		paths[i] = fmt.Sprintf("f%03d.txt", i)
 	}
-	check := checkWrites(&Changes{allPaths: paths}, [][]string{{"declared.txt"}})
+	check := checkWrites(&Changes{allPaths: paths}, []WriteDeclaration{declaredPaths("declared.txt")})
 	if check.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", check)
 	}
@@ -408,7 +474,7 @@ func TestWriteCheckUndeclaredListCappedOnePastCap(t *testing.T) {
 	for i := range paths {
 		paths[i] = fmt.Sprintf("f%03d.txt", i)
 	}
-	check := checkWrites(&Changes{allPaths: paths}, [][]string{{"declared.txt"}})
+	check := checkWrites(&Changes{allPaths: paths}, []WriteDeclaration{declaredPaths("declared.txt")})
 	if check.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", check)
 	}
@@ -432,7 +498,7 @@ func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T
 	// a manifest that was never measured — the partial-declaration
 	// reason wins: it is the caller's own input, and it is the one they
 	// can act on.
-	check := checkWrites(&Changes{Omitted: reasonDirtyBeforeState}, [][]string{{"file.txt"}, nil})
+	check := checkWrites(&Changes{Omitted: reasonDirtyBeforeState}, []WriteDeclaration{declaredPaths("file.txt"), {}})
 	if check.Skipped != reasonPartialDeclaration {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonPartialDeclaration)
 	}
@@ -446,7 +512,7 @@ func TestWriteCheckNilManifestSkips(t *testing.T) {
 	// reaches the manifest-unavailable half of the guard directly,
 	// which every controller-driven run only does through an Omitted
 	// reason. The skip reason must be the same.
-	check := checkWrites(nil, [][]string{{"file.txt"}})
+	check := checkWrites(nil, []WriteDeclaration{declaredPaths("file.txt")})
 	if check.Skipped != reasonManifestUnavailable {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonManifestUnavailable)
 	}
@@ -471,7 +537,7 @@ func TestControllerWritesIgnoredUntrackedPathOutsideManifest(t *testing.T) {
 	gitCommit(t, dir)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("hidden\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{{"declared.txt"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
 	changes := result.Changes
 	if changes == nil || changes.Omitted != "" {
 		t.Fatalf("changes = %#v, want a measured manifest", changes)
@@ -501,7 +567,7 @@ func TestControllerWritesTrackedPathMatchedByIgnoreRuleStillChecked(t *testing.T
 	gitCommit(t, dir)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
-	}}, dir, []string{"a"}, [][]string{{"declared.txt"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
 	changes := result.Changes
 	if changes == nil || changes.Omitted != "" {
 		t.Fatalf("changes = %#v, want a measured manifest", changes)
@@ -537,7 +603,7 @@ func TestControllerWritesDeletedTrackedFileUndeclared(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.Remove(filepath.Join(dir, "file.txt"))
-	}}, dir, []string{"a"}, [][]string{{"declared.txt"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
 	changes := result.Changes
 	if changes == nil || changes.Omitted != "" || len(changes.Files) != 1 || changes.Files[0].Status != "deleted" {
 		t.Fatalf("changes = %#v, want file.txt deleted in the manifest", changes)
@@ -558,7 +624,7 @@ func TestControllerWritesDeletedTrackedFileDeclaredClean(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.Remove(filepath.Join(dir, "file.txt"))
-	}}, dir, []string{"a"}, [][]string{{"file.txt"}})
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -585,7 +651,7 @@ func TestControllerWritesTwoTasksPoolDeclaredPathsClean(t *testing.T) {
 			return err
 		}
 		return os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644)
-	}}, dir, []string{"a", "b"}, [][]string{{"src/a"}, {"src/b"}})
+	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -614,7 +680,7 @@ func TestControllerWritesTwoTasksPoolReportsStrayPathOnce(t *testing.T) {
 			return err
 		}
 		return os.WriteFile(filepath.Join(dir, "src", "stray.txt"), []byte("stray\n"), 0o644)
-	}}, dir, []string{"a", "b"}, [][]string{{"src/a"}, {"src/b"}})
+	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)

@@ -127,6 +127,43 @@ func TestRunUndeclaredWriteExitsFourWithViolationOnStderr(t *testing.T) {
 	}
 }
 
+func TestRunDeclaredWritesNothingReportsStrayPathAndExitsFour(t *testing.T) {
+	// --writes "" declares the task writes nothing: the read-only
+	// declaration. A run that then writes a path must report it
+	// undeclared and exit 4 exactly like any other undeclared path — the
+	// declaration is a contract the check holds the run to, not a gap it
+	// skips over.
+	newGitWorkspace(t)
+	installRealFakePiWorker(t)
+	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{WriteFile: "stray.txt"},
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"done"}`)}},
+		},
+	}})
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", ""}, "")
+	if code != 4 {
+		t.Fatalf("exit = %d, want 4; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "pi-worker: write check failed: 1 undeclared path") {
+		t.Fatalf("stderr missing the violation count: %q", stderr)
+	}
+	if !strings.Contains(stderr, "  stray.txt") {
+		t.Fatalf("stderr missing the undeclared path: %q", stderr)
+	}
+}
+
 func TestRunUndeclaredWriteJSONCarriesViolation(t *testing.T) {
 	// The human-mode violation is pinned; the JSON surface is not. A
 	// violation in --json mode must exit 4 with the writes object in

@@ -277,20 +277,20 @@ func TestControllerRejectsInvalidDeclaredWritesBeforeStartingWorkers(t *testing.
 	tests := []struct {
 		name   string
 		tasks  []string
-		writes [][]string
+		writes []WriteDeclaration
 	}{
-		{name: "writes shorter than tasks", tasks: []string{"a", "b"}, writes: [][]string{{"src/a"}}},
-		{name: "writes longer than tasks", tasks: []string{"a", "b"}, writes: [][]string{{"src/a"}, {"src/b"}, {"src/c"}}},
-		{name: "empty path", tasks: []string{"a"}, writes: [][]string{{""}}},
-		{name: "whitespace path", tasks: []string{"a"}, writes: [][]string{{"   "}}},
-		{name: "absolute path", tasks: []string{"a"}, writes: [][]string{{"/etc/passwd"}}},
-		{name: "escapes workspace", tasks: []string{"a"}, writes: [][]string{{"../outside"}}},
-		{name: "escapes workspace deep", tasks: []string{"a"}, writes: [][]string{{"src/../../outside"}}},
-		{name: "cleans to workspace escape", tasks: []string{"a"}, writes: [][]string{{"a/../.."}}},
-		{name: "whole workspace dot", tasks: []string{"a"}, writes: [][]string{{"."}}},
-		{name: "whole workspace dot slash", tasks: []string{"a"}, writes: [][]string{{"./"}}},
-		{name: "duplicate within task", tasks: []string{"a"}, writes: [][]string{{"src/a", "src/a"}}},
-		{name: "duplicate after cleaning", tasks: []string{"a"}, writes: [][]string{{"src/a", "./src/a"}}},
+		{name: "writes shorter than tasks", tasks: []string{"a", "b"}, writes: []WriteDeclaration{declaredPaths("src/a")}},
+		{name: "writes longer than tasks", tasks: []string{"a", "b"}, writes: []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b"), declaredPaths("src/c")}},
+		{name: "empty path", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("")}},
+		{name: "whitespace path", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("   ")}},
+		{name: "absolute path", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("/etc/passwd")}},
+		{name: "escapes workspace", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("../outside")}},
+		{name: "escapes workspace deep", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("src/../../outside")}},
+		{name: "cleans to workspace escape", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("a/../..")}},
+		{name: "whole workspace dot", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths(".")}},
+		{name: "whole workspace dot slash", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("./")}},
+		{name: "duplicate within task", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("src/a", "src/a")}},
+		{name: "duplicate after cleaning", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("src/a", "./src/a")}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -314,32 +314,32 @@ func TestControllerRejectsInvalidDeclaredWritesBeforeStartingWorkers(t *testing.
 func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 	tests := []struct {
 		name    string
-		writes  [][]string
+		writes  []WriteDeclaration
 		wantErr string
 	}{
 		{
 			name:    "identical paths in two tasks",
-			writes:  [][]string{{"src/a"}, {"src/a"}},
+			writes:  []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/a")},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "directory prefix on segment boundary",
-			writes:  [][]string{{"src/a"}, {"src/a/b.go"}},
+			writes:  []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/a/b.go")},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`,
 		},
 		{
 			name:    "file under other task directory",
-			writes:  [][]string{{"src/a/b.go"}, {"src/a"}},
+			writes:  []WriteDeclaration{declaredPaths("src/a/b.go"), declaredPaths("src/a")},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a/b.go" and "src/a"`,
 		},
 		{
 			name:    "cleaning unifies paths",
-			writes:  [][]string{{"./src/a"}, {"src/a"}},
+			writes:  []WriteDeclaration{declaredPaths("./src/a"), declaredPaths("src/a")},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "overlap inside multi-path task",
-			writes:  [][]string{{"src/a", "src/b"}, {"src/a/c.go"}},
+			writes:  []WriteDeclaration{declaredPaths("src/a", "src/b"), declaredPaths("src/a/c.go")},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/c.go"`,
 		},
 	}
@@ -365,15 +365,15 @@ func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 func TestControllerAcceptsDisjointDeclaredWrites(t *testing.T) {
 	tests := []struct {
 		name   string
-		writes [][]string
+		writes []WriteDeclaration
 	}{
 		{name: "no declaration", writes: nil},
-		{name: "declaration with nil entries", writes: [][]string{nil, nil}},
-		{name: "disjoint files", writes: [][]string{{"src/a"}, {"src/b"}}},
-		{name: "sibling prefix boundary", writes: [][]string{{"src/a"}, {"src/ab"}}},
-		{name: "multi-path disjoint", writes: [][]string{{"src/a", "src/b"}, {"src/c"}}},
-		{name: "one declares one does not", writes: [][]string{{"src/a"}, nil}},
-		{name: "empty entry", writes: [][]string{{}, {"src/a"}}},
+		{name: "declaration with nil entries", writes: []WriteDeclaration{{}, {}}},
+		{name: "disjoint files", writes: []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")}},
+		{name: "sibling prefix boundary", writes: []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/ab")}},
+		{name: "multi-path disjoint", writes: []WriteDeclaration{declaredPaths("src/a", "src/b"), declaredPaths("src/c")}},
+		{name: "one declares one does not", writes: []WriteDeclaration{declaredPaths("src/a"), {}}},
+		{name: "empty entry", writes: []WriteDeclaration{{Declared: true}, declaredPaths("src/a")}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
