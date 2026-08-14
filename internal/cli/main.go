@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -164,7 +165,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--verify <command>] [--json] [--debug]")
 }
 
 type versionOutput struct {
@@ -213,6 +214,7 @@ type runOptions struct {
 	tasks          []string
 	taskFiles      []string
 	timeout        time.Duration
+	verify         []string
 	json           bool
 	debug          bool
 }
@@ -221,7 +223,8 @@ type runOptions struct {
 // task list. The run timeout is a single shared deadline on the caller's
 // context covering every worker: Ctrl-C (or any parent cancellation)
 // cancels the run immediately, and the timeout bounds it when no signal
-// arrives.
+// arrives. With --verify, a completed run's workspace is checked once
+// before returning.
 func runCommand(parent context.Context, opts runOptions, tasks []string, stdout, stderr io.Writer) int {
 	workspace, err := os.Getwd()
 	if err != nil {
@@ -243,18 +246,35 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
 	}
 
-	result, err := run.New(newWorker()).Run(ctx, run.Request{
+	var controller *run.Controller
+	if len(opts.verify) > 0 {
+		controller = run.New(newWorker(), run.NewDefaultVerifier())
+	} else {
+		controller = run.New(newWorker())
+	}
+	result, err := controller.Run(ctx, run.Request{
 		Model:         opts.model,
 		ThinkingLevel: opts.thinking,
 		Tasks:         tasks,
 		Workspace:     workspace,
+		Verify:        opts.verify,
 		Debug:         debug,
 	})
 	if err != nil {
 		// Defensive: the CLI validates the input surface first, so a
-		// controller validation error here is an internal failure.
+		// controller validation error here is an internal failure. A
+		// verification context that expired mid-check is not a check
+		// failure: the run ran out of time and exits like a timed-out
+		// run.
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
+		case errors.Is(err, context.Canceled):
+			return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
+		default:
+			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+		}
 	}
 
 	code := runExitCode(result)
@@ -296,7 +316,32 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		}
 		fmt.Fprintf(stderr, "pi-worker: %s: %s\n", label, message)
 	}
+	if result.Verification != nil {
+		printVerification(result.Verification, stdout, stderr)
+	}
 	return code
+}
+
+// printVerification prints the run-level verification outcome after the
+// worker summaries in human mode. A passing check is one short line on
+// stdout; a failing check reports the exit code and the captured excerpt
+// on stderr, plus the full-log path when one was written. The run status
+// stays unchanged: it describes worker outcomes only.
+func printVerification(verification *run.Verification, stdout, stderr io.Writer) {
+	if verification.ExitCode == 0 {
+		fmt.Fprintln(stdout, "verification: ok")
+		return
+	}
+	fmt.Fprintf(stderr, "pi-worker: verification failed with exit code %d\n", verification.ExitCode)
+	if verification.Output != "" {
+		fmt.Fprint(stderr, verification.Output)
+		if !strings.HasSuffix(verification.Output, "\n") {
+			fmt.Fprintln(stderr)
+		}
+	}
+	if verification.LogFile != "" {
+		fmt.Fprintf(stderr, "pi-worker: verification log: %s\n", verification.LogFile)
+	}
 }
 
 func preflightPiVersion(ctx context.Context, stderr io.Writer) {
@@ -330,7 +375,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 		arg := args[i]
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--model", "--thinking", "--timeout":
+		case "--model", "--thinking", "--timeout", "--verify":
 			if !hasValue {
 				if i+1 >= len(args) {
 					return opts, fmt.Errorf("flag %s requires a value", name)
@@ -351,6 +396,12 @@ func parseRunArgs(args []string) (runOptions, error) {
 					return opts, fmt.Errorf("invalid thinking level %q: expected off, minimal, low, medium, high, xhigh, or max", value)
 				}
 				opts.thinking = level
+			} else if name == "--verify" {
+				argv, err := parseVerifyCommand(value)
+				if err != nil {
+					return opts, err
+				}
+				opts.verify = argv
 			} else {
 				duration, err := time.ParseDuration(value)
 				if err != nil {
@@ -419,6 +470,24 @@ func parseRunArgs(args []string) (runOptions, error) {
 	return opts, nil
 }
 
+// parseVerifyCommand validates the raw --verify value and splits it on
+// whitespace into argv. pi-worker never runs a shell and never assembles
+// a command string, so shell metacharacters cannot work: a value
+// containing any of them is rejected with a usage error naming the
+// offending character rather than silently mis-executed. An empty or
+// whitespace-only value is rejected too.
+func parseVerifyCommand(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, fmt.Errorf("invalid verify command %q: empty or whitespace-only", value)
+	}
+	for _, char := range value {
+		if strings.ContainsRune("|&;<>$`\n'\"\\", char) {
+			return nil, fmt.Errorf("invalid verify command %q: shell character %q is not supported", value, char)
+		}
+	}
+	return strings.Fields(value), nil
+}
+
 func validateModel(model string) error {
 	provider, id, ok := strings.Cut(model, "/")
 	if !ok || provider == "" || id == "" || strings.Contains(id, "/") {
@@ -463,8 +532,13 @@ func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 
 // runExitCode maps the aggregate run result onto the contract exit codes.
 // A no-success run exits 3 when every worker was unavailable and 9 when
-// any worker reported an internal error; partial runs stay 5.
+// any worker reported an internal error; partial runs stay 5. A
+// verification that ran and reported a non-zero exit code exits 6; the
+// run status field still describes worker outcomes only.
 func runExitCode(result run.Result) int {
+	if result.Verification != nil && result.Verification.ExitCode != 0 {
+		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification})
+	}
 	switch result.Status {
 	case contracts.RunCompleted:
 		return 0

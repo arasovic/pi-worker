@@ -122,6 +122,21 @@ Worker fields are conditionally present:
 - `explanation`: present when final assistant text exists
 - `error`: present when the worker reports an error
 
+Verification is additive and optional, so `schemaVersion` stays `1`. Root
+`verification` appears only when `--verify` ran on a completed run; a run
+without the flag, or one that did not complete, carries none:
+
+- `argv`: the check command split into argv (always present)
+- `exitCode`: the process exit code (always present); a passing check
+  carries no other field
+- `output`: present only for a failing check; the captured stdout and
+  stderr in order, reduced to its first 2 KiB and last 6 KiB with the
+  elided middle marked when `truncated`
+- `truncated`: present and `true` only when the capture exceeded the
+  excerpt budget
+- `logFile`: present only when a truncated capture was also written in
+  full to a `pi-worker-verify-*.log` file in the system temp directory
+
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.
 
