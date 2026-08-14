@@ -83,6 +83,29 @@ func TestControllerChangesAddedUntrackedFile(t *testing.T) {
 	}
 }
 
+func TestControllerChangesEmptyUntrackedFileRecorded(t *testing.T) {
+	// An empty new file still prints a record with zero counts: git
+	// diff --no-index against /dev/null reports a new file even when
+	// both sides are empty, exiting non-zero as its normal outcome, and
+	// the manifest must carry the path rather than drop it. The path
+	// also counts toward TotalFiles.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "empty.txt"), nil, 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the empty file counted", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "empty.txt" || file.Status != "added" || file.Added != 0 || file.Deleted != 0 || file.Binary {
+		t.Fatalf("file = %#v, want empty.txt added +0/-0", file)
+	}
+}
+
 func TestControllerChangesDeletedTrackedFile(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {

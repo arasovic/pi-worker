@@ -1878,12 +1878,15 @@ func TestRunExitCodePolicyOnUndeclaredWrites(t *testing.T) {
 
 func TestRunExitCodePrecedence(t *testing.T) {
 	// Run-outcome codes win over both checks: a timed-out run that also
-	// wrote outside its declaration exits 7. Among completed runs,
-	// policy outranks verification: a run that wrote outside its
-	// declared scope has breached the contract the caller relied on to
-	// bound it, and whether its tests pass is secondary information the
-	// result document carries either way. A completed run with a
-	// failing verification and no policy violation still exits 6.
+	// wrote outside its declaration exits 7, and a cancelled one exits
+	// 8. A failed, partial, or all-unavailable run is answered by its
+	// own outcome -- 5, 9, or 3 -- never by the check that runs on
+	// every terminal status. Among completed runs, policy outranks
+	// verification: a run that wrote outside its declared scope has
+	// breached the contract the caller relied on to bound it, and
+	// whether its tests pass is secondary information the result
+	// document carries either way. A completed run with a failing
+	// verification and no policy violation still exits 6.
 	violation := &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}
 	failingVerification := &run.Verification{Argv: []string{"go", "test"}, ExitCode: 3}
 	tests := []struct {
@@ -1892,6 +1895,11 @@ func TestRunExitCodePrecedence(t *testing.T) {
 		want   int
 	}{
 		{name: "timed out with violation", result: run.Result{Status: contracts.RunTimedOut, Writes: violation}, want: 7},
+		{name: "cancelled with violation", result: run.Result{Status: contracts.RunCancelled, Writes: violation}, want: 8},
+		{name: "failed run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusFailed}}, Writes: violation}, want: 5},
+		{name: "internal error with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusError}}, Writes: violation}, want: 9},
+		{name: "partial run with violation", result: run.Result{Status: contracts.RunPartial, Workers: []pi.WorkerResult{{Status: pi.StatusCompleted}}, Writes: violation}, want: 5},
+		{name: "all-unavailable run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusUnavailable}}, Writes: violation}, want: 3},
 		{name: "violation and failing verification", result: run.Result{Status: contracts.RunCompleted, Writes: violation, Verification: failingVerification}, want: 4},
 		{name: "failing verification alone", result: run.Result{Status: contracts.RunCompleted, Verification: failingVerification}, want: 6},
 	}

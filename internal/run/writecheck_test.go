@@ -377,6 +377,84 @@ func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
 	}
 }
 
+func TestWriteCheckUndeclaredListFullAtCapNotTruncated(t *testing.T) {
+	// Exactly maxChangeFiles undeclared paths: the list is full, the
+	// cap dropped nothing, and Truncated must not be set. This is the
+	// boundary itself — an off-by-one in either direction would pass
+	// the driven counts alone — and UndeclaredCount must carry the true
+	// count, not the length of the list, which happens to agree here
+	// only because nothing was dropped.
+	paths := make([]string, maxChangeFiles)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("f%03d.txt", i)
+	}
+	check := checkWrites(&Changes{allPaths: paths}, [][]string{{"declared.txt"}})
+	if check.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", check)
+	}
+	if check.Truncated {
+		t.Fatalf("truncated = true, want false when the cap dropped nothing")
+	}
+	if check.UndeclaredCount != maxChangeFiles || len(check.Undeclared) != maxChangeFiles {
+		t.Fatalf("undeclaredCount = %d, undeclared = %d entries, want both %d", check.UndeclaredCount, len(check.Undeclared), maxChangeFiles)
+	}
+}
+
+func TestWriteCheckUndeclaredListCappedOnePastCap(t *testing.T) {
+	// One more than maxChangeFiles undeclared paths: the cap drops the
+	// last entry and sets Truncated. UndeclaredCount must still carry
+	// the true count, not the length of the capped list.
+	paths := make([]string, maxChangeFiles+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("f%03d.txt", i)
+	}
+	check := checkWrites(&Changes{allPaths: paths}, [][]string{{"declared.txt"}})
+	if check.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", check)
+	}
+	if !check.Truncated {
+		t.Fatalf("truncated = false, want true when the cap dropped an entry")
+	}
+	if check.UndeclaredCount != maxChangeFiles+1 {
+		t.Fatalf("undeclaredCount = %d, want %d", check.UndeclaredCount, maxChangeFiles+1)
+	}
+	if len(check.Undeclared) != maxChangeFiles {
+		t.Fatalf("undeclared = %d entries, want the %d cap", len(check.Undeclared), maxChangeFiles)
+	}
+	// The paths sort by path, so the cap keeps the first hundred.
+	if check.Undeclared[maxChangeFiles-1] != "f099.txt" {
+		t.Fatalf("last undeclared = %q, want f099.txt", check.Undeclared[maxChangeFiles-1])
+	}
+}
+
+func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T) {
+	// When both skips apply at once — a task that declared nothing and
+	// a manifest that was never measured — the partial-declaration
+	// reason wins: it is the caller's own input, and it is the one they
+	// can act on.
+	check := checkWrites(&Changes{Omitted: reasonDirtyBeforeState}, [][]string{{"file.txt"}, nil})
+	if check.Skipped != reasonPartialDeclaration {
+		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonPartialDeclaration)
+	}
+	if check.UndeclaredCount != 0 || check.Undeclared != nil || check.Truncated {
+		t.Fatalf("writes = %#v, want no fields alongside the skip reason", check)
+	}
+}
+
+func TestWriteCheckNilManifestSkips(t *testing.T) {
+	// A nil *Changes is the workspace-outside-a-git-work-tree case; it
+	// reaches the manifest-unavailable half of the guard directly,
+	// which every controller-driven run only does through an Omitted
+	// reason. The skip reason must be the same.
+	check := checkWrites(nil, [][]string{{"file.txt"}})
+	if check.Skipped != reasonManifestUnavailable {
+		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonManifestUnavailable)
+	}
+	if check.UndeclaredCount != 0 || check.Undeclared != nil || check.Truncated {
+		t.Fatalf("writes = %#v, want no fields alongside the skip reason", check)
+	}
+}
+
 func TestControllerWritesIgnoredUntrackedPathOutsideManifest(t *testing.T) {
 	// The untracked pass (git ls-files --others --exclude-standard)
 	// honours ignore rules, so an ignored path a worker wrote is outside
