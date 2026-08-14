@@ -524,6 +524,13 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "empty task file", args: []string{"run", "--model", "acme/m-1", "--task-file", emptyFile}, stdin: ""},
 		{name: "too many tasks", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b", "--task", "c", "--task", "d"}, stdin: ""},
 		{name: "too many task files", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--task-file", "b", "--task-file", "c", "--task-file", "d"}, stdin: ""},
+		{name: "writes before any task", args: []string{"run", "--model", "acme/m-1", "--writes", "src/a"}, stdin: ""},
+		{name: "repeated writes for one task", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
+		{name: "repeated writes for one task file", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
+		{name: "empty writes", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", ""}, stdin: ""},
+		{name: "whitespace writes", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "  "}, stdin: ""},
+		{name: "empty writes element", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a,,src/b"}, stdin: ""},
+		{name: "writes without value", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes"}, stdin: ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -543,6 +550,130 @@ func TestRunUsageErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunUsageShowsWritesFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := Main([]string{}, strings.NewReader(""), &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--writes <paths>") {
+		t.Fatalf("usage does not mention --writes: %q", stderr.String())
+	}
+}
+
+func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testing.T) {
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", "src/b"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stderr, "share the writable current workspace") {
+		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
+	}
+	if stdout != "worker 1: one done\nworker 2: two done\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if fake.callCount() != 2 {
+		t.Fatalf("worker calls = %d, want 2", fake.callCount())
+	}
+}
+
+func TestRunWritesKeepsSharedWorkspaceWarningWhenAnyTaskDeclaresNothing(t *testing.T) {
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	// The --task two worker declared nothing, so the run is not fully
+	// contracted and the warning must stay.
+	if count := strings.Count(stderr, "pi-worker: warning: 2 workers share the writable current workspace; tasks must use disjoint files"); count != 1 {
+		t.Fatalf("warning count = %d, want 1: %q", count, stderr)
+	}
+	if fake.callCount() != 2 {
+		t.Fatalf("worker calls = %d, want 2", fake.callCount())
+	}
+}
+
+func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
+	firstPath := filepath.Join(t.TempDir(), "task-1.txt")
+	secondPath := filepath.Join(t.TempDir(), "task-2.txt")
+	if err := os.WriteFile(firstPath, []byte("first task"), 0o600); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	if err := os.WriteFile(secondPath, []byte("second task"), 0o600); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "first file done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "second file done"},
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task-file", firstPath, "--writes", "internal/run,docs/a.md", "--task-file", secondPath, "--writes", "internal/cli"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stderr, "share the writable current workspace") {
+		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
+	}
+	if stdout != "worker 1: first file done\nworker 2: second file done\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
+		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
+	}
+	if req := mustWorkerRequest(t, fake, 2); req.Prompt != "second task" {
+		t.Fatalf("worker 2 prompt = %q, want second task", req.Prompt)
+	}
+}
+
+func TestRunWritesOverlapRejectedBeforeAnyWorkerStarts(t *testing.T) {
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", "src/a/b.go"}, "")
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty for rejected run", stdout)
+	}
+	if !strings.Contains(stderr, `pi-worker: task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`) {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	_ = code
+}
+
+func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) {
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	// "docs/a.md, src/x" must reach validation as the same paths as
+	// "docs/a.md,src/x": the space after the comma is formatting, not part
+	// of the path, so the overlap with task two's "src/x" is still rejected
+	// before any worker starts.
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "docs/a.md, src/x", "--task", "two", "--writes", "src/x"}, "")
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty for rejected run", stdout)
+	}
+	want := `pi-worker: task 1 and task 2 declare overlapping write paths "src/x" and "src/x"`
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
+	}
+	// The surrounding whitespace must not leak into the reported path.
+	if strings.Contains(stderr, `" src/x"`) {
+		t.Fatalf("stderr reports the untrimmed path: %q", stderr)
+	}
+	_ = code
 }
 
 func TestRunSuccessHuman(t *testing.T) {
