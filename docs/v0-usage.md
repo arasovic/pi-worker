@@ -309,7 +309,10 @@ Replace the provider/model placeholder with one exact selector printed by
   clean before the run, `run` measures which paths the run changed and by
   how much, diffing against the git state recorded before the first worker
   started. This is pi-worker's own measurement, not the worker's account of
-  its work.
+  its work. The manifest covers the paths `git` tracks or would track: a
+  path matched by a `.gitignore` rule is outside both the manifest and the
+  write check, so a run that wrote only ignored paths reports a clean
+  verdict.
 - Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
   the worker summaries, followed by up to five paths most churn first. It is
   information, not a warning, so it carries no `warning:` prefix.
@@ -321,11 +324,12 @@ Replace the provider/model placeholder with one exact selector printed by
   mid-edit is exactly the run whose changes a caller most needs.
 - When the working tree was already dirty before the run, the manifest is
   omitted with a reason rather than guessed, because the run's changes
-  cannot be separated from the ones already there. An unborn HEAD, and a
-  measurement that failed after the workspace was confirmed to be a git work
-  tree, are omitted with a reason the same way. A workspace outside a git work
-  tree, or one whose git inspection failed before it could tell the two apart,
-  carries no manifest at all — the same silent no-op the git state makes.
+  cannot be separated from the ones already there. An unborn HEAD, a context
+  already done when the inspection ran, and a measurement that failed after
+  the workspace was confirmed to be a git work tree, are omitted with a
+  reason the same way. Only a workspace outside a git work tree, or git
+  missing entirely, carries no manifest at all — the same silent no-op the
+  git state makes.
 
 ### Exactly one input mechanism
 
@@ -355,8 +359,18 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 - `--writes <paths>` optionally declares, as a comma-separated list, the
   workspace-relative paths the most recently introduced task (`--task` or
   `--task-file`) intends to write; whitespace around each comma-separated
-  path is ignored. It may appear at most once per task and must follow the
-  task it applies to.
+  path is ignored, and each value is cleaned where it is compared, so
+  `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
+  `..` all name `src/a`. It may appear at most once per task and must
+  follow the task it applies to.
+- A declared path covers everything beneath it on a segment boundary:
+  `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
+  `src/a` names a file or a directory. Comparison is byte-exact per
+  segment with no case folding: on a case-insensitive filesystem a
+  declaration differing from the changed path only in case still does not
+  cover it. Folding case would make the check miss real violations on a
+  case-sensitive filesystem, and a check whose job is to accuse must not
+  accuse less than it should.
 - The declaration is optional and is checked twice: before any worker
   starts, a run whose declared sets overlap is rejected up front, and
   after the run the declaration is compared against the paths the run

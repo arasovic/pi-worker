@@ -160,16 +160,17 @@ a change.
 
 The change manifest is additive and optional, so `schemaVersion` stays `1`.
 Root `changes` is present when the workspace is inside a git work tree and the
-inspection of it succeeded. A workspace outside a git work tree, and an
-inspection that failed before it could tell the two apart, carry no `changes`
-at all — the same silent no-op `git` makes. Unlike `git` it is not gated by a
-state change: a run that only left modified files behind still carries it,
-because those files are what it names. It carries either a reason it could not
-be measured or the measurement, never both:
+inspection of it succeeded. Only a workspace outside a git work tree, and an
+environment with no `git` at all, still carry no `changes` field — the same
+silent no-op `git` makes. Unlike `git` it is not gated by a state change: a
+run that only left modified files behind still carries it, because those files
+are what it names. It carries either a reason it could not be measured or the
+measurement, never both:
 
-- `omitted`: present only when the manifest could not be measured; a short
-  reason. `files`, `totalFiles`, and `truncated` carry no meaning when it is
-  present
+- `omitted`: present only when the manifest could not be measured; one of
+  `dirty before-state`, `unborn head`, `context already done`, or
+  `measurement failed`. `files`, `totalFiles`, and `truncated` carry no
+  meaning when it is present
 - `totalFiles`: always present; the true number of changed paths, before the
   entry cap. A measured run that changed nothing carries `0` rather than
   omitting the field
@@ -188,6 +189,12 @@ Each entry in `files` carries:
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
 it changed.
+
+The manifest covers the paths `git` tracks or would track. A path matched by
+a `.gitignore` rule is outside both the manifest and the write check: it
+cannot appear in `files`, it does not count toward `totalFiles` or
+`undeclaredCount`, and a run that wrote only ignored paths reports a clean
+write verdict.
 
 The write check is additive and optional, so `schemaVersion` stays `1`.
 Root `writes` is present exactly when the request carried a write
