@@ -55,12 +55,22 @@ type Result struct {
 	// Git is present only when the run moved HEAD, the branch, or the
 	// stash list; nil otherwise.
 	Git *GitChange `json:"git,omitempty"`
+	// Changes is the manifest of workspace paths the run changed and by
+	// how much, measured by pi-worker against the before-state HEAD
+	// rather than reported by the worker; nil when the workspace is not
+	// inside a git work tree. Unlike Git it is not gated by the git
+	// tripwire: leaving modified files behind is the point of a
+	// delegation, and those files are exactly what the manifest names.
+	// A measurement failure is reported through Omitted, never by
+	// leaving the field nil.
+	Changes *Changes `json:"changes,omitempty"`
 }
 
 // Controller runs accepted tasks concurrently through one Worker and,
 // when a verifier is configured, checks a completed run's workspace
 // with one command; when a git inspector is configured, it records the
-// workspace git state before and after the run.
+// workspace git state before and after the run and measures the change
+// manifest against the before-state HEAD.
 type Controller struct {
 	worker       pi.Worker
 	verifier     Verifier
@@ -100,9 +110,11 @@ func New(worker pi.Worker, opts ...Option) *Controller {
 // state and the worker outcomes. When a git inspector is configured,
 // Run records the workspace git state before any worker starts and
 // again after every worker settles, reporting only when HEAD, the
-// branch, or the stash list moved. When a verifier and a verification
-// command are configured and the run completed with the parent context
-// intact, Run verifies the workspace once before returning.
+// branch, or the stash list moved, and measures the change manifest
+// against the before-state HEAD on every terminal status. When a
+// verifier and a verification command are configured and the run
+// completed with the parent context intact, Run verifies the workspace
+// once before returning.
 func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
@@ -110,10 +122,19 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// The before state is recorded after validation and before the first
 	// worker starts. Git state reporting is diagnostic, not a gate: a
 	// non-git workspace or an inspection error leaves Git nil without
-	// failing the run.
+	// failing the run. The inspection error is kept separately because
+	// the change manifest treats it differently: a guard failure is
+	// indistinguishable from a workspace outside a git work tree and is
+	// the same silent no-op Git makes, arriving here as before == nil
+	// with beforeErr == nil — git missing or a dead context included.
+	// Only a failure after the guard, from git status --porcelain or
+	// git stash list, is a post-guard inspection failure that reaches
+	// reasonMeasurementFail and must be reported rather than silently
+	// dropped.
 	var before *GitState
+	var beforeErr error
 	if c.gitInspector != nil {
-		before, _ = c.gitInspector.Inspect(ctx, req.Workspace)
+		before, beforeErr = c.gitInspector.Inspect(ctx, req.Workspace)
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
@@ -153,6 +174,24 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			if gitMoved(before, after, stash) {
 				result.Git = &GitChange{Before: *before, After: *after, Stash: stash}
 			}
+		}
+	}
+	// The change manifest runs in the same terminal-status block as the
+	// after state, on every terminal status, under its own fresh
+	// thirty-second budget: the untracked pass can spawn one command per
+	// file up to the cap, and a budget that expires is a measurement
+	// failure that omits with a reason rather than leaving the field
+	// nil. It never depends on the parent context, for the same reason
+	// the after state does not: a run that timed out mid-edit is exactly
+	// the run whose changes a caller most needs.
+	if c.gitInspector != nil {
+		switch {
+		case beforeErr != nil:
+			result.Changes = &Changes{Omitted: reasonMeasurementFail}
+		case before != nil:
+			changesCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
+			defer cancel()
+			result.Changes = measureChanges(changesCtx, req.Workspace, before)
 		}
 	}
 	// Verification runs once for the whole run after every worker has

@@ -158,6 +158,38 @@ between the start and the end of the run. It carries `added` and
 Entries are compared by identity, so a `stash@{N}` index shift is not
 a change.
 
+The change manifest is additive and optional, so `schemaVersion` stays `1`.
+Root `changes` is present when the workspace is inside a git work tree and
+the inspection of it succeeded. A workspace outside a git work tree, and an
+inspection that failed before it could tell the two apart, carry no
+`changes` at all — the same silent no-op `git` makes. Unlike `git` it is not
+gated by a state change: a run
+that only left modified files behind still carries it, because those files
+are what it names. It carries either a reason it could not be measured or
+the measurement, never both:
+
+- `omitted`: present only when the manifest could not be measured; a short
+  reason. `files`, `totalFiles`, and `truncated` carry no meaning when it is
+  present
+- `totalFiles`: always present; the true number of changed paths, before the
+  entry cap. A measured run that changed nothing carries `0` rather than
+  omitting the field
+- `files`: present only when at least one path changed; capped at 100
+  entries
+- `truncated`: present and `true` only when the cap dropped entries
+
+Each entry in `files` carries:
+
+- `path`: always present; the workspace-relative path
+- `status`: always present; exactly one of `added`, `modified`, `deleted`
+- `added` and `deleted`: always present; the line counts, both `0` for a
+  binary file
+- `binary`: present and `true` only when git reported the file as binary
+
+The manifest is measured against the git state recorded before the first
+worker started, so a run that committed its own work still lists the files
+it changed.
+
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.
 

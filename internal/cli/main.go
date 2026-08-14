@@ -340,6 +340,9 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	if result.Git != nil {
 		printGitChange(result.Git, stderr)
 	}
+	if result.Changes != nil {
+		printChanges(result.Changes, stdout)
+	}
 	return code
 }
 
@@ -413,6 +416,46 @@ func gitStashEntries(entries []string) string {
 		parts = append(parts, fmt.Sprintf("and %d more", len(entries)-limit))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// printChanges prints the run's measured change manifest after the
+// worker summaries in human mode: one information line on stdout — the
+// same class as "verification: ok", never a warning — naming the file
+// count and the summed added/deleted lines, then up to five paths most
+// churn first, one per line indented two spaces, and a final indented
+// line naming how many more remain when the list is longer. The trailing
+// count is relative to TotalFiles, not to len(Files), so a truncated
+// manifest reports the paths the entry cap dropped as well as the ones
+// the five-line limit dropped. A measured
+// run that changed nothing prints the zero line alone; an omitted
+// manifest prints the reason instead, so a human never has to guess
+// whether "no changes" means measured-zero or not-measured.
+func printChanges(changes *run.Changes, stdout io.Writer) {
+	if changes.Omitted != "" {
+		fmt.Fprintf(stdout, "changes: omitted: %s\n", changes.Omitted)
+		return
+	}
+	added, deleted := 0, 0
+	for _, file := range changes.Files {
+		added += file.Added
+		deleted += file.Deleted
+	}
+	filesWord := "files"
+	if changes.TotalFiles == 1 {
+		filesWord = "file"
+	}
+	fmt.Fprintf(stdout, "changes: %d %s, +%d/-%d\n", changes.TotalFiles, filesWord, added, deleted)
+	shown := min(len(changes.Files), 5)
+	for _, file := range changes.Files[:shown] {
+		counts := fmt.Sprintf("+%d/-%d", file.Added, file.Deleted)
+		if file.Binary {
+			counts = "binary"
+		}
+		fmt.Fprintf(stdout, "  %s  %s\n", file.Path, counts)
+	}
+	if len(changes.Files) > shown {
+		fmt.Fprintf(stdout, "  and %d more\n", changes.TotalFiles-shown)
+	}
 }
 
 // gitHead renders a commit hash for the human warning at git's default

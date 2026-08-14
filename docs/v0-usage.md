@@ -303,6 +303,31 @@ Replace the provider/model placeholder with one exact selector printed by
   silent no-op: the result carries no `git` object and no warning is
   printed, and the run status and exit code are unchanged.
 
+### Workspace change manifest
+
+- When the current directory is inside a git work tree and the tree was
+  clean before the run, `run` measures which paths the run changed and by
+  how much, diffing against the git state recorded before the first worker
+  started. This is pi-worker's own measurement, not the worker's account of
+  its work.
+- Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
+  the worker summaries, followed by up to five paths most churn first. It is
+  information, not a warning, so it carries no `warning:` prefix.
+- `--json` mode carries a `changes` object. It is not gated by the git
+  tripwire: a run that only left modified files behind carries `changes`
+  and no `git`.
+- The manifest is measured on every terminal status, including a timed-out
+  or cancelled run, under its own thirty-second budget: a run that stopped
+  mid-edit is exactly the run whose changes a caller most needs.
+- When the working tree was already dirty before the run, the manifest is
+  omitted with a reason rather than guessed, because the run's changes
+  cannot be separated from the ones already there. An unborn HEAD, and a
+  measurement that failed after the workspace was
+  confirmed to be a git work tree, are omitted with a reason the same way. A
+  workspace outside a git work tree, or one whose git inspection failed before
+  it could tell the two apart, carries no manifest at all — the same silent
+  no-op the git state makes.
+
 ### Exactly one input mechanism
 
 - `--task` and `--task-file` may each repeat up to 3 total tasks.

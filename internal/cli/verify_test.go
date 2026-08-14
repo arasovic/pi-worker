@@ -130,7 +130,7 @@ func TestRunVerifyPassingExitsZeroAndCarriesArgvOnly(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	document := decodeJSONObject(t, stdout)
-	assertExactJSONKeys(t, document, "schemaVersion", "status", "workers", "verification")
+	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers", "verification")
 	if document["status"] != "completed" {
 		t.Fatalf("status = %v, want completed", document["status"])
 	}
@@ -154,9 +154,7 @@ func TestRunVerifyPassingHumanPrintsOneShortLine(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\nverification: ok\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\nverification: ok\n")
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
@@ -173,7 +171,7 @@ func TestRunVerifyFailingExitsSixAndKeepsStatusCompleted(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty in json mode", stderr)
 	}
 	document := decodeJSONObject(t, stdout)
-	assertExactJSONKeys(t, document, "schemaVersion", "status", "workers", "verification")
+	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers", "verification")
 	if document["status"] != "completed" {
 		t.Fatalf("status = %v, want completed (worker outcomes only)", document["status"])
 	}
@@ -200,9 +198,7 @@ func TestRunVerifyFailingHumanPrintsExitCodeAndExcerpt(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
 	if !strings.Contains(stderr, "pi-worker: verification failed with exit code 3") {
 		t.Fatalf("stderr missing exit code: %q", stderr)
 	}
@@ -220,9 +216,7 @@ func TestRunVerifyFailingHumanPrintsLogPathForTruncatedCapture(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
 	if !strings.Contains(stderr, "pi-worker: verification failed with exit code 3") {
 		t.Fatalf("stderr missing exit code: %q", stderr)
 	}
@@ -258,7 +252,7 @@ func TestRunWithoutVerifyKeepsJSONFreeOfVerification(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
-	assertExactJSONKeys(t, document, "schemaVersion", "status", "workers")
+	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers")
 }
 
 func TestRunVerifyContextExpiryExitsSevenNotSix(t *testing.T) {

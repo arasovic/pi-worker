@@ -224,6 +224,25 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 	return code, stdout.String(), stderr.String()
 }
 
+// requireChangesTail asserts that human run output carries the
+// worker-summary lines `want` verbatim and then exactly one
+// change-manifest line. The manifest line itself depends on the
+// workspace's tree state at test time — "changes: 0 files, +0/-0" on a
+// clean checkout, "changes: omitted: <reason>" on a dirty one — so only
+// its presence and position after the summaries are pinned here; the
+// manifest's own tests pin its content.
+func requireChangesTail(t *testing.T, stdout, want string) {
+	t.Helper()
+	if !strings.HasPrefix(stdout, want) {
+		t.Fatalf("stdout = %q, want it to start with %q", stdout, want)
+	}
+	tail := strings.TrimPrefix(stdout, want)
+	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "changes: ") {
+		t.Fatalf("stdout tail = %q, want exactly one changes: line", tail)
+	}
+}
+
 func withBuildInfo(t *testing.T, version, commit, buildDate string) {
 	t.Helper()
 	oldVersion, oldCommit, oldBuildDate := buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate
@@ -577,9 +596,7 @@ func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testi
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	if stdout != "worker 1: one done\nworker 2: two done\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
 	if fake.callCount() != 2 {
 		t.Fatalf("worker calls = %d, want 2", fake.callCount())
 	}
@@ -626,9 +643,7 @@ func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	if stdout != "worker 1: first file done\nworker 2: second file done\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
 	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
 		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
 	}
@@ -682,9 +697,7 @@ func TestRunSuccessHuman(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
@@ -721,9 +734,7 @@ func TestRunThinkingPropagatesAndLabelsHumanOutput(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1 [model=acme/m-1 thinking=max]: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=max]: All done.\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.ThinkingLevel != pi.ThinkingMax {
 		t.Fatalf("thinking = %q, want max", request.ThinkingLevel)
@@ -892,9 +903,7 @@ func TestRunTaskFile(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: ok\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: ok\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.Prompt != "fix from file" {
 		t.Fatalf("prompt = %q", request.Prompt)
@@ -907,9 +916,7 @@ func TestRunStdinTask(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: ok\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: ok\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.Prompt != "task from stdin" {
 		t.Fatalf("prompt = %q", request.Prompt)
@@ -957,15 +964,7 @@ func TestRunThreeTasksHumanSuccessIsOrderedAndConcurrent(t *testing.T) {
 	if count := strings.Count(stderr, "pi-worker: warning:"); count != 1 {
 		t.Fatalf("stderr warning count = %d, want 1", count)
 	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("stdout lines = %d, want 3: %q", len(lines), stdout)
-	}
-	for i, want := range []string{"worker 1: first done", "worker 2: second done", "worker 3: third done"} {
-		if lines[i] != want {
-			t.Fatalf("stdout line %d = %q, want %q", i+1, lines[i], want)
-		}
-	}
+	requireChangesTail(t, stdout, "worker 1: first done\nworker 2: second done\nworker 3: third done\n")
 	requestOrder := []string{"one", "two", "three"}
 	for i, want := range requestOrder {
 		req := mustWorkerRequest(t, fake, i+1)
@@ -997,13 +996,7 @@ func TestRunRepeatedTaskFilesPreserveInputOrder(t *testing.T) {
 	if count := strings.Count(stderr, "pi-worker: warning:"); count != 1 {
 		t.Fatalf("stderr warning count = %d, want 1", count)
 	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("stdout lines = %d, want 2: %q", len(lines), stdout)
-	}
-	if lines[0] != "worker 1: first file done" || lines[1] != "worker 2: second file done" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
 	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
 		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
 	}
@@ -1081,8 +1074,11 @@ func TestRunExitCodes(t *testing.T) {
 			if !strings.Contains(stderr, test.res.Error) {
 				t.Fatalf("human stderr = %q, want detail %q", stderr, test.res.Error)
 			}
-			if stdout != "" {
-				t.Fatalf("human stdout = %q", stdout)
+			// A failed run still carries its one change-manifest line: the
+			// manifest is measured on every terminal status.
+			lines := strings.Split(strings.TrimSpace(stdout), "\n")
+			if len(lines) != 1 || !strings.HasPrefix(lines[0], "changes: ") {
+				t.Fatalf("human stdout = %q, want exactly the changes: line", stdout)
 			}
 
 			_ = installFakeWorker(t, test.res)
@@ -1119,7 +1115,7 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 		t.Fatalf("human exit = %d, want 5", code)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 1 || lines[0] != "worker 1: primary done" {
+	if len(lines) != 2 || lines[0] != "worker 1: primary done" || !strings.HasPrefix(lines[1], "changes: ") {
 		t.Fatalf("stdout = %q", stdout)
 	}
 	if !strings.Contains(stderr, "pi-worker: worker 2: agent failed") {
@@ -1276,9 +1272,7 @@ func TestRunDebugPassesSinkAndLogsToStderr(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.Debug == nil {
 		t.Fatalf("debug sink not passed to worker")
@@ -1364,9 +1358,7 @@ func TestRunParallelDebugLabelsWorkers1To3(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: done\nworker 2: done\nworker 3: done\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: done\nworker 2: done\nworker 3: done\n")
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	var debugLines []string
 	for _, line := range lines {
@@ -1593,5 +1585,129 @@ func TestPrintGitChangeStashListCapsAtThreeEntries(t *testing.T) {
 	want := "pi-worker: warning: the run changed git state: stash removed: aaaaaaa first; bbbbbbb second; ccccccc third; and 2 more\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}
+
+// TestPrintChanges* build the run.Changes struct directly and pin the
+// exact human rendering: printChanges renders, it does not sort, so every
+// fixture is already in the order the manifest produces (most churn
+// first, then path).
+
+func TestPrintChangesOmittedManifest(t *testing.T) {
+	// An omitted manifest prints the reason line alone, never a path
+	// list.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{Omitted: "measurement failed"}, &stdout)
+	want := "changes: omitted: measurement failed\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesZeroFiles(t *testing.T) {
+	// A measured run that changed nothing prints the zero line alone.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{TotalFiles: 0}, &stdout)
+	want := "changes: 0 files, +0/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesOneFile(t *testing.T) {
+	// A single changed path reads "1 file", not "1 files".
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 1,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1},
+		},
+	}, &stdout)
+	want := "changes: 1 file, +3/-1\n  src/a.go  +3/-1\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesSeveralFiles(t *testing.T) {
+	// The count line sums the entries' added and deleted lines; paths
+	// print in the manifest's order, most churn first, indented two
+	// spaces.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 3,
+		Files: []run.FileChange{
+			{Path: "docs/guide.md", Status: "modified", Added: 12, Deleted: 4},
+			{Path: "src/main.go", Status: "modified", Added: 5, Deleted: 2},
+			{Path: "README.md", Status: "added", Added: 8, Deleted: 0},
+		},
+	}, &stdout)
+	want := "changes: 3 files, +25/-6\n  docs/guide.md  +12/-4\n  src/main.go  +5/-2\n  README.md  +8/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesBinaryFile(t *testing.T) {
+	// A binary entry renders as "binary" on its path line, never as
+	// "+0/-0", and still contributes zero to the summed counts.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 1,
+		Files: []run.FileChange{
+			{Path: "assets/logo.png", Status: "added", Binary: true},
+		},
+	}, &stdout)
+	want := "changes: 1 file, +0/-0\n  assets/logo.png  binary\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesMoreThanFiveFiles(t *testing.T) {
+	// Exactly five paths print, most churn first; the rest collapse into
+	// the trailing line, one per entry the five-line limit dropped.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 7,
+		Files: []run.FileChange{
+			{Path: "a1.go", Status: "modified", Added: 9},
+			{Path: "a2.go", Status: "modified", Added: 8},
+			{Path: "a3.go", Status: "modified", Added: 7},
+			{Path: "a4.go", Status: "modified", Added: 6},
+			{Path: "a5.go", Status: "modified", Added: 5},
+			{Path: "a6.go", Status: "modified", Added: 4},
+			{Path: "a7.go", Status: "modified", Added: 3},
+		},
+	}, &stdout)
+	want := "changes: 7 files, +42/-0\n  a1.go  +9/-0\n  a2.go  +8/-0\n  a3.go  +7/-0\n  a4.go  +6/-0\n  a5.go  +5/-0\n  and 2 more\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesTrailingCountIsRelativeToTotalFiles(t *testing.T) {
+	// A truncated manifest carries TotalFiles larger than len(Files):
+	// the entry cap dropped paths beyond it. The trailing line counts
+	// from TotalFiles, so it reports the paths the cap dropped as well
+	// as the ones the five-line limit dropped: with 120 changed paths,
+	// six of them in the list, five printed, the human is told 115
+	// paths are not on screen.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 120,
+		Truncated:  true,
+		Files: []run.FileChange{
+			{Path: "c1.go", Status: "modified", Added: 1},
+			{Path: "c2.go", Status: "modified", Added: 1},
+			{Path: "c3.go", Status: "modified", Added: 1},
+			{Path: "c4.go", Status: "modified", Added: 1},
+			{Path: "c5.go", Status: "modified", Added: 1},
+			{Path: "c6.go", Status: "modified", Added: 1},
+		},
+	}, &stdout)
+	want := "changes: 120 files, +6/-0\n  c1.go  +1/-0\n  c2.go  +1/-0\n  c3.go  +1/-0\n  c4.go  +1/-0\n  c5.go  +1/-0\n  and 115 more\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
