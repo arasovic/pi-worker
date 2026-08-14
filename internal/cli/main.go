@@ -343,6 +343,16 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	if result.Changes != nil {
 		printChanges(result.Changes, stdout)
 	}
+	if result.Writes != nil {
+		// The verdict and the skip reason are result lines like the
+		// change manifest and belong on stdout; the violation is the
+		// failure exit 4 refers to and belongs on stderr.
+		w := stdout
+		if result.Writes.Skipped == "" && result.Writes.UndeclaredCount > 0 {
+			w = stderr
+		}
+		printWrites(result.Writes, w)
+	}
 	return code
 }
 
@@ -455,6 +465,49 @@ func printChanges(changes *run.Changes, stdout io.Writer) {
 	}
 	if len(changes.Files) > shown {
 		fmt.Fprintf(stdout, "  and %d more\n", changes.TotalFiles-shown)
+	}
+}
+
+// printWrites prints the run's write check after the change manifest in
+// human mode, mirroring printChanges against the same rules. A clean
+// verdict prints one short "writes: ok" line on stdout — the same class
+// as "verification: ok", and the whole point of the field: a caller
+// must be able to see that the check ran and passed, not merely that
+// nothing was said. A skipped check prints the reason instead, so a
+// human never has to guess whether "no writes" means checked-clean or
+// not-checked. A nil check prints nothing: the caller never declared and
+// there is nothing to report. The violation goes to stderr, not stdout,
+// because it is a failure and it is what exit 4 refers to: one count
+// line, then up to five undeclared paths, two spaces indented, one per
+// line, and a final indented line naming how many more remain when more
+// were undeclared than were printed. The trailing count is relative to
+// UndeclaredCount, not to len(Undeclared), so a truncated check reports
+// the paths the entry cap dropped as well as the ones the five-line
+// limit dropped: it tells the human how many undeclared paths they have
+// not seen, which is the number they need.
+func printWrites(check *run.WriteCheck, w io.Writer) {
+	if check == nil {
+		return
+	}
+	if check.Skipped != "" {
+		fmt.Fprintf(w, "writes: skipped: %s\n", check.Skipped)
+		return
+	}
+	if check.UndeclaredCount == 0 {
+		fmt.Fprintln(w, "writes: ok")
+		return
+	}
+	pathsWord := "paths"
+	if check.UndeclaredCount == 1 {
+		pathsWord = "path"
+	}
+	fmt.Fprintf(w, "pi-worker: write check failed: %d undeclared %s\n", check.UndeclaredCount, pathsWord)
+	shown := min(len(check.Undeclared), 5)
+	for _, path := range check.Undeclared[:shown] {
+		fmt.Fprintf(w, "  %s\n", path)
+	}
+	if len(check.Undeclared) > shown {
+		fmt.Fprintf(w, "  and %d more\n", check.UndeclaredCount-shown)
 	}
 }
 
@@ -719,44 +772,61 @@ func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 	return []string{string(data)}, nil
 }
 
-// runExitCode maps the aggregate run result onto the contract exit codes.
-// A no-success run exits 3 when every worker was unavailable and 9 when
-// any worker reported an internal error; partial runs stay 5. A
-// verification that ran and reported a non-zero exit code exits 6; the
-// run status field still describes worker outcomes only.
+// runExitCode maps the aggregate run result onto the contract exit
+// codes, in the documented precedence order: run-outcome codes first
+// (5, 7, 8, 9, and the readiness 3), then the write-check policy code 4,
+// then the verification code 6, then completion's 0. A no-success run
+// exits 3 when every worker was unavailable and 9 when any worker
+// reported an internal error; partial runs stay 5. The run status field
+// always describes worker outcomes only.
 func runExitCode(result run.Result) int {
-	if result.Verification != nil && result.Verification.ExitCode != 0 {
-		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification})
-	}
 	switch result.Status {
-	case contracts.RunCompleted:
-		return 0
 	case contracts.RunTimedOut:
 		return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
 	case contracts.RunCancelled:
 		return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
 	}
-	hasSuccess := false
-	hasError := false
-	allUnavailable := true
-	for _, worker := range result.Workers {
-		switch worker.Status {
-		case pi.StatusCompleted:
-			hasSuccess = true
-		case pi.StatusError:
-			hasError = true
-			allUnavailable = false
-		case pi.StatusUnavailable:
+	// Partial and failed runs keep their run-outcome codes before any
+	// check is considered: a run that did not complete is answered by
+	// its outcome, not by the checks that run on every terminal status.
+	if result.Status != contracts.RunCompleted {
+		hasSuccess := false
+		hasError := false
+		allUnavailable := true
+		for _, worker := range result.Workers {
+			switch worker.Status {
+			case pi.StatusCompleted:
+				hasSuccess = true
+			case pi.StatusError:
+				hasError = true
+				allUnavailable = false
+			case pi.StatusUnavailable:
+			default:
+				allUnavailable = false
+			}
+		}
+		switch {
+		case !hasSuccess && allUnavailable:
+			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorReadiness})
+		case !hasSuccess && hasError:
+			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal})
 		default:
-			allUnavailable = false
+			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorTask})
 		}
 	}
-	switch {
-	case !hasSuccess && allUnavailable:
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorReadiness})
-	case !hasSuccess && hasError:
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal})
-	default:
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorTask})
+	// Completed only. The write contract outranks the quality signal: a
+	// run that wrote outside its declared scope has breached the
+	// contract the caller relied on to bound it, and whether its tests
+	// pass is secondary information the result document carries either
+	// way. Contract breach outranks quality signal. Only a verdict with
+	// undeclared paths exits 4: a skipped check never does — a skip
+	// means the question could not be answered, and answering
+	// "violation" would be a lie — and a clean verdict never does.
+	if result.Writes != nil && result.Writes.Skipped == "" && result.Writes.UndeclaredCount > 0 {
+		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorPolicy})
 	}
+	if result.Verification != nil && result.Verification.ExitCode != 0 {
+		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification})
+	}
+	return 0
 }

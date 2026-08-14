@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/buildinfo"
+	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/skillinstall"
@@ -240,6 +241,25 @@ func requireChangesTail(t *testing.T, stdout, want string) {
 	lines := strings.Split(strings.TrimSpace(tail), "\n")
 	if len(lines) != 1 || !strings.HasPrefix(lines[0], "changes: ") {
 		t.Fatalf("stdout tail = %q, want exactly one changes: line", tail)
+	}
+}
+
+// requireWritesTail asserts that human run output carries the
+// worker-summary lines `want` verbatim, then exactly one change-manifest
+// line and exactly one writes-check line. Both lines depend on the
+// workspace's tree state at test time — "changes: 0 files, +0/-0" and
+// "writes: ok" on a clean checkout, the omitted and skipped forms on a
+// dirty one — so only their presence and position after the summaries
+// are pinned here; the checks' own tests pin their content.
+func requireWritesTail(t *testing.T, stdout, want string) {
+	t.Helper()
+	if !strings.HasPrefix(stdout, want) {
+		t.Fatalf("stdout = %q, want it to start with %q", stdout, want)
+	}
+	tail := strings.TrimPrefix(stdout, want)
+	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "writes: ") {
+		t.Fatalf("stdout tail = %q, want exactly one changes: line and one writes: line", tail)
 	}
 }
 
@@ -596,7 +616,7 @@ func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testi
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	requireChangesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
+	requireWritesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
 	if fake.callCount() != 2 {
 		t.Fatalf("worker calls = %d, want 2", fake.callCount())
 	}
@@ -643,7 +663,7 @@ func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	requireChangesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
+	requireWritesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
 	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
 		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
 	}
@@ -1709,5 +1729,166 @@ func TestPrintChangesTrailingCountIsRelativeToTotalFiles(t *testing.T) {
 	want := "changes: 120 files, +6/-0\n  c1.go  +1/-0\n  c2.go  +1/-0\n  c3.go  +1/-0\n  c4.go  +1/-0\n  c5.go  +1/-0\n  and 115 more\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// TestPrintWrites* build the run.WriteCheck struct directly and pin the
+// exact human rendering: printWrites renders, it does not sort, so every
+// fixture is already in the order the check produces (sorted by path).
+
+func TestPrintWritesNilCheckPrintsNothing(t *testing.T) {
+	// A nil check means the caller never declared; there is nothing to
+	// report.
+	var stdout bytes.Buffer
+	printWrites(nil, &stdout)
+	if got := stdout.String(); got != "" {
+		t.Fatalf("output = %q, want empty", got)
+	}
+}
+
+func TestPrintWritesCleanVerdict(t *testing.T) {
+	// A clean verdict prints one short line on stdout, the whole point
+	// of the field: the caller must see that the check ran and passed,
+	// not merely that nothing was said.
+	var stdout bytes.Buffer
+	printWrites(&run.WriteCheck{UndeclaredCount: 0}, &stdout)
+	want := "writes: ok\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesSkippedPartialDeclaration(t *testing.T) {
+	var stdout bytes.Buffer
+	printWrites(&run.WriteCheck{Skipped: "not all tasks declared writes"}, &stdout)
+	want := "writes: skipped: not all tasks declared writes\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesSkippedManifestUnavailable(t *testing.T) {
+	var stdout bytes.Buffer
+	printWrites(&run.WriteCheck{Skipped: "change manifest unavailable"}, &stdout)
+	want := "writes: skipped: change manifest unavailable\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesOneUndeclaredPath(t *testing.T) {
+	// The violation goes to stderr: it is a failure and it is what exit
+	// 4 refers to. The count line names the count, singular for one
+	// path, and the path follows indented two spaces.
+	var stderr bytes.Buffer
+	printWrites(&run.WriteCheck{
+		Undeclared:      []string{"src/stray.txt"},
+		UndeclaredCount: 1,
+	}, &stderr)
+	want := "pi-worker: write check failed: 1 undeclared path\n  src/stray.txt\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesSeveralUndeclaredPaths(t *testing.T) {
+	// Paths print in the check's order, sorted by path, one per line
+	// indented two spaces.
+	var stderr bytes.Buffer
+	printWrites(&run.WriteCheck{
+		Undeclared:      []string{"docs/leak.md", "go.mod.bak", "src/stray.txt"},
+		UndeclaredCount: 3,
+	}, &stderr)
+	want := "pi-worker: write check failed: 3 undeclared paths\n" +
+		"  docs/leak.md\n  go.mod.bak\n  src/stray.txt\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesMoreThanFiveUndeclaredPaths(t *testing.T) {
+	// Exactly five paths print; the rest collapse into the trailing
+	// line, one per path the five-line limit dropped.
+	var stderr bytes.Buffer
+	undeclared := []string{"a1.txt", "a2.txt", "a3.txt", "a4.txt", "a5.txt", "a6.txt", "a7.txt"}
+	printWrites(&run.WriteCheck{Undeclared: undeclared, UndeclaredCount: 7}, &stderr)
+	want := "pi-worker: write check failed: 7 undeclared paths\n" +
+		"  a1.txt\n  a2.txt\n  a3.txt\n  a4.txt\n  a5.txt\n  and 2 more\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesTrailingCountIsRelativeToUndeclaredCount(t *testing.T) {
+	// A truncated check carries UndeclaredCount larger than
+	// len(Undeclared): the entry cap dropped paths beyond it. The
+	// trailing line counts from UndeclaredCount, so it reports the
+	// paths the cap dropped as well as the ones the five-line limit
+	// dropped: with 120 undeclared paths, six of them in the list, five
+	// printed, the human is told 115 paths are not on screen.
+	var stderr bytes.Buffer
+	printWrites(&run.WriteCheck{
+		Undeclared:      []string{"c1.txt", "c2.txt", "c3.txt", "c4.txt", "c5.txt", "c6.txt"},
+		UndeclaredCount: 120,
+		Truncated:       true,
+	}, &stderr)
+	want := "pi-worker: write check failed: 120 undeclared paths\n" +
+		"  c1.txt\n  c2.txt\n  c3.txt\n  c4.txt\n  c5.txt\n  and 115 more\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunExitCodePolicyOnUndeclaredWrites(t *testing.T) {
+	// A completed run whose write check found at least one undeclared
+	// path exits 4. A skipped check never exits 4: a skip means the
+	// question could not be answered, and answering "violation" would
+	// be a lie. A clean verdict never exits 4 either, and a run with no
+	// declaration has no check at all.
+	tests := []struct {
+		name   string
+		result run.Result
+		want   int
+	}{
+		{name: "no declaration", result: run.Result{Status: contracts.RunCompleted}, want: 0},
+		{name: "clean verdict", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{UndeclaredCount: 0}}, want: 0},
+		{name: "skipped partial declaration", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "not all tasks declared writes"}}, want: 0},
+		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0},
+		{name: "undeclared paths", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}}, want: 4},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runExitCode(test.result); got != test.want {
+				t.Fatalf("exit = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunExitCodePrecedence(t *testing.T) {
+	// Run-outcome codes win over both checks: a timed-out run that also
+	// wrote outside its declaration exits 7. Among completed runs,
+	// policy outranks verification: a run that wrote outside its
+	// declared scope has breached the contract the caller relied on to
+	// bound it, and whether its tests pass is secondary information the
+	// result document carries either way. A completed run with a
+	// failing verification and no policy violation still exits 6.
+	violation := &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}
+	failingVerification := &run.Verification{Argv: []string{"go", "test"}, ExitCode: 3}
+	tests := []struct {
+		name   string
+		result run.Result
+		want   int
+	}{
+		{name: "timed out with violation", result: run.Result{Status: contracts.RunTimedOut, Writes: violation}, want: 7},
+		{name: "violation and failing verification", result: run.Result{Status: contracts.RunCompleted, Writes: violation, Verification: failingVerification}, want: 4},
+		{name: "failing verification alone", result: run.Result{Status: contracts.RunCompleted, Verification: failingVerification}, want: 6},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runExitCode(test.result); got != test.want {
+				t.Fatalf("exit = %d, want %d", got, test.want)
+			}
+		})
 	}
 }

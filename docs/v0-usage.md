@@ -322,11 +322,10 @@ Replace the provider/model placeholder with one exact selector printed by
 - When the working tree was already dirty before the run, the manifest is
   omitted with a reason rather than guessed, because the run's changes
   cannot be separated from the ones already there. An unborn HEAD, and a
-  measurement that failed after the workspace was
-  confirmed to be a git work tree, are omitted with a reason the same way. A
-  workspace outside a git work tree, or one whose git inspection failed before
-  it could tell the two apart, carries no manifest at all — the same silent
-  no-op the git state makes.
+  measurement that failed after the workspace was confirmed to be a git work
+  tree, are omitted with a reason the same way. A workspace outside a git work
+  tree, or one whose git inspection failed before it could tell the two apart,
+  carries no manifest at all — the same silent no-op the git state makes.
 
 ### Exactly one input mechanism
 
@@ -358,16 +357,22 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   `--task-file`) intends to write; whitespace around each comma-separated
   path is ignored. It may appear at most once per task and must follow the
   task it applies to.
-- The declaration is optional and is checked before any worker starts: a
-  run whose declared sets overlap is rejected up front. A run where some
-  tasks declare and others do not is allowed; tasks that declare nothing
-  are simply not part of the pre-flight check. It is a pre-flight contract,
-  not a sandbox or worktree: pi-worker does not enforce it during the run
-  and does not verify after the run that a worker stayed inside its
-  declaration.
+- The declaration is optional and is checked twice: before any worker
+  starts, a run whose declared sets overlap is rejected up front, and
+  after the run the declaration is compared against the paths the run
+  actually changed. A run where some tasks declare and others do not is
+  allowed; tasks that declare nothing are simply not part of the checks.
+  It is a pre-flight contract, not a sandbox or worktree: pi-worker does
+  not enforce it during the run.
 - When every task declares a non-empty set and the check passes, the shared
   workspace warning is suppressed; when any task declares nothing, the
   warning stays.
+- The run reports the changed paths no task declared, and exits `4`
+  (policy) when it found any. The run `status` field is unaffected: a run
+  whose workers all succeeded stays `completed`, and only the process exit
+  code and the reported error carry the failure. When not every task
+  declared writes, or the change manifest was not measured, the check is
+  skipped with a stated reason rather than answered.
 
 ### Output
 
@@ -401,6 +406,9 @@ Example:
 - `0` completed
 - `2` usage
 - `3` all workers unavailable / readiness path
+- `4` policy: a completed run wrote paths no task declared. The run
+  `status` stays `completed` and only the process exit code and the
+  reported error carry the failure
 - `5` task failure or partial completion; top-level `--json` `status` is
   `failed` for task failure and `partial` for partial completion.
 - `6` verification failed; the run `status` stays `completed` and only the
@@ -409,7 +417,13 @@ Example:
 - `8` cancellation
 - `9` protocol/internal; for runs, no worker succeeded and any worker reported an
   internal error
-- `4` (policy) is reserved and **not emitted by this v0 slice**.
+
+When more than one applies, run-outcome codes win over both checks: a
+timed-out run that also wrote outside its declaration exits `7`. Among
+completed runs, policy outranks verification: a run that wrote outside
+its declared scope has breached the contract the caller relied on to
+bound it, and whether its tests pass is secondary information the result
+document carries either way. Contract breach outranks quality signal.
 
 ### `--debug` debug stream
 

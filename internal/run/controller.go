@@ -231,8 +231,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 // trimming whitespace, and — when Writes is present — exactly one write
 // entry per task whose declared paths are normalized and checked. The
 // write declaration is pure input validation: nothing is read from the
-// workspace, and the declaration is never passed to workers, never echoed
-// in the result, and never enforced during or after the run.
+// workspace, and the declaration never reaches a worker and restricts
+// nothing while the run is in progress; once the run has ended it is
+// compared against the change manifest.
 func validate(req Request) error {
 	if req.Model == "" {
 		return fmt.Errorf("model is required")

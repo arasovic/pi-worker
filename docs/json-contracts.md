@@ -159,14 +159,13 @@ Entries are compared by identity, so a `stash@{N}` index shift is not
 a change.
 
 The change manifest is additive and optional, so `schemaVersion` stays `1`.
-Root `changes` is present when the workspace is inside a git work tree and
-the inspection of it succeeded. A workspace outside a git work tree, and an
-inspection that failed before it could tell the two apart, carry no
-`changes` at all — the same silent no-op `git` makes. Unlike `git` it is not
-gated by a state change: a run
-that only left modified files behind still carries it, because those files
-are what it names. It carries either a reason it could not be measured or
-the measurement, never both:
+Root `changes` is present when the workspace is inside a git work tree and the
+inspection of it succeeded. A workspace outside a git work tree, and an
+inspection that failed before it could tell the two apart, carry no `changes`
+at all — the same silent no-op `git` makes. Unlike `git` it is not gated by a
+state change: a run that only left modified files behind still carries it,
+because those files are what it names. It carries either a reason it could not
+be measured or the measurement, never both:
 
 - `omitted`: present only when the manifest could not be measured; a short
   reason. `files`, `totalFiles`, and `truncated` carry no meaning when it is
@@ -189,6 +188,26 @@ Each entry in `files` carries:
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
 it changed.
+
+The write check is additive and optional, so `schemaVersion` stays `1`.
+Root `writes` is present exactly when the request carried a write
+declaration: a caller who declared always gets an answer — a verdict or a
+stated skip reason — and a caller who never declared gets no field at all.
+Silence is never a clean check. The check is run-level, not task-level:
+which task wrote a given path is not knowable from a shared workspace, so
+the undeclared set belongs to the run. It carries either a reason it could
+not run or the verdict, never both:
+
+- `skipped`: present only when the check could not run; a short reason,
+  `not all tasks declared writes` or `change manifest unavailable`.
+  `undeclaredCount`, `undeclared`, and `truncated` carry no meaning when it
+  is present
+- `undeclaredCount`: always present on a verdict; the true number of
+  changed paths no task declared, before the entry cap. A checked run that
+  wrote nothing undeclared carries `0` rather than omitting the field
+- `undeclared`: present only when at least one path was undeclared; capped
+  at 100 entries
+- `truncated`: present and `true` only when the cap dropped entries
 
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.
