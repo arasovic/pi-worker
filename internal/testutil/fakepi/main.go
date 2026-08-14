@@ -170,6 +170,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				writeResponse(out, req.ID, req.Type, step.Response)
 			case len(step.Event) > 0:
 				writeRaw(out, step.Event)
+			case step.WriteFile != "":
+				if err := os.WriteFile(step.WriteFile, []byte("stray\n"), 0o600); err != nil {
+					fmt.Fprintf(stderr, "fakepi: write %s: %v\n", step.WriteFile, err)
+					return 1
+				}
 			default:
 				writeRaw(out, []byte(step.Raw))
 			}

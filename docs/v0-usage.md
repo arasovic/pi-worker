@@ -361,7 +361,8 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   starts, a run whose declared sets overlap is rejected up front, and
   after the run the declaration is compared against the paths the run
   actually changed. A run where some tasks declare and others do not is
-  allowed; tasks that declare nothing are simply not part of the checks.
+  allowed; a task declaring nothing is excluded from the pre-flight
+  overlap check and makes the post-run check skip entirely.
   It is a pre-flight contract, not a sandbox or worktree: pi-worker does
   not enforce it during the run.
 - When every task declares a non-empty set and the check passes, the shared
