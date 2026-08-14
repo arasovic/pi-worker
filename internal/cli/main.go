@@ -154,6 +154,15 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 	if err != nil {
 		return opts, nil, err
 	}
+	// --writes entries pair with the task most recently introduced when
+	// they appeared; pad what was declared to the final task count so the
+	// controller sees one entry per task, with a nil entry for every task
+	// that declared nothing.
+	if opts.writes != nil {
+		for len(opts.writes) < len(tasks) {
+			opts.writes = append(opts.writes, nil)
+		}
+	}
 	return opts, tasks, nil
 }
 
@@ -165,7 +174,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--verify <command>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
 }
 
 type versionOutput struct {
@@ -217,6 +226,10 @@ type runOptions struct {
 	verify         []string
 	json           bool
 	debug          bool
+	// writes is the per-task declared write set in task order: nil when
+	// no --writes appeared, and a nil entry for a task that declared
+	// nothing.
+	writes [][]string
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
@@ -242,7 +255,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 
 	preflightPiVersion(ctx, stderr)
 
-	if len(tasks) > 1 {
+	if len(tasks) > 1 && !allWritesDeclared(opts.writes) {
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
 	}
 
@@ -263,6 +276,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		Workspace:     workspace,
 		Verify:        opts.verify,
 		Debug:         debug,
+		Writes:        opts.writes,
 	})
 	if err != nil {
 		// Defensive: the CLI validates the input surface first, so a
@@ -399,6 +413,23 @@ func gitValue(value string) string {
 	return value
 }
 
+// allWritesDeclared reports whether every task carried a non-empty
+// --writes declaration. Only then is the shared-workspace warning
+// suppressed: the caller stated the disjoint-file contract for the whole
+// run and the controller checked it before any worker started. When any
+// task declared nothing, the warning stays.
+func allWritesDeclared(writes [][]string) bool {
+	if len(writes) == 0 {
+		return false
+	}
+	for _, entry := range writes {
+		if len(entry) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func preflightPiVersion(ctx context.Context, stderr io.Writer) {
 	output, err := runVersionProbe(ctx)
 	if err != nil {
@@ -481,6 +512,41 @@ func parseRunArgs(args []string) (runOptions, error) {
 			} else {
 				opts.taskFiles = append(opts.taskFiles, value)
 			}
+		case "--writes":
+			// Positional: applies to the task most recently introduced by
+			// --task or --task-file, at most once per task.
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, fmt.Errorf("flag %s requires a value", name)
+				}
+				i++
+				value = args[i]
+			}
+			index := len(opts.tasks) + len(opts.taskFiles) - 1
+			if index < 0 {
+				return opts, fmt.Errorf("--writes must follow a --task or --task-file")
+			}
+			if strings.TrimSpace(value) == "" {
+				return opts, fmt.Errorf("invalid writes %q: empty or whitespace-only", value)
+			}
+			paths := strings.Split(value, ",")
+			for i, path := range paths {
+				// Trim surrounding whitespace immediately, before every other
+				// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
+				// validation as the same paths. A trimmed-empty element still
+				// gets the existing empty-element error below.
+				paths[i] = strings.TrimSpace(path)
+				if paths[i] == "" {
+					return opts, fmt.Errorf("invalid writes %q: empty element between commas", value)
+				}
+			}
+			for len(opts.writes) <= index {
+				opts.writes = append(opts.writes, nil)
+			}
+			if opts.writes[index] != nil {
+				return opts, fmt.Errorf("--writes specified more than once for task %d", index+1)
+			}
+			opts.writes[index] = paths
 		case "--json", "--debug":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)

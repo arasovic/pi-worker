@@ -181,7 +181,7 @@ pi-worker skill status [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--verify <command>] [--json] [--debug]
+pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]
 ```
 
 ## Personal default model
@@ -325,6 +325,24 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 
 - Assign disjoint files, or use only one worker. v0 makes no worktree/isolation claim.
 - Every v0 worker always enables `read,grep,find,ls,edit,write,bash` with `--no-approve`; `bash` can execute arbitrary shell commands with the current user's host permissions, and this is not a sandbox.
+
+### Declared writes
+
+- `--writes <paths>` optionally declares, as a comma-separated list, the
+  workspace-relative paths the most recently introduced task (`--task` or
+  `--task-file`) intends to write; whitespace around each comma-separated
+  path is ignored. It may appear at most once per task and must follow the
+  task it applies to.
+- The declaration is optional and is checked before any worker starts: a
+  run whose declared sets overlap is rejected up front. A run where some
+  tasks declare and others do not is allowed; tasks that declare nothing
+  are simply not part of the pre-flight check. It is a pre-flight contract,
+  not a sandbox or worktree: pi-worker does not enforce it during the run
+  and does not verify after the run that a worker stayed inside its
+  declaration.
+- When every task declares a non-empty set and the check passes, the shared
+  workspace warning is suppressed; when any task declares nothing, the
+  warning stays.
 
 ### Output
 

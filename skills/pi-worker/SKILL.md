@@ -13,13 +13,14 @@ integration decisions in the parent agent. Never ask a worker to delegate.
 1. Confirm `pi-worker` is on `PATH`.
 2. For an informal model name, query `pi-worker models --json --debug --timeout 30s`. Select one unambiguous exact `provider/model`; report ambiguity and stop.
 3. Preserve every explicit model. If unavailable or unauthenticated, report the setup action and stop. Never substitute a model or provider. If omitted, let the configured default apply.
-4. Treat thinking separately: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. “Luna Max” means exact Luna plus `--thinking max`. Omit thinking when unspecified.
-5. Write one private task file per worker. Use one to three workers; parallelize only disjoint responsibilities and writes.
+4. Treat thinking as a separate axis from the model: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. An informal name ending in a level — "Luna Max", "Sonnet high" — is one model plus one level, never a model named `luna-max`. Resolve the model through step 2 and pass both flags: `--model <exact selector from the catalog> --thinking max`. Never guess a provider prefix. Omit thinking when unspecified.
+5. Write one private task file per worker. Use one to three workers; parallelize only disjoint responsibilities and writes. Declaring the paths with `--writes` turns that rule into a checked one: an overlapping declaration fails the run before any worker starts.
 6. Run with a bounded timeout, JSON result, and debug lifecycle output:
 
 ```sh
 pi-worker run --model <provider/model> --thinking <level> \
-  --task-file <task-a.txt> --task-file <task-b.txt> \
+  --task-file <task-a.txt> --writes <paths-a> \
+  --task-file <task-b.txt> --writes <paths-b> \
   --timeout <duration> --json --debug [--verify <command>]
 ```
 

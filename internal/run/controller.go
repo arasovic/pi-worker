@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,11 @@ type Request struct {
 	// to check the finished work, split into argv; empty disables
 	// verification.
 	Verify []string
+	// Writes optionally declares, per task, the workspace-relative paths
+	// that task intends to write. A nil or empty entry declares nothing
+	// for that task. When two tasks declare overlapping paths the run is
+	// rejected before any worker starts.
+	Writes [][]string
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
@@ -161,8 +167,12 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 }
 
 // validate checks the request before any worker starts: a non-empty model,
-// a non-empty workspace, between 1 and MaxTasks tasks, and no empty task
-// after trimming whitespace.
+// a non-empty workspace, between 1 and MaxTasks tasks, no empty task after
+// trimming whitespace, and — when Writes is present — exactly one write
+// entry per task whose declared paths are normalized and checked. The
+// write declaration is pure input validation: nothing is read from the
+// workspace, and the declaration is never passed to workers, never echoed
+// in the result, and never enforced during or after the run.
 func validate(req Request) error {
 	if req.Model == "" {
 		return fmt.Errorf("model is required")
@@ -181,7 +191,85 @@ func validate(req Request) error {
 			return fmt.Errorf("task %d is empty", i+1)
 		}
 	}
+	// Writes is either nil or exactly as long as Tasks; a shorter or
+	// longer slice is a validation error. An individual entry may be nil
+	// or empty, declaring nothing for that task.
+	if req.Writes != nil && len(req.Writes) != len(req.Tasks) {
+		return fmt.Errorf("writes must declare one entry per task: got %d entries for %d tasks", len(req.Writes), len(req.Tasks))
+	}
+	normalized := make([][]string, len(req.Tasks))
+	for i, declared := range req.Writes {
+		if len(declared) == 0 {
+			continue
+		}
+		seen := make(map[string]bool, len(declared))
+		normalized[i] = make([]string, 0, len(declared))
+		for _, value := range declared {
+			clean, err := validateWritePath(value)
+			if err != nil {
+				return fmt.Errorf("task %d: %v", i+1, err)
+			}
+			if seen[clean] {
+				return fmt.Errorf("task %d declares write path %q more than once", i+1, clean)
+			}
+			seen[clean] = true
+			normalized[i] = append(normalized[i], clean)
+		}
+	}
+	for i := 0; i < len(normalized); i++ {
+		for j := i + 1; j < len(normalized); j++ {
+			for _, a := range normalized[i] {
+				for _, b := range normalized[j] {
+					if pathsOverlap(a, b) {
+						return fmt.Errorf("task %d and task %d declare overlapping write paths %q and %q", i+1, j+1, a, b)
+					}
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// validateWritePath normalizes one declared write path, rejecting the
+// values that cannot be compared: an empty or whitespace-only path, an
+// absolute path, a path that escapes the workspace, and "." declaring the
+// whole workspace. The returned path is filepath.Clean'ed.
+func validateWritePath(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("write path %q is empty or whitespace-only", value)
+	}
+	if filepath.IsAbs(value) {
+		return "", fmt.Errorf("write path %q is absolute", value)
+	}
+	clean := filepath.Clean(value)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("write path %q escapes the workspace", value)
+	}
+	if clean == "." {
+		return "", fmt.Errorf("write path %q declares the whole workspace", value)
+	}
+	return clean, nil
+}
+
+// pathsOverlap reports whether two cleaned workspace-relative paths
+// overlap: equal, or one is a path prefix of the other on a segment
+// boundary. Comparison uses segment splitting, so "src/a" and "src/ab"
+// do not overlap while "src/a" and "src/a/b.go" do.
+func pathsOverlap(a, b string) bool {
+	if a == b {
+		return true
+	}
+	aseg := strings.Split(a, string(filepath.Separator))
+	bseg := strings.Split(b, string(filepath.Separator))
+	if len(aseg) > len(bseg) {
+		aseg, bseg = bseg, aseg
+	}
+	for i := range aseg {
+		if aseg[i] != bseg[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // gitMoved reports whether the git state moved in a way a bounded edit

@@ -273,6 +273,130 @@ func TestControllerRejectsInvalidRequestsBeforeStartingWorkers(t *testing.T) {
 	}
 }
 
+func TestControllerRejectsInvalidDeclaredWritesBeforeStartingWorkers(t *testing.T) {
+	tests := []struct {
+		name   string
+		tasks  []string
+		writes [][]string
+	}{
+		{name: "writes shorter than tasks", tasks: []string{"a", "b"}, writes: [][]string{{"src/a"}}},
+		{name: "writes longer than tasks", tasks: []string{"a", "b"}, writes: [][]string{{"src/a"}, {"src/b"}, {"src/c"}}},
+		{name: "empty path", tasks: []string{"a"}, writes: [][]string{{""}}},
+		{name: "whitespace path", tasks: []string{"a"}, writes: [][]string{{"   "}}},
+		{name: "absolute path", tasks: []string{"a"}, writes: [][]string{{"/etc/passwd"}}},
+		{name: "escapes workspace", tasks: []string{"a"}, writes: [][]string{{"../outside"}}},
+		{name: "escapes workspace deep", tasks: []string{"a"}, writes: [][]string{{"src/../../outside"}}},
+		{name: "cleans to workspace escape", tasks: []string{"a"}, writes: [][]string{{"a/../.."}}},
+		{name: "whole workspace dot", tasks: []string{"a"}, writes: [][]string{{"."}}},
+		{name: "whole workspace dot slash", tasks: []string{"a"}, writes: [][]string{{"./"}}},
+		{name: "duplicate within task", tasks: []string{"a"}, writes: [][]string{{"src/a", "src/a"}}},
+		{name: "duplicate after cleaning", tasks: []string{"a"}, writes: [][]string{{"src/a", "./src/a"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			worker := newScriptedWorker()
+			req := validRequest(test.tasks...)
+			req.Writes = test.writes
+			result, err := New(worker).Run(context.Background(), req)
+			if err == nil {
+				t.Fatalf("Run accepted invalid writes %#v", test.writes)
+			}
+			if result.Status != "" || len(result.Workers) != 0 {
+				t.Fatalf("invalid request returned a non-zero result: %#v", result)
+			}
+			if worker.callCount() != 0 {
+				t.Fatalf("worker invoked %d times before validation", worker.callCount())
+			}
+		})
+	}
+}
+
+func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
+	tests := []struct {
+		name    string
+		writes  [][]string
+		wantErr string
+	}{
+		{
+			name:    "identical paths in two tasks",
+			writes:  [][]string{{"src/a"}, {"src/a"}},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
+		},
+		{
+			name:    "directory prefix on segment boundary",
+			writes:  [][]string{{"src/a"}, {"src/a/b.go"}},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`,
+		},
+		{
+			name:    "file under other task directory",
+			writes:  [][]string{{"src/a/b.go"}, {"src/a"}},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a/b.go" and "src/a"`,
+		},
+		{
+			name:    "cleaning unifies paths",
+			writes:  [][]string{{"./src/a"}, {"src/a"}},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
+		},
+		{
+			name:    "overlap inside multi-path task",
+			writes:  [][]string{{"src/a", "src/b"}, {"src/a/c.go"}},
+			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/c.go"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			worker := newScriptedWorker()
+			req := validRequest("a", "b")
+			req.Writes = test.writes
+			_, err := New(worker).Run(context.Background(), req)
+			if err == nil {
+				t.Fatalf("Run accepted overlapping writes %#v", test.writes)
+			}
+			if err.Error() != test.wantErr {
+				t.Fatalf("error = %q, want %q", err.Error(), test.wantErr)
+			}
+			if worker.callCount() != 0 {
+				t.Fatalf("worker invoked %d times before validation", worker.callCount())
+			}
+		})
+	}
+}
+
+func TestControllerAcceptsDisjointDeclaredWrites(t *testing.T) {
+	tests := []struct {
+		name   string
+		writes [][]string
+	}{
+		{name: "no declaration", writes: nil},
+		{name: "declaration with nil entries", writes: [][]string{nil, nil}},
+		{name: "disjoint files", writes: [][]string{{"src/a"}, {"src/b"}}},
+		{name: "sibling prefix boundary", writes: [][]string{{"src/a"}, {"src/ab"}}},
+		{name: "multi-path disjoint", writes: [][]string{{"src/a", "src/b"}, {"src/c"}}},
+		{name: "one declares one does not", writes: [][]string{{"src/a"}, nil}},
+		{name: "empty entry", writes: [][]string{{}, {"src/a"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			worker := newScriptedWorker()
+			req := validRequest("a", "b")
+			req.Writes = test.writes
+			result, err := New(worker).Run(context.Background(), req)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if result.Status != contracts.RunCompleted {
+				t.Fatalf("status = %q, want completed", result.Status)
+			}
+			if len(result.Workers) != 2 || result.Workers[0].Explanation != "done:a" || result.Workers[1].Explanation != "done:b" {
+				t.Fatalf("workers = %#v", result.Workers)
+			}
+			if worker.callCount() != 2 {
+				t.Fatalf("worker invoked %d times, want 2", worker.callCount())
+			}
+		})
+	}
+}
+
 func TestControllerRunsAllAcceptedWorkersConcurrently(t *testing.T) {
 	// The gate deadlocks a serializing controller: all three calls must be
 	// in flight simultaneously before any of them may return.
