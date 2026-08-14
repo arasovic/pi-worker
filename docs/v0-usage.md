@@ -363,7 +363,15 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   path is ignored, and each value is cleaned where it is compared, so
   `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
   `..` all name `src/a`. It may appear at most once per task and must
-  follow the task it applies to.
+  follow the task it applies to. An empty value, `--writes ""`, declares
+  that the task writes nothing; whitespace-only is the same declaration
+  because the flag already trims. The empty string is the one spelling
+  that cannot collide with a real path. A task that declared the empty
+  set has declared: when every task in the run declared — the empty
+  declaration included — the post-run check runs, so a read-only round
+  can be proven to have written nothing rather than merely asserted to.
+  Such a run that changed nothing reports a clean verdict; one that
+  changed a path reports it undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per
@@ -376,13 +384,13 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   starts, a run whose declared sets overlap is rejected up front, and
   after the run the declaration is compared against the paths the run
   actually changed. A run where some tasks declare and others do not is
-  allowed; a task declaring nothing is excluded from the pre-flight
+  allowed; a task that did not declare is excluded from the pre-flight
   overlap check and makes the post-run check skip entirely.
   It is a pre-flight contract, not a sandbox or worktree: pi-worker does
   not enforce it during the run.
-- When every task declares a non-empty set and the check passes, the shared
-  workspace warning is suppressed; when any task declares nothing, the
-  warning stays.
+- When every task declared — empty set or not — and the check passes,
+  the shared workspace warning is suppressed; when any task did not
+  declare, the warning stays.
 - The run reports the changed paths no task declared, and exits `4`
   (policy) when it found any. The run `status` field is unaffected: a run
   whose workers all succeeded stays `completed`, and only the process exit

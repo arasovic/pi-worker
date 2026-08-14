@@ -207,7 +207,9 @@ the undeclared set belongs to the run. It carries either a reason it could
 not run or the verdict, never both:
 
 - `skipped`: present only when the check could not run; a short reason,
-  `not all tasks declared writes` or `change manifest unavailable`.
+  `not all tasks declared writes` — some task said nothing at all, the
+  only state that triggers it, since a task that declared an empty set
+  has declared — or `change manifest unavailable`.
   `undeclaredCount`, `undeclared`, and `truncated` carry no meaning when it
   is present
 - `undeclaredCount`: always present on a verdict; the true number of
