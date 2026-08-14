@@ -181,7 +181,7 @@ pi-worker skill status [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--json] [--debug]
+pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--timeout <duration>] [--verify <command>] [--json] [--debug]
 ```
 
 ## Personal default model
@@ -252,6 +252,39 @@ Replace the provider/model placeholder with one exact selector printed by
 - `models` and `doctor` do not enumerate thinking support because doing so
   requires activating a model; both commands remain inspection-only.
 
+### Workspace verification
+
+- `--verify <command>` may be given at most once and runs one check command
+  in the workspace after the workers settle, once per run.
+- No shell is involved: the value is split on whitespace into argv, so
+  shell syntax cannot work. A value containing `|`, `&`, `;`, `<`, `>`,
+  `$`, a backtick, a newline, a quote, or a backslash is rejected as a
+  usage error naming the offending character, and an empty or
+  whitespace-only value is rejected too. A quoted or escaped argument is
+  refused rather than silently mis-split into stray fragments, so a
+  command that needs shell quoting or escaping must be put in a script
+  the check invokes instead. `--verify "go build ./... && go test
+  ./..."` fails up front with the `&` named instead of executing
+  something surprising.
+- Verification runs only when the run completed with the context intact: a
+  partial or failed run leaves the workspace half-written, and a timed-out
+  or cancelled context skips the check.
+- A passing check exits `0`. In human mode it prints one short
+  `verification: ok` line after the worker summaries and carries no further
+  output on purpose; in `--json` mode the result carries `verification`
+  with `argv` and `exitCode: 0` only.
+- A failing check (non-zero exit) exits the process `6` without changing
+  the run `status` field or any worker status: those describe worker
+  outcomes, and only the process exit code and the reported error carry
+  the verification failure. Human mode prints the exit code and the
+  captured excerpt (the first 2 KiB and the last 6 KiB when long, with the
+  elided middle marked), plus the full `pi-worker-verify-*.log` path in
+  the system temp directory when one was written; `--json` mode carries
+  `output`, `truncated`, and `logFile` in the `verification` object.
+- A context that expires while the check runs is not a verification
+  failure: the run ran out of time and exits the way a timed-out run
+  exits (`7`).
+
 ### Exactly one input mechanism
 
 - `--task` and `--task-file` may each repeat up to 3 total tasks.
@@ -288,6 +321,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`
   - fallback workers include `thinkingFallback: true` and a fixed `warning`
+  - `verification`, when `--verify` ran on a completed run: `argv` and
+    `exitCode` always; `output` (the captured excerpt), `truncated`, and
+    `logFile` only for a failing check
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
@@ -303,11 +339,13 @@ Example:
 - `3` all workers unavailable / readiness path
 - `5` task failure or partial completion; top-level `--json` `status` is
   `failed` for task failure and `partial` for partial completion.
+- `6` verification failed; the run `status` stays `completed` and only the
+  process exit code and the reported error carry the failure
 - `7` timeout
 - `8` cancellation
 - `9` protocol/internal; for runs, no worker succeeded and any worker reported an
   internal error
-- `4` (policy) and `6` (verification) are reserved and **not emitted by this v0 slice**.
+- `4` (policy) is reserved and **not emitted by this v0 slice**.
 
 ### `--debug` debug stream
 

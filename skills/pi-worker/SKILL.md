@@ -20,13 +20,22 @@ integration decisions in the parent agent. Never ask a worker to delegate.
 ```sh
 pi-worker run --model <provider/model> --thinking <level> \
   --task-file <task-a.txt> --task-file <task-b.txt> \
-  --timeout <duration> --json --debug
+  --timeout <duration> --json --debug [--verify <command>]
 ```
+
+Add `--verify <command>` when the finished workspace must be proven green
+(e.g. `go test ./...`). The check runs once after the workers settle and
+is split on whitespace into argv: no shell is involved, so shell syntax
+is rejected up front, not executed.
 
 Parse the single JSON document. Report each worker's model, effective
 `thinkingLevel`, status, explanation, and failure. When
 `thinkingFallback` is true, surface its warning: the selected model continued
-with Pi's confirmed default effort.
+with Pi's confirmed default effort. When the result carries `verification`,
+a non-zero `exitCode` means the workspace check failed: report the excerpt
+(`output`) and the full log (`logFile`) and do not treat the run as done;
+fix the workspace and re-run. The run `status` stays `completed`; only the
+process exit code and the verification object carry the failure.
 
 ## Boundaries
 
