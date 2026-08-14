@@ -393,6 +393,7 @@ type runOutput struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Status        string            `json:"status"`
 	Workers       []pi.WorkerResult `json:"workers"`
+	Changes       *run.Changes      `json:"changes"`
 }
 
 // decodeRunOutput decodes the single --json result document from stdout.
@@ -1252,6 +1253,11 @@ func TestRunParentDeadlineExits7FromTimedOutContext(t *testing.T) {
 	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusTimedOut {
 		t.Fatalf("workers = %#v", output.Workers)
 	}
+	// The context was already done at inspection: the manifest must
+	// read as omitted with a stated reason, never as an absent field.
+	if output.Changes == nil || output.Changes.Omitted != "context already done" {
+		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
+	}
 }
 
 func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
@@ -1268,6 +1274,11 @@ func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
 	}
 	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusCancelled {
 		t.Fatalf("workers = %#v", output.Workers)
+	}
+	// The context was already done at inspection: the manifest must
+	// read as omitted with a stated reason, never as an absent field.
+	if output.Changes == nil || output.Changes.Omitted != "context already done" {
+		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
 	}
 }
 

@@ -134,15 +134,24 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// the change manifest treats it differently: a guard failure is
 	// indistinguishable from a workspace outside a git work tree and is
 	// the same silent no-op Git makes, arriving here as before == nil
-	// with beforeErr == nil — git missing or a dead context included.
-	// Only a failure after the guard, from git status --porcelain or
-	// git stash list, is a post-guard inspection failure that reaches
-	// reasonMeasurementFail and must be reported rather than silently
-	// dropped.
+	// with beforeErr == nil — git missing included. A context already
+	// done when the inspection ran is the one exception: the run never
+	// got far enough to look, so that case is a stated omission, not an
+	// absent field. Only a failure after the guard, from git status
+	// --porcelain, git stash list, or rev-parse --abbrev-ref HEAD
+	// outside the unborn-HEAD case, is a post-guard inspection failure
+	// that reaches reasonMeasurementFail and must be reported rather
+	// than silently dropped.
 	var before *GitState
 	var beforeErr error
+	// The context state is captured here, at the inspection site, where
+	// it is knowable: by the time the change-manifest switch runs, a
+	// context that was live at inspection may have died mid-run and
+	// would look identical to one already done when it started.
+	beforeContextDone := false
 	if c.gitInspector != nil {
 		before, beforeErr = c.gitInspector.Inspect(ctx, req.Workspace)
+		beforeContextDone = ctx.Err() != nil
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
@@ -200,6 +209,11 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			changesCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
 			defer cancel()
 			result.Changes = measureChanges(changesCtx, req.Workspace, before)
+		case beforeContextDone:
+			// A context already done when the before-state inspection ran:
+			// nothing was measured and nothing failed, and an absent field
+			// would read as a measured result. Omit with the stated reason.
+			result.Changes = &Changes{Omitted: reasonContextDone}
 		}
 	}
 	// The write check runs after the change manifest, on every terminal

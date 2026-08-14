@@ -414,6 +414,42 @@ func TestControllerChangesNotInsideGitWorkTreeStaysNil(t *testing.T) {
 	}
 }
 
+func TestControllerDeadContextOmissionDistinctFromNonGitWorkspace(t *testing.T) {
+	// A context already done when the before-state inspection ran must
+	// omit with a stated reason, while a live context in the same
+	// non-work-tree workspace stays the one silent nil case. The two
+	// must stay distinguishable: absence is never readable as a
+	// measured result, and a genuine non-work-tree absence is never
+	// mislabeled as this omission.
+	dir := t.TempDir()
+	t.Run("live context", func(t *testing.T) {
+		result := runWithChanges(t, newScriptedWorker(), dir)
+		if result.Changes != nil {
+			t.Fatalf("changes = %#v, want nil outside a git work tree", result.Changes)
+		}
+	})
+	t.Run("dead context", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+		defer cancel()
+		req := validRequest("a")
+		req.Workspace = dir
+		result, err := New(newScriptedWorker(), WithGitInspector(NewDefaultGitInspector())).Run(ctx, req)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		changes := result.Changes
+		if changes == nil {
+			t.Fatalf("changes = nil, want an omitted manifest on a context already done")
+		}
+		if changes.Omitted != reasonContextDone {
+			t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonContextDone)
+		}
+		if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+			t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
+		}
+	})
+}
+
 func TestControllerChangesNotGatedByGitTripwire(t *testing.T) {
 	// The manifest exists precisely for the files the git tripwire
 	// deliberately ignores: a run that only leaves modified files behind

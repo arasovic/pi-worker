@@ -57,11 +57,13 @@ const (
 )
 
 // Omission reasons. They are short, lowercase, fixed strings, and there
-// are exactly these three: a dirty before-state, an unborn HEAD, and a
+// are exactly these four: a dirty before-state, an unborn HEAD, a
+// context already done when the before-state inspection ran, and a
 // failed measurement (a git command failure or a budget that expires).
 const (
 	reasonDirtyBeforeState = "dirty before-state"
 	reasonUnbornHead       = "unborn head"
+	reasonContextDone      = "context already done"
 	reasonMeasurementFail  = "measurement failed"
 )
 
