@@ -298,7 +298,7 @@ func TestControllerRunsVerificationOnceWithWorkspaceAndArgv(t *testing.T) {
 	ctx := context.Background()
 	req := validRequest("a", "b", "c")
 	req.Verify = []string{"go", "test", "./..."}
-	result, err := New(worker, verifier).Run(ctx, req)
+	result, err := New(worker, WithVerifier(verifier)).Run(ctx, req)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestControllerSkipsVerificationWithoutCompletedRun(t *testing.T) {
 			}
 			req := validRequest(tasks...)
 			req.Verify = []string{"go", "test", "./..."}
-			result, err := New(worker, verifier).Run(context.Background(), req)
+			result, err := New(worker, WithVerifier(verifier)).Run(context.Background(), req)
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
@@ -412,7 +412,7 @@ func TestControllerSkipsVerificationOnDoneContext(t *testing.T) {
 			verifier := &scriptedVerifier{result: Verification{ExitCode: 0}}
 			req := validRequest("a", "b")
 			req.Verify = []string{"go", "test", "./..."}
-			result, err := New(worker, verifier).Run(test.ctx(), req)
+			result, err := New(worker, WithVerifier(verifier)).Run(test.ctx(), req)
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
@@ -437,7 +437,7 @@ func TestControllerPropagatesVerificationContextExpiry(t *testing.T) {
 	req.Workspace = t.TempDir()
 	req.Verify = verifyHelperArgs(t, "0", "0")
 	t.Setenv("PI_WORKER_VERIFY_SLEEP_MS", "5000")
-	_, err := New(worker, NewDefaultVerifier()).Run(ctx, req)
+	_, err := New(worker, WithVerifier(NewDefaultVerifier())).Run(ctx, req)
 	if err == nil {
 		t.Fatalf("Run accepted a verification that outlived the context")
 	}
@@ -474,7 +474,7 @@ func TestControllerPropagatesVerifierStartFailure(t *testing.T) {
 	verifier := &scriptedVerifier{err: fmt.Errorf("exec: no such command")}
 	req := validRequest("a", "b")
 	req.Verify = []string{"no-such-command"}
-	result, err := New(worker, verifier).Run(context.Background(), req)
+	result, err := New(worker, WithVerifier(verifier)).Run(context.Background(), req)
 	if err == nil {
 		t.Fatalf("Run accepted a verifier start failure")
 	}

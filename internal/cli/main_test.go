@@ -17,6 +17,7 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/skillinstall"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
@@ -1405,5 +1406,21 @@ func TestMainCancelsSkillCommandsCleanly(t *testing.T) {
 	code, stdout, _ := runCLIWithContext(t, ctx, []string{"skill", "status", "--json"}, "")
 	if code != 8 || stdout != "" {
 		t.Fatalf("exit = %d, stdout = %q", code, stdout)
+	}
+}
+
+func TestPrintGitChangeUnbornToCommittedHeadWarning(t *testing.T) {
+	// A run that starts on an unborn branch has no HEAD. The warning must
+	// render the empty hash as (none) instead of a blank, so an
+	// unborn-to-committed run reads "HEAD (none) -> 8b970ca" and not
+	// "HEAD  -> 8b970ca" with a doubled space.
+	var stderr bytes.Buffer
+	printGitChange(&run.GitChange{
+		Before: run.GitState{Head: ""},
+		After:  run.GitState{Head: "8b970ca6db30a27c713aca1f1ee2974c31cfde3d"},
+	}, &stderr)
+	want := "pi-worker: warning: the run changed git state: HEAD (none) -> 8b970ca\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
 	}
 }
