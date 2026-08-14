@@ -64,6 +64,14 @@ type Result struct {
 	// A measurement failure is reported through Omitted, never by
 	// leaving the field nil.
 	Changes *Changes `json:"changes,omitempty"`
+	// Writes is the post-hoc comparison of the paths the run changed
+	// against the paths its tasks declared they would write. It is
+	// present exactly when the request carried a Writes declaration:
+	// a caller who declared gets the verdict or the skip reason, and a
+	// caller who never declared gets nothing. This is the opposite of
+	// the usual omitempty reading — a declared run that answered with
+	// silence would look checked when it was not.
+	Writes *WriteCheck `json:"writes,omitempty"`
 }
 
 // Controller runs accepted tasks concurrently through one Worker and,
@@ -193,6 +201,16 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			defer cancel()
 			result.Changes = measureChanges(changesCtx, req.Workspace, before)
 		}
+	}
+	// The write check runs after the change manifest, on every terminal
+	// status, whenever the request carried a write declaration: a run
+	// that stopped mid-edit is exactly the run whose stray writes a
+	// caller most needs to know about. It is pure comparison over the
+	// manifest and the declaration in memory — no commands, so no
+	// context and no timeout of its own. No declaration, no field:
+	// silence means the caller never asked.
+	if req.Writes != nil {
+		result.Writes = checkWrites(result.Changes, req.Writes)
 	}
 	// Verification runs once for the whole run after every worker has
 	// settled, and only on a completed run with a live context: a partial

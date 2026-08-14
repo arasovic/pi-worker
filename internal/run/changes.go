@@ -28,6 +28,15 @@ type Changes struct {
 	Files      []FileChange `json:"files,omitempty"`
 	TotalFiles int          `json:"totalFiles"`
 	Truncated  bool         `json:"truncated,omitempty"`
+	// allPaths is the complete set of changed workspace paths before
+	// the cap: the merged manifest set plus the untracked files that
+	// were listed but never measured, which still count toward
+	// TotalFiles. It is present whenever the manifest was measured and
+	// empty when it was omitted, and it backs the post-run write check,
+	// which must not decide policy from the capped, churn-ordered
+	// manifest list. Unexported, so encoding/json never sees it and
+	// schemaVersion stays 1.
+	allPaths []string
 }
 
 // FileChange is one changed workspace path with its measured line
@@ -194,6 +203,22 @@ func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error)
 			total++
 		}
 	}
+	// allPaths is built from the same merged set TotalFiles counts, so
+	// every untracked file beyond the cap is present even though it was
+	// never measured. The write check compares against this complete
+	// set, never against the capped list: a run that changed 150 paths
+	// and wrote outside its declaration only in path number 130 must
+	// still be caught. Ordering does not matter here; the check treats
+	// it as a set.
+	allPaths := make([]string, 0, total)
+	for path := range byPath {
+		allPaths = append(allPaths, path)
+	}
+	for _, path := range unmeasured {
+		if _, seen := byPath[path]; !seen {
+			allPaths = append(allPaths, path)
+		}
+	}
 	sort.Slice(files, func(i, j int) bool {
 		ci, cj := files[i].Added+files[i].Deleted, files[j].Added+files[j].Deleted
 		if ci != cj {
@@ -201,7 +226,7 @@ func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error)
 		}
 		return files[i].Path < files[j].Path
 	})
-	changes := &Changes{Files: files, TotalFiles: total}
+	changes := &Changes{Files: files, TotalFiles: total, allPaths: allPaths}
 	if total > maxChangeFiles {
 		changes.Files = changes.Files[:maxChangeFiles]
 		changes.Truncated = true
