@@ -367,7 +367,7 @@ func printVerification(verification *run.Verification, stdout, stderr io.Writer)
 
 // printGitChange prints the run-level git-state change after the worker
 // summaries in human mode: one stderr warning line naming what moved —
-// HEAD, the branch, or the stash list — when a run changed the git
+// HEAD, the branch, or the stash entries — when a run changed the git
 // state in a way a bounded edit does not normally move. HEAD is shown
 // at git's default seven-character abbreviation; the full values ride
 // in the --json result. The run status stays unchanged: this is a
@@ -381,13 +381,38 @@ func printGitChange(change *run.GitChange, stderr io.Writer) {
 	if before.Branch != after.Branch {
 		parts = append(parts, fmt.Sprintf("branch %s -> %s", gitValue(before.Branch), gitValue(after.Branch)))
 	}
-	if before.Stashes != after.Stashes {
-		parts = append(parts, fmt.Sprintf("stashes %d -> %d", before.Stashes, after.Stashes))
+	if change.Stash != nil {
+		if removed := gitStashEntries(change.Stash.Removed); removed != "" {
+			parts = append(parts, "stash removed: "+removed)
+		}
+		if added := gitStashEntries(change.Stash.Added); added != "" {
+			parts = append(parts, "stash added: "+added)
+		}
 	}
 	if len(parts) == 0 {
 		return
 	}
 	fmt.Fprintf(stderr, "pi-worker: warning: the run changed git state: %s\n", strings.Join(parts, ", "))
+}
+
+// gitStashEntries renders stash entries for the human warning, each as
+// the sha at git's default seven-character abbreviation followed by a
+// space and the subject. At most three entries are listed; the remainder
+// is summarized as "and N more".
+func gitStashEntries(entries []string) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	limit := min(len(entries), 3)
+	parts := make([]string, 0, limit+1)
+	for _, entry := range entries[:limit] {
+		sha, subject, _ := strings.Cut(entry, " ")
+		parts = append(parts, gitHead(sha)+" "+subject)
+	}
+	if len(entries) > limit {
+		parts = append(parts, fmt.Sprintf("and %d more", len(entries)-limit))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // gitHead renders a commit hash for the human warning at git's default

@@ -15,12 +15,26 @@ type GitState struct {
 	Branch  string `json:"branch,omitempty"`
 	Dirty   bool   `json:"dirty"`
 	Stashes int    `json:"stashes"`
+	// StashEntries identifies each stash entry as "<sha> <subject>". It is
+	// the comparison key and never appears in the result document, which
+	// keeps the change additive: the serialized shape of an existing field
+	// does not move.
+	StashEntries []string `json:"-"`
+}
+
+// GitStashChange names the stash entries a run added and removed. Entries
+// are compared by identity, not by position or count, so an index shift is
+// not a change and a drop paired with a push is not silence.
+type GitStashChange struct {
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
 }
 
 // GitChange is the workspace git state before and after a run.
 type GitChange struct {
-	Before GitState `json:"before"`
-	After  GitState `json:"after"`
+	Before GitState        `json:"before"`
+	After  GitState        `json:"after"`
+	Stash  *GitStashChange `json:"stash,omitempty"`
 }
 
 // GitInspector reads the git state of a workspace directory.
@@ -48,9 +62,11 @@ func NewDefaultGitInspector() GitInspector {
 // detached and left empty; an unborn branch makes that command fail
 // after printing the same literal "HEAD", which is the same
 // unborn-HEAD case and equally not an error. Dirty is true when git
-// status --porcelain prints anything, and Stashes is the number of
-// non-empty git stash list lines. A failure of any command after the
-// guard other than the unborn-HEAD case is returned as an error.
+// status --porcelain prints anything, and the stash list comes from
+// git stash list --format=%H %gs, one "<sha> <subject>" identity per
+// non-empty line in git's order (newest first); Stashes is the number
+// of entries. A failure of any command after the guard other than the
+// unborn-HEAD case is returned as an error.
 func (i *DefaultGitInspector) Inspect(ctx context.Context, dir string) (*GitState, error) {
 	inside, err := gitOutput(ctx, dir, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(inside) != "true" {
@@ -76,11 +92,12 @@ func (i *DefaultGitInspector) Inspect(ctx context.Context, dir string) (*GitStat
 		return nil, fmt.Errorf("git status: %w", err)
 	}
 	state.Dirty = porcelain != ""
-	stash, err := gitOutput(ctx, dir, "stash", "list")
+	stash, err := gitOutput(ctx, dir, "stash", "list", "--format=%H %gs")
 	if err != nil {
 		return nil, fmt.Errorf("git stash list: %w", err)
 	}
-	state.Stashes = nonEmptyLineCount(stash)
+	state.StashEntries = nonEmptyLines(stash)
+	state.Stashes = len(state.StashEntries)
 	return state, nil
 }
 
@@ -103,14 +120,45 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return stdout.String(), nil
 }
 
-// nonEmptyLineCount counts the non-empty lines of output.
-func nonEmptyLineCount(output string) int {
-	count := 0
+// nonEmptyLines returns the non-empty lines of output in order.
+func nonEmptyLines(output string) []string {
+	lines := []string{}
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
-		if strings.TrimSpace(scanner.Text()) != "" {
-			count++
+		if trimmed := strings.TrimSpace(scanner.Text()); trimmed != "" {
+			lines = append(lines, trimmed)
 		}
 	}
-	return count
+	return lines
+}
+
+// stashDiff names the stash entries a run added and removed: entries
+// present in after but not before are Added, entries present in before
+// but not after are Removed, each in git stash list order (newest
+// first). The sha makes every entry unique, so a plain set difference is
+// correct. It returns nil when nothing appeared and nothing disappeared.
+func stashDiff(before, after *GitState) *GitStashChange {
+	beforeSet := make(map[string]struct{}, len(before.StashEntries))
+	for _, entry := range before.StashEntries {
+		beforeSet[entry] = struct{}{}
+	}
+	afterSet := make(map[string]struct{}, len(after.StashEntries))
+	for _, entry := range after.StashEntries {
+		afterSet[entry] = struct{}{}
+	}
+	var added, removed []string
+	for _, entry := range after.StashEntries {
+		if _, seen := beforeSet[entry]; !seen {
+			added = append(added, entry)
+		}
+	}
+	for _, entry := range before.StashEntries {
+		if _, seen := afterSet[entry]; !seen {
+			removed = append(removed, entry)
+		}
+	}
+	if len(added) == 0 && len(removed) == 0 {
+		return nil
+	}
+	return &GitStashChange{Added: added, Removed: removed}
 }

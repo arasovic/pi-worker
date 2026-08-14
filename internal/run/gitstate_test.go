@@ -160,6 +160,13 @@ func TestDefaultGitInspectorCountsStashEntries(t *testing.T) {
 	if state == nil || state.Stashes != 1 {
 		t.Fatalf("stashes = %#v, want 1 after one stash push", state)
 	}
+	if len(state.StashEntries) != 1 {
+		t.Fatalf("stash entries = %#v, want one \"<sha> <subject>\" entry", state.StashEntries)
+	}
+	sha, subject, found := strings.Cut(state.StashEntries[0], " ")
+	if !found || len(sha) != 40 || subject == "" {
+		t.Fatalf("stash entry = %q, want \"<40-char sha> <subject>\"", state.StashEntries[0])
+	}
 	runGit(t, dir, "stash", "drop", "-q")
 	state, err = NewDefaultGitInspector().Inspect(context.Background(), dir)
 	if err != nil {
@@ -168,6 +175,196 @@ func TestDefaultGitInspectorCountsStashEntries(t *testing.T) {
 	if state == nil || state.Stashes != 0 {
 		t.Fatalf("stashes = %#v, want 0 after a stash drop", state)
 	}
+	if len(state.StashEntries) != 0 {
+		t.Fatalf("stash entries = %#v, want none after a stash drop", state.StashEntries)
+	}
+}
+
+// stashPush modifies the tracked file and pushes one stash entry,
+// returning its "<sha> <subject>" identity as git stash list prints it.
+func stashPush(t *testing.T, dir, content string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, dir, "stash", "push", "-q")
+	return stashList(t, dir)[0]
+}
+
+// stashList returns the current stash entries in git's order (newest
+// first) as "<sha> <subject>" lines.
+func stashList(t *testing.T, dir string) []string {
+	t.Helper()
+	output := runGit(t, dir, "stash", "list", "--format=%H %gs")
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			lines = append(lines, trimmed)
+		}
+	}
+	return lines
+}
+
+// stashMutatingWorker is a fake worker that applies workspace mutations
+// between the controller's before and after inspections and reports a
+// completed result.
+type stashMutatingWorker struct {
+	mutate func(dir string) error
+}
+
+func (w *stashMutatingWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+	if err := w.mutate(req.Workspace); err != nil {
+		return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+	}
+	return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"}
+}
+
+func TestControllerGitReportsBalancedStashDropAndPush(t *testing.T) {
+	// A run that drops one entry and pushes another leaves the count
+	// unchanged; the count comparison this feature used to make reported
+	// nothing while an unrelated entry was gone for good. The identity
+	// comparison must report both moves.
+	dir := newGitRepo(t)
+	beforeEntry := stashPush(t, dir, "modified one\n")
+	worker := &stashMutatingWorker{mutate: func(dir string) error {
+		drop := exec.Command("git", "stash", "drop", "-q")
+		drop.Dir = dir
+		if err := drop.Run(); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("balanced\n"), 0o644); err != nil {
+			return err
+		}
+		push := exec.Command("git", "stash", "push", "-q")
+		push.Dir = dir
+		return push.Run()
+	}}
+	req := validRequest("a")
+	req.Workspace = dir
+	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Git == nil {
+		t.Fatalf("balanced stash drop and push carried no git change")
+	}
+	if result.Git.Before.Stashes != 1 || result.Git.After.Stashes != 1 {
+		t.Fatalf("stash counts = %d -> %d, want 1 -> 1", result.Git.Before.Stashes, result.Git.After.Stashes)
+	}
+	if result.Git.Stash == nil {
+		t.Fatalf("balanced stash drop and push carried no stash diff")
+	}
+	if len(result.Git.Stash.Removed) != 1 || result.Git.Stash.Removed[0] != beforeEntry {
+		t.Fatalf("stash removed = %#v, want [%q]", result.Git.Stash.Removed, beforeEntry)
+	}
+	afterEntries := stashList(t, dir)
+	if len(afterEntries) != 1 || len(result.Git.Stash.Added) != 1 || result.Git.Stash.Added[0] != afterEntries[0] {
+		t.Fatalf("stash added = %#v, want [%q]", result.Git.Stash.Added, afterEntries[0])
+	}
+}
+
+func TestControllerGitStashIndexShiftIsNotAChange(t *testing.T) {
+	// Dropping stash@{0} of two entries leaves the surviving entry's sha
+	// unchanged; only the stash@{N} index shifts, which must not be a
+	// change. The dropped entry must be the one removal.
+	dir := newGitRepo(t)
+	first := stashPush(t, dir, "modified one\n")
+	second := stashPush(t, dir, "modified two\n")
+	worker := &stashMutatingWorker{mutate: func(dir string) error {
+		drop := exec.Command("git", "stash", "drop", "-q")
+		drop.Dir = dir
+		return drop.Run()
+	}}
+	req := validRequest("a")
+	req.Workspace = dir
+	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Git == nil || result.Git.Stash == nil {
+		t.Fatalf("stash drop carried no git change: %#v", result.Git)
+	}
+	if len(result.Git.Stash.Removed) != 1 || result.Git.Stash.Removed[0] != second {
+		t.Fatalf("stash removed = %#v, want [%q]", result.Git.Stash.Removed, second)
+	}
+	if len(result.Git.Stash.Added) != 0 {
+		t.Fatalf("stash added = %#v, want none", result.Git.Stash.Added)
+	}
+	afterEntries := stashList(t, dir)
+	if len(afterEntries) != 1 || afterEntries[0] != first {
+		t.Fatalf("surviving entry = %#v, want [%q]", afterEntries, first)
+	}
+	for _, entry := range append(append([]string(nil), result.Git.Stash.Added...), result.Git.Stash.Removed...) {
+		if entry == first {
+			t.Fatalf("surviving entry %q reported as a change", entry)
+		}
+	}
+}
+
+func TestControllerGitStashIdenticalSubjectsDistinguished(t *testing.T) {
+	// Two stashes taken from the same commit have byte-identical
+	// subjects; only the sha distinguishes them. A run that drops one
+	// must report exactly one removal, which fails if identity is the
+	// subject alone.
+	dir := newGitRepo(t)
+	first := stashPush(t, dir, "modified one\n")
+	second := stashPush(t, dir, "modified two\n")
+	_, firstSubject, _ := strings.Cut(first, " ")
+	_, secondSubject, _ := strings.Cut(second, " ")
+	if firstSubject != secondSubject || first == second {
+		t.Fatalf("test setup: entries %q and %q must share a subject but differ in sha", first, second)
+	}
+	worker := &stashMutatingWorker{mutate: func(dir string) error {
+		drop := exec.Command("git", "stash", "drop", "-q")
+		drop.Dir = dir
+		return drop.Run()
+	}}
+	req := validRequest("a")
+	req.Workspace = dir
+	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Git == nil || result.Git.Stash == nil {
+		t.Fatalf("stash drop carried no git change: %#v", result.Git)
+	}
+	if len(result.Git.Stash.Removed) != 1 || result.Git.Stash.Removed[0] != second {
+		t.Fatalf("stash removed = %#v, want exactly [%q]", result.Git.Stash.Removed, second)
+	}
+	if len(result.Git.Stash.Added) != 0 {
+		t.Fatalf("stash added = %#v, want none", result.Git.Stash.Added)
+	}
+}
+
+func TestControllerGitNilWhenStashUntouchedOrDirtyOnly(t *testing.T) {
+	t.Run("untouched stash", func(t *testing.T) {
+		dir := newGitRepo(t)
+		stashPush(t, dir, "modified one\n")
+		req := validRequest("a")
+		req.Workspace = dir
+		result, err := New(newScriptedWorker(), WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if result.Git != nil {
+			t.Fatalf("untouched stash carried git change: %#v", result.Git)
+		}
+	})
+	t.Run("dirty only", func(t *testing.T) {
+		dir := newGitRepo(t)
+		worker := &stashMutatingWorker{mutate: func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty\n"), 0o644)
+		}}
+		req := validRequest("a")
+		req.Workspace = dir
+		result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if result.Git != nil {
+			t.Fatalf("dirty-only difference carried git change: %#v", result.Git)
+		}
+	})
 }
 
 // scriptedGitInspector is a concurrency-safe fake GitInspector for
@@ -279,7 +476,7 @@ func TestControllerGitReportsStateMoves(t *testing.T) {
 		},
 		{
 			name:   "stash count changed",
-			before: &GitState{Head: "same", Branch: "main", Stashes: 1},
+			before: &GitState{Head: "same", Branch: "main", Stashes: 1, StashEntries: []string{"e3a12fa54f8deacc23254771d8235abc1b5d9497 WIP on main: 4ae275a init"}},
 			after:  &GitState{Head: "same", Branch: "main", Stashes: 0},
 		},
 	}
@@ -319,7 +516,7 @@ func TestControllerGitAfterStateCollectedOnExpiredContext(t *testing.T) {
 	worker := newScriptedWorker()
 	worker.ignoreCtx = true
 	inspector := &scriptedGitInspector{
-		before: &GitState{Head: "same", Branch: "main", Stashes: 1},
+		before: &GitState{Head: "same", Branch: "main", Stashes: 1, StashEntries: []string{"e3a12fa54f8deacc23254771d8235abc1b5d9497 WIP on main: 4ae275a init"}},
 		after:  &GitState{Head: "same", Branch: "main", Stashes: 0},
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
@@ -376,7 +573,7 @@ func TestControllerGitAfterStateContextIsLiveDespiteDeadParent(t *testing.T) {
 			worker.ignoreCtx = true
 			inspector := &liveAfterContextInspector{
 				scripted: &scriptedGitInspector{
-					before: &GitState{Head: "same", Branch: "main", Stashes: 1},
+					before: &GitState{Head: "same", Branch: "main", Stashes: 1, StashEntries: []string{"e3a12fa54f8deacc23254771d8235abc1b5d9497 WIP on main: 4ae275a init"}},
 					after:  &GitState{Head: "same", Branch: "main", Stashes: 0},
 				},
 				cancel: test.cancel,
