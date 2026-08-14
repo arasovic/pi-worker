@@ -139,9 +139,10 @@ without the flag, or one that did not complete, carries none:
 
 Git state is additive and optional, so `schemaVersion` stays `1`. Root
 `git` appears only when a run moved the workspace's HEAD, its branch,
-or its stash list between the start and the end of the run; a modified
-working tree alone (only `dirty` differing) does not produce it. When
-present it carries `before` and `after`, each with:
+or a stash entry appeared or disappeared between the start and the end
+of the run; a modified working tree alone (only `dirty` differing) does
+not produce it. When present it carries `before`, `after`, and
+optional `stash`; `before` and `after` each with:
 
 - `head`: always present; the empty string when the branch is unborn
 - `branch`: present only when HEAD is attached to a branch (a detached
@@ -149,6 +150,13 @@ present it carries `before` and `after`, each with:
 - `dirty`: always present; true when the working tree has uncommitted
   changes
 - `stashes`: always present; the number of stash entries
+
+`stash` is present only when a stash entry appeared or disappeared
+between the start and the end of the run. It carries `added` and
+`removed`, each optional and omitted when empty, as arrays of
+`"<sha> <subject>"` strings in `git stash list` order (newest first).
+Entries are compared by identity, so a `stash@{N}` index shift is not
+a change.
 
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.

@@ -1555,3 +1555,43 @@ func TestPrintGitChangeUnbornToCommittedHeadWarning(t *testing.T) {
 		t.Fatalf("warning = %q, want %q", got, want)
 	}
 }
+
+func TestPrintGitChangeStashRemovalWarning(t *testing.T) {
+	// A balanced drop-and-push leaves the stash count unchanged; the
+	// warning must come from the entry diff, not the count, and must
+	// render the entry at the seven-character abbreviation, not the full
+	// sha.
+	var stderr bytes.Buffer
+	printGitChange(&run.GitChange{
+		Before: run.GitState{Head: "8b970ca6db30a27c713aca1f1ee2974c31cfde3d", Branch: "main", Stashes: 2},
+		After:  run.GitState{Head: "8b970ca6db30a27c713aca1f1ee2974c31cfde3d", Branch: "main", Stashes: 2},
+		Stash: &run.GitStashChange{
+			Removed: []string{"e3a12fa54f8deacc23254771d8235abc1b5d9497 WIP on main: 4ae275a init"},
+		},
+	}, &stderr)
+	want := "pi-worker: warning: the run changed git state: stash removed: e3a12fa WIP on main: 4ae275a init\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}
+
+func TestPrintGitChangeStashListCapsAtThreeEntries(t *testing.T) {
+	var stderr bytes.Buffer
+	printGitChange(&run.GitChange{
+		Before: run.GitState{Head: "same", Branch: "main", Stashes: 5},
+		After:  run.GitState{Head: "same", Branch: "main", Stashes: 0},
+		Stash: &run.GitStashChange{
+			Removed: []string{
+				"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa first",
+				"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb second",
+				"cccccccccccccccccccccccccccccccccccccccc third",
+				"dddddddddddddddddddddddddddddddddddddddd fourth",
+				"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee fifth",
+			},
+		},
+	}, &stderr)
+	want := "pi-worker: warning: the run changed git state: stash removed: aaaaaaa first; bbbbbbb second; ccccccc third; and 2 more\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}

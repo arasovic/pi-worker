@@ -148,8 +148,11 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		afterCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		after, err := c.gitInspector.Inspect(afterCtx, req.Workspace)
-		if err == nil && after != nil && gitMoved(before, after) {
-			result.Git = &GitChange{Before: *before, After: *after}
+		if err == nil && after != nil {
+			stash := stashDiff(before, after)
+			if gitMoved(before, after, stash) {
+				result.Git = &GitChange{Before: *before, After: *after, Stash: stash}
+			}
 		}
 	}
 	// Verification runs once for the whole run after every worker has
@@ -273,13 +276,14 @@ func pathsOverlap(a, b string) bool {
 }
 
 // gitMoved reports whether the git state moved in a way a bounded edit
-// does not normally move: HEAD, the branch, or the stash list. A
-// changing Dirty flag alone does not trigger the report; modified files
-// are the point of a delegation.
-func gitMoved(before, after *GitState) bool {
+// does not normally move: HEAD, the branch, or the stash entries, where
+// the stash moved when the diff names at least one added or removed
+// entry. A changing Dirty flag alone does not trigger the report;
+// modified files are the point of a delegation.
+func gitMoved(before, after *GitState, stash *GitStashChange) bool {
 	return before.Head != after.Head ||
 		before.Branch != after.Branch ||
-		before.Stashes != after.Stashes
+		stash != nil
 }
 
 // aggregateStatus maps the run outcome onto the documented precedence
