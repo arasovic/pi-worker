@@ -276,6 +276,25 @@ func TestRunVerifyContextExpiryExitsSevenNotSix(t *testing.T) {
 	}
 }
 
+func TestRunVerifyContextExpiryJSONEmitsNoDocument(t *testing.T) {
+	// The context-expiry shape returns exit 7 before any document is
+	// emitted, and --json must keep it that way: zero documents, not a
+	// partial one. This pins the deliberate behaviour so a later reader
+	// does not "fix" it by emitting a partial document.
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
+	t.Setenv("PI_WORKER_CLI_VERIFY_SLEEP_MS", "5000")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
+	if code != 7 {
+		t.Fatalf("exit = %d, want timed-out 7 (not verification 6); stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want zero documents for the aborted run", stdout)
+	}
+}
+
 func TestRunVerifyCarriesArgvSplitOnWhitespace(t *testing.T) {
 	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
 	verify := os.Args[0] + " -test.run=TestCLIVerifyHelperProcess"

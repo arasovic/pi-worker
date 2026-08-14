@@ -393,6 +393,7 @@ func waitForRequestLog(t *testing.T, logPath, wantType string) {
 type runOutput struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Status        string            `json:"status"`
+	Outcome       contracts.Outcome `json:"outcome"`
 	Workers       []pi.WorkerResult `json:"workers"`
 	Changes       *run.Changes      `json:"changes"`
 }
@@ -1132,13 +1133,14 @@ func TestRunTwoTaskJSONResultOrder(t *testing.T) {
 
 func TestRunExitCodes(t *testing.T) {
 	tests := []struct {
-		name string
-		res  pi.WorkerResult
-		want int
+		name        string
+		res         pi.WorkerResult
+		want        int
+		wantOutcome contracts.Outcome
 	}{
-		{name: "task failure", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"}, want: 5},
-		{name: "readiness", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model not available"}, want: 3},
-		{name: "protocol", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusError, Error: "protocol error"}, want: 9},
+		{name: "task failure", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"}, want: 5, wantOutcome: contracts.OutcomeTaskFailed},
+		{name: "readiness", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model not available"}, want: 3, wantOutcome: contracts.OutcomeWorkersUnavailable},
+		{name: "protocol", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusError, Error: "protocol error"}, want: 9, wantOutcome: contracts.OutcomeInternalError},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1169,6 +1171,9 @@ func TestRunExitCodes(t *testing.T) {
 			}
 			if output.Status != "failed" {
 				t.Fatalf("status = %q", output.Status)
+			}
+			if output.Outcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", output.Outcome, test.wantOutcome)
 			}
 			if len(output.Workers) != 1 || output.Workers[0].Status != test.res.Status || output.Workers[0].Error != test.res.Error {
 				t.Fatalf("workers = %#v", output.Workers)
@@ -1306,6 +1311,9 @@ func TestRunParentDeadlineExits7FromTimedOutContext(t *testing.T) {
 	if output.Status != "timed-out" {
 		t.Fatalf("status = %q", output.Status)
 	}
+	if output.Outcome != contracts.OutcomeTimeout {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeTimeout)
+	}
 	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusTimedOut {
 		t.Fatalf("workers = %#v", output.Workers)
 	}
@@ -1328,6 +1336,9 @@ func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
 	if output.Status != "cancelled" {
 		t.Fatalf("status = %q", output.Status)
 	}
+	if output.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
+	}
 	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusCancelled {
 		t.Fatalf("workers = %#v", output.Workers)
 	}
@@ -1335,6 +1346,40 @@ func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
 	// read as omitted with a stated reason, never as an absent field.
 	if output.Changes == nil || output.Changes.Omitted != "context already done" {
 		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
+	}
+}
+
+func TestRunTimedOutContextHumanPrintsOutcomeLineLast(t *testing.T) {
+	// The timed-out worker's message goes to stderr; stdout is exactly
+	// the change-manifest line followed by the final outcome line, and
+	// the outcome word names the timed-out exit.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if code != 7 {
+		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=timeout" {
+		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=timeout", stdout)
+	}
+}
+
+func TestRunCancelledContextHumanPrintsOutcomeLineLast(t *testing.T) {
+	// The cancelled worker's message goes to stderr; stdout is exactly
+	// the change-manifest line followed by the final outcome line, and
+	// the outcome word names the cancelled exit.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if code != 8 {
+		t.Fatalf("exit = %d, want 8; stderr = %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=cancelled" {
+		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=cancelled", stdout)
 	}
 }
 
@@ -1490,6 +1535,9 @@ func TestRunAlreadyCancelledContextExits8WithoutLaunchingPi(t *testing.T) {
 	if output.Status != "cancelled" {
 		t.Fatalf("status = %q, want cancelled", output.Status)
 	}
+	if output.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
+	}
 	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
 		t.Fatalf("pi was launched for an already-cancelled run")
 	}
@@ -1543,6 +1591,9 @@ func TestRunCancellationDuringRunExits8ReapsAndCleansUp(t *testing.T) {
 	output := decodeRunOutput(t, stdout)
 	if output.Status != "cancelled" {
 		t.Fatalf("status = %q, want cancelled", output.Status)
+	}
+	if output.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
 	}
 	if _, err := os.Stat(sessionDirFromMeta(t, metaPath)); !os.IsNotExist(err) {
 		t.Fatalf("session directory left behind after cancellation: %v", err)
