@@ -98,7 +98,7 @@ func writesDeclaredOnEveryTask(writes [][]string) bool {
 func pathDeclared(declared []string, changed string) bool {
 	changed = filepath.ToSlash(changed)
 	for _, d := range declared {
-		if declaredPathCovers(filepath.ToSlash(d), changed) {
+		if declaredPathCovers(filepath.ToSlash(filepath.Clean(d)), changed) {
 			return true
 		}
 	}

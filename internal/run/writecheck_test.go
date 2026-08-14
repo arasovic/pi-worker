@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -348,5 +349,71 @@ func TestControllerWritesCheckedOnTimedOutRun(t *testing.T) {
 	}
 	if writes.Skipped != "" || writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "stray.txt" {
 		t.Fatalf("writes = %#v, want exactly stray.txt undeclared", writes)
+	}
+}
+
+func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
+	// The request keeps the raw declared strings; only validate's
+	// discarded normalized copy was Clean'ed, so a trailing slash, a
+	// ./ prefix, a doubled separator, an interior ., and a non-escaping
+	// interior .. each reached the check uncleaned and each falsely
+	// flagged a changed path beneath it as undeclared. The check must
+	// clean its own declared inputs, so every form validation accepts
+	// yields a clean verdict.
+	tests := []string{
+		"internal/run/",       // trailing slash
+		"./internal/run",      // ./ prefix
+		"internal//run",       // doubled separator
+		"internal/./run",      // interior .
+		"src/../internal/run", // non-escaping interior ..
+	}
+	for _, declared := range tests {
+		t.Run(declared, func(t *testing.T) {
+			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, [][]string{{declared}})
+			if check.Skipped != "" || check.UndeclaredCount != 0 || len(check.Undeclared) != 0 || check.Truncated {
+				t.Fatalf("writes = %#v, want checked-clean for declared %q", check, declared)
+			}
+		})
+	}
+}
+
+func TestValidateWritePathAcceptedFormsNeverCleanToDotOrEscape(t *testing.T) {
+	// The check relying on filepath.Clean of a declared path is safe
+	// only because no value validateWritePath accepts can clean to "."
+	// or to an escaping "..": the comparison would then compare
+	// segments the declaration never meant. Assert the boundary rather
+	// than reasoning about it.
+	rejected := []string{
+		"",            // empty
+		"   ",         // whitespace-only
+		"/etc/passwd", // absolute
+		"../outside",  // escapes the workspace
+		"a/../../outside",
+		".",    // whole workspace
+		"./",   // whole workspace via dot-slash
+		"a/..", // cleans to the whole workspace
+	}
+	for _, value := range rejected {
+		if _, err := validateWritePath(value); err == nil {
+			t.Fatalf("validateWritePath accepted %q, want rejection", value)
+		}
+	}
+	accepted := []string{
+		"internal/run/",
+		"./internal/run",
+		"internal//run",
+		"internal/./run",
+		"src/../internal/run",
+		".hidden",
+		"internal/run/x.go",
+	}
+	for _, value := range accepted {
+		clean, err := validateWritePath(value)
+		if err != nil {
+			t.Fatalf("validateWritePath rejected %q: %v", value, err)
+		}
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			t.Fatalf("accepted path %q cleaned to %q, must be neither . nor an escaping ..", value, clean)
+		}
 	}
 }
