@@ -410,12 +410,14 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   `worker N [model=provider/model thinking=level]:`.
   - Completed worker output goes to stdout.
   - Failed/errored worker output goes to stderr.
-- Human mode prints one final `outcome=<word>` line to stdout after the
-  change manifest and write-check lines; the word and the exit code are
-  the same decision.
+- A run that ends in a human summary prints one final `outcome=<word>`
+  line to stdout after the change manifest and write-check lines; the
+  word and the exit code are the same decision wherever a document or a
+  human summary is produced.
 - `--json` emits **exactly one** JSON object (single document) only after argument/input validation succeeds and a run starts, with:
   - `schemaVersion` = `1`
   - `status`
+  - `outcome`, always present; the same decision as the exit code
   - `workers` in input order (the same order as task inputs, not completion order)
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`

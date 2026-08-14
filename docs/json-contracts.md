@@ -10,10 +10,17 @@ contract for agents and other machine consumers.
 - Required arrays are always arrays, including when empty; they are never
   `null` or omitted.
 - An unsupported `schemaVersion` must be rejected.
-- Removing a field, changing a field type or enum meaning, or adding a new
-  required field requires a new schema version. Additive optional fields may
-  remain in v1, so external consumers should ignore unknown fields after
-  validating the supported schema version.
+- Removing a field, changing a field type or enum meaning, or making a
+  required field optional requires a new schema version everywhere:
+  each takes away a guarantee a consumer relied on. For output
+  documents — the ones pi-worker writes for a consumer to read — the
+  additive direction may remain in v1: a new required field only
+  widens what a consumer may rely on and takes nothing away, and
+  external consumers ignore unknown fields after validating the
+  supported schema version. Durable input documents are the opposite,
+  because they reject unknown fields: a new required field there
+  breaks an older file, which does not carry it, and a newer file is
+  rejected by an older pi-worker.
 - Durable input documents are stricter: config and skill receipts reject
   unknown fields and trailing data. The npm launcher also strictly validates
   the native `skill status` document shipped in the same package before adding
@@ -108,9 +115,13 @@ Required root fields are `schemaVersion`, `status`, `outcome`, and non-null
 `cancelled`. Workers remain in request order even when concurrent completion
 order differs.
 
-Root `outcome` is always present: unlike `changes`, `writes`, and `git`
-it has no absent form, so it is never read by presence. Its value is the
-same decision as the exit code, in words, from one place in the code:
+`outcome` is additive in the only direction an output document can
+break a reader — it adds a guarantee rather than removing one — so
+`schemaVersion` stays `1`. Within an emitted run document, root
+`outcome` is always present: unlike `changes`, `writes`, and `git`,
+it has no absent form, so it is never read by presence. Its value is
+the same decision as the exit code, in words, from one place in the
+code:
 
 | `outcome` | exit code |
 | --- | --- |
