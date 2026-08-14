@@ -275,12 +275,13 @@ Replace the provider/model placeholder with one exact selector printed by
   with `argv` and `exitCode: 0` only.
 - A failing check (non-zero exit) exits the process `6` without changing
   the run `status` field or any worker status: those describe worker
-  outcomes, and only the process exit code and the reported error carry
-  the verification failure. Human mode prints the exit code and the
-  captured excerpt (the first 2 KiB and the last 6 KiB when long, with the
-  elided middle marked), plus the full `pi-worker-verify-*.log` path in
-  the system temp directory when one was written; `--json` mode carries
-  `output`, `truncated`, and `logFile` in the `verification` object.
+  outcomes, and the process exit code, the reported error, and the root
+  `outcome` carry the verification failure. Human mode prints the exit
+  code and the captured excerpt (the first 2 KiB and the last 6 KiB when
+  long, with the elided middle marked), plus the full
+  `pi-worker-verify-*.log` path in the system temp directory when one
+  was written; `--json` mode carries `output`, `truncated`, and
+  `logFile` in the `verification` object.
 - A context that expires while the check runs is not a verification
   failure: the run ran out of time and exits the way a timed-out run
   exits (`7`).
@@ -397,10 +398,11 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   declare, the warning stays.
 - The run reports the changed paths no task declared, and exits `4`
   (policy) when it found any. The run `status` field is unaffected: a run
-  whose workers all succeeded stays `completed`, and only the process exit
-  code and the reported error carry the failure. When not every task
-  declared writes, or the change manifest was not measured, the check is
-  skipped with a stated reason rather than answered.
+  whose workers all succeeded stays `completed`, and the process exit
+  code, the reported error, and the root `outcome` carry the failure.
+  When not every task declared writes, or the change manifest was not
+  measured, the check is skipped with a stated reason rather than
+  answered.
 
 ### Output
 
@@ -408,6 +410,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   `worker N [model=provider/model thinking=level]:`.
   - Completed worker output goes to stdout.
   - Failed/errored worker output goes to stderr.
+- Human mode prints one final `outcome=<word>` line to stdout after the
+  change manifest and write-check lines; the word and the exit code are
+  the same decision.
 - `--json` emits **exactly one** JSON object (single document) only after argument/input validation succeeds and a run starts, with:
   - `schemaVersion` = `1`
   - `status`
@@ -426,25 +431,31 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 Example:
 
 ```json
-{"schemaVersion":1,"status":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with Pi default thinking=high","status":"completed","explanation":"Worker one done"}]}
+{"schemaVersion":1,"status":"completed","outcome":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with Pi default thinking=high","status":"completed","explanation":"Worker one done"}]}
 ```
 
 ### Exit codes
 
-- `0` completed
-- `2` usage
-- `3` all workers unavailable / readiness path
-- `4` policy: a completed run wrote paths no task declared. The run
-  `status` stays `completed` and only the process exit code and the
-  reported error carry the failure
+- `0` completed (`outcome=completed`)
+- `2` usage (`outcome=usage`; this word never appears in a document)
+- `3` all workers unavailable / readiness path (`outcome=workers-unavailable`)
+- `4` policy: a completed run wrote paths no task declared
+  (`outcome=undeclared-writes`). The run `status` stays `completed`; the
+  process exit code, the reported error, and the root `outcome` carry
+  the failure
 - `5` task failure or partial completion; top-level `--json` `status` is
-  `failed` for task failure and `partial` for partial completion.
-- `6` verification failed; the run `status` stays `completed` and only the
-  process exit code and the reported error carry the failure
-- `7` timeout
-- `8` cancellation
+  `failed` for task failure and `partial` for partial completion
+  (`outcome=task-failed` and `outcome=partial` respectively)
+- `6` verification failed (`outcome=verification-failed`); the run
+  `status` stays `completed`; the process exit code, the reported error,
+  and the root `outcome` carry the failure
+- `7` timeout (`outcome=timeout`)
+- `8` cancellation (`outcome=cancelled`)
 - `9` protocol/internal; for runs, no worker succeeded and any worker reported an
-  internal error
+  internal error (`outcome=internal-error`)
+
+A caller parsing `--json` should read root `outcome` rather than
+reconstruct it from `status` plus the check objects.
 
 When more than one applies, run-outcome codes win over both checks: a
 timed-out run that also wrote outside its declaration exits `7`. Among

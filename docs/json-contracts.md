@@ -103,9 +103,36 @@ native status exit code.
 
 ## `run --json`
 
-Required root fields are `schemaVersion`, `status`, and non-null `workers`.
-Root status is `completed`, `partial`, `failed`, `timed-out`, or `cancelled`.
-Workers remain in request order even when concurrent completion order differs.
+Required root fields are `schemaVersion`, `status`, `outcome`, and non-null
+`workers`. Root status is `completed`, `partial`, `failed`, `timed-out`, or
+`cancelled`. Workers remain in request order even when concurrent completion
+order differs.
+
+Root `outcome` is always present: unlike `changes`, `writes`, and `git`
+it has no absent form, so it is never read by presence. Its value is the
+same decision as the exit code, in words, from one place in the code:
+
+| `outcome` | exit code |
+| --- | --- |
+| `completed` | `0` |
+| `workers-unavailable` | `3` |
+| `undeclared-writes` | `4` |
+| `task-failed` | `5` |
+| `partial` | `5` |
+| `verification-failed` | `6` |
+| `timeout` | `7` |
+| `cancelled` | `8` |
+| `internal-error` | `9` |
+
+Exit `5` joins two words: `task-failed` for a run whose status is
+`failed`, and `partial` for one whose status is `partial`. The `usage`
+word has no row because a usage error fails before a run exists and it
+never reaches a document.
+
+`completed` means the run finished and no check contradicted it. It does
+not mean every check ran: a skipped write check leaves `outcome` at
+`completed`, and `writes.skipped` is where a caller learns the question
+went unanswered.
 
 Every worker requires:
 
