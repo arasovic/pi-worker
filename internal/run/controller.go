@@ -25,34 +25,54 @@ type Request struct {
 	ThinkingLevel pi.ThinkingLevel
 	Tasks         []string
 	Workspace     string
+	// Verify is the command run in the workspace after a completed run
+	// to check the finished work, split into argv; empty disables
+	// verification.
+	Verify []string
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
 }
 
 // Result is the aggregate outcome of one run. Workers preserve input
-// order regardless of completion order.
+// order regardless of completion order. Verification, when present, is
+// the outcome of the run-level check command executed in the workspace
+// after a completed run.
 type Result struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Status        contracts.RunStatus `json:"status"`
 	Workers       []pi.WorkerResult   `json:"workers"`
+	// Verification is the outcome of the run-level check command; nil
+	// when no verification ran.
+	Verification *Verification `json:"verification,omitempty"`
 }
 
-// Controller runs accepted tasks concurrently through one Worker.
+// Controller runs accepted tasks concurrently through one Worker and,
+// when a verifier is configured, checks a completed run's workspace
+// with one command.
 type Controller struct {
-	worker pi.Worker
+	worker   pi.Worker
+	verifier Verifier
 }
 
 // New returns a controller that runs accepted tasks through worker.
-func New(worker pi.Worker) *Controller {
-	return &Controller{worker: worker}
+// When a verifier is supplied, the controller also verifies a completed
+// run's workspace with it; without one, Run behaves exactly as before.
+func New(worker pi.Worker, verifier ...Verifier) *Controller {
+	c := &Controller{worker: worker}
+	if len(verifier) > 0 {
+		c.verifier = verifier[0]
+	}
+	return c
 }
 
 // Run validates the request before starting any worker, starts every
 // accepted task concurrently with the SAME parent context passed to Run,
 // waits for every started worker before returning (including after
 // cancellation), and aggregates the run status from the parent context
-// state and the worker outcomes.
+// state and the worker outcomes. When a verifier and a verification
+// command are configured and the run completed with the parent context
+// intact, Run verifies the workspace once before returning.
 func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
@@ -74,11 +94,23 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		}(i, task)
 	}
 	wg.Wait()
-	return Result{
+	result := Result{
 		SchemaVersion: contracts.SchemaVersion,
 		Status:        aggregateStatus(ctx, results),
 		Workers:       results,
-	}, nil
+	}
+	// Verification runs once for the whole run after every worker has
+	// settled, and only on a completed run with a live context: a partial
+	// or failed run leaves the workspace half-written, and a cancelled or
+	// timed-out context would fail the command for an unrelated reason.
+	if c.verifier != nil && len(req.Verify) > 0 && result.Status == contracts.RunCompleted && ctx.Err() == nil {
+		verification, err := c.verifier.Verify(ctx, req.Workspace, req.Verify)
+		if err != nil {
+			return result, fmt.Errorf("verification: %w", err)
+		}
+		result.Verification = &verification
+	}
+	return result, nil
 }
 
 // validate checks the request before any worker starts: a non-empty model,
