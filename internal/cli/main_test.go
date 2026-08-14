@@ -227,11 +227,12 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 
 // requireChangesTail asserts that human run output carries the
 // worker-summary lines `want` verbatim and then exactly one
-// change-manifest line. The manifest line itself depends on the
-// workspace's tree state at test time — "changes: 0 files, +0/-0" on a
-// clean checkout, "changes: omitted: <reason>" on a dirty one — so only
-// its presence and position after the summaries are pinned here; the
-// manifest's own tests pin its content.
+// change-manifest line and the final outcome line. The manifest line
+// itself depends on the workspace's tree state at test time —
+// "changes: 0 files, +0/-0" on a clean checkout, "changes: omitted:
+// <reason>" on a dirty one — so only its presence and position after
+// the summaries are pinned here; the manifest's own tests pin its
+// content.
 func requireChangesTail(t *testing.T, stdout, want string) {
 	t.Helper()
 	if !strings.HasPrefix(stdout, want) {
@@ -239,8 +240,8 @@ func requireChangesTail(t *testing.T, stdout, want string) {
 	}
 	tail := strings.TrimPrefix(stdout, want)
 	lines := strings.Split(strings.TrimSpace(tail), "\n")
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "changes: ") {
-		t.Fatalf("stdout tail = %q, want exactly one changes: line", tail)
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "outcome=") {
+		t.Fatalf("stdout tail = %q, want one changes: line and one outcome= line", tail)
 	}
 }
 
@@ -258,8 +259,8 @@ func requireWritesTail(t *testing.T, stdout, want string) {
 	}
 	tail := strings.TrimPrefix(stdout, want)
 	lines := strings.Split(strings.TrimSpace(tail), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "writes: ") {
-		t.Fatalf("stdout tail = %q, want exactly one changes: line and one writes: line", tail)
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "writes: ") || !strings.HasPrefix(lines[2], "outcome=") {
+		t.Fatalf("stdout tail = %q, want one changes: line, one writes: line, and one outcome= line", tail)
 	}
 }
 
@@ -1149,11 +1150,12 @@ func TestRunExitCodes(t *testing.T) {
 			if !strings.Contains(stderr, test.res.Error) {
 				t.Fatalf("human stderr = %q, want detail %q", stderr, test.res.Error)
 			}
-			// A failed run still carries its one change-manifest line: the
-			// manifest is measured on every terminal status.
+			// A failed run still carries its one change-manifest line and
+			// the final outcome line: the manifest is measured on every
+			// terminal status, and the outcome word names the exit code.
 			lines := strings.Split(strings.TrimSpace(stdout), "\n")
-			if len(lines) != 1 || !strings.HasPrefix(lines[0], "changes: ") {
-				t.Fatalf("human stdout = %q, want exactly the changes: line", stdout)
+			if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "outcome=") {
+				t.Fatalf("human stdout = %q, want the changes: line and an outcome= line", stdout)
 			}
 
 			_ = installFakeWorker(t, test.res)
@@ -1190,7 +1192,7 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 		t.Fatalf("human exit = %d, want 5", code)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 2 || lines[0] != "worker 1: primary done" || !strings.HasPrefix(lines[1], "changes: ") {
+	if len(lines) != 3 || lines[0] != "worker 1: primary done" || !strings.HasPrefix(lines[1], "changes: ") || lines[2] != "outcome=partial" {
 		t.Fatalf("stdout = %q", stdout)
 	}
 	if !strings.Contains(stderr, "pi-worker: worker 2: agent failed") {
@@ -1911,20 +1913,25 @@ func TestRunExitCodePolicyOnUndeclaredWrites(t *testing.T) {
 	// be a lie. A clean verdict never exits 4 either, and a run with no
 	// declaration has no check at all.
 	tests := []struct {
-		name   string
-		result run.Result
-		want   int
+		name        string
+		result      run.Result
+		want        int
+		wantOutcome contracts.Outcome
 	}{
-		{name: "no declaration", result: run.Result{Status: contracts.RunCompleted}, want: 0},
-		{name: "clean verdict", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{UndeclaredCount: 0}}, want: 0},
-		{name: "skipped partial declaration", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "not all tasks declared writes"}}, want: 0},
-		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0},
-		{name: "undeclared paths", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}}, want: 4},
+		{name: "no declaration", result: run.Result{Status: contracts.RunCompleted}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "clean verdict", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{UndeclaredCount: 0}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "skipped partial declaration", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "not all tasks declared writes"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "undeclared paths", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}}, want: 4, wantOutcome: contracts.OutcomeUndeclaredWrites},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := runExitCode(test.result); got != test.want {
+			gotOutcome, got := runOutcome(test.result)
+			if got != test.want {
 				t.Fatalf("exit = %d, want %d", got, test.want)
+			}
+			if gotOutcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", gotOutcome, test.wantOutcome)
 			}
 		})
 	}
@@ -1944,23 +1951,28 @@ func TestRunExitCodePrecedence(t *testing.T) {
 	violation := &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}
 	failingVerification := &run.Verification{Argv: []string{"go", "test"}, ExitCode: 3}
 	tests := []struct {
-		name   string
-		result run.Result
-		want   int
+		name        string
+		result      run.Result
+		want        int
+		wantOutcome contracts.Outcome
 	}{
-		{name: "timed out with violation", result: run.Result{Status: contracts.RunTimedOut, Writes: violation}, want: 7},
-		{name: "cancelled with violation", result: run.Result{Status: contracts.RunCancelled, Writes: violation}, want: 8},
-		{name: "failed run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusFailed}}, Writes: violation}, want: 5},
-		{name: "internal error with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusError}}, Writes: violation}, want: 9},
-		{name: "partial run with violation", result: run.Result{Status: contracts.RunPartial, Workers: []pi.WorkerResult{{Status: pi.StatusCompleted}}, Writes: violation}, want: 5},
-		{name: "all-unavailable run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusUnavailable}}, Writes: violation}, want: 3},
-		{name: "violation and failing verification", result: run.Result{Status: contracts.RunCompleted, Writes: violation, Verification: failingVerification}, want: 4},
-		{name: "failing verification alone", result: run.Result{Status: contracts.RunCompleted, Verification: failingVerification}, want: 6},
+		{name: "timed out with violation", result: run.Result{Status: contracts.RunTimedOut, Writes: violation}, want: 7, wantOutcome: contracts.OutcomeTimeout},
+		{name: "cancelled with violation", result: run.Result{Status: contracts.RunCancelled, Writes: violation}, want: 8, wantOutcome: contracts.OutcomeCancelled},
+		{name: "failed run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusFailed}}, Writes: violation}, want: 5, wantOutcome: contracts.OutcomeTaskFailed},
+		{name: "internal error with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusError}}, Writes: violation}, want: 9, wantOutcome: contracts.OutcomeInternalError},
+		{name: "partial run with violation", result: run.Result{Status: contracts.RunPartial, Workers: []pi.WorkerResult{{Status: pi.StatusCompleted}}, Writes: violation}, want: 5, wantOutcome: contracts.OutcomePartial},
+		{name: "all-unavailable run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusUnavailable}}, Writes: violation}, want: 3, wantOutcome: contracts.OutcomeWorkersUnavailable},
+		{name: "violation and failing verification", result: run.Result{Status: contracts.RunCompleted, Writes: violation, Verification: failingVerification}, want: 4, wantOutcome: contracts.OutcomeUndeclaredWrites},
+		{name: "failing verification alone", result: run.Result{Status: contracts.RunCompleted, Verification: failingVerification}, want: 6, wantOutcome: contracts.OutcomeVerificationFailed},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := runExitCode(test.result); got != test.want {
+			gotOutcome, got := runOutcome(test.result)
+			if got != test.want {
 				t.Fatalf("exit = %d, want %d", got, test.want)
+			}
+			if gotOutcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", gotOutcome, test.wantOutcome)
 			}
 		})
 	}

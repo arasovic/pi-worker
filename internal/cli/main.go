@@ -296,7 +296,8 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		}
 	}
 
-	code := runExitCode(result)
+	outcome, code := runOutcome(result)
+	result.Outcome = outcome
 	for i, worker := range result.Workers {
 		if worker.Warning != "" {
 			fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Warning)
@@ -354,6 +355,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		}
 		printWrites(result.Writes, w)
 	}
+	fmt.Fprintf(stdout, "outcome=%s\n", result.Outcome)
 	return code
 }
 
@@ -780,19 +782,23 @@ func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 	return []string{string(data)}, nil
 }
 
-// runExitCode maps the aggregate run result onto the contract exit
-// codes, in the documented precedence order: run-outcome codes first
-// (5, 7, 8, 9, and the readiness 3), then the write-check policy code 4,
-// then the verification code 6, then completion's 0. A no-success run
-// exits 3 when every worker was unavailable and 9 when any worker
-// reported an internal error; partial runs stay 5. The run status field
-// always describes worker outcomes only.
-func runExitCode(result run.Result) int {
+// runFailure resolves which (status, error kind) pair describes the
+// aggregate run result, in the documented precedence order. It is the
+// single place that decision is made: the word and the exit code are
+// both derived from what it returns, so they cannot describe
+// different things. The codes follow the documented precedence order:
+// run-outcome codes first (5, 7, 8, 9, and the readiness 3), then the
+// write-check policy code 4, then the verification code 6, then
+// completion's 0. A no-success run exits 3 when every worker was
+// unavailable and 9 when any worker reported an internal error; partial
+// runs stay 5. The run status field always describes worker outcomes
+// only.
+func runFailure(result run.Result) (contracts.RunStatus, *contracts.RunError) {
 	switch result.Status {
 	case contracts.RunTimedOut:
-		return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
+		return contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout}
 	case contracts.RunCancelled:
-		return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
+		return contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation}
 	}
 	// Partial and failed runs keep their run-outcome codes before any
 	// check is considered: a run that did not complete is answered by
@@ -815,11 +821,11 @@ func runExitCode(result run.Result) int {
 		}
 		switch {
 		case !hasSuccess && allUnavailable:
-			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorReadiness})
+			return result.Status, &contracts.RunError{Kind: contracts.ErrorReadiness}
 		case !hasSuccess && hasError:
-			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal})
+			return result.Status, &contracts.RunError{Kind: contracts.ErrorInternal}
 		default:
-			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorTask})
+			return result.Status, &contracts.RunError{Kind: contracts.ErrorTask}
 		}
 	}
 	// Completed only. The write contract outranks the quality signal: a
@@ -831,10 +837,18 @@ func runExitCode(result run.Result) int {
 	// means the question could not be answered, and answering
 	// "violation" would be a lie — and a clean verdict never does.
 	if result.Writes != nil && result.Writes.Skipped == "" && result.Writes.UndeclaredCount > 0 {
-		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorPolicy})
+		return contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorPolicy}
 	}
 	if result.Verification != nil && result.Verification.ExitCode != 0 {
-		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification})
+		return contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification}
 	}
-	return 0
+	return contracts.RunCompleted, nil
+}
+
+// runOutcome returns both the self-describing word and the contract
+// exit code for the aggregate run result, both derived in one place
+// from the (status, error kind) pair resolved by runFailure.
+func runOutcome(result run.Result) (contracts.Outcome, int) {
+	status, runError := runFailure(result)
+	return contracts.RunOutcome(status, runError), contracts.ExitCode(status, runError)
 }

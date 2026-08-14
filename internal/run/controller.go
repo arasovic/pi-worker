@@ -64,7 +64,12 @@ type Request struct {
 type Result struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Status        contracts.RunStatus `json:"status"`
-	Workers       []pi.WorkerResult   `json:"workers"`
+	// Outcome is the self-describing word for what this run's exit code
+	// means, decided from the same (status, error) pair as the exit
+	// code. It is never omitted: an absent or empty outcome must not
+	// read as "fine".
+	Outcome contracts.Outcome `json:"outcome"`
+	Workers []pi.WorkerResult `json:"workers"`
 	// Verification is the outcome of the run-level check command; nil
 	// when no verification ran.
 	Verification *Verification `json:"verification,omitempty"`

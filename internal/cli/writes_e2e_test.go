@@ -72,9 +72,17 @@ func TestRunJSONCarriesWritesForDeclaredRun(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
-	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers", "writes")
+	assertExactJSONKeys(t, document, "changes", "outcome", "schemaVersion", "status", "workers", "writes")
 	if document["status"] != "completed" {
 		t.Fatalf("status = %v, want completed", document["status"])
+	}
+	// The outcome key must be present even on this plain successful
+	// run: an absent or empty outcome must not read as "fine".
+	if _, present := document["outcome"]; !present {
+		t.Fatalf("document carries no outcome key: %v", document)
+	}
+	if document["outcome"] != "completed" {
+		t.Fatalf("outcome = %v, want completed", document["outcome"])
 	}
 	writes, ok := document["writes"].(map[string]any)
 	if !ok {
@@ -98,9 +106,12 @@ func TestRunJSONDeclaredEmptyWritesCarriesCleanVerdict(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
-	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers", "writes")
+	assertExactJSONKeys(t, document, "changes", "outcome", "schemaVersion", "status", "workers", "writes")
 	if document["status"] != "completed" {
 		t.Fatalf("status = %v, want completed", document["status"])
+	}
+	if document["outcome"] != "completed" {
+		t.Fatalf("outcome = %v, want completed", document["outcome"])
 	}
 	writes, ok := document["writes"].(map[string]any)
 	if !ok {
@@ -221,9 +232,12 @@ func TestRunUndeclaredWriteJSONCarriesViolation(t *testing.T) {
 		t.Fatalf("exit = %d, want 4; stdout = %q; stderr = %q", code, stdout, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
-	assertExactJSONKeys(t, document, "changes", "schemaVersion", "status", "workers", "writes")
+	assertExactJSONKeys(t, document, "changes", "outcome", "schemaVersion", "status", "workers", "writes")
 	if document["status"] != "completed" {
 		t.Fatalf("status = %v, want completed: the violation is a policy exit, not a run outcome", document["status"])
+	}
+	if document["outcome"] != "undeclared-writes" {
+		t.Fatalf("outcome = %v, want undeclared-writes", document["outcome"])
 	}
 	writes, ok := document["writes"].(map[string]any)
 	if !ok {
@@ -260,10 +274,38 @@ func TestRunSkippedWriteCheckPrintsReadableReason(t *testing.T) {
 	}
 	const want = "worker 1: done\n" +
 		"changes: omitted: dirty before-state\n" +
-		"writes: skipped: change manifest unavailable\n"
+		"writes: skipped: change manifest unavailable\n" +
+		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
+}
+
+func TestRunSkippedWriteCheckJSONCarriesCompleted(t *testing.T) {
+	// A skipped write check is deliberately not a violation: the check
+	// could not answer, so the run exits 0 and the document says
+	// completed. This is not a hole — a skip means the question could
+	// not be answered, and answering "violation" would be a lie — and
+	// the test exists so a later reader does not "fix" it.
+	dir := newGitWorkspace(t)
+	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirt: %v", err)
+	}
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	assertExactJSONKeys(t, document, "changes", "outcome", "schemaVersion", "status", "workers", "writes")
+	if document["outcome"] != "completed" {
+		t.Fatalf("outcome = %v, want completed", document["outcome"])
+	}
+	writes, ok := document["writes"].(map[string]any)
+	if !ok {
+		t.Fatalf("writes = %#v, want object", document["writes"])
+	}
+	assertExactJSONKeys(t, writes, "skipped", "undeclaredCount")
 }
 
 func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
@@ -287,7 +329,8 @@ func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
 	}
 	const want = "worker 1: done\n" +
 		"changes: omitted: dirty before-state\n" +
-		"writes: skipped: change manifest unavailable\n"
+		"writes: skipped: change manifest unavailable\n" +
+		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
