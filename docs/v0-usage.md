@@ -285,6 +285,24 @@ Replace the provider/model placeholder with one exact selector printed by
   failure: the run ran out of time and exits the way a timed-out run
   exits (`7`).
 
+### Workspace git state
+
+- When the current directory is inside a git work tree, `run` records
+  the git state once before any worker starts and once after every
+  worker settles: HEAD, the current branch, the dirty flag, and the
+  stash count. There is no flag for this; it happens on every run.
+- When the run moved HEAD, the branch, or the stash list, human mode
+  prints one `pi-worker: warning: the run changed git state: ...` line
+  on stderr naming what moved, and `--json` mode carries a `git` object
+  with `before` and `after` states. A modified working tree alone does
+  not trigger it: leaving modified files behind is the point of a run.
+- The after state is collected on every terminal status, including a
+  timed-out or cancelled run, under a fresh five-second budget when the
+  parent context is already done.
+- A workspace outside a git work tree, or a failed inspection, is a
+  silent no-op: the result carries no `git` object and no warning is
+  printed, and the run status and exit code are unchanged.
+
 ### Exactly one input mechanism
 
 - `--task` and `--task-file` may each repeat up to 3 total tasks.
@@ -324,6 +342,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `verification`, when `--verify` ran on a completed run: `argv` and
     `exitCode` always; `output` (the captured excerpt), `truncated`, and
     `logFile` only for a failing check
+  - `git`, when the run moved HEAD, the branch, or the stash list:
+    `before` and `after` states, each with `head`, `branch`, `dirty`,
+    and `stashes`
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:

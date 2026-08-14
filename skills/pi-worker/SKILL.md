@@ -39,7 +39,8 @@ process exit code and the verification object carry the failure.
 
 ## Boundaries
 
-- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox or worktree layer.
+- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox or worktree layer. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed.
+- When a run moves HEAD, the branch, or the stash list, the result carries a `git` object with the before and after state. Its presence means something moved that a bounded edit does not normally move: read it as a notification, not a prohibition — a caller may legitimately want a worker to commit.
 - Use trusted workspaces. Parallel writes must be disjoint.
 - Each run's Pi process and its descendants are terminated when the run ends, times out, or is cancelled.
 - That guarantee covers pi-worker's own children only. A delegation runs for minutes, so a background job the parent agent starts beside one is exposed to a harness timeout that can SIGKILL the shell. Make that job self-terminating: it must end on its own without any cleanup step running. Where `timeout` exists, use `timeout 60 <command>`; where it does not, use a loop with a fixed iteration count that cannot run forever.

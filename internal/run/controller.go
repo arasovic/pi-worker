@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -45,23 +46,43 @@ type Result struct {
 	// Verification is the outcome of the run-level check command; nil
 	// when no verification ran.
 	Verification *Verification `json:"verification,omitempty"`
+	// Git is present only when the run moved HEAD, the branch, or the
+	// stash list; nil otherwise.
+	Git *GitChange `json:"git,omitempty"`
 }
 
 // Controller runs accepted tasks concurrently through one Worker and,
 // when a verifier is configured, checks a completed run's workspace
-// with one command.
+// with one command; when a git inspector is configured, it records the
+// workspace git state before and after the run.
 type Controller struct {
-	worker   pi.Worker
-	verifier Verifier
+	worker       pi.Worker
+	verifier     Verifier
+	gitInspector GitInspector
+}
+
+// Option configures a Controller.
+type Option func(*Controller)
+
+// WithVerifier configures the run-level check command executed in the
+// workspace after a completed run.
+func WithVerifier(v Verifier) Option {
+	return func(c *Controller) { c.verifier = v }
+}
+
+// WithGitInspector configures the read-only git-state recording around
+// a run.
+func WithGitInspector(g GitInspector) Option {
+	return func(c *Controller) { c.gitInspector = g }
 }
 
 // New returns a controller that runs accepted tasks through worker.
-// When a verifier is supplied, the controller also verifies a completed
-// run's workspace with it; without one, Run behaves exactly as before.
-func New(worker pi.Worker, verifier ...Verifier) *Controller {
+// Options configure the optional verifier and the optional git-state
+// inspector; without them, Run behaves exactly as before.
+func New(worker pi.Worker, opts ...Option) *Controller {
 	c := &Controller{worker: worker}
-	if len(verifier) > 0 {
-		c.verifier = verifier[0]
+	for _, opt := range opts {
+		opt(c)
 	}
 	return c
 }
@@ -70,12 +91,23 @@ func New(worker pi.Worker, verifier ...Verifier) *Controller {
 // accepted task concurrently with the SAME parent context passed to Run,
 // waits for every started worker before returning (including after
 // cancellation), and aggregates the run status from the parent context
-// state and the worker outcomes. When a verifier and a verification
+// state and the worker outcomes. When a git inspector is configured,
+// Run records the workspace git state before any worker starts and
+// again after every worker settles, reporting only when HEAD, the
+// branch, or the stash list moved. When a verifier and a verification
 // command are configured and the run completed with the parent context
 // intact, Run verifies the workspace once before returning.
 func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
+	}
+	// The before state is recorded after validation and before the first
+	// worker starts. Git state reporting is diagnostic, not a gate: a
+	// non-git workspace or an inspection error leaves Git nil without
+	// failing the run.
+	var before *GitState
+	if c.gitInspector != nil {
+		before, _ = c.gitInspector.Inspect(ctx, req.Workspace)
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
@@ -98,6 +130,21 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		SchemaVersion: contracts.SchemaVersion,
 		Status:        aggregateStatus(ctx, results),
 		Workers:       results,
+	}
+	// The after state is the opposite of verification: it runs on every
+	// terminal status, not only on a completed run, because a run that
+	// timed out mid-checkout is exactly the run whose git state a caller
+	// most needs. It never depends on the parent context — the workers
+	// have already settled, and a deadline is exactly when the state
+	// matters — so it always runs under a fresh five-second budget. An
+	// error from either inspection leaves Git nil and is never returned.
+	if c.gitInspector != nil && before != nil {
+		afterCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		after, err := c.gitInspector.Inspect(afterCtx, req.Workspace)
+		if err == nil && after != nil && gitMoved(before, after) {
+			result.Git = &GitChange{Before: *before, After: *after}
+		}
 	}
 	// Verification runs once for the whole run after every worker has
 	// settled, and only on a completed run with a live context: a partial
@@ -135,6 +182,16 @@ func validate(req Request) error {
 		}
 	}
 	return nil
+}
+
+// gitMoved reports whether the git state moved in a way a bounded edit
+// does not normally move: HEAD, the branch, or the stash list. A
+// changing Dirty flag alone does not trigger the report; modified files
+// are the point of a delegation.
+func gitMoved(before, after *GitState) bool {
+	return before.Head != after.Head ||
+		before.Branch != after.Branch ||
+		before.Stashes != after.Stashes
 }
 
 // aggregateStatus maps the run outcome onto the documented precedence

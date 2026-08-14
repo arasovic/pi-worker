@@ -246,11 +246,15 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
 	}
 
+	// Every run records the workspace git state before and after, so a
+	// task that moves HEAD, the branch, or the stash list shows up in
+	// the result whether or not --verify was passed; there is no flag
+	// for this feature.
 	var controller *run.Controller
 	if len(opts.verify) > 0 {
-		controller = run.New(newWorker(), run.NewDefaultVerifier())
+		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()))
 	} else {
-		controller = run.New(newWorker())
+		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()))
 	}
 	result, err := controller.Run(ctx, run.Request{
 		Model:         opts.model,
@@ -319,6 +323,9 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	if result.Verification != nil {
 		printVerification(result.Verification, stdout, stderr)
 	}
+	if result.Git != nil {
+		printGitChange(result.Git, stderr)
+	}
 	return code
 }
 
@@ -342,6 +349,54 @@ func printVerification(verification *run.Verification, stdout, stderr io.Writer)
 	if verification.LogFile != "" {
 		fmt.Fprintf(stderr, "pi-worker: verification log: %s\n", verification.LogFile)
 	}
+}
+
+// printGitChange prints the run-level git-state change after the worker
+// summaries in human mode: one stderr warning line naming what moved —
+// HEAD, the branch, or the stash list — when a run changed the git
+// state in a way a bounded edit does not normally move. HEAD is shown
+// at git's default seven-character abbreviation; the full values ride
+// in the --json result. The run status stays unchanged: this is a
+// notification, not a restriction.
+func printGitChange(change *run.GitChange, stderr io.Writer) {
+	var parts []string
+	before, after := change.Before, change.After
+	if before.Head != after.Head {
+		parts = append(parts, fmt.Sprintf("HEAD %s -> %s", gitHead(before.Head), gitHead(after.Head)))
+	}
+	if before.Branch != after.Branch {
+		parts = append(parts, fmt.Sprintf("branch %s -> %s", gitValue(before.Branch), gitValue(after.Branch)))
+	}
+	if before.Stashes != after.Stashes {
+		parts = append(parts, fmt.Sprintf("stashes %d -> %d", before.Stashes, after.Stashes))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintf(stderr, "pi-worker: warning: the run changed git state: %s\n", strings.Join(parts, ", "))
+}
+
+// gitHead renders a commit hash for the human warning at git's default
+// seven-character abbreviation, and an empty hash — an unborn branch
+// has no HEAD — as (none), the same placeholder gitValue uses for the
+// branch field.
+func gitHead(value string) string {
+	if value == "" {
+		return "(none)"
+	}
+	if len(value) > 7 {
+		return value[:7]
+	}
+	return value
+}
+
+// gitValue renders an empty git identity in the human warning: an unborn
+// branch has no HEAD, and a detached HEAD has no branch.
+func gitValue(value string) string {
+	if value == "" {
+		return "(none)"
+	}
+	return value
 }
 
 func preflightPiVersion(ctx context.Context, stderr io.Writer) {

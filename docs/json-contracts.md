@@ -137,6 +137,19 @@ without the flag, or one that did not complete, carries none:
 - `logFile`: present only when a truncated capture was also written in
   full to a `pi-worker-verify-*.log` file in the system temp directory
 
+Git state is additive and optional, so `schemaVersion` stays `1`. Root
+`git` appears only when a run moved the workspace's HEAD, its branch,
+or its stash list between the start and the end of the run; a modified
+working tree alone (only `dirty` differing) does not produce it. When
+present it carries `before` and `after`, each with:
+
+- `head`: always present; the empty string when the branch is unborn
+- `branch`: present only when HEAD is attached to a branch (a detached
+  HEAD omits it)
+- `dirty`: always present; true when the working tree has uncommitted
+  changes
+- `stashes`: always present; the number of stash entries
+
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.
 
