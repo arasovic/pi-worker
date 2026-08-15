@@ -1,6 +1,6 @@
 {
   "name": "pi-worker",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Run exact Pi models as bounded workers for coding agents.",
   "license": "MIT",
   "author": "Mehmet Aras (https://github.com/arasovic)",
