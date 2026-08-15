@@ -10,6 +10,8 @@ contract for agents and other machine consumers.
 - Required arrays are always arrays, including when empty; they are never
   `null` or omitted.
 - An unsupported `schemaVersion` must be rejected.
+- A consumer must ignore fields it does not recognise on a
+  `schemaVersion` it supports.
 - Removing a field, changing a field type or enum meaning, or making a
   required field optional requires a new schema version everywhere:
   each takes away a guarantee a consumer relied on. A new required
@@ -117,11 +119,11 @@ order differs.
 
 `outcome` is a new required field, and the run document is safe on
 both versioning skews — it never persists and its readers ignore
-unknown fields — so `schemaVersion` stays `1`. Within an emitted run document, root
-`outcome` is always present: unlike `changes`, `writes`, and `git`,
-it has no absent form, so it is never read by presence. Its value is
-the same decision as the exit code, in words, from one place in the
-code:
+unknown fields — so `schemaVersion` stays `1`. Within an emitted
+run document, root `outcome` is always present: unlike `changes`,
+`writes`, and `git`, it has no absent form, so it is never read by
+presence. Its value is the same decision as the exit code, in words,
+from one place in the code:
 
 | `outcome` | exit code |
 | --- | --- |
@@ -243,8 +245,11 @@ declaration: a caller who declared always gets an answer — a verdict or a
 stated skip reason — and a caller who never declared gets no field at all.
 Silence is never a clean check. The check is run-level, not task-level:
 which task wrote a given path is not knowable from a shared workspace, so
-the undeclared set belongs to the run. It carries either a reason it could
-not run or the verdict, never both:
+the undeclared set belongs to the run. The same limit holds one level up:
+a concurrent writer — another run, an editor, a build — lands in whichever
+run is measuring, so while any run declares `--writes`, that workspace must
+have one run at a time. Root `writes` carries either a reason it could not run
+or the verdict, never both:
 
 - `skipped`: present only when the check could not run; a short reason,
   `not all tasks declared writes` — some task said nothing at all, the

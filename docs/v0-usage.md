@@ -393,6 +393,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   overlap check and makes the post-run check skip entirely.
   It is a pre-flight contract, not a sandbox or worktree: pi-worker does
   not enforce it during the run.
+- While any run declares `--writes`, that workspace must have one run at a
+  time: the check compares against the whole workspace's pre-run git
+  state, so a concurrent writer lands in whichever run is measuring.
 - When every task declared — empty set or not — and the check passes,
   the shared workspace warning is suppressed; when any task did not
   declare, the warning stays.
@@ -417,7 +420,8 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 - `--json` emits **exactly one** JSON object (single document) only after argument/input validation succeeds and a run starts, with:
   - `schemaVersion` = `1`
   - `status`
-  - `outcome`, always present; the same decision as the exit code
+  - `outcome`, always present within an emitted run document; the same
+    decision as the exit code
   - `workers` in input order (the same order as task inputs, not completion order)
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`
@@ -428,6 +432,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `git`, when the run moved HEAD, the branch, or the stash list:
     `before` and `after` states, each with `head`, `branch`, `dirty`,
     and `stashes`
+  A run that started can still emit no document: once the run itself fails
+  rather than merely finishing badly — it ran out of time, it was cancelled,
+  or it could not complete at all — no document is emitted, deliberately,
+  rather than a partial one, and only the exit code and stderr remain.
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
