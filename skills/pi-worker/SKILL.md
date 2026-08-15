@@ -14,7 +14,7 @@ integration decisions in the parent agent. Never ask a worker to delegate.
 2. For an informal model name, query `pi-worker models --json --debug --timeout 30s`. Select one unambiguous exact `provider/model`; report ambiguity and stop.
 3. Preserve every explicit model. If unavailable or unauthenticated, report the setup action and stop. Never substitute a model or provider. If omitted, let the configured default apply. The model and thinking level are run-level: every worker in a run gets the same pair, so two different models mean two runs — and two runs that both declare writes cannot overlap in one workspace.
 4. Treat thinking as a separate axis from the model: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. An informal name ending in a level — "Luna Max", "Sonnet high" — is one model plus one level, never a model named `luna-max`. Resolve the model through step 2 and pass both flags: `--model <exact selector from the catalog> --thinking max`. Never guess a provider prefix. Omit thinking when unspecified.
-5. Write one private task file per worker. Use one to three workers, and parallelize only disjoint responsibilities and writes. Declaring the paths with `--writes` asks for the write check; whether it actually ran is something the result reports. One holdout disables the check, so declaring on some tasks buys nothing. A task that will write nothing declares `--writes ""`. An overlapping declaration fails the run before any worker starts.
+5. Write one private task file per worker. Use one to three workers, and parallelize only disjoint responsibilities and writes. Declaring the paths with `--writes` asks for the write check; whether it actually ran is something the result reports. The manifest is measured against the state recorded before the first worker started, so a workspace that was already dirty has no clean base to measure from and the check cannot run; a caller who wants the check answered starts from a clean tree. One holdout disables the check, so declaring on some tasks buys nothing. A task that will write nothing declares `--writes ""`. An overlapping declaration fails the run before any worker starts.
 6. Run with a bounded timeout, JSON result, and debug lifecycle output:
 
 ```sh
@@ -36,6 +36,9 @@ empty output as any kind of success. Report each worker's model, effective
 true, surface its warning: the selected model continued with Pi's confirmed
 default effort. Read root `outcome`: `completed` is the only done state — a
 `writes.skipped` value means a check could not run, unproven, not clean.
+When `writes.skipped` is `change manifest unavailable`, the reason is in
+`changes.omitted` — `dirty before-state`, for example — and that reason
+decides the caller's next move.
 `verification-failed` means the `verification` object is there; report it, fix
 the workspace, and re-run. Any other word means report it with its object when
 one exists (`writes`, `verification`, or the worker's `failure`) and stop.
