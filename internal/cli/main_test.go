@@ -1117,7 +1117,7 @@ func TestRunTwoTaskJSONResultOrder(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	output := decodeRunOutput(t, stdout)
-	if output.SchemaVersion != 1 || output.Status != "completed" {
+	if output.SchemaVersion != 1 || output.Status != "completed" || output.Outcome != contracts.OutcomeCompleted {
 		t.Fatalf("output = %#v", output)
 	}
 	if len(output.Workers) != 2 {
@@ -1219,6 +1219,9 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 	output := decodeRunOutput(t, stdout)
 	if output.Status != "partial" {
 		t.Fatalf("status = %q", output.Status)
+	}
+	if output.Outcome != contracts.OutcomePartial {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomePartial)
 	}
 	if len(output.Workers) != 2 {
 		t.Fatalf("workers = %v", output.Workers)

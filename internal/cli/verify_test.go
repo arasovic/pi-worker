@@ -295,6 +295,57 @@ func TestRunVerifyContextExpiryJSONEmitsNoDocument(t *testing.T) {
 	}
 }
 
+func TestRunVerifyStartFailureJSONEmitsNoDocument(t *testing.T) {
+	// The unstartable-verify shape returns exit 9 before any document is
+	// emitted, and --json must keep it that way: zero documents, not a
+	// partial one. This pins the deliberate behaviour so a later reader
+	// does not "fix" it by emitting a partial document.
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", "pi-worker-no-such-command"}, "")
+	if code != 9 {
+		t.Fatalf("exit = %d, want start-failure 9 (not verification 6); stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want zero documents for the unstartable verify command", stdout)
+	}
+	if !strings.Contains(stderr, "verification") || !strings.Contains(stderr, "pi-worker-no-such-command") {
+		t.Fatalf("stderr missing the start failure: %q", stderr)
+	}
+}
+
+func TestRunVerifyCancellationJSONEmitsNoDocument(t *testing.T) {
+	// The cancelled-mid-verify shape returns exit 8 before any document is
+	// emitted, and --json must keep it that way: zero documents, not a
+	// partial one. This pins the deliberate behaviour so a later reader
+	// does not "fix" it by emitting a partial document.
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
+	t.Setenv("PI_WORKER_CLI_VERIFY_SLEEP_MS", "5000")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var code int
+	var stdout, stderr string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		code, stdout, stderr = runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
+	}()
+	time.Sleep(2 * time.Second)
+	cancel()
+	<-done
+
+	if code != 8 {
+		t.Fatalf("exit = %d, want cancelled 8 (not verification 6); stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want zero documents for the cancelled verify run", stdout)
+	}
+	if !strings.Contains(stderr, "verification") || !strings.Contains(stderr, "canceled") {
+		t.Fatalf("stderr missing the cancellation failure: %q", stderr)
+	}
+}
+
 func TestRunVerifyCarriesArgvSplitOnWhitespace(t *testing.T) {
 	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
 	verify := os.Args[0] + " -test.run=TestCLIVerifyHelperProcess"
