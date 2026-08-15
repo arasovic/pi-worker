@@ -10,14 +10,23 @@ contract for agents and other machine consumers.
 - Required arrays are always arrays, including when empty; they are never
   `null` or omitted.
 - An unsupported `schemaVersion` must be rejected.
-- Removing a field, changing a field type or enum meaning, or adding a new
-  required field requires a new schema version. Additive optional fields may
-  remain in v1, so external consumers should ignore unknown fields after
-  validating the supported schema version.
-- Durable input documents are stricter: config and skill receipts reject
-  unknown fields and trailing data. The npm launcher also strictly validates
-  the native `skill status` document shipped in the same package before adding
-  live external inspection.
+- A consumer must ignore fields it does not recognise on a
+  `schemaVersion` it supports.
+- Removing a field, changing a field type or enum meaning, or making a
+  required field optional requires a new schema version everywhere:
+  each takes away a guarantee a consumer relied on. A new required
+  field adds a guarantee instead, so it may stay in v1 while both
+  skews are covered: a reader older than the writer is safe when
+  it ignores unknown fields or ships with the writer and can never
+  be out of step, and a file older than the reader is safe only
+  when the document does not persist, because an older file lacks
+  the new field. The run document never persists and its readers
+  validate `schemaVersion` and ignore unknown fields; the npm
+  launcher rejects unknown fields on `skill status` but reads the
+  document from a binary shipped in the same package, so the two
+  are always in step. Config and skill receipts persist and their
+  readers reject unknown fields, so a new required field needs a
+  new version there.
 - Usage and early setup failures may write no JSON. Diagnostics and `--debug`
   output go to stderr and never become a second stdout document.
 
@@ -103,9 +112,40 @@ native status exit code.
 
 ## `run --json`
 
-Required root fields are `schemaVersion`, `status`, and non-null `workers`.
-Root status is `completed`, `partial`, `failed`, `timed-out`, or `cancelled`.
-Workers remain in request order even when concurrent completion order differs.
+Required root fields are `schemaVersion`, `status`, `outcome`, and non-null
+`workers`. Root status is `completed`, `partial`, `failed`, `timed-out`, or
+`cancelled`. Workers remain in request order even when concurrent completion
+order differs.
+
+`outcome` is a new required field, and the run document is safe on
+both versioning skews — it never persists and its readers ignore
+unknown fields — so `schemaVersion` stays `1`. Within an emitted
+run document, root `outcome` is always present: unlike `changes`,
+`writes`, and `git`, it has no absent form, so it is never read by
+presence. Its value is the same decision as the exit code, in words,
+from one place in the code:
+
+| `outcome` | exit code |
+| --- | --- |
+| `completed` | `0` |
+| `workers-unavailable` | `3` |
+| `undeclared-writes` | `4` |
+| `task-failed` | `5` |
+| `partial` | `5` |
+| `verification-failed` | `6` |
+| `timeout` | `7` |
+| `cancelled` | `8` |
+| `internal-error` | `9` |
+
+Exit `5` joins two words: `task-failed` for a run whose status is
+`failed`, and `partial` for one whose status is `partial`. The `usage`
+word has no row because a usage error fails before a run exists and it
+never reaches a document.
+
+`completed` means the run finished and no check contradicted it. It does
+not mean every check ran: a skipped write check leaves `outcome` at
+`completed`, and `writes.skipped` is where a caller learns the question
+went unanswered.
 
 Every worker requires:
 
@@ -157,6 +197,72 @@ between the start and the end of the run. It carries `added` and
 `"<sha> <subject>"` strings in `git stash list` order (newest first).
 Entries are compared by identity, so a `stash@{N}` index shift is not
 a change.
+
+The change manifest is additive and optional, so `schemaVersion` stays `1`.
+Root `changes` is present when the workspace is inside a git work tree and the
+inspection of it succeeded. Only a workspace outside a git work tree, and an
+environment with no `git` at all, reached with a live context at the
+inspection, still carry no `changes` field — the same silent no-op `git`
+makes; a dead context never reaches the guard, so the same directory carries
+the `context already done` omission instead. Unlike `git` it is not gated by a
+state change: a run that only left modified files behind still carries it,
+because those files are what it names. It carries either a reason it could
+not be measured or the measurement, never both:
+
+- `omitted`: present only when the manifest could not be measured; one of
+  `dirty before-state`, `unborn head`, `context already done`, or
+  `measurement failed`. `files`, `totalFiles`, and `truncated` carry no
+  meaning when it is present
+- `totalFiles`: always present; the true number of changed paths, before the
+  entry cap. A measured run that changed nothing carries `0` rather than
+  omitting the field
+- `files`: present only when at least one path changed; capped at 100
+  entries
+- `truncated`: present and `true` only when the cap dropped entries
+
+Each entry in `files` carries:
+
+- `path`: always present; the workspace-relative path
+- `status`: always present; exactly one of `added`, `modified`, `deleted`
+- `added` and `deleted`: always present; the line counts, both `0` for a
+  binary file
+- `binary`: present and `true` only when git reported the file as binary
+
+The manifest is measured against the git state recorded before the first
+worker started, so a run that committed its own work still lists the files
+it changed.
+
+The manifest covers the paths `git` tracks or would track. Ignore rules
+exclude untracked paths only: an ignored path is outside both the manifest
+and the write check when it is untracked — it cannot appear in `files`, it
+does not count toward `totalFiles` or `undeclaredCount`, and a run that
+wrote only ignored untracked paths reports a clean write verdict. A tracked
+path is measured, and therefore checked, whether or not a rule matches it.
+
+The write check is additive and optional, so `schemaVersion` stays `1`.
+Root `writes` is present exactly when the request carried a write
+declaration: a caller who declared always gets an answer — a verdict or a
+stated skip reason — and a caller who never declared gets no field at all.
+Silence is never a clean check. The check is run-level, not task-level:
+which task wrote a given path is not knowable from a shared workspace, so
+the undeclared set belongs to the run. The same limit holds one level up:
+a concurrent writer — another run, an editor, a build — lands in whichever
+run is measuring, so while any run declares `--writes`, that workspace must
+have one run at a time. Root `writes` carries either a reason it could not run
+or the verdict, never both:
+
+- `skipped`: present only when the check could not run; a short reason,
+  `not all tasks declared writes` — some task said nothing at all, the
+  only state that triggers it, since a task that declared an empty set
+  has declared — or `change manifest unavailable`.
+  `undeclaredCount`, `undeclared`, and `truncated` carry no meaning when it
+  is present
+- `undeclaredCount`: always present on a verdict; the true number of
+  changed paths no task declared, before the entry cap. A checked run that
+  wrote nothing undeclared carries `0` rather than omitting the field
+- `undeclared`: present only when at least one path was undeclared; capped
+  at 100 entries
+- `truncated`: present and `true` only when the cap dropped entries
 
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.

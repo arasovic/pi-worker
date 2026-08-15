@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/buildinfo"
+	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/skillinstall"
@@ -224,6 +225,45 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 	return code, stdout.String(), stderr.String()
 }
 
+// requireChangesTail asserts that human run output carries the
+// worker-summary lines `want` verbatim and then exactly one
+// change-manifest line and the final outcome line. The manifest line
+// itself depends on the workspace's tree state at test time —
+// "changes: 0 files, +0/-0" on a clean checkout, "changes: omitted:
+// <reason>" on a dirty one — so only its presence and position after
+// the summaries are pinned here; the manifest's own tests pin its
+// content.
+func requireChangesTail(t *testing.T, stdout, want string) {
+	t.Helper()
+	if !strings.HasPrefix(stdout, want) {
+		t.Fatalf("stdout = %q, want it to start with %q", stdout, want)
+	}
+	tail := strings.TrimPrefix(stdout, want)
+	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "outcome=") {
+		t.Fatalf("stdout tail = %q, want one changes: line and one outcome= line", tail)
+	}
+}
+
+// requireWritesTail asserts that human run output carries the
+// worker-summary lines `want` verbatim, then exactly one change-manifest
+// line and exactly one writes-check line. Both lines depend on the
+// workspace's tree state at test time — "changes: 0 files, +0/-0" and
+// "writes: ok" on a clean checkout, the omitted and skipped forms on a
+// dirty one — so only their presence and position after the summaries
+// are pinned here; the checks' own tests pin their content.
+func requireWritesTail(t *testing.T, stdout, want string) {
+	t.Helper()
+	if !strings.HasPrefix(stdout, want) {
+		t.Fatalf("stdout = %q, want it to start with %q", stdout, want)
+	}
+	tail := strings.TrimPrefix(stdout, want)
+	lines := strings.Split(strings.TrimSpace(tail), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "writes: ") || !strings.HasPrefix(lines[2], "outcome=") {
+		t.Fatalf("stdout tail = %q, want one changes: line, one writes: line, and one outcome= line", tail)
+	}
+}
+
 func withBuildInfo(t *testing.T, version, commit, buildDate string) {
 	t.Helper()
 	oldVersion, oldCommit, oldBuildDate := buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate
@@ -353,7 +393,9 @@ func waitForRequestLog(t *testing.T, logPath, wantType string) {
 type runOutput struct {
 	SchemaVersion int               `json:"schemaVersion"`
 	Status        string            `json:"status"`
+	Outcome       contracts.Outcome `json:"outcome"`
 	Workers       []pi.WorkerResult `json:"workers"`
+	Changes       *run.Changes      `json:"changes"`
 }
 
 // decodeRunOutput decodes the single --json result document from stdout.
@@ -527,8 +569,6 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "writes before any task", args: []string{"run", "--model", "acme/m-1", "--writes", "src/a"}, stdin: ""},
 		{name: "repeated writes for one task", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
 		{name: "repeated writes for one task file", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
-		{name: "empty writes", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", ""}, stdin: ""},
-		{name: "whitespace writes", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "  "}, stdin: ""},
 		{name: "empty writes element", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a,,src/b"}, stdin: ""},
 		{name: "writes without value", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes"}, stdin: ""},
 	}
@@ -577,9 +617,7 @@ func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testi
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	if stdout != "worker 1: one done\nworker 2: two done\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireWritesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
 	if fake.callCount() != 2 {
 		t.Fatalf("worker calls = %d, want 2", fake.callCount())
 	}
@@ -626,9 +664,7 @@ func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	if stdout != "worker 1: first file done\nworker 2: second file done\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireWritesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
 	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
 		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
 	}
@@ -676,15 +712,69 @@ func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) 
 	_ = code
 }
 
+func TestParseRunArgsEmptyWritesDeclaresEmptySet(t *testing.T) {
+	// --writes "" is the one spelling that cannot collide with a real
+	// path: it is how a task declares that it writes nothing. The same
+	// whitespace trimming the flag already applies to real paths must
+	// apply here, so --writes "  " means the same thing. Every other
+	// parse failure keeps failing exactly as before.
+	for _, value := range []string{"", "   "} {
+		for _, args := range [][]string{
+			{"--task", "a", "--writes", value},
+			{"--task", "a", "--writes=" + value},
+		} {
+			opts, err := parseRunArgs(args)
+			if err != nil {
+				t.Fatalf("parseRunArgs(%q): %v, want a declared empty set", args, err)
+			}
+			if len(opts.writes) != 1 || !opts.writes[0].Declared || len(opts.writes[0].Paths) != 0 {
+				t.Fatalf("writes = %#v, want one declared empty entry for %q", opts.writes, args)
+			}
+		}
+	}
+	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "a,,b"}); err == nil {
+		t.Fatalf("parseRunArgs accepted --writes \"a,,b\", want the empty-element error")
+	}
+	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "src/a", "--writes", "src/b"}); err == nil {
+		t.Fatalf("parseRunArgs accepted a repeated --writes, want the duplicate error")
+	}
+	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "", "--writes", "src/a"}); err == nil {
+		t.Fatalf("parseRunArgs accepted a repeated --writes after an empty declaration, want the duplicate error")
+	}
+	if _, err := parseRunArgs([]string{"--writes", "src/a"}); err == nil {
+		t.Fatalf("parseRunArgs accepted --writes before any task, want the ordering error")
+	}
+}
+
+func TestRunWritesEmptySetSuppressesSharedWorkspaceWarning(t *testing.T) {
+	// A task that declared --writes "" has declared: the run is fully
+	// contracted, so the shared-workspace warning must stay suppressed
+	// even though that task declared no paths at all.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", ""}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stderr, "share the writable current workspace") {
+		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
+	}
+	requireWritesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
+	if fake.callCount() != 2 {
+		t.Fatalf("worker calls = %d, want 2", fake.callCount())
+	}
+}
+
 func TestRunSuccessHuman(t *testing.T) {
 	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix the bug"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
@@ -721,9 +811,7 @@ func TestRunThinkingPropagatesAndLabelsHumanOutput(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1 [model=acme/m-1 thinking=max]: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=max]: All done.\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.ThinkingLevel != pi.ThinkingMax {
 		t.Fatalf("thinking = %q, want max", request.ThinkingLevel)
@@ -892,9 +980,7 @@ func TestRunTaskFile(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: ok\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: ok\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.Prompt != "fix from file" {
 		t.Fatalf("prompt = %q", request.Prompt)
@@ -907,9 +993,7 @@ func TestRunStdinTask(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: ok\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: ok\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.Prompt != "task from stdin" {
 		t.Fatalf("prompt = %q", request.Prompt)
@@ -957,15 +1041,7 @@ func TestRunThreeTasksHumanSuccessIsOrderedAndConcurrent(t *testing.T) {
 	if count := strings.Count(stderr, "pi-worker: warning:"); count != 1 {
 		t.Fatalf("stderr warning count = %d, want 1", count)
 	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("stdout lines = %d, want 3: %q", len(lines), stdout)
-	}
-	for i, want := range []string{"worker 1: first done", "worker 2: second done", "worker 3: third done"} {
-		if lines[i] != want {
-			t.Fatalf("stdout line %d = %q, want %q", i+1, lines[i], want)
-		}
-	}
+	requireChangesTail(t, stdout, "worker 1: first done\nworker 2: second done\nworker 3: third done\n")
 	requestOrder := []string{"one", "two", "three"}
 	for i, want := range requestOrder {
 		req := mustWorkerRequest(t, fake, i+1)
@@ -997,13 +1073,7 @@ func TestRunRepeatedTaskFilesPreserveInputOrder(t *testing.T) {
 	if count := strings.Count(stderr, "pi-worker: warning:"); count != 1 {
 		t.Fatalf("stderr warning count = %d, want 1", count)
 	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("stdout lines = %d, want 2: %q", len(lines), stdout)
-	}
-	if lines[0] != "worker 1: first file done" || lines[1] != "worker 2: second file done" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
 	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
 		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
 	}
@@ -1047,7 +1117,7 @@ func TestRunTwoTaskJSONResultOrder(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	output := decodeRunOutput(t, stdout)
-	if output.SchemaVersion != 1 || output.Status != "completed" {
+	if output.SchemaVersion != 1 || output.Status != "completed" || output.Outcome != contracts.OutcomeCompleted {
 		t.Fatalf("output = %#v", output)
 	}
 	if len(output.Workers) != 2 {
@@ -1063,13 +1133,14 @@ func TestRunTwoTaskJSONResultOrder(t *testing.T) {
 
 func TestRunExitCodes(t *testing.T) {
 	tests := []struct {
-		name string
-		res  pi.WorkerResult
-		want int
+		name        string
+		res         pi.WorkerResult
+		want        int
+		wantOutcome contracts.Outcome
 	}{
-		{name: "task failure", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"}, want: 5},
-		{name: "readiness", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model not available"}, want: 3},
-		{name: "protocol", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusError, Error: "protocol error"}, want: 9},
+		{name: "task failure", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"}, want: 5, wantOutcome: contracts.OutcomeTaskFailed},
+		{name: "readiness", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model not available"}, want: 3, wantOutcome: contracts.OutcomeWorkersUnavailable},
+		{name: "protocol", res: pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusError, Error: "protocol error"}, want: 9, wantOutcome: contracts.OutcomeInternalError},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1081,8 +1152,12 @@ func TestRunExitCodes(t *testing.T) {
 			if !strings.Contains(stderr, test.res.Error) {
 				t.Fatalf("human stderr = %q, want detail %q", stderr, test.res.Error)
 			}
-			if stdout != "" {
-				t.Fatalf("human stdout = %q", stdout)
+			// A failed run still carries its one change-manifest line and
+			// the final outcome line: the manifest is measured on every
+			// terminal status, and the outcome word names the exit code.
+			lines := strings.Split(strings.TrimSpace(stdout), "\n")
+			if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "outcome=") {
+				t.Fatalf("human stdout = %q, want the changes: line and an outcome= line", stdout)
 			}
 
 			_ = installFakeWorker(t, test.res)
@@ -1096,6 +1171,9 @@ func TestRunExitCodes(t *testing.T) {
 			}
 			if output.Status != "failed" {
 				t.Fatalf("status = %q", output.Status)
+			}
+			if output.Outcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", output.Outcome, test.wantOutcome)
 			}
 			if len(output.Workers) != 1 || output.Workers[0].Status != test.res.Status || output.Workers[0].Error != test.res.Error {
 				t.Fatalf("workers = %#v", output.Workers)
@@ -1119,7 +1197,7 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 		t.Fatalf("human exit = %d, want 5", code)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 1 || lines[0] != "worker 1: primary done" {
+	if len(lines) != 3 || lines[0] != "worker 1: primary done" || !strings.HasPrefix(lines[1], "changes: ") || lines[2] != "outcome=partial" {
 		t.Fatalf("stdout = %q", stdout)
 	}
 	if !strings.Contains(stderr, "pi-worker: worker 2: agent failed") {
@@ -1141,6 +1219,9 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 	output := decodeRunOutput(t, stdout)
 	if output.Status != "partial" {
 		t.Fatalf("status = %q", output.Status)
+	}
+	if output.Outcome != contracts.OutcomePartial {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomePartial)
 	}
 	if len(output.Workers) != 2 {
 		t.Fatalf("workers = %v", output.Workers)
@@ -1233,8 +1314,16 @@ func TestRunParentDeadlineExits7FromTimedOutContext(t *testing.T) {
 	if output.Status != "timed-out" {
 		t.Fatalf("status = %q", output.Status)
 	}
+	if output.Outcome != contracts.OutcomeTimeout {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeTimeout)
+	}
 	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusTimedOut {
 		t.Fatalf("workers = %#v", output.Workers)
+	}
+	// The context was already done at inspection: the manifest must
+	// read as omitted with a stated reason, never as an absent field.
+	if output.Changes == nil || output.Changes.Omitted != "context already done" {
+		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
 	}
 }
 
@@ -1250,8 +1339,50 @@ func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
 	if output.Status != "cancelled" {
 		t.Fatalf("status = %q", output.Status)
 	}
+	if output.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
+	}
 	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusCancelled {
 		t.Fatalf("workers = %#v", output.Workers)
+	}
+	// The context was already done at inspection: the manifest must
+	// read as omitted with a stated reason, never as an absent field.
+	if output.Changes == nil || output.Changes.Omitted != "context already done" {
+		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
+	}
+}
+
+func TestRunTimedOutContextHumanPrintsOutcomeLineLast(t *testing.T) {
+	// The timed-out worker's message goes to stderr; stdout is exactly
+	// the change-manifest line followed by the final outcome line, and
+	// the outcome word names the timed-out exit.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if code != 7 {
+		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=timeout" {
+		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=timeout", stdout)
+	}
+}
+
+func TestRunCancelledContextHumanPrintsOutcomeLineLast(t *testing.T) {
+	// The cancelled worker's message goes to stderr; stdout is exactly
+	// the change-manifest line followed by the final outcome line, and
+	// the outcome word names the cancelled exit.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if code != 8 {
+		t.Fatalf("exit = %d, want 8; stderr = %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=cancelled" {
+		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=cancelled", stdout)
 	}
 }
 
@@ -1276,9 +1407,7 @@ func TestRunDebugPassesSinkAndLogsToStderr(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: All done.\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
 	request := mustWorkerRequest(t, fake, 1)
 	if request.Debug == nil {
 		t.Fatalf("debug sink not passed to worker")
@@ -1364,9 +1493,7 @@ func TestRunParallelDebugLabelsWorkers1To3(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stdout != "worker 1: done\nworker 2: done\nworker 3: done\n" {
-		t.Fatalf("stdout = %q", stdout)
-	}
+	requireChangesTail(t, stdout, "worker 1: done\nworker 2: done\nworker 3: done\n")
 	lines := strings.Split(strings.TrimSpace(stderr), "\n")
 	var debugLines []string
 	for _, line := range lines {
@@ -1410,6 +1537,9 @@ func TestRunAlreadyCancelledContextExits8WithoutLaunchingPi(t *testing.T) {
 	output := decodeRunOutput(t, stdout)
 	if output.Status != "cancelled" {
 		t.Fatalf("status = %q, want cancelled", output.Status)
+	}
+	if output.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
 	}
 	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
 		t.Fatalf("pi was launched for an already-cancelled run")
@@ -1464,6 +1594,9 @@ func TestRunCancellationDuringRunExits8ReapsAndCleansUp(t *testing.T) {
 	output := decodeRunOutput(t, stdout)
 	if output.Status != "cancelled" {
 		t.Fatalf("status = %q, want cancelled", output.Status)
+	}
+	if output.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
 	}
 	if _, err := os.Stat(sessionDirFromMeta(t, metaPath)); !os.IsNotExist(err) {
 		t.Fatalf("session directory left behind after cancellation: %v", err)
@@ -1593,5 +1726,308 @@ func TestPrintGitChangeStashListCapsAtThreeEntries(t *testing.T) {
 	want := "pi-worker: warning: the run changed git state: stash removed: aaaaaaa first; bbbbbbb second; ccccccc third; and 2 more\n"
 	if got := stderr.String(); got != want {
 		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}
+
+// TestPrintChanges* build the run.Changes struct directly and pin the
+// exact human rendering: printChanges renders, it does not sort, so every
+// fixture is already in the order the manifest produces (most churn
+// first, then path).
+
+func TestPrintChangesOmittedManifest(t *testing.T) {
+	// An omitted manifest prints the reason line alone, never a path
+	// list.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{Omitted: "measurement failed"}, &stdout)
+	want := "changes: omitted: measurement failed\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesZeroFiles(t *testing.T) {
+	// A measured run that changed nothing prints the zero line alone.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{TotalFiles: 0}, &stdout)
+	want := "changes: 0 files, +0/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesOneFile(t *testing.T) {
+	// A single changed path reads "1 file", not "1 files".
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 1,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1},
+		},
+	}, &stdout)
+	want := "changes: 1 file, +3/-1\n  src/a.go  +3/-1\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesSeveralFiles(t *testing.T) {
+	// The count line sums the entries' added and deleted lines; paths
+	// print in the manifest's order, most churn first, indented two
+	// spaces.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 3,
+		Files: []run.FileChange{
+			{Path: "docs/guide.md", Status: "modified", Added: 12, Deleted: 4},
+			{Path: "src/main.go", Status: "modified", Added: 5, Deleted: 2},
+			{Path: "README.md", Status: "added", Added: 8, Deleted: 0},
+		},
+	}, &stdout)
+	want := "changes: 3 files, +25/-6\n  docs/guide.md  +12/-4\n  src/main.go  +5/-2\n  README.md  +8/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesBinaryFile(t *testing.T) {
+	// A binary entry renders as "binary" on its path line, never as
+	// "+0/-0", and still contributes zero to the summed counts.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 1,
+		Files: []run.FileChange{
+			{Path: "assets/logo.png", Status: "added", Binary: true},
+		},
+	}, &stdout)
+	want := "changes: 1 file, +0/-0\n  assets/logo.png  binary\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesMoreThanFiveFiles(t *testing.T) {
+	// Exactly five paths print, most churn first; the rest collapse into
+	// the trailing line, one per entry the five-line limit dropped.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 7,
+		Files: []run.FileChange{
+			{Path: "a1.go", Status: "modified", Added: 9},
+			{Path: "a2.go", Status: "modified", Added: 8},
+			{Path: "a3.go", Status: "modified", Added: 7},
+			{Path: "a4.go", Status: "modified", Added: 6},
+			{Path: "a5.go", Status: "modified", Added: 5},
+			{Path: "a6.go", Status: "modified", Added: 4},
+			{Path: "a7.go", Status: "modified", Added: 3},
+		},
+	}, &stdout)
+	want := "changes: 7 files, +42/-0\n  a1.go  +9/-0\n  a2.go  +8/-0\n  a3.go  +7/-0\n  a4.go  +6/-0\n  a5.go  +5/-0\n  and 2 more\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesTrailingCountIsRelativeToTotalFiles(t *testing.T) {
+	// A truncated manifest carries TotalFiles larger than len(Files):
+	// the entry cap dropped paths beyond it. The trailing line counts
+	// from TotalFiles, so it reports the paths the cap dropped as well
+	// as the ones the five-line limit dropped: with 120 changed paths,
+	// six of them in the list, five printed, the human is told 115
+	// paths are not on screen.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 120,
+		Truncated:  true,
+		Files: []run.FileChange{
+			{Path: "c1.go", Status: "modified", Added: 1},
+			{Path: "c2.go", Status: "modified", Added: 1},
+			{Path: "c3.go", Status: "modified", Added: 1},
+			{Path: "c4.go", Status: "modified", Added: 1},
+			{Path: "c5.go", Status: "modified", Added: 1},
+			{Path: "c6.go", Status: "modified", Added: 1},
+		},
+	}, &stdout)
+	want := "changes: 120 files, +6/-0\n  c1.go  +1/-0\n  c2.go  +1/-0\n  c3.go  +1/-0\n  c4.go  +1/-0\n  c5.go  +1/-0\n  and 115 more\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+// TestPrintWrites* build the run.WriteCheck struct directly and pin the
+// exact human rendering: printWrites renders, it does not sort, so every
+// fixture is already in the order the check produces (sorted by path).
+
+func TestPrintWritesNilCheckPrintsNothing(t *testing.T) {
+	// A nil check means the caller never declared; there is nothing to
+	// report.
+	var stdout bytes.Buffer
+	printWrites(nil, &stdout)
+	if got := stdout.String(); got != "" {
+		t.Fatalf("output = %q, want empty", got)
+	}
+}
+
+func TestPrintWritesCleanVerdict(t *testing.T) {
+	// A clean verdict prints one short line on stdout, the whole point
+	// of the field: the caller must see that the check ran and passed,
+	// not merely that nothing was said.
+	var stdout bytes.Buffer
+	printWrites(&run.WriteCheck{UndeclaredCount: 0}, &stdout)
+	want := "writes: ok\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesSkippedPartialDeclaration(t *testing.T) {
+	var stdout bytes.Buffer
+	printWrites(&run.WriteCheck{Skipped: "not all tasks declared writes"}, &stdout)
+	want := "writes: skipped: not all tasks declared writes\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesSkippedManifestUnavailable(t *testing.T) {
+	var stdout bytes.Buffer
+	printWrites(&run.WriteCheck{Skipped: "change manifest unavailable"}, &stdout)
+	want := "writes: skipped: change manifest unavailable\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesOneUndeclaredPath(t *testing.T) {
+	// The violation goes to stderr: it is a failure and it is what exit
+	// 4 refers to. The count line names the count, singular for one
+	// path, and the path follows indented two spaces.
+	var stderr bytes.Buffer
+	printWrites(&run.WriteCheck{
+		Undeclared:      []string{"src/stray.txt"},
+		UndeclaredCount: 1,
+	}, &stderr)
+	want := "pi-worker: write check failed: 1 undeclared path\n  src/stray.txt\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesSeveralUndeclaredPaths(t *testing.T) {
+	// Paths print in the check's order, sorted by path, one per line
+	// indented two spaces.
+	var stderr bytes.Buffer
+	printWrites(&run.WriteCheck{
+		Undeclared:      []string{"docs/leak.md", "go.mod.bak", "src/stray.txt"},
+		UndeclaredCount: 3,
+	}, &stderr)
+	want := "pi-worker: write check failed: 3 undeclared paths\n" +
+		"  docs/leak.md\n  go.mod.bak\n  src/stray.txt\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesMoreThanFiveUndeclaredPaths(t *testing.T) {
+	// Exactly five paths print; the rest collapse into the trailing
+	// line, one per path the five-line limit dropped.
+	var stderr bytes.Buffer
+	undeclared := []string{"a1.txt", "a2.txt", "a3.txt", "a4.txt", "a5.txt", "a6.txt", "a7.txt"}
+	printWrites(&run.WriteCheck{Undeclared: undeclared, UndeclaredCount: 7}, &stderr)
+	want := "pi-worker: write check failed: 7 undeclared paths\n" +
+		"  a1.txt\n  a2.txt\n  a3.txt\n  a4.txt\n  a5.txt\n  and 2 more\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintWritesTrailingCountIsRelativeToUndeclaredCount(t *testing.T) {
+	// A truncated check carries UndeclaredCount larger than
+	// len(Undeclared): the entry cap dropped paths beyond it. The
+	// trailing line counts from UndeclaredCount, so it reports the
+	// paths the cap dropped as well as the ones the five-line limit
+	// dropped: with 120 undeclared paths, six of them in the list, five
+	// printed, the human is told 115 paths are not on screen.
+	var stderr bytes.Buffer
+	printWrites(&run.WriteCheck{
+		Undeclared:      []string{"c1.txt", "c2.txt", "c3.txt", "c4.txt", "c5.txt", "c6.txt"},
+		UndeclaredCount: 120,
+		Truncated:       true,
+	}, &stderr)
+	want := "pi-worker: write check failed: 120 undeclared paths\n" +
+		"  c1.txt\n  c2.txt\n  c3.txt\n  c4.txt\n  c5.txt\n  and 115 more\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRunExitCodePolicyOnUndeclaredWrites(t *testing.T) {
+	// A completed run whose write check found at least one undeclared
+	// path exits 4. A skipped check never exits 4: a skip means the
+	// question could not be answered, and answering "violation" would
+	// be a lie. A clean verdict never exits 4 either, and a run with no
+	// declaration has no check at all.
+	tests := []struct {
+		name        string
+		result      run.Result
+		want        int
+		wantOutcome contracts.Outcome
+	}{
+		{name: "no declaration", result: run.Result{Status: contracts.RunCompleted}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "clean verdict", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{UndeclaredCount: 0}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "skipped partial declaration", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "not all tasks declared writes"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "undeclared paths", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}}, want: 4, wantOutcome: contracts.OutcomeUndeclaredWrites},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotOutcome, got := runOutcome(test.result)
+			if got != test.want {
+				t.Fatalf("exit = %d, want %d", got, test.want)
+			}
+			if gotOutcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", gotOutcome, test.wantOutcome)
+			}
+		})
+	}
+}
+
+func TestRunExitCodePrecedence(t *testing.T) {
+	// Run-outcome codes win over both checks: a timed-out run that also
+	// wrote outside its declaration exits 7, and a cancelled one exits
+	// 8. A failed, partial, or all-unavailable run is answered by its
+	// own outcome -- 5, 9, or 3 -- never by the check that runs on
+	// every terminal status. Among completed runs, policy outranks
+	// verification: a run that wrote outside its declared scope has
+	// breached the contract the caller relied on to bound it, and
+	// whether its tests pass is secondary information the result
+	// document carries either way. A completed run with a failing
+	// verification and no policy violation still exits 6.
+	violation := &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}
+	failingVerification := &run.Verification{Argv: []string{"go", "test"}, ExitCode: 3}
+	tests := []struct {
+		name        string
+		result      run.Result
+		want        int
+		wantOutcome contracts.Outcome
+	}{
+		{name: "timed out with violation", result: run.Result{Status: contracts.RunTimedOut, Writes: violation}, want: 7, wantOutcome: contracts.OutcomeTimeout},
+		{name: "cancelled with violation", result: run.Result{Status: contracts.RunCancelled, Writes: violation}, want: 8, wantOutcome: contracts.OutcomeCancelled},
+		{name: "failed run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusFailed}}, Writes: violation}, want: 5, wantOutcome: contracts.OutcomeTaskFailed},
+		{name: "internal error with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusError}}, Writes: violation}, want: 9, wantOutcome: contracts.OutcomeInternalError},
+		{name: "partial run with violation", result: run.Result{Status: contracts.RunPartial, Workers: []pi.WorkerResult{{Status: pi.StatusCompleted}}, Writes: violation}, want: 5, wantOutcome: contracts.OutcomePartial},
+		{name: "all-unavailable run with violation", result: run.Result{Status: contracts.RunFailed, Workers: []pi.WorkerResult{{Status: pi.StatusUnavailable}}, Writes: violation}, want: 3, wantOutcome: contracts.OutcomeWorkersUnavailable},
+		{name: "violation and failing verification", result: run.Result{Status: contracts.RunCompleted, Writes: violation, Verification: failingVerification}, want: 4, wantOutcome: contracts.OutcomeUndeclaredWrites},
+		{name: "failing verification alone", result: run.Result{Status: contracts.RunCompleted, Verification: failingVerification}, want: 6, wantOutcome: contracts.OutcomeVerificationFailed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotOutcome, got := runOutcome(test.result)
+			if got != test.want {
+				t.Fatalf("exit = %d, want %d", got, test.want)
+			}
+			if gotOutcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", gotOutcome, test.wantOutcome)
+			}
+		})
 	}
 }

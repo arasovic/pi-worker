@@ -20,6 +20,20 @@ import (
 // MaxTasks is the absolute cap on accepted tasks per run.
 const MaxTasks = 3
 
+// WriteDeclaration is one task's write declaration: Declared reports
+// whether the task declared anything at all, and Paths are the
+// workspace-relative paths it declared it will write. The two are
+// independent statements: a task that said nothing carries Declared
+// false, and a task that declared it writes nothing carries Declared
+// true with an empty Paths. Only the declared-empty form can prove a
+// read-only task read-only, so the distinction must not be collapsed
+// into nil-versus-empty on a plain slice, where a later len(x) == 0
+// would silently erase it.
+type WriteDeclaration struct {
+	Declared bool
+	Paths    []string
+}
+
 // Request describes one bounded parallel run: every accepted task runs
 // concurrently through the same worker with the same model and workspace.
 type Request struct {
@@ -32,10 +46,12 @@ type Request struct {
 	// verification.
 	Verify []string
 	// Writes optionally declares, per task, the workspace-relative paths
-	// that task intends to write. A nil or empty entry declares nothing
-	// for that task. When two tasks declare overlapping paths the run is
-	// rejected before any worker starts.
-	Writes [][]string
+	// that task intends to write. A zero-value entry — Declared false —
+	// declares nothing for that task, and an entry with Declared true
+	// and an empty Paths declares the task writes nothing. When two
+	// tasks declare overlapping paths the run is rejected before any
+	// worker starts.
+	Writes []WriteDeclaration
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
@@ -48,19 +64,42 @@ type Request struct {
 type Result struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Status        contracts.RunStatus `json:"status"`
-	Workers       []pi.WorkerResult   `json:"workers"`
+	// Outcome is the self-describing word for what this run's exit code
+	// means, decided from the same (status, error) pair as the exit
+	// code. It is never omitted: an absent or empty outcome must not
+	// read as "fine".
+	Outcome contracts.Outcome `json:"outcome"`
+	Workers []pi.WorkerResult `json:"workers"`
 	// Verification is the outcome of the run-level check command; nil
 	// when no verification ran.
 	Verification *Verification `json:"verification,omitempty"`
 	// Git is present only when the run moved HEAD, the branch, or the
 	// stash list; nil otherwise.
 	Git *GitChange `json:"git,omitempty"`
+	// Changes is the manifest of workspace paths the run changed and by
+	// how much, measured by pi-worker against the before-state HEAD
+	// rather than reported by the worker; nil when the workspace is not
+	// inside a git work tree. Unlike Git it is not gated by the git
+	// tripwire: leaving modified files behind is the point of a
+	// delegation, and those files are exactly what the manifest names.
+	// A measurement failure is reported through Omitted, never by
+	// leaving the field nil.
+	Changes *Changes `json:"changes,omitempty"`
+	// Writes is the post-hoc comparison of the paths the run changed
+	// against the paths its tasks declared they would write. It is
+	// present exactly when the request carried a Writes declaration:
+	// a caller who declared gets the verdict or the skip reason, and a
+	// caller who never declared gets nothing. This is the opposite of
+	// the usual omitempty reading — a declared run that answered with
+	// silence would look checked when it was not.
+	Writes *WriteCheck `json:"writes,omitempty"`
 }
 
 // Controller runs accepted tasks concurrently through one Worker and,
 // when a verifier is configured, checks a completed run's workspace
 // with one command; when a git inspector is configured, it records the
-// workspace git state before and after the run.
+// workspace git state before and after the run and measures the change
+// manifest against the before-state HEAD.
 type Controller struct {
 	worker       pi.Worker
 	verifier     Verifier
@@ -100,9 +139,11 @@ func New(worker pi.Worker, opts ...Option) *Controller {
 // state and the worker outcomes. When a git inspector is configured,
 // Run records the workspace git state before any worker starts and
 // again after every worker settles, reporting only when HEAD, the
-// branch, or the stash list moved. When a verifier and a verification
-// command are configured and the run completed with the parent context
-// intact, Run verifies the workspace once before returning.
+// branch, or the stash list moved, and measures the change manifest
+// against the before-state HEAD on every terminal status. When a
+// verifier and a verification command are configured and the run
+// completed with the parent context intact, Run verifies the workspace
+// once before returning.
 func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
@@ -110,10 +151,28 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// The before state is recorded after validation and before the first
 	// worker starts. Git state reporting is diagnostic, not a gate: a
 	// non-git workspace or an inspection error leaves Git nil without
-	// failing the run.
+	// failing the run. The inspection error is kept separately because
+	// the change manifest treats it differently: a guard failure is
+	// indistinguishable from a workspace outside a git work tree and is
+	// the same silent no-op Git makes, arriving here as before == nil
+	// with beforeErr == nil — git missing included. A context already
+	// done when the inspection ran is the one exception: the run never
+	// got far enough to look, so that case is a stated omission, not an
+	// absent field. Only a failure after the guard, from git status
+	// --porcelain, git stash list, or rev-parse --abbrev-ref HEAD
+	// outside the unborn-HEAD case, is a post-guard inspection failure
+	// that reaches reasonMeasurementFail and must be reported rather
+	// than silently dropped.
 	var before *GitState
+	var beforeErr error
+	// The context state is captured here, at the inspection site, where
+	// it is knowable: by the time the change-manifest switch runs, a
+	// context that was live at inspection may have died mid-run and
+	// would look identical to one already done when it started.
+	beforeContextDone := false
 	if c.gitInspector != nil {
-		before, _ = c.gitInspector.Inspect(ctx, req.Workspace)
+		before, beforeErr = c.gitInspector.Inspect(ctx, req.Workspace)
+		beforeContextDone = ctx.Err() != nil
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
@@ -155,6 +214,39 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			}
 		}
 	}
+	// The change manifest runs in the same terminal-status block as the
+	// after state, on every terminal status, under its own fresh
+	// thirty-second budget: the untracked pass can spawn one command per
+	// file up to the cap, and a budget that expires is a measurement
+	// failure that omits with a reason rather than leaving the field
+	// nil. It never depends on the parent context, for the same reason
+	// the after state does not: a run that timed out mid-edit is exactly
+	// the run whose changes a caller most needs.
+	if c.gitInspector != nil {
+		switch {
+		case beforeErr != nil:
+			result.Changes = &Changes{Omitted: reasonMeasurementFail}
+		case before != nil:
+			changesCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
+			defer cancel()
+			result.Changes = measureChanges(changesCtx, req.Workspace, before)
+		case beforeContextDone:
+			// A context already done when the before-state inspection ran:
+			// nothing was measured and nothing failed, and an absent field
+			// would read as a measured result. Omit with the stated reason.
+			result.Changes = &Changes{Omitted: reasonContextDone}
+		}
+	}
+	// The write check runs after the change manifest, on every terminal
+	// status, whenever the request carried a write declaration: a run
+	// that stopped mid-edit is exactly the run whose stray writes a
+	// caller most needs to know about. It is pure comparison over the
+	// manifest and the declaration in memory — no commands, so no
+	// context and no timeout of its own. No declaration, no field:
+	// silence means the caller never asked.
+	if req.Writes != nil {
+		result.Writes = checkWrites(result.Changes, req.Writes)
+	}
 	// Verification runs once for the whole run after every worker has
 	// settled, and only on a completed run with a live context: a partial
 	// or failed run leaves the workspace half-written, and a cancelled or
@@ -174,8 +266,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 // trimming whitespace, and — when Writes is present — exactly one write
 // entry per task whose declared paths are normalized and checked. The
 // write declaration is pure input validation: nothing is read from the
-// workspace, and the declaration is never passed to workers, never echoed
-// in the result, and never enforced during or after the run.
+// workspace, and the declaration never reaches a worker and restricts
+// nothing while the run is in progress; once the run has ended it is
+// compared against the change manifest.
 func validate(req Request) error {
 	if req.Model == "" {
 		return fmt.Errorf("model is required")
@@ -195,19 +288,21 @@ func validate(req Request) error {
 		}
 	}
 	// Writes is either nil or exactly as long as Tasks; a shorter or
-	// longer slice is a validation error. An individual entry may be nil
-	// or empty, declaring nothing for that task.
+	// longer slice is a validation error. An entry with Declared false
+	// declares nothing for that task, as today; a Declared true entry
+	// with an empty Paths — the writes-nothing declaration — has no
+	// paths to reject and none to overlap with another task's.
 	if req.Writes != nil && len(req.Writes) != len(req.Tasks) {
 		return fmt.Errorf("writes must declare one entry per task: got %d entries for %d tasks", len(req.Writes), len(req.Tasks))
 	}
 	normalized := make([][]string, len(req.Tasks))
-	for i, declared := range req.Writes {
-		if len(declared) == 0 {
+	for i, entry := range req.Writes {
+		if !entry.Declared || len(entry.Paths) == 0 {
 			continue
 		}
-		seen := make(map[string]bool, len(declared))
-		normalized[i] = make([]string, 0, len(declared))
-		for _, value := range declared {
+		seen := make(map[string]bool, len(entry.Paths))
+		normalized[i] = make([]string, 0, len(entry.Paths))
+		for _, value := range entry.Paths {
 			clean, err := validateWritePath(value)
 			if err != nil {
 				return fmt.Errorf("task %d: %v", i+1, err)

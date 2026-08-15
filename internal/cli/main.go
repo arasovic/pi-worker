@@ -156,11 +156,11 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 	}
 	// --writes entries pair with the task most recently introduced when
 	// they appeared; pad what was declared to the final task count so the
-	// controller sees one entry per task, with a nil entry for every task
-	// that declared nothing.
+	// controller sees one entry per task, with a zero-value entry —
+	// Declared false — for every task that declared nothing.
 	if opts.writes != nil {
 		for len(opts.writes) < len(tasks) {
-			opts.writes = append(opts.writes, nil)
+			opts.writes = append(opts.writes, run.WriteDeclaration{})
 		}
 	}
 	return opts, tasks, nil
@@ -227,9 +227,10 @@ type runOptions struct {
 	json           bool
 	debug          bool
 	// writes is the per-task declared write set in task order: nil when
-	// no --writes appeared, and a nil entry for a task that declared
-	// nothing.
-	writes [][]string
+	// no --writes appeared, and a zero-value entry — Declared false — for
+	// a task that declared nothing. --writes "" fills a Declared true
+	// entry with no paths, the writes-nothing declaration.
+	writes []run.WriteDeclaration
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
@@ -295,7 +296,8 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		}
 	}
 
-	code := runExitCode(result)
+	outcome, code := runOutcome(result)
+	result.Outcome = outcome
 	for i, worker := range result.Workers {
 		if worker.Warning != "" {
 			fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Warning)
@@ -340,6 +342,20 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 	if result.Git != nil {
 		printGitChange(result.Git, stderr)
 	}
+	if result.Changes != nil {
+		printChanges(result.Changes, stdout)
+	}
+	if result.Writes != nil {
+		// The verdict and the skip reason are result lines like the
+		// change manifest and belong on stdout; the violation is the
+		// failure exit 4 refers to and belongs on stderr.
+		w := stdout
+		if result.Writes.Skipped == "" && result.Writes.UndeclaredCount > 0 {
+			w = stderr
+		}
+		printWrites(result.Writes, w)
+	}
+	fmt.Fprintf(stdout, "outcome=%s\n", result.Outcome)
 	return code
 }
 
@@ -415,6 +431,89 @@ func gitStashEntries(entries []string) string {
 	return strings.Join(parts, "; ")
 }
 
+// printChanges prints the run's measured change manifest after the
+// worker summaries in human mode: one information line on stdout — the
+// same class as "verification: ok", never a warning — naming the file
+// count and the summed added/deleted lines, then up to five paths most
+// churn first, one per line indented two spaces, and a final indented
+// line naming how many more remain when the list is longer. The trailing
+// count is relative to TotalFiles, not to len(Files), so a truncated
+// manifest reports the paths the entry cap dropped as well as the ones
+// the five-line limit dropped. A measured
+// run that changed nothing prints the zero line alone; an omitted
+// manifest prints the reason instead, so a human never has to guess
+// whether "no changes" means measured-zero or not-measured.
+func printChanges(changes *run.Changes, stdout io.Writer) {
+	if changes.Omitted != "" {
+		fmt.Fprintf(stdout, "changes: omitted: %s\n", changes.Omitted)
+		return
+	}
+	added, deleted := 0, 0
+	for _, file := range changes.Files {
+		added += file.Added
+		deleted += file.Deleted
+	}
+	filesWord := "files"
+	if changes.TotalFiles == 1 {
+		filesWord = "file"
+	}
+	fmt.Fprintf(stdout, "changes: %d %s, +%d/-%d\n", changes.TotalFiles, filesWord, added, deleted)
+	shown := min(len(changes.Files), 5)
+	for _, file := range changes.Files[:shown] {
+		counts := fmt.Sprintf("+%d/-%d", file.Added, file.Deleted)
+		if file.Binary {
+			counts = "binary"
+		}
+		fmt.Fprintf(stdout, "  %s  %s\n", file.Path, counts)
+	}
+	if len(changes.Files) > shown {
+		fmt.Fprintf(stdout, "  and %d more\n", changes.TotalFiles-shown)
+	}
+}
+
+// printWrites prints the run's write check after the change manifest in
+// human mode, mirroring printChanges against the same rules. A clean
+// verdict prints one short "writes: ok" line on stdout — the same class
+// as "verification: ok", and the whole point of the field: a caller
+// must be able to see that the check ran and passed, not merely that
+// nothing was said. A skipped check prints the reason instead, so a
+// human never has to guess whether "no writes" means checked-clean or
+// not-checked. A nil check prints nothing: the caller never declared and
+// there is nothing to report. The violation goes to stderr, not stdout,
+// because it is a failure and it is what exit 4 refers to: one count
+// line, then up to five undeclared paths, two spaces indented, one per
+// line, and a final indented line naming how many more remain when more
+// were undeclared than were printed. The trailing count is relative to
+// UndeclaredCount, not to len(Undeclared), so a truncated check reports
+// the paths the entry cap dropped as well as the ones the five-line
+// limit dropped: it tells the human how many undeclared paths they have
+// not seen, which is the number they need.
+func printWrites(check *run.WriteCheck, w io.Writer) {
+	if check == nil {
+		return
+	}
+	if check.Skipped != "" {
+		fmt.Fprintf(w, "writes: skipped: %s\n", check.Skipped)
+		return
+	}
+	if check.UndeclaredCount == 0 {
+		fmt.Fprintln(w, "writes: ok")
+		return
+	}
+	pathsWord := "paths"
+	if check.UndeclaredCount == 1 {
+		pathsWord = "path"
+	}
+	fmt.Fprintf(w, "pi-worker: write check failed: %d undeclared %s\n", check.UndeclaredCount, pathsWord)
+	shown := min(len(check.Undeclared), 5)
+	for _, path := range check.Undeclared[:shown] {
+		fmt.Fprintf(w, "  %s\n", path)
+	}
+	if len(check.Undeclared) > shown {
+		fmt.Fprintf(w, "  and %d more\n", check.UndeclaredCount-shown)
+	}
+}
+
 // gitHead renders a commit hash for the human warning at git's default
 // seven-character abbreviation, and an empty hash — an unborn branch
 // has no HEAD — as (none), the same placeholder gitValue uses for the
@@ -438,17 +537,18 @@ func gitValue(value string) string {
 	return value
 }
 
-// allWritesDeclared reports whether every task carried a non-empty
-// --writes declaration. Only then is the shared-workspace warning
-// suppressed: the caller stated the disjoint-file contract for the whole
-// run and the controller checked it before any worker started. When any
-// task declared nothing, the warning stays.
-func allWritesDeclared(writes [][]string) bool {
+// allWritesDeclared reports whether every task carried a --writes
+// declaration. Only then is the shared-workspace warning suppressed:
+// the caller stated the disjoint-file contract for the whole run and
+// the controller checked it before any worker started. A declared empty
+// set counts as declared — the task bounded itself to nothing — while
+// any task that did not declare keeps the warning.
+func allWritesDeclared(writes []run.WriteDeclaration) bool {
 	if len(writes) == 0 {
 		return false
 	}
 	for _, entry := range writes {
-		if len(entry) == 0 {
+		if !entry.Declared {
 			return false
 		}
 	}
@@ -551,27 +651,33 @@ func parseRunArgs(args []string) (runOptions, error) {
 			if index < 0 {
 				return opts, fmt.Errorf("--writes must follow a --task or --task-file")
 			}
-			if strings.TrimSpace(value) == "" {
-				return opts, fmt.Errorf("invalid writes %q: empty or whitespace-only", value)
-			}
-			paths := strings.Split(value, ",")
-			for i, path := range paths {
-				// Trim surrounding whitespace immediately, before every other
-				// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
-				// validation as the same paths. A trimmed-empty element still
-				// gets the existing empty-element error below.
-				paths[i] = strings.TrimSpace(path)
-				if paths[i] == "" {
-					return opts, fmt.Errorf("invalid writes %q: empty element between commas", value)
+			// A trimmed-empty value is the one spelling that cannot
+			// collide with a real path: it is how a task declares that it
+			// writes nothing. Only a non-empty value is split on commas,
+			// so an empty element between commas keeps failing below.
+			var declaration run.WriteDeclaration
+			if strings.TrimSpace(value) != "" {
+				paths := strings.Split(value, ",")
+				for i, path := range paths {
+					// Trim surrounding whitespace immediately, before every other
+					// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
+					// validation as the same paths. A trimmed-empty element still
+					// gets the existing empty-element error below.
+					paths[i] = strings.TrimSpace(path)
+					if paths[i] == "" {
+						return opts, fmt.Errorf("invalid writes %q: empty element between commas", value)
+					}
 				}
+				declaration.Paths = paths
 			}
 			for len(opts.writes) <= index {
-				opts.writes = append(opts.writes, nil)
+				opts.writes = append(opts.writes, run.WriteDeclaration{})
 			}
-			if opts.writes[index] != nil {
+			if opts.writes[index].Declared {
 				return opts, fmt.Errorf("--writes specified more than once for task %d", index+1)
 			}
-			opts.writes[index] = paths
+			declaration.Declared = true
+			opts.writes[index] = declaration
 		case "--json", "--debug":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)
@@ -676,44 +782,73 @@ func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 	return []string{string(data)}, nil
 }
 
-// runExitCode maps the aggregate run result onto the contract exit codes.
-// A no-success run exits 3 when every worker was unavailable and 9 when
-// any worker reported an internal error; partial runs stay 5. A
-// verification that ran and reported a non-zero exit code exits 6; the
-// run status field still describes worker outcomes only.
-func runExitCode(result run.Result) int {
-	if result.Verification != nil && result.Verification.ExitCode != 0 {
-		return contracts.ExitCode(contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification})
-	}
+// runFailure resolves which (status, error kind) pair describes the
+// aggregate run result, in the documented precedence order. It is the
+// single place that decision is made: the word and the exit code are
+// both derived from what it returns, so they cannot describe
+// different things. The codes follow the documented precedence order:
+// run-outcome codes first (5, 7, 8, 9, and the readiness 3), then the
+// write-check policy code 4, then the verification code 6, then
+// completion's 0. A no-success run exits 3 when every worker was
+// unavailable and 9 when any worker reported an internal error; partial
+// runs stay 5. The run status field always describes worker outcomes
+// only.
+func runFailure(result run.Result) (contracts.RunStatus, *contracts.RunError) {
 	switch result.Status {
-	case contracts.RunCompleted:
-		return 0
 	case contracts.RunTimedOut:
-		return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
+		return contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout}
 	case contracts.RunCancelled:
-		return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
+		return contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation}
 	}
-	hasSuccess := false
-	hasError := false
-	allUnavailable := true
-	for _, worker := range result.Workers {
-		switch worker.Status {
-		case pi.StatusCompleted:
-			hasSuccess = true
-		case pi.StatusError:
-			hasError = true
-			allUnavailable = false
-		case pi.StatusUnavailable:
+	// Partial and failed runs keep their run-outcome codes before any
+	// check is considered: a run that did not complete is answered by
+	// its outcome, not by the checks that run on every terminal status.
+	if result.Status != contracts.RunCompleted {
+		hasSuccess := false
+		hasError := false
+		allUnavailable := true
+		for _, worker := range result.Workers {
+			switch worker.Status {
+			case pi.StatusCompleted:
+				hasSuccess = true
+			case pi.StatusError:
+				hasError = true
+				allUnavailable = false
+			case pi.StatusUnavailable:
+			default:
+				allUnavailable = false
+			}
+		}
+		switch {
+		case !hasSuccess && allUnavailable:
+			return result.Status, &contracts.RunError{Kind: contracts.ErrorReadiness}
+		case !hasSuccess && hasError:
+			return result.Status, &contracts.RunError{Kind: contracts.ErrorInternal}
 		default:
-			allUnavailable = false
+			return result.Status, &contracts.RunError{Kind: contracts.ErrorTask}
 		}
 	}
-	switch {
-	case !hasSuccess && allUnavailable:
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorReadiness})
-	case !hasSuccess && hasError:
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal})
-	default:
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorTask})
+	// Completed only. The write contract outranks the quality signal: a
+	// run that wrote outside its declared scope has breached the
+	// contract the caller relied on to bound it, and whether its tests
+	// pass is secondary information the result document carries either
+	// way. Contract breach outranks quality signal. Only a verdict with
+	// undeclared paths exits 4: a skipped check never does — a skip
+	// means the question could not be answered, and answering
+	// "violation" would be a lie — and a clean verdict never does.
+	if result.Writes != nil && result.Writes.Skipped == "" && result.Writes.UndeclaredCount > 0 {
+		return contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorPolicy}
 	}
+	if result.Verification != nil && result.Verification.ExitCode != 0 {
+		return contracts.RunCompleted, &contracts.RunError{Kind: contracts.ErrorVerification}
+	}
+	return contracts.RunCompleted, nil
+}
+
+// runOutcome returns both the self-describing word and the contract
+// exit code for the aggregate run result, both derived in one place
+// from the (status, error kind) pair resolved by runFailure.
+func runOutcome(result run.Result) (contracts.Outcome, int) {
+	status, runError := runFailure(result)
+	return contracts.RunOutcome(status, runError), contracts.ExitCode(status, runError)
 }

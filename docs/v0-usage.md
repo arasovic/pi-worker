@@ -275,12 +275,13 @@ Replace the provider/model placeholder with one exact selector printed by
   with `argv` and `exitCode: 0` only.
 - A failing check (non-zero exit) exits the process `6` without changing
   the run `status` field or any worker status: those describe worker
-  outcomes, and only the process exit code and the reported error carry
-  the verification failure. Human mode prints the exit code and the
-  captured excerpt (the first 2 KiB and the last 6 KiB when long, with the
-  elided middle marked), plus the full `pi-worker-verify-*.log` path in
-  the system temp directory when one was written; `--json` mode carries
-  `output`, `truncated`, and `logFile` in the `verification` object.
+  outcomes, and the process exit code, the reported error, and the root
+  `outcome` carry the verification failure. Human mode prints the exit
+  code and the captured excerpt (the first 2 KiB and the last 6 KiB when
+  long, with the elided middle marked), plus the full
+  `pi-worker-verify-*.log` path in the system temp directory when one
+  was written; `--json` mode carries `output`, `truncated`, and
+  `logFile` in the `verification` object.
 - A context that expires while the check runs is not a verification
   failure: the run ran out of time and exits the way a timed-out run
   exits (`7`).
@@ -302,6 +303,35 @@ Replace the provider/model placeholder with one exact selector printed by
 - A workspace outside a git work tree, or a failed inspection, is a
   silent no-op: the result carries no `git` object and no warning is
   printed, and the run status and exit code are unchanged.
+
+### Workspace change manifest
+
+- When the current directory is inside a git work tree and the tree was
+  clean before the run, `run` measures which paths the run changed and by
+  how much, diffing against the git state recorded before the first worker
+  started. This is pi-worker's own measurement, not the worker's account of
+  its work. The manifest covers the paths `git` tracks or would track:
+  ignore rules exclude untracked paths only, so an ignored path is outside
+  both the manifest and the write check when it is untracked and a run that
+  wrote only such paths reports a clean verdict; a tracked path is measured,
+  and therefore checked, whether or not a rule matches it.
+- Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
+  the worker summaries, followed by up to five paths most churn first. It is
+  information, not a warning, so it carries no `warning:` prefix.
+- `--json` mode carries a `changes` object. It is not gated by the git
+  tripwire: a run that only left modified files behind carries `changes`
+  and no `git`.
+- The manifest is measured on every terminal status, including a timed-out
+  or cancelled run, under its own thirty-second budget: a run that stopped
+  mid-edit is exactly the run whose changes a caller most needs.
+- When the working tree was already dirty before the run, the manifest is
+  omitted with a reason rather than guessed, because the run's changes
+  cannot be separated from the ones already there. An unborn HEAD, a context
+  already done when the inspection ran, and a measurement that failed after
+  the workspace was confirmed to be a git work tree, are omitted with a
+  reason the same way. Only a workspace outside a git work tree, or git
+  missing entirely, reached with a live context when the inspection ran,
+  carries no manifest at all — the same silent no-op the git state makes.
 
 ### Exactly one input mechanism
 
@@ -331,18 +361,51 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 - `--writes <paths>` optionally declares, as a comma-separated list, the
   workspace-relative paths the most recently introduced task (`--task` or
   `--task-file`) intends to write; whitespace around each comma-separated
-  path is ignored. It may appear at most once per task and must follow the
-  task it applies to.
-- The declaration is optional and is checked before any worker starts: a
-  run whose declared sets overlap is rejected up front. A run where some
-  tasks declare and others do not is allowed; tasks that declare nothing
-  are simply not part of the pre-flight check. It is a pre-flight contract,
-  not a sandbox or worktree: pi-worker does not enforce it during the run
-  and does not verify after the run that a worker stayed inside its
-  declaration.
-- When every task declares a non-empty set and the check passes, the shared
-  workspace warning is suppressed; when any task declares nothing, the
-  warning stays.
+  path is ignored, and each value is cleaned where it is compared, so
+  `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
+  `..` all name `src/a`. It may appear at most once per task and must
+  follow the task it applies to. An empty value, `--writes ""`, declares
+  that the task writes nothing; whitespace-only is the same declaration
+  because the flag already trims. The empty string is the one spelling
+  that cannot collide with a real path. A task that declared the empty
+  set has declared: when every task in the run declared — the empty
+  declaration included — and the change manifest was measured, the
+  post-run check runs, so a read-only round can be proven to have
+  written nothing rather than merely asserted to. Only a measured
+  manifest makes that proof: on a dirty before-state, an unborn HEAD, a
+  dead context, or a failed measurement the check skips with `change
+  manifest unavailable` and the run exits `0`, whatever was declared.
+  Such a run that changed nothing reports a clean verdict; one that
+  changed a path reports it undeclared and exits `4`.
+- A declared path covers everything beneath it on a segment boundary:
+  `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
+  `src/a` names a file or a directory. Comparison is byte-exact per
+  segment with no case folding: on a case-insensitive filesystem a
+  declaration differing from the changed path only in case still does not
+  cover it. Folding case would make the check miss real violations on a
+  case-sensitive filesystem, and a check whose job is to accuse must not
+  accuse less than it should.
+- The declaration is optional and is checked twice: before any worker
+  starts, a run whose declared sets overlap is rejected up front, and
+  after the run the declaration is compared against the paths the run
+  actually changed. A run where some tasks declare and others do not is
+  allowed; a task that did not declare is excluded from the pre-flight
+  overlap check and makes the post-run check skip entirely.
+  It is a pre-flight contract, not a sandbox or worktree: pi-worker does
+  not enforce it during the run.
+- While any run declares `--writes`, that workspace must have one run at a
+  time: the check compares against the whole workspace's pre-run git
+  state, so a concurrent writer lands in whichever run is measuring.
+- When every task declared — empty set or not — and the check passes,
+  the shared workspace warning is suppressed; when any task did not
+  declare, the warning stays.
+- The run reports the changed paths no task declared, and exits `4`
+  (policy) when it found any. The run `status` field is unaffected: a run
+  whose workers all succeeded stays `completed`, and the process exit
+  code, the reported error, and the root `outcome` carry the failure.
+  When not every task declared writes, or the change manifest was not
+  measured, the check is skipped with a stated reason rather than
+  answered.
 
 ### Output
 
@@ -350,9 +413,15 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   `worker N [model=provider/model thinking=level]:`.
   - Completed worker output goes to stdout.
   - Failed/errored worker output goes to stderr.
+- A run that ends in a human summary prints one final `outcome=<word>`
+  line to stdout after the change manifest and write-check lines; the
+  word and the exit code are the same decision wherever a document or a
+  human summary is produced.
 - `--json` emits **exactly one** JSON object (single document) only after argument/input validation succeeds and a run starts, with:
   - `schemaVersion` = `1`
   - `status`
+  - `outcome`, always present within an emitted run document; the same
+    decision as the exit code
   - `workers` in input order (the same order as task inputs, not completion order)
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`
@@ -363,28 +432,47 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `git`, when the run moved HEAD, the branch, or the stash list:
     `before` and `after` states, each with `head`, `branch`, `dirty`,
     and `stashes`
+  A run that started can still emit no document: once the run itself fails
+  rather than merely finishing badly — it ran out of time, it was cancelled,
+  or it could not complete at all — no document is emitted, deliberately,
+  rather than a partial one, and only the exit code and stderr remain.
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
 
 ```json
-{"schemaVersion":1,"status":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with Pi default thinking=high","status":"completed","explanation":"Worker one done"}]}
+{"schemaVersion":1,"status":"completed","outcome":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with Pi default thinking=high","status":"completed","explanation":"Worker one done"}]}
 ```
 
 ### Exit codes
 
-- `0` completed
-- `2` usage
-- `3` all workers unavailable / readiness path
+- `0` completed (`outcome=completed`)
+- `2` usage (`outcome=usage`; this word never appears in a document)
+- `3` all workers unavailable / readiness path (`outcome=workers-unavailable`)
+- `4` policy: a completed run wrote paths no task declared
+  (`outcome=undeclared-writes`). The run `status` stays `completed`; the
+  process exit code, the reported error, and the root `outcome` carry
+  the failure
 - `5` task failure or partial completion; top-level `--json` `status` is
-  `failed` for task failure and `partial` for partial completion.
-- `6` verification failed; the run `status` stays `completed` and only the
-  process exit code and the reported error carry the failure
-- `7` timeout
-- `8` cancellation
+  `failed` for task failure and `partial` for partial completion
+  (`outcome=task-failed` and `outcome=partial` respectively)
+- `6` verification failed (`outcome=verification-failed`); the run
+  `status` stays `completed`; the process exit code, the reported error,
+  and the root `outcome` carry the failure
+- `7` timeout (`outcome=timeout`)
+- `8` cancellation (`outcome=cancelled`)
 - `9` protocol/internal; for runs, no worker succeeded and any worker reported an
-  internal error
-- `4` (policy) is reserved and **not emitted by this v0 slice**.
+  internal error (`outcome=internal-error`)
+
+A caller parsing `--json` should read root `outcome` rather than
+reconstruct it from `status` plus the check objects.
+
+When more than one applies, run-outcome codes win over both checks: a
+timed-out run that also wrote outside its declaration exits `7`. Among
+completed runs, policy outranks verification: a run that wrote outside
+its declared scope has breached the contract the caller relied on to
+bound it, and whether its tests pass is secondary information the result
+document carries either way. Contract breach outranks quality signal.
 
 ### `--debug` debug stream
 

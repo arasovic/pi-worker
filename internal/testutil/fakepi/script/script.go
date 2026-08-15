@@ -24,6 +24,10 @@ type Step struct {
 	// Raw writes a literal stdout line, appending a trailing LF when missing.
 	// It is used to simulate malformed and oversized frames.
 	Raw string `json:"raw,omitempty"`
+	// WriteFile writes a file at path, relative to the process's working
+	// directory, before continuing the sequence. It lets scripts leave a
+	// workspace path behind mid-run the way a real worker's tools would.
+	WriteFile string `json:"writeFile,omitempty"`
 	// SleepMS pauses before the next step.
 	SleepMS int `json:"sleepMs,omitempty"`
 	// Exit terminates fakepi immediately without further output.
