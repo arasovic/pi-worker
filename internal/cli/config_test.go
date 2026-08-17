@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -363,7 +362,9 @@ func TestConfigSetCatalogFailurePreservesConfig(t *testing.T) {
 	}
 	installConfigPath(t, path)
 	installFakeCatalog(t, &countingCatalog{err: errors.New("catalog unavailable")})
-	code, _, _ := runCLI(t, []string{"config", "set", "default-model", "acme/model", "--timeout", (10 * time.Millisecond).String()}, "")
+	// No --timeout: the fake catalog fails immediately, and a short deadline
+	// would race that failure and turn exit 9 into exit 7.
+	code, _, _ := runCLI(t, []string{"config", "set", "default-model", "acme/model"}, "")
 	got, err := config.Load(path)
 	if code != 9 || err != nil || got != before {
 		t.Fatalf("failed catalog = code %d, config %#v, error %v", code, got, err)
