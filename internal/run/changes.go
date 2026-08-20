@@ -240,10 +240,14 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 	// the tracked diff nor the untracked listing now matches HEAD, or is
 	// gone: the run reverted it to its committed content — the case the
 	// dirty union exists for — or removed it. Give it an entry with zero
-	// counts and dirtyBefore true, deriving status exactly as the
-	// tracked pass does from base presence and current presence. Every
-	// changed path, including these, must reach allPaths, because that
-	// is what the write check compares against.
+	// counts and dirtyBefore true. Current presence decides first: a
+	// path that no longer exists cannot be an addition, so a gone path
+	// is deleted even when it was never in the base tree — an untracked
+	// file the run deleted was never in the base tree, and calling it
+	// added would name a nonexistent path an addition. A present path
+	// is added when it was not in the base tree and modified when it
+	// was. Every changed path, including these, must reach allPaths,
+	// because that is what the write check compares against.
 	inTracked := make(map[string]bool, len(tracked))
 	for _, f := range tracked {
 		inTracked[f.Path] = true
@@ -260,19 +264,17 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 			continue
 		}
 		f := FileChange{Path: path, DirtyBefore: true}
+		present, err := filePresent(dir, path)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
 		switch {
+		case !present:
+			f.Status = statusDeleted
 		case !existed[path]:
 			f.Status = statusAdded
 		default:
-			present, err := filePresent(dir, path)
-			if err != nil {
-				return nil, fmt.Errorf("stat %s: %w", path, err)
-			}
-			if present {
-				f.Status = statusModified
-			} else {
-				f.Status = statusDeleted
-			}
+			f.Status = statusModified
 		}
 		appendFile(f)
 	}

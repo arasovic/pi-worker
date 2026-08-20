@@ -325,6 +325,32 @@ func TestControllerChangesDirtyBeforeStateDeletedThenRestoredReported(t *testing
 	}
 }
 
+func TestControllerChangesDirtyBeforeStateUntrackedDeletedReported(t *testing.T) {
+	// An untracked file the run deletes was never in the base tree, so
+	// base presence cannot decide its status: the stamp moved, the path
+	// appears in neither the tracked diff nor the untracked listing, and
+	// the fallback must call the gone path deleted, not added — a path
+	// that does not exist any more was not added.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.Remove(filepath.Join(dir, "stray.txt"))
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the deleted path in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "stray.txt" || file.Status != "deleted" || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want stray.txt deleted +0/-0 with dirtyBefore", file)
+	}
+}
+
 func TestControllerChangesCleanBeforeStateUnchanged(t *testing.T) {
 	// A clean before-state behaves exactly as before: no subtraction,
 	// no dirtyBefore markings, and the measured result is identical to
