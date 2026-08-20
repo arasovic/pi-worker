@@ -309,19 +309,27 @@ Replace the provider/model placeholder with one exact selector printed by
 - When the current directory is inside a git work tree, `run` measures
   which paths the run changed and by how much, diffing against the git
   state recorded before the first worker started. This is pi-worker's own
-  measurement, not the worker's account of its work. The manifest covers
-  the paths `git` tracks or would track:
+  measurement, not the worker's account of its work. Because the
+  measurement compares the workspace before the run against the workspace
+  after it, it cannot tell the run's writes from anyone else's: a file an
+  editor or a watcher saves while the run is in flight appears as a change
+  the run made, and with `--writes` declared the check reports it
+  undeclared and the run exits `4`. While a run is in flight, keep one run
+  at a time per workspace and leave the workspace alone. The manifest
+  covers the paths `git` tracks or would track:
   ignore rules exclude untracked paths only, so an ignored path is outside
   both the manifest and the write check when it is untracked and a run that
   wrote only such paths reports a clean verdict; a tracked path is measured,
   and therefore checked, whether or not a rule matches it.
-- Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
-  the worker summaries, followed by up to five paths most churn first. When
-  at least one listed entry was already dirty before the run, the line
-  appends `(N already modified before the run)`: those entries' counts are
-  measured against the last commit rather than against pre-run content, so
-  they include work that was already there. It is information, not a
-  warning, so it carries no `warning:` prefix.
+- Human mode prints one `changes: <n> files, +<a>/-<d>` line (singular
+  `file` at one) on stdout after the worker summaries, followed by up to
+  five paths most churn first. When at least one listed entry was already
+  dirty before the run, the line appends `(N already modified before the
+  run)`: those entries' counts are measured against the last commit rather
+  than against pre-run content, so they include work that was already
+  there. The sums and the clause count the carried entries only, capped
+  at 100, not all `<n>` files; the line is information, not a warning, so
+  it carries no `warning:` prefix.
 - `--json` mode carries a `changes` object. It is not gated by the git
   tripwire: a run that only left modified files behind carries `changes`
   and no `git`.
@@ -383,12 +391,13 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   declaration included — and the change manifest was measured, the
   post-run check runs, so a read-only round can be proven to have
   written nothing rather than merely asserted to. Only a measured
-  manifest makes that proof: on an unborn HEAD, a dead context, or a
-  failed measurement the check skips with `change manifest unavailable`
-  and the run exits `0`, whatever was declared. A dirty before-state is
-  measured rather than skipped, so there the check runs. A checked run
-  that changed nothing reports a clean verdict; one that changed a path
-  reports it undeclared and exits `4`.
+  manifest makes that proof: on an unborn HEAD, a dead context, a
+  failed measurement, or a workspace that carries no manifest at all,
+  the check skips with `change manifest unavailable` and the run exits
+  `0`, whatever was declared. A dirty before-state is measured rather
+  than skipped, so there the check runs. A checked run that changed
+  nothing reports a clean verdict; one that changed a path reports it
+  undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per

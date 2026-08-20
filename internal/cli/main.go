@@ -445,10 +445,14 @@ func gitStashEntries(entries []string) string {
 // measured against the last commit rather than against the pre-run
 // content, so they include work that was already there and the summed
 // +added/-deleted would otherwise read inflated by the caller's own
-// uncommitted work. The header carries the clause rather than the path
-// lines because the header is the one place that stays correct when the
-// five-line list and the entry cap have both dropped rows. A measured
-// run that changed nothing prints the zero line alone; an omitted
+// uncommitted work. The clause and the +added/-deleted sums describe
+// the listed entries: they count only what the capped Files list
+// carries, while TotalFiles is the true count, so above the entry cap
+// the two can disagree. The clause still belongs on the header rather
+// than on the path lines: the path lines show at most the five most
+// churned entries, so the header is the one place a count over all the
+// listed entries stays visible when the five-line limit drops rows. A
+// measured run that changed nothing prints the zero line alone; an omitted
 // manifest prints the reason instead, so a human never has to guess
 // whether "no changes" means measured-zero or not-measured.
 func printChanges(changes *run.Changes, stdout io.Writer) {
