@@ -1865,6 +1865,40 @@ func TestPrintChangesTrailingCountIsRelativeToTotalFiles(t *testing.T) {
 	}
 }
 
+func TestPrintChangesDirtyBeforeClause(t *testing.T) {
+	// An entry that was already dirty before the run names the fact on
+	// the header line: its counts are measured against the last commit
+	// and include the caller's own uncommitted work, so the summed
+	// +added/-deleted would otherwise read inflated. One entry reads
+	// "1 already modified before the run"; the phrase is not pluralised,
+	// only the number changes.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 2,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1, DirtyBefore: true},
+			{Path: "README.md", Status: "added", Added: 8},
+		},
+	}, &stdout)
+	want := "changes: 2 files, +11/-1 (1 already modified before the run)\n  src/a.go  +3/-1\n  README.md  +8/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+
+	var many bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 2,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1, DirtyBefore: true},
+			{Path: "src/b.go", Status: "modified", Added: 2, DirtyBefore: true},
+		},
+	}, &many)
+	wantMany := "changes: 2 files, +5/-1 (2 already modified before the run)\n  src/a.go  +3/-1\n  src/b.go  +2/-0\n"
+	if got := many.String(); got != wantMany {
+		t.Fatalf("output = %q, want %q", got, wantMany)
+	}
+}
+
 // TestPrintWrites* build the run.WriteCheck struct directly and pin the
 // exact human rendering: printWrites renders, it does not sort, so every
 // fixture is already in the order the check produces (sorted by path).

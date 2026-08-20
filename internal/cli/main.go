@@ -439,7 +439,15 @@ func gitStashEntries(entries []string) string {
 // line naming how many more remain when the list is longer. The trailing
 // count is relative to TotalFiles, not to len(Files), so a truncated
 // manifest reports the paths the entry cap dropped as well as the ones
-// the five-line limit dropped. A measured
+// the five-line limit dropped. When at least one listed entry was
+// already dirty before the run, the line appends a parenthesised count
+// of them, "N already modified before the run": their counts are
+// measured against the last commit rather than against the pre-run
+// content, so they include work that was already there and the summed
+// +added/-deleted would otherwise read inflated by the caller's own
+// uncommitted work. The header carries the clause rather than the path
+// lines because the header is the one place that stays correct when the
+// five-line list and the entry cap have both dropped rows. A measured
 // run that changed nothing prints the zero line alone; an omitted
 // manifest prints the reason instead, so a human never has to guess
 // whether "no changes" means measured-zero or not-measured.
@@ -448,16 +456,23 @@ func printChanges(changes *run.Changes, stdout io.Writer) {
 		fmt.Fprintf(stdout, "changes: omitted: %s\n", changes.Omitted)
 		return
 	}
-	added, deleted := 0, 0
+	added, deleted, dirtyBefore := 0, 0, 0
 	for _, file := range changes.Files {
 		added += file.Added
 		deleted += file.Deleted
+		if file.DirtyBefore {
+			dirtyBefore++
+		}
 	}
 	filesWord := "files"
 	if changes.TotalFiles == 1 {
 		filesWord = "file"
 	}
-	fmt.Fprintf(stdout, "changes: %d %s, +%d/-%d\n", changes.TotalFiles, filesWord, added, deleted)
+	fmt.Fprintf(stdout, "changes: %d %s, +%d/-%d", changes.TotalFiles, filesWord, added, deleted)
+	if dirtyBefore > 0 {
+		fmt.Fprintf(stdout, " (%d already modified before the run)", dirtyBefore)
+	}
+	fmt.Fprintln(stdout)
 	shown := min(len(changes.Files), 5)
 	for _, file := range changes.Files[:shown] {
 		counts := fmt.Sprintf("+%d/-%d", file.Added, file.Deleted)
