@@ -183,11 +183,13 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// measurement-failed reason. The snapshot is never added to
 	// Inspect or GitState: the after pass has no use for it, the
 	// interface is faked in tests, and paying for two more git
-	// commands on every inspection is waste. It never runs on an
-	// unborn HEAD — its diff command would fail and displace the
-	// unborn-head omission — or outside a git work tree.
+	// commands on every inspection is waste; it runs only when the
+	// tree is dirty, because a clean tree can only yield an empty
+	// map. It never runs on an unborn HEAD — its diff command would
+	// fail and displace the unborn-head omission — or outside a git
+	// work tree.
 	var dirtyStamps map[string]fileStamp
-	if before != nil && beforeErr == nil && before.Head != "" {
+	if before != nil && beforeErr == nil && before.Head != "" && before.Dirty {
 		dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
