@@ -16,9 +16,7 @@ import (
 // directory with one committed file and makes it the process working
 // directory for the duration of the test, restoring the original on
 // cleanup. The run command reads its workspace from os.Getwd, so a
-// CLI-level test that needs a specific workspace must chdir; the tree
-// must also be clean before the run, or the change manifest is omitted
-// and the write check skips instead of answering.
+// CLI-level test that needs a specific workspace must chdir.
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -253,13 +251,14 @@ func TestRunUndeclaredWriteJSONCarriesViolation(t *testing.T) {
 	}
 }
 
-func TestRunSkippedWriteCheckPrintsReadableReason(t *testing.T) {
-	// A dirty before-state omits the manifest, so the write check
-	// cannot answer and must skip with a stated reason. grep-worthy as
-	// it is, no run-level test asserted the reason text a caller
+func TestRunDirtyBeforeStatePrintsMeasuredAndChecked(t *testing.T) {
+	// A dirty before-state is measured and checked: the untouched dirty
+	// path subtracts out of the manifest, which prints measured-zero,
+	// and the write check answers with a clean verdict. grep-worthy as
+	// it is, no run-level test asserted the exact lines a caller
 	// actually reads: requireWritesTail only pins the "writes: "
-	// prefix. The stdout must carry the exact reason line, telling the
-	// caller the question could not be answered and why.
+	// prefix. The stdout must carry the measured line and the verdict
+	// line.
 	dir := newGitWorkspace(t)
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
@@ -273,20 +272,20 @@ func TestRunSkippedWriteCheckPrintsReadableReason(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1: done\n" +
-		"changes: omitted: dirty before-state\n" +
-		"writes: skipped: change manifest unavailable\n" +
+		"changes: 0 files, +0/-0\n" +
+		"writes: ok\n" +
 		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }
 
-func TestRunSkippedWriteCheckJSONCarriesCompleted(t *testing.T) {
-	// A skipped write check is deliberately not a violation: the check
-	// could not answer, so the run exits 0 and the document says
-	// completed. This is not a hole — a skip means the question could
-	// not be answered, and answering "violation" would be a lie — and
-	// the test exists so a later reader does not "fix" it.
+func TestRunDirtyBeforeStateJSONCarriesCleanVerdict(t *testing.T) {
+	// The dirty before-state human mode is pinned; the JSON surface is
+	// not. On a dirty tree the manifest is measured, the untouched dirt
+	// subtracts out, and the document must carry the clean verdict — a
+	// present undeclaredCount of zero and no skip reason — not the old
+	// skipped form.
 	dir := newGitWorkspace(t)
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
@@ -305,16 +304,22 @@ func TestRunSkippedWriteCheckJSONCarriesCompleted(t *testing.T) {
 	if !ok {
 		t.Fatalf("writes = %#v, want object", document["writes"])
 	}
-	assertExactJSONKeys(t, writes, "skipped", "undeclaredCount")
+	assertExactJSONKeys(t, writes, "undeclaredCount")
+	if writes["undeclaredCount"] != float64(0) {
+		t.Fatalf("undeclaredCount = %v, want present 0", writes["undeclaredCount"])
+	}
 }
 
-func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
-	// --writes "" on a workspace whose before-state was dirty pairs the
-	// writes-nothing declaration with an unmeasured manifest: the
-	// read-only claim cannot be proven, so the check must skip with the
-	// manifest-unavailable reason and the run must exit 0, not 4. The
-	// caller who declared the empty set is exactly the one most likely
-	// to read a clean verdict as proof their round wrote nothing.
+func TestRunDeclaredEmptyOnDirtyBeforeStateRunsCheck(t *testing.T) {
+	// --writes "" declares the task writes nothing. On a workspace
+	// whose before-state was dirty the manifest is still measured — the
+	// untouched dirt subtracts out to zero changes — so the read-only
+	// claim is actually proven against the manifest and the check
+	// answers with a clean verdict instead of skipping, and the run
+	// exits 0, not 4. The caller who declared the empty set is exactly
+	// the one most likely to read a clean verdict as proof their round
+	// wrote nothing, and on an untouched dirty tree that proof is now
+	// honest.
 	dir := newGitWorkspace(t)
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
@@ -328,8 +333,8 @@ func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1: done\n" +
-		"changes: omitted: dirty before-state\n" +
-		"writes: skipped: change manifest unavailable\n" +
+		"changes: 0 files, +0/-0\n" +
+		"writes: ok\n" +
 		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)

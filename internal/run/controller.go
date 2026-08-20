@@ -174,6 +174,22 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		before, beforeErr = c.gitInspector.Inspect(ctx, req.Workspace)
 		beforeContextDone = ctx.Err() != nil
 	}
+	// The before-dirty snapshot runs immediately after the inspection
+	// and before any worker starts, under the same parent context the
+	// inspection used: it stamps every path already dirty in the
+	// workspace so the manifest can subtract the ones the run never
+	// moved. Its error rides the same slot as the inspection's, so a
+	// failed snapshot omits the manifest with the existing
+	// measurement-failed reason. The snapshot is never added to
+	// Inspect or GitState: the after pass has no use for it, the
+	// interface is faked in tests, and paying for two more git
+	// commands on every inspection is waste. It never runs on an
+	// unborn HEAD — its diff command would fail and displace the
+	// unborn-head omission — or outside a git work tree.
+	var dirtyStamps map[string]fileStamp
+	if before != nil && beforeErr == nil && before.Head != "" {
+		dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
+	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
 	for i, task := range req.Tasks {
@@ -229,7 +245,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		case before != nil:
 			changesCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
 			defer cancel()
-			result.Changes = measureChanges(changesCtx, req.Workspace, before)
+			result.Changes = measureChanges(changesCtx, req.Workspace, before, dirtyStamps)
 		case beforeContextDone:
 			// A context already done when the before-state inspection ran:
 			// nothing was measured and nothing failed, and an absent field
@@ -337,7 +353,7 @@ func validateWritePath(value string) (string, error) {
 		return "", fmt.Errorf("write path %q is empty or whitespace-only", value)
 	}
 	if filepath.IsAbs(value) {
-		return "", fmt.Errorf("write path %q is absolute", value)
+		return "", fmt.Errorf("write path %q is absolute; declare paths relative to the workspace", value)
 	}
 	clean := filepath.Clean(value)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
