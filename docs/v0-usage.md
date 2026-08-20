@@ -306,32 +306,41 @@ Replace the provider/model placeholder with one exact selector printed by
 
 ### Workspace change manifest
 
-- When the current directory is inside a git work tree and the tree was
-  clean before the run, `run` measures which paths the run changed and by
-  how much, diffing against the git state recorded before the first worker
-  started. This is pi-worker's own measurement, not the worker's account of
-  its work. The manifest covers the paths `git` tracks or would track:
+- When the current directory is inside a git work tree, `run` measures
+  which paths the run changed and by how much, diffing against the git
+  state recorded before the first worker started. This is pi-worker's own
+  measurement, not the worker's account of its work. The manifest covers
+  the paths `git` tracks or would track:
   ignore rules exclude untracked paths only, so an ignored path is outside
   both the manifest and the write check when it is untracked and a run that
   wrote only such paths reports a clean verdict; a tracked path is measured,
   and therefore checked, whether or not a rule matches it.
 - Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
-  the worker summaries, followed by up to five paths most churn first. It is
-  information, not a warning, so it carries no `warning:` prefix.
+  the worker summaries, followed by up to five paths most churn first. When
+  at least one listed entry was already dirty before the run, the line
+  appends `(N already modified before the run)`: those entries' counts are
+  measured against the last commit rather than against pre-run content, so
+  they include work that was already there. It is information, not a
+  warning, so it carries no `warning:` prefix.
 - `--json` mode carries a `changes` object. It is not gated by the git
   tripwire: a run that only left modified files behind carries `changes`
   and no `git`.
 - The manifest is measured on every terminal status, including a timed-out
   or cancelled run, under its own thirty-second budget: a run that stopped
   mid-edit is exactly the run whose changes a caller most needs.
-- When the working tree was already dirty before the run, the manifest is
-  omitted with a reason rather than guessed, because the run's changes
-  cannot be separated from the ones already there. An unborn HEAD, a context
-  already done when the inspection ran, and a measurement that failed after
-  the workspace was confirmed to be a git work tree, are omitted with a
-  reason the same way. Only a workspace outside a git work tree, or git
-  missing entirely, reached with a live context when the inspection ran,
-  carries no manifest at all — the same silent no-op the git state makes.
+- A dirty working tree is measured by subtraction, not guessed: paths
+  already dirty when the run started are stamped up front with size and
+  modification time, and the ones whose stamp never moved are subtracted —
+  they were equally dirty before the run and name no change it made. One
+  false negative is accepted and deliberate: if the run restores an
+  already-dirty file to its exact pre-run content, the path is absent from
+  the manifest, which is defensible because net change is zero. An unborn
+  HEAD, a context already done when the inspection ran, and a measurement
+  that failed after the workspace was confirmed to be a git work tree, are
+  omitted with a reason the same way. Only a workspace outside a git work
+  tree, or git missing entirely, reached with a live context when the
+  inspection ran, carries no manifest at all — the same silent no-op the
+  git state makes.
 
 ### Exactly one input mechanism
 
@@ -363,8 +372,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   `--task-file`) intends to write; whitespace around each comma-separated
   path is ignored, and each value is cleaned where it is compared, so
   `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
-  `..` all name `src/a`. It may appear at most once per task and must
-  follow the task it applies to. An empty value, `--writes ""`, declares
+  `..` all name `src/a`. An absolute path is rejected before any worker
+  starts, and the rejection names the remedy — declare paths relative
+  to the workspace. It may appear at most once per task and must follow
+  the task it applies to. An empty value, `--writes ""`, declares
   that the task writes nothing; whitespace-only is the same declaration
   because the flag already trims. The empty string is the one spelling
   that cannot collide with a real path. A task that declared the empty
@@ -372,11 +383,12 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   declaration included — and the change manifest was measured, the
   post-run check runs, so a read-only round can be proven to have
   written nothing rather than merely asserted to. Only a measured
-  manifest makes that proof: on a dirty before-state, an unborn HEAD, a
-  dead context, or a failed measurement the check skips with `change
-  manifest unavailable` and the run exits `0`, whatever was declared.
-  Such a run that changed nothing reports a clean verdict; one that
-  changed a path reports it undeclared and exits `4`.
+  manifest makes that proof: on an unborn HEAD, a dead context, or a
+  failed measurement the check skips with `change manifest unavailable`
+  and the run exits `0`, whatever was declared. A dirty before-state is
+  measured rather than skipped, so there the check runs. A checked run
+  that changed nothing reports a clean verdict; one that changed a path
+  reports it undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per

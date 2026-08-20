@@ -210,9 +210,8 @@ because those files are what it names. It carries either a reason it could
 not be measured or the measurement, never both:
 
 - `omitted`: present only when the manifest could not be measured; one of
-  `dirty before-state`, `unborn head`, `context already done`, or
-  `measurement failed`. `files`, `totalFiles`, and `truncated` carry no
-  meaning when it is present
+  `unborn head`, `context already done`, or `measurement failed`. `files`,
+  `totalFiles`, and `truncated` carry no meaning when it is present
 - `totalFiles`: always present; the true number of changed paths, before the
   entry cap. A measured run that changed nothing carries `0` rather than
   omitting the field
@@ -227,10 +226,20 @@ Each entry in `files` carries:
 - `added` and `deleted`: always present; the line counts, both `0` for a
   binary file
 - `binary`: present and `true` only when git reported the file as binary
+- `dirtyBefore`: present and `true` only when the path was already dirty
+  before the run started; the line counts are measured against the last
+  commit rather than against the pre-run content, so they include work
+  that was already there and the run's share cannot be separated out
 
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
-it changed.
+it changed. Paths already dirty when the run started are stamped up front
+with size and modification time, and the ones whose stamp never moved are
+subtracted from the result: they were equally dirty before the run and name
+no change it made. That subtraction accepts one false negative, and it is
+deliberate rather than an oversight: if the run restores an already-dirty
+file to its exact pre-run content, the path is absent from the manifest,
+which is defensible because net change is zero.
 
 The manifest covers the paths `git` tracks or would track. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
@@ -254,9 +263,10 @@ or the verdict, never both:
 - `skipped`: present only when the check could not run; a short reason,
   `not all tasks declared writes` — some task said nothing at all, the
   only state that triggers it, since a task that declared an empty set
-  has declared — or `change manifest unavailable`.
-  `undeclaredCount`, `undeclared`, and `truncated` carry no meaning when it
-  is present
+  has declared — or `change manifest unavailable`, which only the three
+  manifest omissions above reach: a dirty before-state is measured now,
+  so it never triggers the skip. `undeclaredCount`, `undeclared`, and
+  `truncated` carry no meaning when it is present
 - `undeclaredCount`: always present on a verdict; the true number of
   changed paths no task declared, before the entry cap. A checked run that
   wrote nothing undeclared carries `0` rather than omitting the field

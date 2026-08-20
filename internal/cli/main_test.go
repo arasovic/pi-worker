@@ -229,10 +229,11 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 // worker-summary lines `want` verbatim and then exactly one
 // change-manifest line and the final outcome line. The manifest line
 // itself depends on the workspace's tree state at test time —
-// "changes: 0 files, +0/-0" on a clean checkout, "changes: omitted:
-// <reason>" on a dirty one — so only its presence and position after
-// the summaries are pinned here; the manifest's own tests pin its
-// content.
+// "changes: 0 files, +0/-0" on a clean checkout, a dirty tree carrying
+// measured counts and the dirty-before clause, "changes: omitted:
+// <reason>" only when measurement could not run — so only its presence
+// and position after the summaries are pinned here; the manifest's own
+// tests pin its content.
 func requireChangesTail(t *testing.T, stdout, want string) {
 	t.Helper()
 	if !strings.HasPrefix(stdout, want) {
@@ -249,9 +250,11 @@ func requireChangesTail(t *testing.T, stdout, want string) {
 // worker-summary lines `want` verbatim, then exactly one change-manifest
 // line and exactly one writes-check line. Both lines depend on the
 // workspace's tree state at test time — "changes: 0 files, +0/-0" and
-// "writes: ok" on a clean checkout, the omitted and skipped forms on a
-// dirty one — so only their presence and position after the summaries
-// are pinned here; the checks' own tests pin their content.
+// "writes: ok" on a clean checkout, a dirty tree carrying measured
+// counts and a writes verdict, the omitted and skipped forms only when
+// measurement could not run — so only their presence and position after
+// the summaries are pinned here; the checks' own tests pin their
+// content.
 func requireWritesTail(t *testing.T, stdout, want string) {
 	t.Helper()
 	if !strings.HasPrefix(stdout, want) {
