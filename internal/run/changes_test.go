@@ -156,7 +156,11 @@ func TestControllerChangesWorkTheRunCommittedStillReported(t *testing.T) {
 	}
 }
 
-func TestControllerChangesDirtyBeforeStateOmitted(t *testing.T) {
+func TestControllerChangesDirtyBeforeStateUntouchedPathAbsent(t *testing.T) {
+	// A dirty before-state is measured, not omitted: the before-dirty
+	// file carries the base forward, and a worker that never touched it
+	// leaves its stamp unchanged, so the path is subtracted out of the
+	// manifest entirely.
 	dir := newGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -164,13 +168,181 @@ func TestControllerChangesDirtyBeforeStateOmitted(t *testing.T) {
 	result := runWithChanges(t, newScriptedWorker(), dir)
 	changes := result.Changes
 	if changes == nil {
-		t.Fatalf("changes = nil, want an omitted manifest on a dirty before-state")
+		t.Fatalf("changes = nil, want a measured manifest on a dirty before-state")
 	}
-	if changes.Omitted != reasonDirtyBeforeState {
-		t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonDirtyBeforeState)
+	if changes.Omitted != "" {
+		t.Fatalf("omitted = %q, want a measured manifest", changes.Omitted)
 	}
-	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
-		t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the untouched dirty path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateModifiedFurther(t *testing.T) {
+	// A worker that modifies an already-dirty path further lists the
+	// path with its counts against the before-state HEAD and marks it
+	// dirtyBefore: the counts include the pre-run work that was already
+	// there, so the run's share cannot be separated out.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\nbeta\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the one modified file", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 2 || file.Deleted != 1 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +2/-1 with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateRevertedToCommit(t *testing.T) {
+	// A worker that reverts an already-dirty tracked file to its
+	// committed content drops out of the HEAD diff entirely — the file
+	// matches the base — yet the caller's uncommitted work was
+	// destroyed. The dirty union keeps the path in the manifest with
+	// zero counts and dirtyBefore true, so the destruction is reported
+	// instead of going silent.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the reverted path in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +0/-0 with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateRestoredToPreRunContent(t *testing.T) {
+	// A worker that restores an already-dirty file to its exact pre-run
+	// content leaves the stamp unchanged — same size, same modification
+	// time — so the path is subtracted and absent from the manifest.
+	// The deliberate, accepted false negative: net change is zero and
+	// the stamp cannot see a write that leaves no trace.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty content\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	// The stamp the snapshot will record is the dirty file's own: size
+	// and modification time as they sit right before the run.
+	info, err := os.Lstat(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	stampTime := info.ModTime()
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty content\n"), 0o644); err != nil {
+			return err
+		}
+		// Restore the modification time too, so the stamp matches: the
+		// run wrote nothing the manifest can see, by construction.
+		return os.Chtimes(filepath.Join(dir, "file.txt"), stampTime, stampTime)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the restored path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateUntrackedUntouchedAbsent(t *testing.T) {
+	// An already-dirty untracked file the worker never touched is
+	// subtracted like a tracked one: the run contributed nothing to it.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the untouched untracked path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateDeletedStillDeletedAbsent(t *testing.T) {
+	// A path deleted before the run and still deleted carries an absent
+	// stamp before and after, so it is subtracted: the deletion belongs
+	// to the caller's pre-run state, not to the run.
+	dir := newGitRepo(t)
+	if err := os.Remove(filepath.Join(dir, "file.txt")); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the still-deleted path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateDeletedThenRestoredReported(t *testing.T) {
+	// A path deleted before the run that the worker restores to its
+	// committed content moved its stamp from absent to present, so it
+	// is a candidate: it appears in neither the tracked diff nor the
+	// untracked listing, and the fallback gives it a zero-count
+	// dirtyBefore entry rather than silence.
+	dir := newGitRepo(t)
+	if err := os.Remove(filepath.Join(dir, "file.txt")); err != nil {
+		t.Fatalf("remove file: %v", err)
+	}
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the restored path in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +0/-0 with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesCleanBeforeStateUnchanged(t *testing.T) {
+	// A clean before-state behaves exactly as before: no subtraction,
+	// no dirtyBefore markings, and the measured result is identical to
+	// the pre-fix manifest.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\nthree\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want one file", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 2 || file.Deleted != 0 || file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +2/-0 without dirtyBefore", file)
 	}
 }
 
@@ -225,10 +397,11 @@ func TestControllerChangesNothingMeasuredZero(t *testing.T) {
 	}
 }
 
-func TestControllerChangesOmittedNeverLooksLikeMeasuredZero(t *testing.T) {
-	// The other half of the #14 failure class: an omitted manifest must
-	// carry its reason in the document, so a consumer can tell it from a
-	// measured zero even though both serialize totalFiles as zero.
+func TestControllerChangesDirtyBeforeStateMeasuredZeroSerializesAsMeasured(t *testing.T) {
+	// The #14 failure class, on the fixed side: a dirty before-state
+	// with nothing touched now measures zero, and measured zero must
+	// serialize as totalFiles present with zero — never as an absent
+	// field, and never with an omission reason beside it.
 	dir := newGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -242,11 +415,14 @@ func TestControllerChangesOmittedNeverLooksLikeMeasuredZero(t *testing.T) {
 	if err := json.Unmarshal(data, &document); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if document["omitted"] != reasonDirtyBeforeState {
-		t.Fatalf("omitted = %v, want %q in %s", document["omitted"], reasonDirtyBeforeState, data)
+	if document["totalFiles"] != float64(0) {
+		t.Fatalf("totalFiles = %v, want 0", document["totalFiles"])
+	}
+	if _, present := document["omitted"]; present {
+		t.Fatalf("measured zero serialized with omitted: %s", data)
 	}
 	if _, present := document["files"]; present {
-		t.Fatalf("omitted manifest serialized files: %s", data)
+		t.Fatalf("measured zero serialized with files: %s", data)
 	}
 }
 

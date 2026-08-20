@@ -17,6 +17,9 @@ import (
 // Changes is the manifest of workspace paths a run changed, measured by
 // pi-worker itself against the before-state HEAD rather than reported by
 // the worker; nil when the workspace is not inside a git work tree.
+// Paths that were already dirty before the run and whose stamp (size
+// plus modification time) did not move are subtracted, so the manifest
+// answers what this run changed even on a dirty before-state.
 // Unlike GitChange it is not gated by the git tripwire: leaving modified
 // files behind is the point of a delegation, and those files are exactly
 // what the manifest exists to name.
@@ -47,6 +50,12 @@ type FileChange struct {
 	Added   int    `json:"added"`
 	Deleted int    `json:"deleted"`
 	Binary  bool   `json:"binary,omitempty"`
+	// DirtyBefore is true when the path was already dirty before the
+	// run started: the line counts are measured against the last commit
+	// rather than against the pre-run content, so they include work
+	// that was already there and the run's share cannot be separated
+	// out. It is additive and optional, so schemaVersion stays 1.
+	DirtyBefore bool `json:"dirtyBefore,omitempty"`
 }
 
 // The file status values in the manifest.
@@ -57,14 +66,13 @@ const (
 )
 
 // Omission reasons. They are short, lowercase, fixed strings, and there
-// are exactly these four: a dirty before-state, an unborn HEAD, a
-// context already done when the before-state inspection ran, and a
-// failed measurement (a git command failure or a budget that expires).
+// are exactly these three: an unborn HEAD, a context already done when
+// the before-state inspection ran, and a failed measurement (a git
+// command failure or a budget that expires).
 const (
-	reasonDirtyBeforeState = "dirty before-state"
-	reasonUnbornHead       = "unborn head"
-	reasonContextDone      = "context already done"
-	reasonMeasurementFail  = "measurement failed"
+	reasonUnbornHead      = "unborn head"
+	reasonContextDone     = "context already done"
+	reasonMeasurementFail = "measurement failed"
 )
 
 // maxChangeFiles caps the manifest list. TotalFiles always carries the
@@ -80,20 +88,19 @@ const maxChangeFiles = 100
 const changesTimeout = 30 * time.Second
 
 // measureChanges measures the workspace change manifest against the
-// before-state HEAD, or returns a Changes carrying the reason it could
-// not. A measurement failure is reported, never silent: leaving the
-// field nil on a failure is the bug this feature exists to prevent, so
-// the caller keeps the same distinction as git — a workspace outside a
-// git work tree is the one nil case, and it is decided by the caller
-// before this function is reached.
-func measureChanges(ctx context.Context, dir string, before *GitState) *Changes {
-	if before.Dirty {
-		return &Changes{Omitted: reasonDirtyBeforeState}
-	}
+// before-state HEAD, subtracting the before-dirty paths whose stamps
+// did not move during the run, or returns a Changes carrying the reason
+// it could not. dirtyStamps is the pre-run snapshot of the paths that
+// were already dirty; a measurement failure is reported, never silent:
+// leaving the field nil on a failure is the bug this feature exists to
+// prevent, so the caller keeps the same distinction as git — a
+// workspace outside a git work tree is the one nil case, and it is
+// decided by the caller before this function is reached.
+func measureChanges(ctx context.Context, dir string, before *GitState, dirtyStamps map[string]fileStamp) *Changes {
 	if before.Head == "" {
 		return &Changes{Omitted: reasonUnbornHead}
 	}
-	changes, err := measureChangeFiles(ctx, dir, before.Head)
+	changes, err := measureChangeFiles(ctx, dir, before.Head, dirtyStamps)
 	if err != nil {
 		return &Changes{Omitted: reasonMeasurementFail}
 	}
@@ -101,7 +108,8 @@ func measureChanges(ctx context.Context, dir string, before *GitState) *Changes 
 }
 
 // measureChangeFiles measures the tracked and untracked workspace
-// changes against head. The tracked pass is one diff command that
+// changes against head, minus the before-dirty paths whose stamps did
+// not move. The tracked pass is one diff command that
 // covers every tracked change including work the run committed, because
 // the base is the before-state HEAD rather than the current one. The
 // untracked pass lists untracked files with one command and takes each
@@ -111,7 +119,7 @@ func measureChanges(ctx context.Context, dir string, before *GitState) *Changes 
 // branch, tag, or worktree operation. Any parse failure or command
 // failure fails the whole measurement: an approximate manifest
 // presented as truth is worse than none.
-func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error) {
+func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[string]fileStamp) (*Changes, error) {
 	trackedOut, err := gitOutput(ctx, dir, "diff", "--numstat", "--no-renames", "-z", head, "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
@@ -139,6 +147,28 @@ func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error)
 	}
 	untracked := nulSplit(untrackedOut)
 
+	// The candidate set is the union of three sets: the tracked diff
+	// against the before-state HEAD, the untracked listing, and the
+	// paths that were dirty before the run. From that union, every
+	// before-dirty path whose stamp is unchanged — same size and same
+	// modification time, or absent then and absent now — is subtracted:
+	// it was equally dirty before the run and the run contributed
+	// nothing to it, so it names no change this run made. The dirty
+	// union term is not optional: without it a worker that reverts an
+	// already-dirty file to its committed content drops out of the HEAD
+	// diff completely and the manifest would go silent even though the
+	// caller's uncommitted work was destroyed.
+	unchanged := make(map[string]bool, len(dirtyStamps))
+	for path, stamp := range dirtyStamps {
+		matches, err := stampMatches(dir, path, stamp)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		if matches {
+			unchanged[path] = true
+		}
+	}
+
 	// Entries are keyed by path so a tracked deletion that the run
 	// replaced with an untracked file at the same path merges into one
 	// entry: the old file's deletions and the new file's additions.
@@ -159,6 +189,11 @@ func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error)
 		files = append(files, f)
 	}
 	for _, f := range tracked {
+		// A before-dirty path whose stamp did not move is subtracted even
+		// from the tracked diff: it was equally dirty before the run.
+		if unchanged[f.Path] {
+			continue
+		}
 		switch {
 		case !existed[f.Path]:
 			f.Status = statusAdded
@@ -178,18 +213,75 @@ func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error)
 	// The untracked pass can spawn one command per file up to the cap; the
 	// files beyond it are listed but their churn stays unmeasured. They
 	// still count toward TotalFiles, which is the true count of changed
-	// paths before the cap and before this trim.
+	// paths before the cap and before this trim. Subtracted before-dirty
+	// paths drop out of the listing before the cap: an untouched pre-run
+	// file neither takes a measured slot nor counts toward TotalFiles.
+	keptUntracked := make([]string, 0, len(untracked))
 	unmeasured := []string(nil)
-	if len(untracked) > maxChangeFiles {
-		unmeasured = untracked[maxChangeFiles:]
-		untracked = untracked[:maxChangeFiles]
-	}
 	for _, path := range untracked {
+		if unchanged[path] {
+			continue
+		}
+		if len(keptUntracked) == maxChangeFiles {
+			unmeasured = append(unmeasured, path)
+			continue
+		}
+		keptUntracked = append(keptUntracked, path)
+	}
+	for _, path := range keptUntracked {
 		added, deleted, binary, err := measureUntrackedFile(ctx, dir, path)
 		if err != nil {
 			return nil, err
 		}
 		appendFile(FileChange{Path: path, Status: statusAdded, Added: added, Deleted: deleted, Binary: binary})
+	}
+
+	// A before-dirty path whose stamp moved but that appears in neither
+	// the tracked diff nor the untracked listing now matches HEAD, or is
+	// gone: the run reverted it to its committed content — the case the
+	// dirty union exists for — or removed it. Give it an entry with zero
+	// counts and dirtyBefore true, deriving status exactly as the
+	// tracked pass does from base presence and current presence. Every
+	// changed path, including these, must reach allPaths, because that
+	// is what the write check compares against.
+	inTracked := make(map[string]bool, len(tracked))
+	for _, f := range tracked {
+		inTracked[f.Path] = true
+	}
+	inUntracked := make(map[string]bool, len(untracked))
+	for _, path := range untracked {
+		inUntracked[path] = true
+	}
+	for path := range dirtyStamps {
+		if unchanged[path] || inTracked[path] || inUntracked[path] {
+			continue
+		}
+		if _, seen := byPath[path]; seen {
+			continue
+		}
+		f := FileChange{Path: path, DirtyBefore: true}
+		switch {
+		case !existed[path]:
+			f.Status = statusAdded
+		default:
+			present, err := filePresent(dir, path)
+			if err != nil {
+				return nil, fmt.Errorf("stat %s: %w", path, err)
+			}
+			if present {
+				f.Status = statusModified
+			} else {
+				f.Status = statusDeleted
+			}
+		}
+		appendFile(f)
+	}
+	// Every entry whose path was dirty before the run is marked, so a
+	// caller knows its counts include work that was already there.
+	for path := range dirtyStamps {
+		if i, seen := byPath[path]; seen {
+			files[i].DirtyBefore = true
+		}
 	}
 
 	// Tracked entries and the measured untracked entries are ordered by
@@ -234,6 +326,70 @@ func measureChangeFiles(ctx context.Context, dir, head string) (*Changes, error)
 		changes.Truncated = true
 	}
 	return changes, nil
+}
+
+// fileStamp is the identity clue captured for one path that was
+// already dirty when the run started: size and modification time from
+// Lstat, or an explicit absence for a staged or unstaged deletion,
+// which is a legitimate dirty state. Size plus modification time is
+// deliberate: a worker that writes a file always moves its modification
+// time, and the failure direction is the safe one — a missed change
+// means a path is left out of the manifest, never that an honest run is
+// accused. File contents are never read and git hash-object never runs.
+type fileStamp struct {
+	size    int64
+	modTime time.Time
+	absent  bool
+}
+
+// snapshotDirtyStamps enumerates the paths already dirty in the
+// workspace before the run starts and stamps each one, keyed by path,
+// so the manifest can subtract the ones the run never moved.
+// Enumerating with exactly the two commands the after pass already uses
+// — git diff --name-only -z HEAD -- and git ls-files --others
+// --exclude-standard -z — keeps both passes over the same universe.
+// Every command here is read-only with respect to the repository.
+func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp, error) {
+	trackedOut, err := gitOutput(ctx, dir, "diff", "--name-only", "-z", "HEAD", "--")
+	if err != nil {
+		return nil, fmt.Errorf("git diff --name-only: %w", err)
+	}
+	untrackedOut, err := gitOutput(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	stamps := make(map[string]fileStamp)
+	for _, path := range append(nulSplit(trackedOut), nulSplit(untrackedOut)...) {
+		info, err := os.Lstat(filepath.Join(dir, path))
+		if err != nil {
+			if os.IsNotExist(err) {
+				stamps[path] = fileStamp{absent: true}
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		stamps[path] = fileStamp{size: info.Size(), modTime: info.ModTime()}
+	}
+	return stamps, nil
+}
+
+// stampMatches reports whether the workspace path currently carries the
+// captured pre-run stamp: both present with the same size and the same
+// modification time, or absent then and absent now. A path that was not
+// absent before but is a directory now has changed — a file replaced by
+// a directory is not the same path it was.
+func stampMatches(dir, path string, stamp fileStamp) (bool, error) {
+	info, err := os.Lstat(filepath.Join(dir, path))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return stamp.absent, nil
+		}
+		return false, err
+	}
+	if stamp.absent || info.IsDir() {
+		return false, nil
+	}
+	return info.Size() == stamp.size && info.ModTime().Equal(stamp.modTime), nil
 }
 
 // filePresent reports whether the workspace-relative path is currently a
