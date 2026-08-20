@@ -334,10 +334,12 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 // already dirty when the run started: size and modification time from
 // Lstat, or an explicit absence for a staged or unstaged deletion,
 // which is a legitimate dirty state. Size plus modification time is
-// deliberate: a worker that writes a file always moves its modification
-// time, and the failure direction is the safe one — a missed change
-// means a path is left out of the manifest, never that an honest run is
-// accused. File contents are never read and git hash-object never runs.
+// chosen because it reads no file contents and runs no hashing: it is
+// exact where modification time has sub-second resolution (APFS, ext4,
+// NTFS, the normal case), and it can miss a same-size rewrite inside
+// one tick on a coarse-granularity filesystem (FAT, exFAT, some NFS
+// mounts, older ext3). File contents are never read and git
+// hash-object never runs.
 type fileStamp struct {
 	size    int64
 	modTime time.Time

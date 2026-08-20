@@ -233,7 +233,13 @@ Each entry in `files` carries:
 
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
-it changed. Paths already dirty when the run started are stamped up front
+it changed. Because the measurement compares the workspace before the run
+against the workspace after it, it cannot tell the run's writes from
+anyone else's: a file an editor or a watcher saves while the run is in
+flight appears as a change the run made, and with `--writes` declared the
+check reports it undeclared and the run exits `4`. While a run is in
+flight, keep one run at a time per workspace and leave the workspace
+alone. Paths already dirty when the run started are stamped up front
 with size and modification time, and the ones whose stamp never moved are
 subtracted from the result: they were equally dirty before the run and name
 no change it made. That subtraction accepts one false negative, and it is
@@ -263,9 +269,10 @@ or the verdict, never both:
 - `skipped`: present only when the check could not run; a short reason,
   `not all tasks declared writes` — some task said nothing at all, the
   only state that triggers it, since a task that declared an empty set
-  has declared — or `change manifest unavailable`, which only the three
-  manifest omissions above reach: a dirty before-state is measured now,
-  so it never triggers the skip. `undeclaredCount`, `undeclared`, and
+  has declared — or `change manifest unavailable`, reached by the three
+  manifest omissions above and by an absent manifest, which carries no
+  `omitted` field to consult: a dirty before-state is measured now, so
+  it never triggers the skip. `undeclaredCount`, `undeclared`, and
   `truncated` carry no meaning when it is present
 - `undeclaredCount`: always present on a verdict; the true number of
   changed paths no task declared, before the entry cap. A checked run that
