@@ -12,6 +12,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/doctor"
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
@@ -24,6 +25,7 @@ func readyDoctorDependencies() doctor.Dependencies {
 		},
 		Catalog:   &fakeCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}},
 		Workspace: func() (string, error) { return ".", nil },
+		Inspect:   func(context.Context, string) (*run.GitState, error) { return &run.GitState{}, nil },
 	}
 }
 
@@ -37,7 +39,7 @@ func installDoctorDependencies(t *testing.T, deps doctor.Dependencies) {
 	t.Cleanup(func() { newDoctorDependencies = original })
 }
 
-func TestDoctorHumanOutputKeepsFiveChecksInOrder(t *testing.T) {
+func TestDoctorHumanOutputKeepsSixChecksInOrder(t *testing.T) {
 	// This catches a CLI formatter that hides a check or changes the runner's
 	// contract order, making readiness diagnosis ambiguous.
 	installDoctorDependencies(t, readyDoctorDependencies())
@@ -46,7 +48,7 @@ func TestDoctorHumanOutputKeepsFiveChecksInOrder(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	want := []string{
-		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.1 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "ready: yes",
+		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.1 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "workspace: ok - Workspace is a git work tree; a run can report what it changed and check declared writes.", "ready: yes",
 	}
 	for i, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		if i >= len(want) || line != want[i] {
@@ -71,7 +73,7 @@ func TestDoctorJSONIsOneDocumentAndDebugStaysOnStderr(t *testing.T) {
 		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	var result doctor.Result
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result.Checks) != 5 || result.SchemaVersion != 1 {
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result.Checks) != 6 || result.SchemaVersion != 1 {
 		t.Fatalf("JSON = %q, result = %#v, err = %v", stdout, result, err)
 	}
 }
@@ -172,6 +174,7 @@ func TestDoctorMissingExecutableKeepsReadinessExitWithoutCatalogProcess(t *testi
 		"config: ok - Pi-worker configuration is valid",
 		"model-catalog: failed - Pi model catalog is unavailable",
 		"default-model: failed - Configured default model is unavailable",
+		"workspace: ok - Workspace is a git work tree; a run can report what it changed and check declared writes.",
 		"ready: no",
 	}
 	got := strings.Split(strings.TrimSpace(stdout), "\n")

@@ -10,7 +10,10 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/run"
 )
+
+const workspaceWarningMessage = "Not a confirmed git work tree: a run here cannot report what it changed and cannot check declared writes. Workers run with your permissions in this directory. A git work tree enables both checks."
 
 const seededSecret = "seeded-credential-value"
 const seededEnvironment = "seeded-environment-value"
@@ -24,15 +27,16 @@ func readyDependencies() Dependencies {
 		},
 		Catalog:   &catalogFake{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}},
 		Workspace: func() (string, error) { return ".", nil },
+		Inspect:   func(context.Context, string) (*run.GitState, error) { return &run.GitState{}, nil },
 	}
 }
 
-func TestRunKeepsFiveChecksInDeterministicOrder(t *testing.T) {
+func TestRunKeepsSixChecksInDeterministicOrder(t *testing.T) {
 	result, err := Run(context.Background(), readyDependencies())
 	if err != nil {
 		t.Fatalf("Run error = %v", err)
 	}
-	want := []string{"pi-executable", "pi-version", "config", "model-catalog", "default-model"}
+	want := []string{"pi-executable", "pi-version", "config", "model-catalog", "default-model", "workspace"}
 	if len(result.Checks) != len(want) {
 		t.Fatalf("checks = %#v", result.Checks)
 	}
@@ -61,7 +65,7 @@ func TestRunReportsMissingExecutableAsFailed(t *testing.T) {
 	catalog := &catalogFake{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}}
 	deps.Catalog = catalog
 	result, err := Run(context.Background(), deps)
-	if err != nil || result.Ready || len(result.Checks) != 5 || result.Checks[0].Status != CheckFailed || result.Checks[3].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
+	if err != nil || result.Ready || len(result.Checks) != 6 || result.Checks[0].Status != CheckFailed || result.Checks[3].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
 	if catalog.calls != 0 {
@@ -181,12 +185,80 @@ func TestRunReportsConfigStatusInDefaultModelCheck(t *testing.T) {
 			deps := readyDependencies()
 			deps.LoadConfig = func() (config.Config, error) { return config.Config{}, test.err }
 			result, err := Run(context.Background(), deps)
-			if err != nil || len(result.Checks) != 5 || result.SchemaVersion != 1 || result.Checks[4].Status != test.want {
+			if err != nil || len(result.Checks) != 6 || result.SchemaVersion != 1 || result.Checks[4].Status != test.want {
 				t.Fatalf("result = %#v, err = %v", result, err)
 			}
 			assertRedacted(t, result)
 		})
 	}
+}
+
+func TestRunWorkspaceWarnsWhenGitCannotConfirm(t *testing.T) {
+	deps := readyDependencies()
+	deps.Inspect = func(context.Context, string) (*run.GitState, error) { return nil, nil }
+	result, err := Run(context.Background(), deps)
+	if err != nil || !result.Ready {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	last := result.Checks[len(result.Checks)-1]
+	if last.Name != "workspace" || last.Status != CheckWarning || last.Message != workspaceWarningMessage {
+		t.Fatalf("last check = %#v", last)
+	}
+}
+
+func TestRunWorkspaceOKWhenGitConfirmsWorkTree(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		inspect func(context.Context, string) (*run.GitState, error)
+	}{
+		{"non-nil state", func(context.Context, string) (*run.GitState, error) { return &run.GitState{}, nil }},
+		{"error after guard", func(context.Context, string) (*run.GitState, error) { return nil, errors.New("git state") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deps := readyDependencies()
+			deps.Inspect = test.inspect
+			result, err := Run(context.Background(), deps)
+			if err != nil || !result.Ready {
+				t.Fatalf("result = %#v, err = %v", result, err)
+			}
+			last := result.Checks[len(result.Checks)-1]
+			if last.Name != "workspace" || last.Status != CheckOK {
+				t.Fatalf("last check = %#v", last)
+			}
+		})
+	}
+}
+
+func TestRunWorkspaceWarnsWithoutAnInspector(t *testing.T) {
+	// A Dependencies value built without an inspector must warn, not
+	// panic: the check reaches for deps.Inspect, so the guard has to be
+	// read before the call rather than alongside its result.
+	deps := readyDependencies()
+	deps.Inspect = nil
+	result, err := Run(context.Background(), deps)
+	if err != nil || !result.Ready {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	last := result.Checks[len(result.Checks)-1]
+	if last.Name != "workspace" || last.Status != CheckWarning || last.Message != workspaceWarningMessage {
+		t.Fatalf("last check = %#v", last)
+	}
+}
+
+func TestRunWorkspaceWarnsWhenGettingWorkspaceFails(t *testing.T) {
+	deps := readyDependencies()
+	deps.Workspace = func() (string, error) { return "", errors.New("getwd" + seededEnvironment) }
+	// A workspace failure also blocks the model catalog, which the runner
+	// surfaces as an internal failure after the workspace check is recorded.
+	result, err := Run(context.Background(), deps)
+	if FailureKindOf(err) != FailureInternal {
+		t.Fatalf("FailureKindOf(%v) = %q, want %q", err, FailureKindOf(err), FailureInternal)
+	}
+	last := result.Checks[len(result.Checks)-1]
+	if last.Name != "workspace" || last.Status != CheckWarning || last.Message != workspaceWarningMessage {
+		t.Fatalf("last check = %#v", last)
+	}
+	assertRedacted(t, result)
 }
 
 func TestRunClassifiesCatalogProtocolAsInternal(t *testing.T) {

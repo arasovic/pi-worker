@@ -9,6 +9,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/piversion"
+	"github.com/arasovic/pi-worker/internal/run"
 )
 
 type CheckStatus string
@@ -59,6 +60,7 @@ type Dependencies struct {
 	CatalogFactory func(string) pi.ModelCatalog
 	Catalog        pi.ModelCatalog
 	Workspace      func() (string, error)
+	Inspect        func(context.Context, string) (*run.GitState, error)
 	Debug          *pi.DebugSink
 }
 
@@ -66,7 +68,7 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, contextFailure(err)
 	}
-	result := Result{SchemaVersion: 1, Ready: true, Checks: make([]Check, 0, 5)}
+	result := Result{SchemaVersion: 1, Ready: true, Checks: make([]Check, 0, 6)}
 	executable, executableErr := deps.Lookup("pi")
 	if executableErr != nil {
 		add(&result, "pi-executable", CheckFailed, "Pi executable is unavailable")
@@ -128,6 +130,27 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 		add(&result, "default-model", CheckFailed, "Configured default model is unavailable")
 	default:
 		add(&result, "default-model", CheckOK, "Configured default model is available")
+	}
+
+	// The work-tree question is answered by the same guard a run uses, so
+	// the two surfaces can never disagree about the same directory: a nil
+	// state with no error is Inspect saying it could not confirm one, and
+	// an error means the guard passed and a later command failed, which
+	// still confirms the work tree. Without a workspace or an inspector
+	// there is nothing to ask, and asking anyway would run git in an
+	// unspecified directory.
+	confirmed := false
+	if workspaceErr == nil && deps.Inspect != nil {
+		state, inspectErr := deps.Inspect(ctx, workspace)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, contextFailure(ctxErr)
+		}
+		confirmed = state != nil || inspectErr != nil
+	}
+	if !confirmed {
+		add(&result, "workspace", CheckWarning, "Not a confirmed git work tree: a run here cannot report what it changed and cannot check declared writes. Workers run with your permissions in this directory. A git work tree enables both checks.")
+	} else {
+		add(&result, "workspace", CheckOK, "Workspace is a git work tree; a run can report what it changed and check declared writes.")
 	}
 
 	if catalogErr != nil {
