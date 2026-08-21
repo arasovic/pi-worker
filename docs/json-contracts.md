@@ -200,18 +200,22 @@ a change.
 
 The change manifest is additive and optional, so `schemaVersion` stays `1`.
 Root `changes` is present when the workspace is inside a git work tree and the
-inspection of it succeeded. Only a workspace outside a git work tree, and an
-environment with no `git` at all, reached with a live context at the
-inspection, still carry no `changes` field — the same silent no-op `git`
-makes; a dead context never reaches the guard, so the same directory carries
-the `context already done` omission instead. Unlike `git` it is not gated by a
-state change: a run that only left modified files behind still carries it,
-because those files are what it names. It carries either a reason it could
-not be measured or the measurement, never both:
+inspection of it succeeded. A workspace outside a git work tree, an
+environment with no `git` at all, and a guard command that failed for a
+transient reason, all reached with a live context at the inspection, carry
+the `git work tree unconfirmed` omission instead; the reason does not say
+which of the three it is: two are expected and stable, and the third is
+worth one retry. A dead context never reaches the guard, so the same
+directory carries the `context already done` omission instead. Unlike
+`git` it is not gated by a state change: a run that only left modified
+files behind still carries it, because those files are what it names. It
+carries either a reason it could not be measured or the measurement,
+never both:
 
 - `omitted`: present only when the manifest could not be measured; one of
-  `unborn head`, `context already done`, or `measurement failed`. `files`,
-  `totalFiles`, and `truncated` carry no meaning when it is present
+  `unborn head`, `context already done`, `measurement failed`, or
+  `git work tree unconfirmed`. `files`, `totalFiles`, and `truncated`
+  carry no meaning when it is present
 - `totalFiles`: always present; the true number of changed paths, before the
   entry cap. A measured run that changed nothing carries `0` rather than
   omitting the field
@@ -236,18 +240,23 @@ worker started, so a run that committed its own work still lists the files
 it changed. Because the measurement compares the workspace before the run
 against the workspace after it, it cannot tell the run's writes from
 anyone else's: a file an editor or a watcher saves while the run is in
-flight appears as a change the run made, and with `--writes` declared the
-check reports it undeclared and the run exits `4`. While a run is in
+flight appears as a change the run made, and when the check actually ran
+it reports it undeclared and the run exits `4`. While a run is in
 flight, keep one run at a time per workspace and leave the workspace
 alone. Paths already dirty when the run started are stamped up front
-with size and modification time, and the ones whose stamp never moved are
-subtracted from the result: they were equally dirty before the run and name
-no change it made. That subtraction accepts one false negative, and it is
-deliberate rather than an oversight: if the run restores an already-dirty
-file to its exact pre-run content, the path is absent from the manifest,
-which is defensible because net change is zero.
+with size, modification time, and the executable bit, and the ones whose
+stamp never moved are subtracted from the result: they were equally dirty
+before the run and name no change it made; a same-size rewrite inside one
+timestamp tick on a coarse-granularity filesystem is not seen. That
+subtraction accepts one false negative, and it is deliberate rather than
+an oversight: if the run restores an already-dirty file to its exact
+pre-run content, the path is absent from the manifest, which is defensible
+because net change is zero.
 
-The manifest covers the paths `git` tracks or would track. Ignore rules
+The manifest covers the paths `git` tracks or would track. Submodules are
+outside it: the changed-path commands pass `--ignore-submodules=all`, so a
+submodule never enters the manifest or the write check — a run that updates
+a submodule pointer is not reported and not checked. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
 and the write check when it is untracked — it cannot appear in `files`, it
 does not count toward `totalFiles` or `undeclaredCount`, and a run that
@@ -269,9 +278,8 @@ or the verdict, never both:
 - `skipped`: present only when the check could not run; a short reason,
   `not all tasks declared writes` — some task said nothing at all, the
   only state that triggers it, since a task that declared an empty set
-  has declared — or `change manifest unavailable`, reached by the three
-  manifest omissions above and by an absent manifest, which carries no
-  `omitted` field to consult: a dirty before-state is measured now, so
+  has declared — or `change manifest unavailable`, reached by the four
+  manifest omissions above: a dirty before-state is measured now, so
   it never triggers the skip. `undeclaredCount`, `undeclared`, and
   `truncated` carry no meaning when it is present
 - `undeclaredCount`: always present on a verdict; the true number of

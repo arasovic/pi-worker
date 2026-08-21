@@ -313,11 +313,14 @@ Replace the provider/model placeholder with one exact selector printed by
   measurement compares the workspace before the run against the workspace
   after it, it cannot tell the run's writes from anyone else's: a file an
   editor or a watcher saves while the run is in flight appears as a change
-  the run made, and with `--writes` declared the check reports it
+  the run made, and when the check actually ran it reports it
   undeclared and the run exits `4`. While a run is in flight, keep one run
   at a time per workspace and leave the workspace alone. The manifest
-  covers the paths `git` tracks or would track:
-  ignore rules exclude untracked paths only, so an ignored path is outside
+  covers the paths `git` tracks or would track. Submodules are outside
+  it: the changed-path commands pass `--ignore-submodules=all`, so a
+  submodule never enters the manifest or the write check — a run that
+  updates a submodule pointer is not reported and not checked. Ignore rules
+  exclude untracked paths only, so an ignored path is outside
   both the manifest and the write check when it is untracked and a run that
   wrote only such paths reports a clean verdict; a tracked path is measured,
   and therefore checked, whether or not a rule matches it.
@@ -337,18 +340,21 @@ Replace the provider/model placeholder with one exact selector printed by
   or cancelled run, under its own thirty-second budget: a run that stopped
   mid-edit is exactly the run whose changes a caller most needs.
 - A dirty working tree is measured by subtraction, not guessed: paths
-  already dirty when the run started are stamped up front with size and
-  modification time, and the ones whose stamp never moved are subtracted —
-  they were equally dirty before the run and name no change it made. One
-  false negative is accepted and deliberate: if the run restores an
-  already-dirty file to its exact pre-run content, the path is absent from
-  the manifest, which is defensible because net change is zero. An unborn
-  HEAD, a context already done when the inspection ran, and a measurement
-  that failed after the workspace was confirmed to be a git work tree, are
-  omitted with a reason the same way. Only a workspace outside a git work
-  tree, or git missing entirely, reached with a live context when the
-  inspection ran, carries no manifest at all — the same silent no-op the
-  git state makes.
+  already dirty when the run started are stamped up front with size,
+  modification time, and the executable bit, and the ones whose stamp
+  never moved are subtracted — they were equally dirty before the run and
+  name no change it made; a same-size rewrite inside one timestamp tick
+  on a coarse-granularity filesystem is not seen. One false negative is
+  accepted and deliberate: if the run restores an already-dirty file to
+  its exact pre-run content, the path is absent from the manifest, which
+  is defensible because net change is zero. An unborn HEAD, a context
+  already done when the inspection ran, a measurement that failed after
+  the workspace was confirmed to be a git work tree, and a git work tree
+  that could not be confirmed — outside one, git missing entirely, or a
+  guard command that failed transiently — are omitted with a reason the
+  same way. The last reason, `git work tree unconfirmed`, does not say
+  which of the three it is: two are expected and stable, and the third
+  is worth one retry.
 
 ### Exactly one input mechanism
 
@@ -392,9 +398,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   post-run check runs, so a read-only round can be proven to have
   written nothing rather than merely asserted to. Only a measured
   manifest makes that proof: on an unborn HEAD, a dead context, a
-  failed measurement, or a workspace that carries no manifest at all,
-  the check skips with `change manifest unavailable` and the run exits
-  `0`, whatever was declared. A dirty before-state is measured rather
+  failed measurement, or an unconfirmed git work tree, the check skips
+  with `change manifest unavailable` and the run exits `0`, whatever
+  was declared. A dirty before-state is measured rather
   than skipped, so there the check runs. A checked run that changed
   nothing reports a clean verdict; one that changed a path reports it
   undeclared and exits `4`.
