@@ -62,11 +62,15 @@ func NewDefaultGitInspector() GitInspector {
 // detached and left empty; an unborn branch makes that command fail
 // after printing the same literal "HEAD", which is the same
 // unborn-HEAD case and equally not an error. Dirty is true when git
-// status --porcelain prints anything, and the stash list comes from
-// git stash list --format=%H %gs, one "<sha> <subject>" identity per
-// non-empty line in git's order (newest first); Stashes is the number
-// of entries. A failure of any command after the guard other than the
-// unborn-HEAD case is returned as an error.
+// status --porcelain --ignore-submodules=all --untracked-files=normal
+// prints anything: submodules are excluded so a dirty submodule does not
+// make the tree look dirty, and untracked files are forced back to
+// normal reporting so dirtiness does not depend on the repository's
+// status.showUntrackedFiles display preference. The stash list comes
+// from git stash list --format=%H %gs, one "<sha> <subject>" identity
+// per non-empty line in git's order (newest first); Stashes is the
+// number of entries. A failure of any command after the guard other
+// than the unborn-HEAD case is returned as an error.
 func (i *DefaultGitInspector) Inspect(ctx context.Context, dir string) (*GitState, error) {
 	inside, err := gitOutput(ctx, dir, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(inside) != "true" {
@@ -87,7 +91,7 @@ func (i *DefaultGitInspector) Inspect(ctx context.Context, dir string) (*GitStat
 	} else if trimmed := strings.TrimSpace(branch); trimmed != "HEAD" {
 		state.Branch = trimmed
 	}
-	porcelain, err := gitOutput(ctx, dir, "status", "--porcelain")
+	porcelain, err := gitOutput(ctx, dir, "status", "--porcelain", "--ignore-submodules=all", "--untracked-files=normal")
 	if err != nil {
 		return nil, fmt.Errorf("git status: %w", err)
 	}

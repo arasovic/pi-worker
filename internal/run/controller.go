@@ -78,12 +78,14 @@ type Result struct {
 	Git *GitChange `json:"git,omitempty"`
 	// Changes is the manifest of workspace paths the run changed and by
 	// how much, measured by pi-worker against the before-state HEAD
-	// rather than reported by the worker; nil when the workspace is not
-	// inside a git work tree. Unlike Git it is not gated by the git
-	// tripwire: leaving modified files behind is the point of a
-	// delegation, and those files are exactly what the manifest names.
-	// A measurement failure is reported through Omitted, never by
-	// leaving the field nil.
+	// rather than reported by the worker; nil only when the controller
+	// ran without a git inspector. A workspace whose git work tree could
+	// not be confirmed omits with a stated reason rather than staying
+	// nil, so the caller is told the check could not run and why. Unlike
+	// Git it is not gated by the git tripwire: leaving modified files
+	// behind is the point of a delegation, and those files are exactly
+	// what the manifest names. A measurement failure is reported through
+	// Omitted, never by leaving the field nil.
 	Changes *Changes `json:"changes,omitempty"`
 	// Writes is the post-hoc comparison of the paths the run changed
 	// against the paths its tasks declared they would write. It is
@@ -152,17 +154,17 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// worker starts. Git state reporting is diagnostic, not a gate: a
 	// non-git workspace or an inspection error leaves Git nil without
 	// failing the run. The inspection error is kept separately because
-	// the change manifest treats it differently: a guard failure is
-	// indistinguishable from a workspace outside a git work tree and is
-	// the same silent no-op Git makes, arriving here as before == nil
-	// with beforeErr == nil — git missing included. A context already
-	// done when the inspection ran is the one exception: the run never
-	// got far enough to look, so that case is a stated omission, not an
-	// absent field. Only a failure after the guard, from git status
-	// --porcelain, git stash list, or rev-parse --abbrev-ref HEAD
-	// outside the unborn-HEAD case, is a post-guard inspection failure
-	// that reaches reasonMeasurementFail and must be reported rather
-	// than silently dropped.
+	// the change manifest treats it differently: a guard failure or a
+	// workspace outside a git work tree arrives here as before == nil
+	// with beforeErr == nil — git missing included — and omits the
+	// manifest with the work-tree-unconfirmed reason rather than leaving
+	// the field nil. A context already done when the inspection ran is a
+	// separate stated omission: the run never got far enough to look.
+	// Only a failure after the guard, from git status --porcelain, git
+	// stash list, or rev-parse --abbrev-ref HEAD outside the
+	// unborn-HEAD case, is a post-guard inspection failure that reaches
+	// reasonMeasurementFail and must be reported rather than silently
+	// dropped.
 	var before *GitState
 	var beforeErr error
 	// The context state is captured here, at the inspection site, where
@@ -253,6 +255,13 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			// nothing was measured and nothing failed, and an absent field
 			// would read as a measured result. Omit with the stated reason.
 			result.Changes = &Changes{Omitted: reasonContextDone}
+		default:
+			// Inspect returned nil, nil under a live context: a workspace
+			// outside a git work tree, git missing entirely, or a guard
+			// command that failed for a transient reason. The manifest
+			// omits with the stated reason — never nil, so the caller is
+			// told the check could not run and why.
+			result.Changes = &Changes{Omitted: reasonWorkTreeUnconfirmed}
 		}
 	}
 	// The write check runs after the change manifest, on every terminal

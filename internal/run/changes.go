@@ -16,10 +16,13 @@ import (
 
 // Changes is the manifest of workspace paths a run changed, measured by
 // pi-worker itself against the before-state HEAD rather than reported by
-// the worker; nil when the workspace is not inside a git work tree.
-// Paths that were already dirty before the run and whose stamp (size
-// plus modification time) did not move are subtracted, so the manifest
-// answers what this run changed even on a dirty before-state.
+// the worker; nil only when the controller ran without a git inspector.
+// A workspace whose git work tree the guard could not confirm is not
+// nil: it carries an omission reason, so the caller is told the manifest
+// could not be measured and why.
+// Paths that were already dirty before the run and whose stamp (size,
+// modification time, and executable bit) did not move are subtracted, so
+// the manifest answers what this run changed even on a dirty before-state.
 // Unlike GitChange it is not gated by the git tripwire: leaving modified
 // files behind is the point of a delegation, and those files are exactly
 // what the manifest exists to name.
@@ -66,13 +69,21 @@ const (
 )
 
 // Omission reasons. They are short, lowercase, fixed strings, and there
-// are exactly these three: an unborn HEAD, a context already done when
-// the before-state inspection ran, and a failed measurement (a git
-// command failure or a budget that expires).
+// are exactly these four: an unborn HEAD, a context already done when
+// the before-state inspection ran, a failed measurement (a git command
+// failure or a budget that expires), and a git work tree the guard
+// could not confirm.
 const (
 	reasonUnbornHead      = "unborn head"
 	reasonContextDone     = "context already done"
 	reasonMeasurementFail = "measurement failed"
+	// reasonWorkTreeUnconfirmed names the state where Inspect returned
+	// nil, nil: the workspace is outside a git work tree, git is missing
+	// entirely, or the guard command failed for a transient reason. The
+	// wording must not claim more than the code knows — it is not "not a
+	// git work tree" — because the three causes are indistinguishable
+	// here.
+	reasonWorkTreeUnconfirmed = "git work tree unconfirmed"
 )
 
 // maxChangeFiles caps the manifest list. TotalFiles always carries the
@@ -94,8 +105,9 @@ const changesTimeout = 30 * time.Second
 // were already dirty; a measurement failure is reported, never silent:
 // leaving the field nil on a failure is the bug this feature exists to
 // prevent, so the caller keeps the same distinction as git — a
-// workspace outside a git work tree is the one nil case, and it is
-// decided by the caller before this function is reached.
+// workspace outside a git work tree is decided by the caller before
+// this function is reached and omitted with the work-tree-unconfirmed
+// reason, never left nil.
 func measureChanges(ctx context.Context, dir string, before *GitState, dirtyStamps map[string]fileStamp) *Changes {
 	if before.Head == "" {
 		return &Changes{Omitted: reasonUnbornHead}
@@ -120,7 +132,15 @@ func measureChanges(ctx context.Context, dir string, before *GitState, dirtyStam
 // failure fails the whole measurement: an approximate manifest
 // presented as truth is worse than none.
 func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[string]fileStamp) (*Changes, error) {
-	trackedOut, err := gitOutput(ctx, dir, "diff", "--numstat", "--no-renames", "-z", head, "--")
+	// Every path enumeration in the manifest ignores submodules: the
+	// parent repository only records a gitlink, so a submodule's own
+	// dirty working tree must never enter the candidate set. A submodule
+	// path is a directory, which the stamp can neither describe nor
+	// subtract, so without the flag the path is reported deleted and the
+	// write check names it undeclared even when the run touched nothing.
+	// The consequence is intended: a run that updates a submodule pointer
+	// is not reported in the manifest and not covered by the write check.
+	trackedOut, err := gitOutput(ctx, dir, "diff", "--numstat", "--no-renames", "-z", "--ignore-submodules=all", head, "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
 	}
@@ -331,30 +351,37 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 }
 
 // fileStamp is the identity clue captured for one path that was
-// already dirty when the run started: size and modification time from
-// Lstat, or an explicit absence for a staged or unstaged deletion,
-// which is a legitimate dirty state. Size plus modification time is
-// chosen because it reads no file contents and runs no hashing: it is
-// exact where modification time has sub-second resolution (APFS, ext4,
-// NTFS, the normal case), and it can miss a same-size rewrite inside
-// one tick on a coarse-granularity filesystem (FAT, exFAT, some NFS
-// mounts, older ext3). File contents are never read and git
-// hash-object never runs.
+// already dirty when the run started: size, modification time, and the
+// executable bit from Lstat, or an explicit absence for a staged or
+// unstaged deletion, which is a legitimate dirty state. Size plus
+// modification time is chosen because it reads no file contents and
+// runs no hashing: it is exact where modification time has sub-second
+// resolution (APFS, ext4, NTFS, the normal case), and it can miss a
+// same-size rewrite inside one tick on a coarse-granularity filesystem
+// (FAT, exFAT, some NFS mounts, older ext3). The executable bit is
+// carried because git tracks exactly that and nothing else of a mode:
+// a chmod +x changes neither size nor modification time yet is a change
+// git records, and a chmod between non-executable modes is not a change
+// git sees and must not look like one. File contents are never read and
+// git hash-object never runs.
 type fileStamp struct {
-	size    int64
-	modTime time.Time
-	absent  bool
+	size       int64
+	modTime    time.Time
+	executable bool
+	absent     bool
 }
 
 // snapshotDirtyStamps enumerates the paths already dirty in the
 // workspace before the run starts and stamps each one, keyed by path,
 // so the manifest can subtract the ones the run never moved.
 // Enumerating with exactly the two commands the after pass already uses
-// — git diff --name-only -z HEAD -- and git ls-files --others
-// --exclude-standard -z — keeps both passes over the same universe.
-// Every command here is read-only with respect to the repository.
+// — git diff --name-only -z --ignore-submodules=all HEAD -- and git
+// ls-files --others --exclude-standard -z — keeps both passes over the
+// same universe; the diff ignores submodules for the same reason as the
+// after pass, so a submodule never enters the stamp set either. Every
+// command here is read-only with respect to the repository.
 func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp, error) {
-	trackedOut, err := gitOutput(ctx, dir, "diff", "--name-only", "-z", "HEAD", "--")
+	trackedOut, err := gitOutput(ctx, dir, "diff", "--name-only", "-z", "--ignore-submodules=all", "HEAD", "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only: %w", err)
 	}
@@ -372,16 +399,17 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 			}
 			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
-		stamps[path] = fileStamp{size: info.Size(), modTime: info.ModTime()}
+		stamps[path] = fileStamp{size: info.Size(), modTime: info.ModTime(), executable: info.Mode().Perm()&0o111 != 0}
 	}
 	return stamps, nil
 }
 
 // stampMatches reports whether the workspace path currently carries the
-// captured pre-run stamp: both present with the same size and the same
-// modification time, or absent then and absent now. A path that was not
-// absent before but is a directory now has changed — a file replaced by
-// a directory is not the same path it was.
+// captured pre-run stamp: both present with the same size, the same
+// modification time, and the same executable bit, or absent then and
+// absent now. A path that was not absent before but is a directory now
+// has changed — a file replaced by a directory is not the same path it
+// was.
 func stampMatches(dir, path string, stamp fileStamp) (bool, error) {
 	info, err := os.Lstat(filepath.Join(dir, path))
 	if err != nil {
@@ -393,7 +421,9 @@ func stampMatches(dir, path string, stamp fileStamp) (bool, error) {
 	if stamp.absent || info.IsDir() {
 		return false, nil
 	}
-	return info.Size() == stamp.size && info.ModTime().Equal(stamp.modTime), nil
+	return info.Size() == stamp.size &&
+		info.ModTime().Equal(stamp.modTime) &&
+		(info.Mode().Perm()&0o111 != 0) == stamp.executable, nil
 }
 
 // filePresent reports whether the workspace-relative path is currently a
