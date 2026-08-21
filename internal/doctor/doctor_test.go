@@ -14,6 +14,7 @@ import (
 )
 
 const workspaceWarningMessage = "Not a confirmed git work tree: a run here cannot report what it changed and cannot check declared writes. Workers run with your permissions in this directory. A git work tree enables both checks."
+const workspaceUnreadableMessage = "Git work tree found but its state could not be read: a run here cannot report what it changed and cannot check declared writes."
 
 const seededSecret = "seeded-credential-value"
 const seededEnvironment = "seeded-environment-value"
@@ -207,25 +208,31 @@ func TestRunWorkspaceWarnsWhenGitCannotConfirm(t *testing.T) {
 }
 
 func TestRunWorkspaceOKWhenGitConfirmsWorkTree(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		inspect func(context.Context, string) (*run.GitState, error)
-	}{
-		{"non-nil state", func(context.Context, string) (*run.GitState, error) { return &run.GitState{}, nil }},
-		{"error after guard", func(context.Context, string) (*run.GitState, error) { return nil, errors.New("git state") }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			deps := readyDependencies()
-			deps.Inspect = test.inspect
-			result, err := Run(context.Background(), deps)
-			if err != nil || !result.Ready {
-				t.Fatalf("result = %#v, err = %v", result, err)
-			}
-			last := result.Checks[len(result.Checks)-1]
-			if last.Name != "workspace" || last.Status != CheckOK {
-				t.Fatalf("last check = %#v", last)
-			}
-		})
+	deps := readyDependencies()
+	deps.Inspect = func(context.Context, string) (*run.GitState, error) { return &run.GitState{}, nil }
+	result, err := Run(context.Background(), deps)
+	if err != nil || !result.Ready {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	last := result.Checks[len(result.Checks)-1]
+	if last.Name != "workspace" || last.Status != CheckOK {
+		t.Fatalf("last check = %#v", last)
+	}
+}
+
+func TestRunWorkspaceWarnsWhenGitStateUnreadable(t *testing.T) {
+	// The guard passed, so this is a work tree, but a later command
+	// failed, so a run here can neither report what it changed nor check
+	// declared writes.
+	deps := readyDependencies()
+	deps.Inspect = func(context.Context, string) (*run.GitState, error) { return nil, errors.New("git state") }
+	result, err := Run(context.Background(), deps)
+	if err != nil || !result.Ready {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	last := result.Checks[len(result.Checks)-1]
+	if last.Name != "workspace" || last.Status != CheckWarning || last.Message != workspaceUnreadableMessage {
+		t.Fatalf("last check = %#v", last)
 	}
 }
 

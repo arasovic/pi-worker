@@ -134,24 +134,31 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 
 	// The work-tree question is answered by the same guard a run uses, so
 	// the two surfaces can never disagree about the same directory: a nil
-	// state with no error is Inspect saying it could not confirm one, and
-	// an error means the guard passed and a later command failed, which
-	// still confirms the work tree. Without a workspace or an inspector
+	// state with no error is Inspect saying it could not confirm a work
+	// tree, an error means the guard passed and a later command failed, so
+	// it is a work tree but its state cannot be read, and a non-nil state
+	// is a work tree read successfully. Without a workspace or an inspector
 	// there is nothing to ask, and asking anyway would run git in an
 	// unspecified directory.
-	confirmed := false
+	status := CheckWarning
+	message := "Not a confirmed git work tree: a run here cannot report what it changed and cannot check declared writes. Workers run with your permissions in this directory. A git work tree enables both checks."
 	if workspaceErr == nil && deps.Inspect != nil {
 		state, inspectErr := deps.Inspect(ctx, workspace)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, contextFailure(ctxErr)
 		}
-		confirmed = state != nil || inspectErr != nil
+		switch {
+		case state != nil:
+			// Guard passed and the state was read: a run can report what it
+			// changed and check declared writes.
+			status, message = CheckOK, "Workspace is a git work tree; a run can report what it changed and check declared writes."
+		case inspectErr != nil:
+			// Guard passed, so this is a work tree, but a command after the
+			// guard failed, so a run here loses both checks.
+			message = "Git work tree found but its state could not be read: a run here cannot report what it changed and cannot check declared writes."
+		}
 	}
-	if !confirmed {
-		add(&result, "workspace", CheckWarning, "Not a confirmed git work tree: a run here cannot report what it changed and cannot check declared writes. Workers run with your permissions in this directory. A git work tree enables both checks.")
-	} else {
-		add(&result, "workspace", CheckOK, "Workspace is a git work tree; a run can report what it changed and check declared writes.")
-	}
+	add(&result, "workspace", status, message)
 
 	if catalogErr != nil {
 		var readiness *pi.ReadinessError
