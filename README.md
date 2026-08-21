@@ -78,8 +78,8 @@ pi-worker config set default-model provider/model
 pi-worker run --thinking high --task "Review this module and explain the main risks"
 ```
 
-Doctor is read-only. Its five checks, in order, are `pi-executable`,
-`pi-version`, `config`, `model-catalog`, and `default-model`.
+Doctor is read-only. Its six checks, in order, are `pi-executable`,
+`pi-version`, `config`, `model-catalog`, `default-model`, and `workspace`.
 
 Thinking is separate from model identity. Accepted values are `off`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, and `max`. An unsupported explicit effort

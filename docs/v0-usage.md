@@ -130,7 +130,7 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   switches providers or models, reads Pi profile/auth files, invokes a model,
   or submits a prompt.
 - It performs these checks in this exact order: `pi-executable`, `pi-version`,
-  `config`, `model-catalog`, and `default-model`.
+  `config`, `model-catalog`, `default-model`, and `workspace`.
 - Pi `0.84.1` is verified and reports `ok`. A different valid semantic version
   reports `warning` and leaves the environment ready. Unreadable or malformed
   version output reports `failed`. A missing configuration is a warning;
@@ -138,6 +138,10 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
 - Skill installation status is reported separately by `pi-worker skill status`.
 - `model-catalog` sends only `get_available_models`; it does not activate a
   model or send a prompt. An empty catalog is failed.
+- `workspace` reports whether the current directory is a confirmed git work
+  tree. A run there still delegates work, but its change manifest omits with
+  `git work tree unconfirmed` and its write check skips. The check is
+  advisory: it warns, it never makes `doctor` unready.
 - The default timeout is `30s`. Human output has one line per ordered check and
   an overall readiness line. For a completed inspection, `--json` writes exactly
   one `doctor.Result` document to stdout. A timed-out, cancelled, or internally
