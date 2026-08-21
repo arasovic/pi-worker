@@ -142,6 +142,9 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   tree. A run there still delegates work, but its change manifest omits with
   `git work tree unconfirmed` and its write check skips. The check is
   advisory: it warns, it never makes `doctor` unready.
+- A confirmed and readable work tree reports `ok`; a work tree whose state
+  cannot be read reports `warning`, as does a directory that cannot be
+  confirmed as a work tree. All three leave the environment ready.
 - The default timeout is `30s`. Human output has one line per ordered check and
   an overall readiness line. For a completed inspection, `--json` writes exactly
   one `doctor.Result` document to stdout. A timed-out, cancelled, or internally

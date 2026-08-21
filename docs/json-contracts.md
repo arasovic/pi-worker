@@ -188,7 +188,9 @@ optional `stash`; `before` and `after` each with:
 - `branch`: present only when HEAD is attached to a branch (a detached
   HEAD omits it)
 - `dirty`: always present; true when the working tree has uncommitted
-  changes
+  changes, with submodules excluded — a repository whose only uncommitted
+  change is inside a submodule is not dirty. It is independent of the
+  repository's `status.showUntrackedFiles` preference.
 - `stashes`: always present; the number of stash entries
 
 `stash` is present only when a stash entry appeared or disappeared
