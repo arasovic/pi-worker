@@ -13,8 +13,8 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/MIT-green.svg" alt="MIT license"></a>
 </p>
 
-Delegate bounded coding tasks to exact models available through your local Pi
-installation.
+Delegate bounded coding tasks to exact models available through your local
+[Pi](https://pi.dev/) installation.
 
 ## What is it?
 
@@ -32,8 +32,9 @@ level.
 
 ## How do I use it?
 
-You need Node.js 22.20.0 or newer and a Pi CLI with provider authentication.
-Pi `0.84.1` is verified; other semantic versions run with an explicit warning.
+You need Node.js 22.20.0 or newer and a [Pi](https://pi.dev/) CLI with provider
+authentication. Pi `0.84.1` is verified; other semantic versions run with an
+explicit warning.
 
 Install the npm package:
 
