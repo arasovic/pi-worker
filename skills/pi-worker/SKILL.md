@@ -43,8 +43,14 @@ vanishes from output. The reason decides the caller's next move:
 `unborn head`, `context already done`, `measurement failed`, or `work
 tree not confirmed` — the last meaning the workspace is not a git work
 tree, git is missing, or the guard failed transiently, which the reason
-does not claim to distinguish. Either way the check could not be
-answered and retrying changes nothing.
+does not claim to distinguish. Which reasons a retry can clear differs:
+`measurement failed` — a git command failure or a budget that expired —
+and the transient guard failure behind `work tree not confirmed` can
+clear on retry; the reason cannot tell that cause from a genuinely
+unconfirmed work tree, so one retry is a fair test and repeating it is
+not. `context already done` means the run's own context was already dead
+when it would have inspected, so re-run with a live context. `unborn
+head` means the repository has no commits, which no retry can change.
 `verification-failed` means the `verification` object is there; report it, fix
 the workspace, and re-run. Any other word means report it with its object when
 one exists (`writes`, `verification`, or the worker's `failure`) and stop.

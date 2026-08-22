@@ -354,9 +354,12 @@ Replace the provider/model placeholder with one exact selector printed by
   tracks, so a chmod between two non-executable modes does not register
   as a change — and the ones whose stamp never moved are subtracted —
   they were equally dirty before the run and name no change it made. One
-  false negative is accepted and deliberate: if the run restores an
-  already-dirty file to its exact pre-run content, the path is absent from
-  the manifest, which is defensible because net change is zero. Dirtiness
+  false negative is accepted and deliberate, on a coarse-granularity
+  filesystem only: a restore that lands within the same clock tick as
+  the pre-run stamp leaves size and modification time unchanged, so the
+  path is subtracted even though the run wrote it — defensible because
+  net change is zero. On a normal filesystem the write moves the
+  modification time and the restore is still reported. Dirtiness
   never depends on the repository's display preference: the status
   command forces `status.showUntrackedFiles=all`, so a repository that
   hides untracked files from `git status` still records a tree that is
