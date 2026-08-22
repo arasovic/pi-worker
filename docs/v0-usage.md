@@ -17,7 +17,7 @@ or raw protocol output.
 ## Prerequisites
 
 - Node.js 22.20.0 or newer and npm.
-- Installed Pi CLI. Version **0.84.1** is the verified compatibility surface;
+- Installed Pi CLI. Version **0.84.2** is the verified compatibility surface;
   other semantic versions remain usable with an explicit warning.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
   - Open Pi interactively and use Pi's own authentication flow.
@@ -131,7 +131,7 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   or submits a prompt.
 - It performs these checks in this exact order: `pi-executable`, `pi-version`,
   `config`, `model-catalog`, `default-model`, and `workspace`.
-- Pi `0.84.1` is verified and reports `ok`. A different valid semantic version
+- Pi `0.84.2` is verified and reports `ok`. A different valid semantic version
   reports `warning` and leaves the environment ready. Unreadable or malformed
   version output reports `failed`. A missing configuration is a warning;
   warnings leave the environment ready. A failed check makes it not ready.
@@ -586,7 +586,7 @@ cat prompt.txt | pi-worker run --model provider/model-id
 
 ## Compatibility note
 
-v0 is verified against Pi **0.84.1**. Other semantic versions are explicitly
+v0 is verified against Pi **0.84.2**. Other semantic versions are explicitly
 reported as unverified while the runtime continues through its fail-closed RPC
 validation. Re-probe before expanding the verified compatibility surface:
 

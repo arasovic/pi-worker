@@ -218,7 +218,7 @@ test("contribution guidance covers the public workflow and local checks", () => 
   assert.match(contributing, /go\.mod|Go toolchain/i);
   assert.match(contributing, /Node(?:\.js)?\s*>=?\s*22\.20\.0/i);
   assert.match(contributing, /npm/i);
-  assert.match(contributing, /Pi\s+(?:CLI\s+)?0\.84\.1.*(?:integration|dogfood)/is);
+  assert.match(contributing, /Pi\s+(?:CLI\s+)?0\.84\.2.*(?:integration|dogfood)/is);
   assert.match(contributing, /fork/i);
   assert.match(contributing, /purpose[- ]named branch/i);
   assert.match(contributing, /focused changes/i);

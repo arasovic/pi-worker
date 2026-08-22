@@ -33,7 +33,7 @@ level.
 ## How do I use it?
 
 You need Node.js 22.20.0 or newer and a Pi CLI with provider authentication.
-Pi `0.84.1` is verified; other semantic versions run with an explicit warning.
+Pi `0.84.2` is verified; other semantic versions run with an explicit warning.
 
 Install the npm package:
 
