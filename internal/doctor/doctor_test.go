@@ -19,7 +19,7 @@ const seededEnvironment = "seeded-environment-value"
 func readyDependencies() Dependencies {
 	return Dependencies{
 		Lookup:  func(string) (string, error) { return "pi", nil },
-		Version: func(context.Context, string) (string, error) { return "0.84.1", nil },
+		Version: func(context.Context, string) (string, error) { return "0.84.2", nil },
 		LoadConfig: func() (config.Config, error) {
 			return config.Config{SchemaVersion: 1, DefaultModel: "acme/model"}, nil
 		},
@@ -81,7 +81,7 @@ func TestRunReportsValidUnverifiedVersionAsWarningAndReady(t *testing.T) {
 	if err != nil || !result.Ready || result.Checks[1].Status != CheckWarning {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
-	if got, want := result.Checks[1].Message, "Pi version 0.99.0 is unverified; verified version is 0.84.1"; got != want {
+	if got, want := result.Checks[1].Message, "Pi version 0.99.0 is unverified; verified version is 0.84.2"; got != want {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
 }
@@ -103,7 +103,7 @@ func TestRunUsesResolvedExecutableForVersionAndCatalog(t *testing.T) {
 		if executable != resolvedExecutable {
 			t.Fatalf("version executable = %q, want %q", executable, resolvedExecutable)
 		}
-		return "0.84.1", nil
+		return "0.84.2", nil
 	}
 	factoryCalls := 0
 	deps.CatalogFactory = func(executable string) pi.ModelCatalog {

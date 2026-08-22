@@ -4,17 +4,21 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `0.84.1`.
+Observed version: `0.84.2`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
 were also inspected.
 No authentication command that reads credentials was run. No model catalog,
 prompt, or other billable operation was run.
+The surface was re-probed on 2026-08-22 against 0.84.2 from `pi --version`
+and `pi --help`, with `--mode rpc` and every required flag still present; no
+authentication command, model catalog call, prompt, or other billable
+operation was run in the re-probe.
 
 ## Compatibility gate
 
-**Gate result: pass for Pi 0.84.1.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 0.84.2.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.

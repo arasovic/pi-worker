@@ -91,7 +91,7 @@ func (c *Client) GetAvailableModels(ctx context.Context) ([]ModelProjection, err
 	if err != nil {
 		var transportErr *transportError
 		if errors.As(err, &transportErr) {
-			return nil, &ReadinessError{Message: "pi exited before returning the model catalog; verify Pi 0.84.1 compatibility and provider login"}
+			return nil, &ReadinessError{Message: "pi exited before returning the model catalog; verify Pi 0.84.2 compatibility and provider login"}
 		}
 		return nil, err
 	}

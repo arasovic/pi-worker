@@ -355,7 +355,7 @@ func TestClientStartupReadFailureIsReadinessError(t *testing.T) {
 	}
 	message := err.Error()
 	lower := strings.ToLower(message)
-	for _, want := range []string{"0.84.1", "compatib", "provider", "login"} {
+	for _, want := range []string{"0.84.2", "compatib", "provider", "login"} {
 		if !strings.Contains(lower, strings.ToLower(want)) {
 			t.Fatalf("error = %q, want detail %q", message, want)
 		}
@@ -375,7 +375,7 @@ func TestClientStartupWriteFailureIsReadinessError(t *testing.T) {
 	}
 	message := err.Error()
 	lower := strings.ToLower(message)
-	for _, want := range []string{"0.84.1", "compatib", "provider", "login"} {
+	for _, want := range []string{"0.84.2", "compatib", "provider", "login"} {
 		if !strings.Contains(lower, strings.ToLower(want)) {
 			t.Fatalf("error = %q, want detail %q", message, want)
 		}

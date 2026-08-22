@@ -48,7 +48,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	originalRunVersionProbe := runVersionProbe
-	runVersionProbe = func(context.Context) (string, error) { return "0.84.1", nil }
+	runVersionProbe = func(context.Context) (string, error) { return "0.84.2", nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
 	os.RemoveAll(dir)
@@ -904,7 +904,7 @@ func TestRunSuccessJSON(t *testing.T) {
 
 func TestRunVerifiedPiVersionProbesOnceBeforeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "version-probed")
-	logPath := installProcessVersionProbe(t, "0.84.1\n", "", 0)
+	logPath := installProcessVersionProbe(t, "0.84.2\n", "", 0)
 	t.Setenv("PI_WORKER_VERSION_MARKER", marker)
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
 	fake.runHook = func() {
@@ -936,7 +936,7 @@ func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
 	if got := versionProbeCount(t, logPath); got != 1 {
 		t.Fatalf("version probe count = %d, want 1", got)
 	}
-	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is 0.84.1; continuing\n"
+	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is 0.84.2; continuing\n"
 	if stderr != wantWarning || strings.Contains(stderr, "child-secret-must-not-leak") {
 		t.Fatalf("stderr = %q", stderr)
 	}
