@@ -90,25 +90,60 @@ func TestWorkerDebugHeartbeatCoversSlowSetupAndStopsBeforeFinalStatus(t *testing
 		t.Fatal("lifecycle heartbeat did not start after process start")
 	}
 	_ = waitRequestLog(t, requestLog, 1)
+	// The heartbeat reports only when a full interval of fake time has
+	// passed with no visible worker line. The worker runs on the real
+	// scheduler, so it can log a line (rpc completions, phases, prompt
+	// events) at the same fake instant as our tick but before the loop
+	// reads lastActivity; the loop then consumes that tick without
+	// reporting and re-arms the timer for the remainder. The loop
+	// publishes every re-arm on the timer reset channel, so drive the
+	// heartbeat exactly like its own timer: advance the clock by one
+	// interval, tick, and whenever the loop re-arms without a line,
+	// advance again and retry, until it observes a genuinely silent
+	// interval. A tick dropped to recent activity is therefore never the
+	// last one.
 	clock.advance(debugHeartbeatInterval)
-	timer.ticks <- clock.now()
 	foundHeartbeat := false
 	deadline := time.After(time.Second)
 	for !foundHeartbeat {
+		select {
+		case timer.ticks <- clock.now():
+		default:
+			// The loop is behind on ticks it has not consumed yet; those
+			// will produce the report, so do not pile more into the buffer.
+		}
 		select {
 		case line := <-writes:
 			if strings.Contains(line, "phase=waiting-for-pi") {
 				foundHeartbeat = true
 			}
+		case <-timer.resets:
+			clock.advance(debugHeartbeatInterval)
 		case <-deadline:
 			t.Fatal("no lifecycle heartbeat during slow setup RPC")
 		}
 	}
-	if types := readRequestLog(requestLog); slices.Contains(types, "prompt") {
-		t.Fatalf("heartbeat arrived after prompt instead of during setup: %v", types)
-	}
 
 	result := <-done
+	// The heartbeat must have been emitted during the slow setup, before
+	// the prompt request: the first waiting-for-pi line must precede the
+	// prompt RPC's first line in the sink's serialized debug output.
+	// Checking the request log in flight races the worker's real-time
+	// progress against this goroutine's read; buffer order under the
+	// sink's write lock is authoritative and cannot flake on scheduling.
+	allBodies := debugBodies(t, writer.buf.String())
+	firstHeartbeat := slices.IndexFunc(allBodies, func(body string) bool {
+		return strings.Contains(body, "phase=waiting-for-pi")
+	})
+	firstPrompt := slices.IndexFunc(allBodies, func(body string) bool {
+		return strings.Contains(body, "rpc=prompt")
+	})
+	if firstHeartbeat < 0 {
+		t.Fatalf("no lifecycle heartbeat during slow setup RPC")
+	}
+	if firstPrompt >= 0 && firstHeartbeat >= firstPrompt {
+		t.Fatalf("heartbeat arrived after prompt instead of during setup: heartbeat at line %d, prompt at line %d (of %d)", firstHeartbeat, firstPrompt, len(allBodies))
+	}
 	if result.Status != StatusCompleted {
 		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
 	}
@@ -127,7 +162,13 @@ func TestWorkerDebugHeartbeatCoversSlowSetupAndStopsBeforeFinalStatus(t *testing
 
 drained:
 	clock.advance(debugHeartbeatInterval)
-	timer.ticks <- clock.now()
+	select {
+	case timer.ticks <- clock.now():
+	default:
+		// The heartbeat loop is stopped and joined by now; the tick is
+		// only a probe that it emits nothing, so a full tick buffer must
+		// not wedge the test.
+	}
 	select {
 	case line := <-writes:
 		t.Fatalf("debug line emitted after final status: %q", line)
