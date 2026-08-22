@@ -9,6 +9,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/piversion"
+	"github.com/arasovic/pi-worker/internal/run"
 )
 
 type CheckStatus string
@@ -59,6 +60,7 @@ type Dependencies struct {
 	CatalogFactory func(string) pi.ModelCatalog
 	Catalog        pi.ModelCatalog
 	Workspace      func() (string, error)
+	GitInspector   run.GitInspector
 	Debug          *pi.DebugSink
 }
 
@@ -66,7 +68,7 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, contextFailure(err)
 	}
-	result := Result{SchemaVersion: 1, Ready: true, Checks: make([]Check, 0, 5)}
+	result := Result{SchemaVersion: 1, Ready: true, Checks: make([]Check, 0, 6)}
 	executable, executableErr := deps.Lookup("pi")
 	if executableErr != nil {
 		add(&result, "pi-executable", CheckFailed, "Pi executable is unavailable")
@@ -102,7 +104,17 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 		add(&result, "config", CheckOK, "Pi-worker configuration is valid")
 	}
 
-	workspace, workspaceErr := deps.Workspace()
+	var workspace string
+	var workspaceErr error
+	if deps.Workspace == nil {
+		// A caller that leaves the workspace resolver unset gets the same
+		// outcome as one whose resolver fails: there is no workspace to
+		// ask about, so the catalog cannot run in it and nothing else may
+		// probe it either.
+		workspaceErr = errors.New("workspace resolver unavailable")
+	} else {
+		workspace, workspaceErr = deps.Workspace()
+	}
 	var models []pi.ModelProjection
 	var catalogErr error
 	if executableErr != nil {
@@ -130,12 +142,48 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 		add(&result, "default-model", CheckOK, "Configured default model is available")
 	}
 
+	// The workspace check is advisory and appended last. It asks the same
+	// guard a run asks — GitInspector.Inspect — so doctor and run can
+	// never disagree about the same directory. A warning never makes the
+	// environment unready: a run outside a confirmed git work tree still
+	// runs, but its change manifest is omitted with the
+	// work-tree-unconfirmed reason and its declared-writes check is
+	// skipped. The dependency and the workspace are both optional; when
+	// either is absent the check reports that it could not ask rather
+	// than running git in a directory it does not have. It runs even
+	// when the catalog could not be checked: the report is the point,
+	// and a missing workspace is not a reason to skip the check that
+	// exists to say the workspace is missing.
+	switch {
+	case workspaceErr != nil:
+		add(&result, "workspace", CheckWarning, "Workspace could not be determined; git state was not checked")
+	case deps.GitInspector == nil:
+		add(&result, "workspace", CheckWarning, "No git inspector is configured; git state was not checked")
+	default:
+		state, err := deps.GitInspector.Inspect(ctx, workspace)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, contextFailure(ctxErr)
+		}
+		switch {
+		case err != nil:
+			// The guard runs first, so an error can only come from a
+			// command after it: the work tree was confirmed. This is not
+			// the "not a work tree" case and must not read as one.
+			add(&result, "workspace", CheckWarning, "Workspace is inside a confirmed git work tree, but its git state could not be fully measured; a run there would omit its change manifest and skip its declared-writes check")
+		case state != nil:
+			add(&result, "workspace", CheckOK, "Workspace is inside a confirmed git work tree")
+		default:
+			add(&result, "workspace", CheckWarning, "Workspace is not inside a confirmed git work tree; a run there would omit its change manifest and skip its declared-writes check")
+		}
+	}
+
 	if catalogErr != nil {
 		var readiness *pi.ReadinessError
 		if !errors.As(catalogErr, &readiness) {
 			return result, &failure{kind: FailureInternal}
 		}
 	}
+
 	return result, nil
 }
 

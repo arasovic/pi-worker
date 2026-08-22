@@ -254,38 +254,36 @@ func TestControllerWritesPartialDeclarationSkips(t *testing.T) {
 	}
 }
 
-func TestControllerWritesUnavailableWithoutManifest(t *testing.T) {
-	// A dirty before-state omits the manifest, and a check with no
-	// manifest has nothing to compare against; the caller still gets
-	// the field, carrying the reason.
+func TestControllerWritesVerdictOnDirtyBeforeState(t *testing.T) {
+	// A dirty before-state is measured, so the write check answers: the
+	// untouched dirty path is subtracted from the manifest, nothing was
+	// changed, and the declared path comes back clean — a verdict, not
+	// a manifest-unavailable skip.
 	dir := newGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 	result := runWithWrites(t, newScriptedWorker(), dir, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
-	if result.Changes == nil || result.Changes.Omitted != reasonDirtyBeforeState {
-		t.Fatalf("changes = %#v, want the dirty before-state omission", result.Changes)
+	if result.Changes == nil || result.Changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest on the dirty before-state", result.Changes)
+	}
+	if result.Changes.TotalFiles != 0 {
+		t.Fatalf("changes = %#v, want zero changed paths", result.Changes)
 	}
 	writes := result.Writes
 	if writes == nil {
-		t.Fatalf("writes = nil, want the manifest-unavailable skip reason")
+		t.Fatalf("writes = nil, want a verdict")
 	}
-	if writes.Skipped != reasonManifestUnavailable {
-		t.Fatalf("skipped = %q, want %q", writes.Skipped, reasonManifestUnavailable)
+	if writes.Skipped != "" {
+		t.Fatalf("skipped = %q, want a verdict", writes.Skipped)
 	}
-	if writes.UndeclaredCount != 0 || writes.Undeclared != nil || writes.Truncated {
-		t.Fatalf("writes = %#v, want no fields alongside the skip reason", writes)
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
+		t.Fatalf("writes = %#v, want checked-clean", writes)
 	}
-	// UndeclaredCount carries no omitempty, so the serialized document
-	// still carries its meaningless zero beside the reason; the reason
-	// is the field a caller must read first.
 	document := writeCheckDocument(t, writes)
-	assertExactJSONKeys(t, document, "skipped", "undeclaredCount")
-	if document["skipped"] != reasonManifestUnavailable {
-		t.Fatalf("skipped = %v, want %q", document["skipped"], reasonManifestUnavailable)
-	}
+	assertExactJSONKeys(t, document, "undeclaredCount")
 	if document["undeclaredCount"] != float64(0) {
-		t.Fatalf("undeclaredCount = %v, want meaningless zero", document["undeclaredCount"])
+		t.Fatalf("undeclaredCount = %v, want present 0", document["undeclaredCount"])
 	}
 }
 
@@ -528,7 +526,7 @@ func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T
 	// a manifest that was never measured — the partial-declaration
 	// reason wins: it is the caller's own input, and it is the one they
 	// can act on.
-	check := checkWrites(&Changes{Omitted: reasonDirtyBeforeState}, []WriteDeclaration{declaredPaths("file.txt"), {}})
+	check := checkWrites(&Changes{Omitted: reasonMeasurementFail}, []WriteDeclaration{declaredPaths("file.txt"), {}})
 	if check.Skipped != reasonPartialDeclaration {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonPartialDeclaration)
 	}
@@ -538,10 +536,12 @@ func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T
 }
 
 func TestWriteCheckNilManifestSkips(t *testing.T) {
-	// A nil *Changes is the workspace-outside-a-git-work-tree case; it
-	// reaches the manifest-unavailable half of the guard directly,
-	// which every controller-driven run only does through an Omitted
-	// reason. The skip reason must be the same.
+	// A nil *Changes only reaches the check when the run carried no git
+	// inspector at all, which every controller-driven run with one does
+	// through an Omitted reason instead — including the
+	// work-tree-unconfirmed omission, now that the controller states it
+	// rather than leaving the field absent. The skip reason must be the
+	// same either way.
 	check := checkWrites(nil, []WriteDeclaration{declaredPaths("file.txt")})
 	if check.Skipped != reasonManifestUnavailable {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonManifestUnavailable)

@@ -48,7 +48,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	originalRunVersionProbe := runVersionProbe
-	runVersionProbe = func(context.Context) (string, error) { return "0.84.1", nil }
+	runVersionProbe = func(context.Context) (string, error) { return "0.84.2", nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
 	os.RemoveAll(dir)
@@ -229,10 +229,11 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 // worker-summary lines `want` verbatim and then exactly one
 // change-manifest line and the final outcome line. The manifest line
 // itself depends on the workspace's tree state at test time —
-// "changes: 0 files, +0/-0" on a clean checkout, "changes: omitted:
-// <reason>" on a dirty one — so only its presence and position after
-// the summaries are pinned here; the manifest's own tests pin its
-// content.
+// "changes: 0 files, +0/-0" on a clean checkout, a dirty tree carrying
+// measured counts and the dirty-before clause, "changes: omitted:
+// <reason>" only when measurement could not run — so only its presence
+// and position after the summaries are pinned here; the manifest's own
+// tests pin its content.
 func requireChangesTail(t *testing.T, stdout, want string) {
 	t.Helper()
 	if !strings.HasPrefix(stdout, want) {
@@ -249,9 +250,11 @@ func requireChangesTail(t *testing.T, stdout, want string) {
 // worker-summary lines `want` verbatim, then exactly one change-manifest
 // line and exactly one writes-check line. Both lines depend on the
 // workspace's tree state at test time — "changes: 0 files, +0/-0" and
-// "writes: ok" on a clean checkout, the omitted and skipped forms on a
-// dirty one — so only their presence and position after the summaries
-// are pinned here; the checks' own tests pin their content.
+// "writes: ok" on a clean checkout, a dirty tree carrying measured
+// counts and a writes verdict, the omitted and skipped forms only when
+// measurement could not run — so only their presence and position after
+// the summaries are pinned here; the checks' own tests pin their
+// content.
 func requireWritesTail(t *testing.T, stdout, want string) {
 	t.Helper()
 	if !strings.HasPrefix(stdout, want) {
@@ -901,7 +904,7 @@ func TestRunSuccessJSON(t *testing.T) {
 
 func TestRunVerifiedPiVersionProbesOnceBeforeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "version-probed")
-	logPath := installProcessVersionProbe(t, "0.84.1\n", "", 0)
+	logPath := installProcessVersionProbe(t, "0.84.2\n", "", 0)
 	t.Setenv("PI_WORKER_VERSION_MARKER", marker)
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
 	fake.runHook = func() {
@@ -933,7 +936,7 @@ func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
 	if got := versionProbeCount(t, logPath); got != 1 {
 		t.Fatalf("version probe count = %d, want 1", got)
 	}
-	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is 0.84.1; continuing\n"
+	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is 0.84.2; continuing\n"
 	if stderr != wantWarning || strings.Contains(stderr, "child-secret-must-not-leak") {
 		t.Fatalf("stderr = %q", stderr)
 	}
@@ -1862,6 +1865,40 @@ func TestPrintChangesTrailingCountIsRelativeToTotalFiles(t *testing.T) {
 	want := "changes: 120 files, +6/-0\n  c1.go  +1/-0\n  c2.go  +1/-0\n  c3.go  +1/-0\n  c4.go  +1/-0\n  c5.go  +1/-0\n  and 115 more\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintChangesDirtyBeforeClause(t *testing.T) {
+	// An entry that was already dirty before the run names the fact on
+	// the header line: its counts are measured against the last commit
+	// and include the caller's own uncommitted work, so the summed
+	// +added/-deleted would otherwise read inflated. One entry reads
+	// "1 already modified before the run"; the phrase is not pluralised,
+	// only the number changes.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 2,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1, DirtyBefore: true},
+			{Path: "README.md", Status: "added", Added: 8},
+		},
+	}, &stdout)
+	want := "changes: 2 files, +11/-1 (1 already modified before the run)\n  src/a.go  +3/-1\n  README.md  +8/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+
+	var many bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 2,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1, DirtyBefore: true},
+			{Path: "src/b.go", Status: "modified", Added: 2, DirtyBefore: true},
+		},
+	}, &many)
+	wantMany := "changes: 2 files, +5/-1 (2 already modified before the run)\n  src/a.go  +3/-1\n  src/b.go  +2/-0\n"
+	if got := many.String(); got != wantMany {
+		t.Fatalf("output = %q, want %q", got, wantMany)
 	}
 }
 

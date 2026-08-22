@@ -16,9 +16,7 @@ import (
 // directory with one committed file and makes it the process working
 // directory for the duration of the test, restoring the original on
 // cleanup. The run command reads its workspace from os.Getwd, so a
-// CLI-level test that needs a specific workspace must chdir; the tree
-// must also be clean before the run, or the change manifest is omitted
-// and the write check skips instead of answering.
+// CLI-level test that needs a specific workspace must chdir.
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -128,11 +126,12 @@ func TestRunUndeclaredWriteExitsFourWithViolationOnStderr(t *testing.T) {
 	// drove an actual run whose worker writes an undeclared path and
 	// asserted the process exits 4 with the violation on stderr. The
 	// stray path must appear while the run is in progress, not before
-	// it: a file present before the run makes the tree dirty, the
-	// manifest is then omitted, the check skips, and the test would
-	// silently stop testing what it claims. The fakepi write step leaves
-	// stray.txt in its working directory — the run workspace — during
-	// the prompt RPC, exactly when a real worker's tools would act.
+	// it: a file present before the run is a before-dirty path, the
+	// manifest subtracts the untouched one, the check runs clean, and
+	// the test would silently stop testing what it claims. The fakepi
+	// write step leaves stray.txt in its working directory — the run
+	// workspace — during the prompt RPC, exactly when a real worker's
+	// tools would act.
 	newGitWorkspace(t)
 	installRealFakePiWorker(t)
 	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
@@ -253,13 +252,14 @@ func TestRunUndeclaredWriteJSONCarriesViolation(t *testing.T) {
 	}
 }
 
-func TestRunSkippedWriteCheckPrintsReadableReason(t *testing.T) {
-	// A dirty before-state omits the manifest, so the write check
-	// cannot answer and must skip with a stated reason. grep-worthy as
-	// it is, no run-level test asserted the reason text a caller
+func TestRunDirtyBeforeStatePrintsMeasuredAndChecked(t *testing.T) {
+	// A dirty before-state is measured and checked: the untouched dirty
+	// path subtracts out of the manifest, which prints measured-zero,
+	// and the write check answers with a clean verdict. grep-worthy as
+	// it is, no run-level test asserted the exact lines a caller
 	// actually reads: requireWritesTail only pins the "writes: "
-	// prefix. The stdout must carry the exact reason line, telling the
-	// caller the question could not be answered and why.
+	// prefix. The stdout must carry the measured line and the verdict
+	// line.
 	dir := newGitWorkspace(t)
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
@@ -273,20 +273,20 @@ func TestRunSkippedWriteCheckPrintsReadableReason(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1: done\n" +
-		"changes: omitted: dirty before-state\n" +
-		"writes: skipped: change manifest unavailable\n" +
+		"changes: 0 files, +0/-0\n" +
+		"writes: ok\n" +
 		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }
 
-func TestRunSkippedWriteCheckJSONCarriesCompleted(t *testing.T) {
-	// A skipped write check is deliberately not a violation: the check
-	// could not answer, so the run exits 0 and the document says
-	// completed. This is not a hole — a skip means the question could
-	// not be answered, and answering "violation" would be a lie — and
-	// the test exists so a later reader does not "fix" it.
+func TestRunDirtyBeforeStateJSONCarriesCleanVerdict(t *testing.T) {
+	// The dirty before-state human mode is pinned; the JSON surface is
+	// not. On a dirty tree the manifest is measured, the untouched dirt
+	// subtracts out, and the document must carry the clean verdict — a
+	// present undeclaredCount of zero and no skip reason — not the old
+	// skipped form.
 	dir := newGitWorkspace(t)
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
@@ -305,16 +305,22 @@ func TestRunSkippedWriteCheckJSONCarriesCompleted(t *testing.T) {
 	if !ok {
 		t.Fatalf("writes = %#v, want object", document["writes"])
 	}
-	assertExactJSONKeys(t, writes, "skipped", "undeclaredCount")
+	assertExactJSONKeys(t, writes, "undeclaredCount")
+	if writes["undeclaredCount"] != float64(0) {
+		t.Fatalf("undeclaredCount = %v, want present 0", writes["undeclaredCount"])
+	}
 }
 
-func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
-	// --writes "" on a workspace whose before-state was dirty pairs the
-	// writes-nothing declaration with an unmeasured manifest: the
-	// read-only claim cannot be proven, so the check must skip with the
-	// manifest-unavailable reason and the run must exit 0, not 4. The
-	// caller who declared the empty set is exactly the one most likely
-	// to read a clean verdict as proof their round wrote nothing.
+func TestRunDeclaredEmptyOnDirtyBeforeStateRunsCheck(t *testing.T) {
+	// --writes "" declares the task writes nothing. On a workspace
+	// whose before-state was dirty the manifest is still measured — the
+	// untouched dirt subtracts out to zero changes — so the read-only
+	// claim is actually proven against the manifest and the check
+	// answers with a clean verdict instead of skipping, and the run
+	// exits 0, not 4. The caller who declared the empty set is exactly
+	// the one most likely to read a clean verdict as proof their round
+	// wrote nothing, and on an untouched dirty tree that proof is now
+	// honest.
 	dir := newGitWorkspace(t)
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
@@ -328,10 +334,193 @@ func TestRunDeclaredEmptyOnDirtyBeforeStateSkipsNotExitsFour(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1: done\n" +
-		"changes: omitted: dirty before-state\n" +
-		"writes: skipped: change manifest unavailable\n" +
+		"changes: 0 files, +0/-0\n" +
+		"writes: ok\n" +
 		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRunUndeclaredWriteOnDirtyBeforeStateExitsFour(t *testing.T) {
+	// The case the whole dirty-before feature exists for, proven end to
+	// end: a dirty before-state is measured, not omitted, so a path the
+	// worker writes that no task declared appears in the manifest and
+	// the check reports it undeclared with exit 4. Before this change
+	// the dirty tree omitted the manifest, the check skipped with
+	// "change manifest unavailable", and the run exited 0 despite the
+	// stray write. The pre-existing dirt path stays untouched and
+	// subtracts out of the manifest; the stray write is the one change.
+	dir := newGitWorkspace(t)
+	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirt: %v", err)
+	}
+	installRealFakePiWorker(t)
+	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{WriteFile: "stray.txt"},
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"done"}`)}},
+		},
+	}})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt"}, "")
+	if code != 4 {
+		t.Fatalf("exit = %d, want 4; stdout = %q; stderr = %q", code, stdout, stderr)
+	}
+	// The measured manifest proves the check had something to decide
+	// on: the untouched dirt path is gone and the stray write is the
+	// one changed file, so the run reports undeclared-writes, never a
+	// skip.
+	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
+		"changes: 1 file, +1/-0\n" +
+		"  stray.txt  +1/-0\n" +
+		"outcome=undeclared-writes\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if !strings.Contains(stderr, "pi-worker: write check failed: 1 undeclared path") {
+		t.Fatalf("stderr missing the violation count: %q", stderr)
+	}
+	if !strings.Contains(stderr, "  stray.txt") {
+		t.Fatalf("stderr missing the undeclared path: %q", stderr)
+	}
+}
+
+func TestRunDirtyBeforeEntryPrintsClauseOnChangesLine(t *testing.T) {
+	// A manifest entry whose path was already dirty before the run must
+	// say so on the changes header line: its counts are measured against
+	// the last commit and include the caller's own uncommitted work, so
+	// the summed +added/-deleted would otherwise read inflated. The
+	// fake worker modifies the pre-dirty file.txt further during the
+	// run, so the entry survives subtraction and carries dirtyBefore;
+	// the declared path stays clean and the run exits 0.
+	dir := newGitWorkspace(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	fake.runHook = func() {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+			t.Errorf("write file during run: %v", err)
+		}
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	// The committed file.txt holds "one\n", so the final two lines read
+	// +2/-1 against HEAD, and the clause names the one entry whose
+	// counts include pre-run work.
+	const want = "worker 1: done\n" +
+		"changes: 1 file, +2/-1 (1 already modified before the run)\n" +
+		"  file.txt  +2/-1\n" +
+		"writes: ok\n" +
+		"outcome=completed\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRunCleanBeforeStateChangesLineHasNoClause(t *testing.T) {
+	// A clean before-state stays byte-for-byte what it always was: no
+	// entry is dirty before the run, so the changes header line carries
+	// the count and the sums with no parenthesised clause. This is the
+	// output that must not move, because most runs are not dirty.
+	dir := newGitWorkspace(t)
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	fake.runHook = func() {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+			t.Errorf("write file during run: %v", err)
+		}
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	const want = "worker 1: done\n" +
+		"changes: 1 file, +1/-0\n" +
+		"  file.txt  +1/-0\n" +
+		"outcome=completed\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRunDirtyBeforeJSONCarriesFieldOnlyOnDirtyEntry(t *testing.T) {
+	// The JSON contract of the dirty-before marking, driven through the
+	// real CLI entry point: an entry whose path was dirty before the run
+	// carries dirtyBefore true, an entry whose path was not carries no
+	// dirtyBefore key at all, and schemaVersion stays 1 — the field is
+	// additive and optional, so a decoded document must show both
+	// shapes.
+	dir := newGitWorkspace(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	fake.runHook = func() {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+			t.Errorf("write file during run: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+			t.Errorf("write new file during run: %v", err)
+		}
+	}
+	// Declare both changed paths so the run exits 0 and the document is
+	// the clean shape this test is about; without the declaration the
+	// stray new.txt would turn it into an exit-4 violation document.
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt,new.txt", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	assertExactJSONKeys(t, document, "changes", "outcome", "schemaVersion", "status", "workers", "writes")
+	if document["schemaVersion"] != float64(1) {
+		t.Fatalf("schemaVersion = %v, want 1", document["schemaVersion"])
+	}
+	changes, ok := document["changes"].(map[string]any)
+	if !ok {
+		t.Fatalf("changes = %#v, want object", document["changes"])
+	}
+	assertExactJSONKeys(t, changes, "files", "totalFiles")
+	if changes["totalFiles"] != float64(2) {
+		t.Fatalf("totalFiles = %v, want 2", changes["totalFiles"])
+	}
+	sawDirty, sawClean := false, false
+	for _, raw := range requireJSONArray(t, changes["files"], "changes.files") {
+		entry := raw.(map[string]any)
+		switch entry["path"] {
+		case "file.txt":
+			sawDirty = true
+			assertExactJSONKeys(t, entry, "added", "deleted", "dirtyBefore", "path", "status")
+			if entry["dirtyBefore"] != true {
+				t.Fatalf("file.txt dirtyBefore = %v, want true", entry["dirtyBefore"])
+			}
+		case "new.txt":
+			sawClean = true
+			assertExactJSONKeys(t, entry, "added", "deleted", "path", "status")
+			if _, present := entry["dirtyBefore"]; present {
+				t.Fatalf("new.txt carries dirtyBefore: %v", entry["dirtyBefore"])
+			}
+		}
+	}
+	if !sawDirty || !sawClean {
+		t.Fatalf("changes.files = %v, want one dirty-before entry and one clean entry", changes["files"])
 	}
 }

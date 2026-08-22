@@ -12,19 +12,35 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/doctor"
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 func readyDoctorDependencies() doctor.Dependencies {
 	return doctor.Dependencies{
 		Lookup:  func(string) (string, error) { return "pi", nil },
-		Version: func(context.Context, string) (string, error) { return "0.84.1", nil },
+		Version: func(context.Context, string) (string, error) { return "0.84.2", nil },
 		LoadConfig: func() (config.Config, error) {
 			return config.Config{SchemaVersion: 1, DefaultModel: "acme/model"}, nil
 		},
 		Catalog:   &fakeCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}},
 		Workspace: func() (string, error) { return ".", nil },
+		GitInspector: &doctorInspector{
+			state: &run.GitState{Head: "deadbeef", Branch: "main"},
+		},
 	}
+}
+
+// doctorInspector is a hermetic GitInspector for CLI tests: it returns the
+// configured state without running git, so doctor's human output and JSON
+// stay deterministic.
+type doctorInspector struct {
+	state *run.GitState
+	err   error
+}
+
+func (d *doctorInspector) Inspect(context.Context, string) (*run.GitState, error) {
+	return d.state, d.err
 }
 
 func installDoctorDependencies(t *testing.T, deps doctor.Dependencies) {
@@ -37,7 +53,7 @@ func installDoctorDependencies(t *testing.T, deps doctor.Dependencies) {
 	t.Cleanup(func() { newDoctorDependencies = original })
 }
 
-func TestDoctorHumanOutputKeepsFiveChecksInOrder(t *testing.T) {
+func TestDoctorHumanOutputKeepsSixChecksInOrder(t *testing.T) {
 	// This catches a CLI formatter that hides a check or changes the runner's
 	// contract order, making readiness diagnosis ambiguous.
 	installDoctorDependencies(t, readyDoctorDependencies())
@@ -46,7 +62,7 @@ func TestDoctorHumanOutputKeepsFiveChecksInOrder(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	want := []string{
-		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.1 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "ready: yes",
+		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.2 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "workspace: ok - Workspace is inside a confirmed git work tree", "ready: yes",
 	}
 	for i, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		if i >= len(want) || line != want[i] {
@@ -71,7 +87,7 @@ func TestDoctorJSONIsOneDocumentAndDebugStaysOnStderr(t *testing.T) {
 		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	var result doctor.Result
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result.Checks) != 5 || result.SchemaVersion != 1 {
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil || len(result.Checks) != 6 || result.SchemaVersion != 1 {
 		t.Fatalf("JSON = %q, result = %#v, err = %v", stdout, result, err)
 	}
 }
@@ -172,6 +188,7 @@ func TestDoctorMissingExecutableKeepsReadinessExitWithoutCatalogProcess(t *testi
 		"config: ok - Pi-worker configuration is valid",
 		"model-catalog: failed - Pi model catalog is unavailable",
 		"default-model: failed - Configured default model is unavailable",
+		"workspace: ok - Workspace is inside a confirmed git work tree",
 		"ready: no",
 	}
 	got := strings.Split(strings.TrimSpace(stdout), "\n")
@@ -230,7 +247,7 @@ func TestDoctorRealFakePiUsesOnlyCatalogRequest(t *testing.T) {
 	logPath := os.Getenv("FAKEPI_LOG")
 	deps := readyDoctorDependencies()
 	deps.Lookup = func(string) (string, error) { return fakePiBin, nil }
-	deps.Version = func(context.Context, string) (string, error) { return "0.84.1", nil }
+	deps.Version = func(context.Context, string) (string, error) { return "0.84.2", nil }
 	deps.Catalog = pi.NewCatalog(fakePiBin)
 	deps.Workspace = func() (string, error) { return t.TempDir(), nil }
 	installDoctorDependencies(t, deps)

@@ -34,7 +34,7 @@ level.
 
 You need Node.js 22.20.0 or newer and a [Pi](https://pi.dev/) CLI with
 provider authentication.
-Pi `0.84.1` is verified; other semantic versions run with an explicit warning.
+Pi `0.84.2` is verified; other semantic versions run with an explicit warning.
 
 Install the npm package:
 
@@ -79,8 +79,12 @@ pi-worker config set default-model provider/model
 pi-worker run --thinking high --task "Review this module and explain the main risks"
 ```
 
-Doctor is read-only. Its five checks, in order, are `pi-executable`,
-`pi-version`, `config`, `model-catalog`, and `default-model`.
+Doctor is read-only. Its six checks, in order, are `pi-executable`,
+`pi-version`, `config`, `model-catalog`, `default-model`, and `workspace`.
+A `workspace` warning is advisory and never blocks a run: it means the
+current directory is not inside a confirmed git work tree, so a run there
+cannot prove what it changed — its change manifest states an omission and
+its declared-writes check is skipped.
 
 Thinking is separate from model identity. Accepted values are `off`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, and `max`. An unsupported explicit effort

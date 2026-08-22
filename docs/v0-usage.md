@@ -17,7 +17,7 @@ or raw protocol output.
 ## Prerequisites
 
 - Node.js 22.20.0 or newer and npm.
-- Installed Pi CLI. Version **0.84.1** is the verified compatibility surface;
+- Installed Pi CLI. Version **0.84.2** is the verified compatibility surface;
   other semantic versions remain usable with an explicit warning.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
   - Open Pi interactively and use Pi's own authentication flow.
@@ -130,8 +130,16 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   switches providers or models, reads Pi profile/auth files, invokes a model,
   or submits a prompt.
 - It performs these checks in this exact order: `pi-executable`, `pi-version`,
-  `config`, `model-catalog`, and `default-model`.
-- Pi `0.84.1` is verified and reports `ok`. A different valid semantic version
+  `config`, `model-catalog`, `default-model`, and `workspace`.
+- The `workspace` check is advisory and never makes the environment unready.
+  It asks the same guard a run asks, so `doctor` and `run` cannot disagree
+  about the same directory. A warning means the workspace is not inside a
+  confirmed git work tree (or its git state could not be fully measured): the
+  run still works, but it cannot prove what it changed — its change manifest
+  is omitted with the work-tree-unconfirmed reason and its declared-writes
+  check is skipped. A directory outside a work tree is not a broken
+  environment; it is a reduction in what a run can report.
+- Pi `0.84.2` is verified and reports `ok`. A different valid semantic version
   reports `warning` and leaves the environment ready. Unreadable or malformed
   version output reports `failed`. A missing configuration is a warning;
   warnings leave the environment ready. A failed check makes it not ready.
@@ -306,32 +314,63 @@ Replace the provider/model placeholder with one exact selector printed by
 
 ### Workspace change manifest
 
-- When the current directory is inside a git work tree and the tree was
-  clean before the run, `run` measures which paths the run changed and by
-  how much, diffing against the git state recorded before the first worker
-  started. This is pi-worker's own measurement, not the worker's account of
-  its work. The manifest covers the paths `git` tracks or would track:
+- When the current directory is inside a git work tree, `run` measures
+  which paths the run changed and by how much, diffing against the git
+  state recorded before the first worker started. This is pi-worker's own
+  measurement, not the worker's account of its work. Because the
+  measurement compares the workspace before the run against the workspace
+  after it, it cannot tell the run's writes from anyone else's: a file an
+  editor or a watcher saves while the run is in flight appears as a change
+  the run made, and with `--writes` declared the check reports it
+  undeclared and the run exits `4`. While a run is in flight, keep one run
+  at a time per workspace and leave the workspace alone. The manifest
+  covers the paths `git` tracks or would track:
   ignore rules exclude untracked paths only, so an ignored path is outside
   both the manifest and the write check when it is untracked and a run that
   wrote only such paths reports a clean verdict; a tracked path is measured,
-  and therefore checked, whether or not a rule matches it.
-- Human mode prints one `changes: <n> files, +<a>/-<d>` line on stdout after
-  the worker summaries, followed by up to five paths most churn first. It is
-  information, not a warning, so it carries no `warning:` prefix.
+  and therefore checked, whether or not a rule matches it. Submodules are
+  the other exclusion: every diff that measures paths ignores them, so a
+  dirty submodule is never a changed path and can never be reported as an
+  undeclared write — the manifest measures this workspace's files, and a
+  submodule's contents are another repository's business.
+- Human mode prints one `changes: <n> files, +<a>/-<d>` line (singular
+  `file` at one) on stdout after the worker summaries, followed by up to
+  five paths most churn first. When at least one listed entry was already
+  dirty before the run, the line appends `(N already modified before the
+  run)`: those entries' counts are measured against the last commit rather
+  than against pre-run content, so they include work that was already
+  there. The sums and the clause count the carried entries only, capped
+  at 100, not all `<n>` files; the line is information, not a warning, so
+  it carries no `warning:` prefix.
 - `--json` mode carries a `changes` object. It is not gated by the git
   tripwire: a run that only left modified files behind carries `changes`
   and no `git`.
 - The manifest is measured on every terminal status, including a timed-out
   or cancelled run, under its own thirty-second budget: a run that stopped
   mid-edit is exactly the run whose changes a caller most needs.
-- When the working tree was already dirty before the run, the manifest is
-  omitted with a reason rather than guessed, because the run's changes
-  cannot be separated from the ones already there. An unborn HEAD, a context
-  already done when the inspection ran, and a measurement that failed after
-  the workspace was confirmed to be a git work tree, are omitted with a
-  reason the same way. Only a workspace outside a git work tree, or git
-  missing entirely, reached with a live context when the inspection ran,
-  carries no manifest at all — the same silent no-op the git state makes.
+- A dirty working tree is measured by subtraction, not guessed: paths
+  already dirty when the run started are stamped up front with size,
+  modification time, and the executable bit — the one mode bit git
+  tracks, so a chmod between two non-executable modes does not register
+  as a change — and the ones whose stamp never moved are subtracted —
+  they were equally dirty before the run and name no change it made. One
+  false negative is accepted and deliberate: if the run restores an
+  already-dirty file to its exact pre-run content, the path is absent from
+  the manifest, which is defensible because net change is zero. Dirtiness
+  never depends on the repository's display preference: the status
+  command forces `status.showUntrackedFiles=all`, so a repository that
+  hides untracked files from `git status` still records a tree that is
+  genuinely dirty. An unborn HEAD, a context already done when the
+  inspection ran, a measurement that failed after the workspace was
+  confirmed to be a git work tree, and a work tree that could not be
+  confirmed — the directory is not a git work tree, git is missing
+  entirely, or the guard failed for a transient reason, which the code
+  cannot tell apart and the reason does not claim to — are all omitted
+  with a stated reason, and human mode prints `changes: omitted:
+  <reason>` for them. The manifest never vanishes from a real run: the
+  CLI always configures the git inspector, so a workspace outside a git
+  work tree reads `changes: omitted: work tree not confirmed` rather
+  than nothing.
 
 ### Exactly one input mechanism
 
@@ -363,8 +402,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   `--task-file`) intends to write; whitespace around each comma-separated
   path is ignored, and each value is cleaned where it is compared, so
   `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
-  `..` all name `src/a`. It may appear at most once per task and must
-  follow the task it applies to. An empty value, `--writes ""`, declares
+  `..` all name `src/a`. An absolute path is rejected before any worker
+  starts, and the rejection names the remedy — declare paths relative
+  to the workspace. It may appear at most once per task and must follow
+  the task it applies to. An empty value, `--writes ""`, declares
   that the task writes nothing; whitespace-only is the same declaration
   because the flag already trims. The empty string is the one spelling
   that cannot collide with a real path. A task that declared the empty
@@ -372,11 +413,14 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   declaration included — and the change manifest was measured, the
   post-run check runs, so a read-only round can be proven to have
   written nothing rather than merely asserted to. Only a measured
-  manifest makes that proof: on a dirty before-state, an unborn HEAD, a
-  dead context, or a failed measurement the check skips with `change
-  manifest unavailable` and the run exits `0`, whatever was declared.
-  Such a run that changed nothing reports a clean verdict; one that
-  changed a path reports it undeclared and exits `4`.
+  manifest makes that proof: on an unborn HEAD, a dead context, a
+  failed measurement, an unconfirmed work tree, or a manifest omitted
+  for any of those reasons,
+  the check skips with `change manifest unavailable` and the run exits
+  `0`, whatever was declared. A dirty before-state is measured rather
+  than skipped, so there the check runs. A checked run that changed
+  nothing reports a clean verdict; one that changed a path reports it
+  undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per
@@ -552,7 +596,7 @@ cat prompt.txt | pi-worker run --model provider/model-id
 
 ## Compatibility note
 
-v0 is verified against Pi **0.84.1**. Other semantic versions are explicitly
+v0 is verified against Pi **0.84.2**. Other semantic versions are explicitly
 reported as unverified while the runtime continues through its fail-closed RPC
 validation. Re-probe before expanding the verified compatibility surface:
 

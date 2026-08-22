@@ -8,6 +8,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/piversion"
+	"github.com/arasovic/pi-worker/internal/run"
 )
 
 func DefaultDependencies(debug *pi.DebugSink) Dependencies {
@@ -17,6 +18,7 @@ func DefaultDependencies(debug *pi.DebugSink) Dependencies {
 		LoadConfig:     loadUserConfig,
 		CatalogFactory: pi.NewCatalog,
 		Workspace:      os.Getwd,
+		GitInspector:   run.NewDefaultGitInspector(),
 		Debug:          debug,
 	}
 }
