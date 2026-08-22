@@ -120,8 +120,9 @@ order differs.
 `outcome` is a new required field, and the run document is safe on
 both versioning skews — it never persists and its readers ignore
 unknown fields — so `schemaVersion` stays `1`. Within an emitted
-run document, root `outcome` is always present: unlike `changes`,
-`writes`, and `git`, it has no absent form, so it is never read by
+run document, root `outcome` is always present, as is `changes` (the
+CLI always configures the git inspector): unlike `writes` and `git`,
+the two have no absent form, so they are never read by
 presence. Its value is the same decision as the exit code, in words,
 from one place in the code:
 
@@ -199,19 +200,19 @@ Entries are compared by identity, so a `stash@{N}` index shift is not
 a change.
 
 The change manifest is additive and optional, so `schemaVersion` stays `1`.
-Root `changes` is present when the workspace is inside a git work tree and the
-inspection of it succeeded. Only a workspace outside a git work tree, and an
-environment with no `git` at all, reached with a live context at the
-inspection, still carry no `changes` field — the same silent no-op `git`
-makes; a dead context never reaches the guard, so the same directory carries
-the `context already done` omission instead. Unlike `git` it is not gated by a
-state change: a run that only left modified files behind still carries it,
-because those files are what it names. It carries either a reason it could
-not be measured or the measurement, never both:
+Root `changes` never vanishes from real output: the CLI always configures
+the git inspector, and with one configured the field always carries a
+value. Only a
+controller built without the git inspector omits the field entirely. Unlike
+`git` it is not gated by a state change: a run that only left modified
+files behind still carries it, because those files are what it names. It
+carries either a reason it could not be measured or the measurement, never
+both:
 
 - `omitted`: present only when the manifest could not be measured; one of
-  `unborn head`, `context already done`, or `measurement failed`. `files`,
-  `totalFiles`, and `truncated` carry no meaning when it is present
+  `unborn head`, `context already done`, `measurement failed`, or
+  `work tree not confirmed`. `files`, `totalFiles`, and `truncated` carry
+  no meaning when it is present
 - `totalFiles`: always present; the true number of changed paths, before the
   entry cap. A measured run that changed nothing carries `0` rather than
   omitting the field
@@ -231,6 +232,14 @@ Each entry in `files` carries:
   commit rather than against the pre-run content, so they include work
   that was already there and the run's share cannot be separated out
 
+`work tree not confirmed` is the reason the inspector could not confirm a
+work tree: the directory is not a git work tree, git is missing entirely,
+or the guard failed for a transient reason. The code cannot tell the three
+apart, so the reason names only what is known and claims none of them — it
+does not say which cause it is, because the code does not know. It is
+distinct from `measurement failed`, which covers the other failure position:
+a guard that passed and a later command that failed.
+
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
 it changed. Because the measurement compares the workspace before the run
@@ -240,12 +249,14 @@ flight appears as a change the run made, and with `--writes` declared the
 check reports it undeclared and the run exits `4`. While a run is in
 flight, keep one run at a time per workspace and leave the workspace
 alone. Paths already dirty when the run started are stamped up front
-with size and modification time, and the ones whose stamp never moved are
-subtracted from the result: they were equally dirty before the run and name
-no change it made. That subtraction accepts one false negative, and it is
-deliberate rather than an oversight: if the run restores an already-dirty
-file to its exact pre-run content, the path is absent from the manifest,
-which is defensible because net change is zero.
+with size, modification time, and the executable bit — the one mode bit
+git tracks, so a chmod between two non-executable modes does not register
+as a change — and the ones whose stamp never moved are subtracted from the
+result: they were equally dirty before the run and name no change it made.
+That subtraction accepts one false negative, and it is deliberate rather
+than an oversight: if the run restores an already-dirty file to its exact
+pre-run content, the path is absent from the manifest, which is defensible
+because net change is zero.
 
 The manifest covers the paths `git` tracks or would track. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
@@ -253,6 +264,10 @@ and the write check when it is untracked — it cannot appear in `files`, it
 does not count toward `totalFiles` or `undeclaredCount`, and a run that
 wrote only ignored untracked paths reports a clean write verdict. A tracked
 path is measured, and therefore checked, whether or not a rule matches it.
+Submodules are the other exclusion: every path-computing diff ignores them,
+so a dirty submodule is never a changed path and can never be reported as
+an undeclared write — the manifest measures this workspace's files, and a
+submodule's contents are another repository's business.
 
 The write check is additive and optional, so `schemaVersion` stays `1`.
 Root `writes` is present exactly when the request carried a write
@@ -269,10 +284,11 @@ or the verdict, never both:
 - `skipped`: present only when the check could not run; a short reason,
   `not all tasks declared writes` — some task said nothing at all, the
   only state that triggers it, since a task that declared an empty set
-  has declared — or `change manifest unavailable`, reached by the three
+  has declared — or `change manifest unavailable`, reached by the four
   manifest omissions above and by an absent manifest, which carries no
-  `omitted` field to consult: a dirty before-state is measured now, so
-  it never triggers the skip. `undeclaredCount`, `undeclared`, and
+  `omitted` field to consult (the run had no git inspector): a dirty
+  before-state is measured now, so it never triggers the skip.
+  `undeclaredCount`, `undeclared`, and
   `truncated` carry no meaning when it is present
 - `undeclaredCount`: always present on a verdict; the true number of
   changed paths no task declared, before the entry cap. A checked run that

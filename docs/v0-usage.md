@@ -320,7 +320,11 @@ Replace the provider/model placeholder with one exact selector printed by
   ignore rules exclude untracked paths only, so an ignored path is outside
   both the manifest and the write check when it is untracked and a run that
   wrote only such paths reports a clean verdict; a tracked path is measured,
-  and therefore checked, whether or not a rule matches it.
+  and therefore checked, whether or not a rule matches it. Submodules are
+  the other exclusion: every diff that measures paths ignores them, so a
+  dirty submodule is never a changed path and can never be reported as an
+  undeclared write — the manifest measures this workspace's files, and a
+  submodule's contents are another repository's business.
 - Human mode prints one `changes: <n> files, +<a>/-<d>` line (singular
   `file` at one) on stdout after the worker summaries, followed by up to
   five paths most churn first. When at least one listed entry was already
@@ -337,18 +341,28 @@ Replace the provider/model placeholder with one exact selector printed by
   or cancelled run, under its own thirty-second budget: a run that stopped
   mid-edit is exactly the run whose changes a caller most needs.
 - A dirty working tree is measured by subtraction, not guessed: paths
-  already dirty when the run started are stamped up front with size and
-  modification time, and the ones whose stamp never moved are subtracted —
+  already dirty when the run started are stamped up front with size,
+  modification time, and the executable bit — the one mode bit git
+  tracks, so a chmod between two non-executable modes does not register
+  as a change — and the ones whose stamp never moved are subtracted —
   they were equally dirty before the run and name no change it made. One
   false negative is accepted and deliberate: if the run restores an
   already-dirty file to its exact pre-run content, the path is absent from
-  the manifest, which is defensible because net change is zero. An unborn
-  HEAD, a context already done when the inspection ran, and a measurement
-  that failed after the workspace was confirmed to be a git work tree, are
-  omitted with a reason the same way. Only a workspace outside a git work
-  tree, or git missing entirely, reached with a live context when the
-  inspection ran, carries no manifest at all — the same silent no-op the
-  git state makes.
+  the manifest, which is defensible because net change is zero. Dirtiness
+  never depends on the repository's display preference: the status
+  command forces `status.showUntrackedFiles=all`, so a repository that
+  hides untracked files from `git status` still records a tree that is
+  genuinely dirty. An unborn HEAD, a context already done when the
+  inspection ran, a measurement that failed after the workspace was
+  confirmed to be a git work tree, and a work tree that could not be
+  confirmed — the directory is not a git work tree, git is missing
+  entirely, or the guard failed for a transient reason, which the code
+  cannot tell apart and the reason does not claim to — are all omitted
+  with a stated reason, and human mode prints `changes: omitted:
+  <reason>` for them. The manifest never vanishes from a real run: the
+  CLI always configures the git inspector, so a workspace outside a git
+  work tree reads `changes: omitted: work tree not confirmed` rather
+  than nothing.
 
 ### Exactly one input mechanism
 
@@ -392,7 +406,8 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   post-run check runs, so a read-only round can be proven to have
   written nothing rather than merely asserted to. Only a measured
   manifest makes that proof: on an unborn HEAD, a dead context, a
-  failed measurement, or a workspace that carries no manifest at all,
+  failed measurement, an unconfirmed work tree, or a manifest omitted
+  for any of those reasons,
   the check skips with `change manifest unavailable` and the run exits
   `0`, whatever was declared. A dirty before-state is measured rather
   than skipped, so there the check runs. A checked run that changed

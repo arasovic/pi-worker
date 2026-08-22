@@ -281,6 +281,112 @@ func TestControllerChangesDirtyBeforeStateUntrackedUntouchedAbsent(t *testing.T)
 	}
 }
 
+func TestControllerChangesDirtySubmoduleUntouchedAbsent(t *testing.T) {
+	// A submodule's contents are another repository's business: a
+	// submodule already dirty before the run that the run never touched
+	// must be absent from the manifest, on a run that changed nothing.
+	// The assertion is on the manifest's contents — an untouched
+	// submodule must not appear as a changed path at all, not merely
+	// that some count changed. Before the fix the measurement diff and
+	// the dirty snapshot listed the submodule, and the write check then
+	// named it an undeclared write.
+	dir := newGitRepo(t)
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	isolateGitConfig(t)
+	runGit(t, sub, "init", "-q")
+	runGit(t, sub, "config", "user.email", "test@pi-worker")
+	runGit(t, sub, "config", "user.name", "pi-worker test")
+	if err := os.WriteFile(filepath.Join(sub, "subfile.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write subfile: %v", err)
+	}
+	runGit(t, sub, "add", "subfile.txt")
+	runGit(t, sub, "commit", "-q", "-m", "sub init")
+	subHead := strings.TrimSpace(runGit(t, sub, "rev-parse", "HEAD"))
+	// Register the submodule as a gitlink in the superproject with
+	// plumbing only — git submodule add would need the file protocol
+	// tweak — then commit the gitlink and dirty the submodule's work
+	// tree, which makes the superproject report ` M sub`.
+	runGit(t, dir, "update-index", "--add", "--cacheinfo", "160000,"+subHead+",sub")
+	runGit(t, dir, "commit", "-q", "-m", "add submodule")
+	if err := os.WriteFile(filepath.Join(sub, "subfile.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty subfile: %v", err)
+	}
+	if out := runGit(t, dir, "status", "--porcelain"); !strings.Contains(out, " M sub") {
+		t.Fatalf("test setup: superproject status = %q, want the dirty submodule reported", out)
+	}
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	for _, file := range changes.Files {
+		if file.Path == "sub" {
+			t.Fatalf("manifest lists the untouched dirty submodule: %#v", changes.Files)
+		}
+	}
+	if changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the untouched dirty submodule absent entirely", changes)
+	}
+}
+
+func TestControllerChangesUntrackedVisibleDespiteShowUntrackedFilesNo(t *testing.T) {
+	// Dirtiness must not depend on the repository's display preference:
+	// git status --porcelain with status.showUntrackedFiles=no hides
+	// untracked files, so the before-state would be recorded as clean
+	// while an untracked file sits in the tree, and the run would then
+	// be attributed that file. The inspection forces the setting, so
+	// the before-state is dirty, the file is stamped, and the untouched
+	// path is subtracted from the manifest.
+	dir := newGitRepo(t)
+	runGit(t, dir, "config", "status.showUntrackedFiles", "no")
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	// Prove the setting actually hides the file from the display:
+	// without this the test would pass vacuously.
+	if out := runGit(t, dir, "status", "--porcelain"); out != "" {
+		t.Fatalf("test setup: status --porcelain = %q, want empty with the hiding setting", out)
+	}
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the untouched untracked path absent", changes)
+	}
+}
+
+func TestControllerChangesChmodPlusXOnDirtyFileReported(t *testing.T) {
+	// chmod +x changes neither size nor modification time, so a stamp of
+	// size plus mtime alone would match and the run's change would
+	// disappear from the manifest. The stamp records the executable bit
+	// — the one mode bit git tracks — so a chmod that makes a file
+	// executable registers while a chmod between two non-executable
+	// modes does not.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.Chmod(filepath.Join(dir, "file.txt"), 0o755)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the chmodded file in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 1 || file.Deleted != 1 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +1/-1 with dirtyBefore", file)
+	}
+}
+
 func TestControllerChangesDirtyBeforeStateDeletedStillDeletedAbsent(t *testing.T) {
 	// A path deleted before the run and still deleted carries an absent
 	// stamp before and after, so it is subtracted: the deletion belongs
@@ -632,26 +738,49 @@ func TestControllerChangesUntrackedBeyondCapDroppedUnmeasured(t *testing.T) {
 	}
 }
 
-func TestControllerChangesNotInsideGitWorkTreeStaysNil(t *testing.T) {
+func TestControllerChangesWorkTreeNotConfirmedOmitted(t *testing.T) {
+	// A workspace whose work tree cannot be confirmed — the directory is
+	// not a git work tree, git is missing entirely, or the guard failed
+	// for a transient reason — must omit with a stated reason, never
+	// with an absent field: a consumer cannot tell a run that changed
+	// nothing from a run that could not be measured, and the reason must
+	// not claim to know which of the three causes it is because the code
+	// does not know. This is distinct from reasonMeasurementFail, which
+	// covers a guard that passed and a later command that failed.
 	dir := t.TempDir()
 	result := runWithChanges(t, newScriptedWorker(), dir)
-	if result.Changes != nil {
-		t.Fatalf("changes = %#v, want nil outside a git work tree", result.Changes)
+	changes := result.Changes
+	if changes == nil {
+		t.Fatalf("changes = nil, want an omitted manifest when the work tree cannot be confirmed")
+	}
+	if changes.Omitted != reasonWorkTreeUnconfirmed {
+		t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonWorkTreeUnconfirmed)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
 	}
 }
 
 func TestControllerDeadContextOmissionDistinctFromNonGitWorkspace(t *testing.T) {
 	// A context already done when the before-state inspection ran must
-	// omit with a stated reason, while a live context in the same
-	// non-work-tree workspace stays the one silent nil case. The two
-	// must stay distinguishable: absence is never readable as a
-	// measured result, and a genuine non-work-tree absence is never
-	// mislabeled as this omission.
+	// omit with the context-already-done reason, while a live context in
+	// the same non-work-tree workspace must omit with the
+	// work-tree-unconfirmed reason. The two must stay distinguishable:
+	// absence is never readable as a measured result, and the
+	// work-tree-unconfirmed omission is never mislabeled as the
+	// context one.
 	dir := t.TempDir()
 	t.Run("live context", func(t *testing.T) {
 		result := runWithChanges(t, newScriptedWorker(), dir)
-		if result.Changes != nil {
-			t.Fatalf("changes = %#v, want nil outside a git work tree", result.Changes)
+		changes := result.Changes
+		if changes == nil {
+			t.Fatalf("changes = nil, want the work-tree-unconfirmed omission outside a git work tree")
+		}
+		if changes.Omitted != reasonWorkTreeUnconfirmed {
+			t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonWorkTreeUnconfirmed)
+		}
+		if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+			t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
 		}
 	})
 	t.Run("dead context", func(t *testing.T) {

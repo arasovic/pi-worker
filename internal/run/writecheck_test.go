@@ -536,10 +536,12 @@ func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T
 }
 
 func TestWriteCheckNilManifestSkips(t *testing.T) {
-	// A nil *Changes is the workspace-outside-a-git-work-tree case; it
-	// reaches the manifest-unavailable half of the guard directly,
-	// which every controller-driven run only does through an Omitted
-	// reason. The skip reason must be the same.
+	// A nil *Changes only reaches the check when the run carried no git
+	// inspector at all, which every controller-driven run with one does
+	// through an Omitted reason instead — including the
+	// work-tree-unconfirmed omission, now that the controller states it
+	// rather than leaving the field absent. The skip reason must be the
+	// same either way.
 	check := checkWrites(nil, []WriteDeclaration{declaredPaths("file.txt")})
 	if check.Skipped != reasonManifestUnavailable {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonManifestUnavailable)

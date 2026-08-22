@@ -126,11 +126,12 @@ func TestRunUndeclaredWriteExitsFourWithViolationOnStderr(t *testing.T) {
 	// drove an actual run whose worker writes an undeclared path and
 	// asserted the process exits 4 with the violation on stderr. The
 	// stray path must appear while the run is in progress, not before
-	// it: a file present before the run makes the tree dirty, the
-	// manifest is then omitted, the check skips, and the test would
-	// silently stop testing what it claims. The fakepi write step leaves
-	// stray.txt in its working directory — the run workspace — during
-	// the prompt RPC, exactly when a real worker's tools would act.
+	// it: a file present before the run is a before-dirty path, the
+	// manifest subtracts the untouched one, the check runs clean, and
+	// the test would silently stop testing what it claims. The fakepi
+	// write step leaves stray.txt in its working directory — the run
+	// workspace — during the prompt RPC, exactly when a real worker's
+	// tools would act.
 	newGitWorkspace(t)
 	installRealFakePiWorker(t)
 	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{

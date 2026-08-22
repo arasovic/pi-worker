@@ -78,12 +78,13 @@ type Result struct {
 	Git *GitChange `json:"git,omitempty"`
 	// Changes is the manifest of workspace paths the run changed and by
 	// how much, measured by pi-worker against the before-state HEAD
-	// rather than reported by the worker; nil when the workspace is not
-	// inside a git work tree. Unlike Git it is not gated by the git
-	// tripwire: leaving modified files behind is the point of a
-	// delegation, and those files are exactly what the manifest names.
-	// A measurement failure is reported through Omitted, never by
-	// leaving the field nil.
+	// rather than reported by the worker; nil only when no git inspector
+	// was configured, because with one the field always carries either
+	// the measurement or a stated omission reason. Unlike Git it is not
+	// gated by the git tripwire: leaving modified files behind is the
+	// point of a delegation, and those files are exactly what the
+	// manifest names. A measurement failure is reported through Omitted,
+	// never by leaving the field nil.
 	Changes *Changes `json:"changes,omitempty"`
 	// Writes is the post-hoc comparison of the paths the run changed
 	// against the paths its tasks declared they would write. It is
@@ -151,18 +152,17 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// The before state is recorded after validation and before the first
 	// worker starts. Git state reporting is diagnostic, not a gate: a
 	// non-git workspace or an inspection error leaves Git nil without
-	// failing the run. The inspection error is kept separately because
-	// the change manifest treats it differently: a guard failure is
-	// indistinguishable from a workspace outside a git work tree and is
-	// the same silent no-op Git makes, arriving here as before == nil
-	// with beforeErr == nil — git missing included. A context already
-	// done when the inspection ran is the one exception: the run never
-	// got far enough to look, so that case is a stated omission, not an
-	// absent field. Only a failure after the guard, from git status
-	// --porcelain, git stash list, or rev-parse --abbrev-ref HEAD
-	// outside the unborn-HEAD case, is a post-guard inspection failure
-	// that reaches reasonMeasurementFail and must be reported rather
-	// than silently dropped.
+	// failing the run. The change manifest treats the inspection result
+	// differently and states a reason for every outcome it cannot
+	// measure. A context already done when the inspection ran is one
+	// stated omission: the run never got far enough to look. A failed
+	// inspection after the guard — a failure of git status --porcelain,
+	// git stash list, or rev-parse --abbrev-ref HEAD outside the
+	// unborn-HEAD case — is the measurement-failed reason. And a guard
+	// that never confirmed a work tree — which is indistinguishable
+	// from a directory outside one and from git missing entirely — is
+	// its own stated omission naming only what is known, never which of
+	// the three causes it is.
 	var before *GitState
 	var beforeErr error
 	// The context state is captured here, at the inspection site, where
@@ -253,6 +253,17 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			// nothing was measured and nothing failed, and an absent field
 			// would read as a measured result. Omit with the stated reason.
 			result.Changes = &Changes{Omitted: reasonContextDone}
+		default:
+			// The inspector was configured and ran with a live context but
+			// neither returned a state nor failed: the work tree could not
+			// be confirmed. A directory outside a git work tree, git
+			// missing entirely, and a transient guard failure all arrive
+			// here collapsed into one result, which is the point of the
+			// reason: it states only what is known and never claims which
+			// of the three it is. An absent field would make a consumer
+			// unable to tell a run that changed nothing from a run that
+			// could not be measured.
+			result.Changes = &Changes{Omitted: reasonWorkTreeUnconfirmed}
 		}
 	}
 	// The write check runs after the change manifest, on every terminal

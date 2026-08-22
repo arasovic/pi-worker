@@ -36,11 +36,15 @@ empty output as any kind of success. Report each worker's model, effective
 true, surface its warning: the selected model continued with Pi's confirmed
 default effort. Read root `outcome`: `completed` is the only done state — a
 `writes.skipped` value means a check could not run, unproven, not clean.
-When `writes.skipped` is `change manifest unavailable`, read
-`changes.omitted` when it is present — `unborn head`, for example — and
-that reason decides the caller's next move. An absent `changes` means
-the workspace is not a git work tree (or git is missing), so the check
-could not be answered and retrying changes nothing.
+When `writes.skipped` is `change manifest unavailable`, the manifest was
+not measured: read `changes.omitted`, which is always present on a real
+run — the CLI always configures the git inspector, so `changes` never
+vanishes from output. The reason decides the caller's next move:
+`unborn head`, `context already done`, `measurement failed`, or `work
+tree not confirmed` — the last meaning the workspace is not a git work
+tree, git is missing, or the guard failed transiently, which the reason
+does not claim to distinguish. Either way the check could not be
+answered and retrying changes nothing.
 `verification-failed` means the `verification` object is there; report it, fix
 the workspace, and re-run. Any other word means report it with its object when
 one exists (`writes`, `verification`, or the worker's `failure`) and stop.

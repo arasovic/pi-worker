@@ -39,7 +39,13 @@ type GitChange struct {
 
 // GitInspector reads the git state of a workspace directory.
 type GitInspector interface {
-	// Inspect returns nil, nil when dir is not inside a git work tree.
+	// Inspect returns nil, nil when the work tree could not be
+	// confirmed: dir is not inside a git work tree, git is missing
+	// entirely, or the guard failed for a transient reason. The three
+	// collapse into one result on purpose — the caller cannot tell
+	// them apart — and the change manifest reports a single stated
+	// omission reason for all of them instead of treating the field as
+	// absent.
 	Inspect(ctx context.Context, dir string) (*GitState, error)
 }
 
@@ -53,20 +59,26 @@ func NewDefaultGitInspector() GitInspector {
 }
 
 // Inspect collects the git state of dir at one instant. The guard runs
-// first: when dir is not inside a git work tree, so the guard command
-// fails or prints anything other than "true", Inspect returns nil, nil
-// and a caller treats the workspace as a silent no-op. After the guard,
-// HEAD comes from rev-parse HEAD and is left empty when that fails —
-// the unborn-branch case, which is not an error. The branch is
-// rev-parse --abbrev-ref HEAD trimmed, with the literal "HEAD" meaning
-// detached and left empty; an unborn branch makes that command fail
-// after printing the same literal "HEAD", which is the same
-// unborn-HEAD case and equally not an error. Dirty is true when git
-// status --porcelain prints anything, and the stash list comes from
-// git stash list --format=%H %gs, one "<sha> <subject>" identity per
-// non-empty line in git's order (newest first); Stashes is the number
-// of entries. A failure of any command after the guard other than the
-// unborn-HEAD case is returned as an error.
+// first: when the work tree cannot be confirmed — the guard command
+// fails (dir is not inside a git work tree, git is missing, or the
+// failure was transient) or prints anything other than "true" —
+// Inspect returns nil, nil and the caller decides what a stated
+// omission means, never treating the manifest as silently absent.
+// After the guard, HEAD comes from rev-parse HEAD and is left empty
+// when that fails — the unborn-branch case, which is not an error. The
+// branch is rev-parse --abbrev-ref HEAD trimmed, with the literal
+// "HEAD" meaning detached and left empty; an unborn branch makes that
+// command fail after printing the same literal "HEAD", which is the
+// same unborn-HEAD case and equally not an error. Dirty is true when
+// git status --porcelain prints anything; the status command forces
+// status.showUntrackedFiles=all so a repository configured to hide
+// untracked files from that display still reports a tree that is
+// genuinely dirty — dirtiness must not depend on the user's display
+// preference. The stash list comes from git stash list --format=%H %gs,
+// one "<sha> <subject>" identity per non-empty line in git's order
+// (newest first); Stashes is the number of entries. A failure of any
+// command after the guard other than the unborn-HEAD case is returned
+// as an error.
 func (i *DefaultGitInspector) Inspect(ctx context.Context, dir string) (*GitState, error) {
 	inside, err := gitOutput(ctx, dir, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(inside) != "true" {
@@ -87,7 +99,7 @@ func (i *DefaultGitInspector) Inspect(ctx context.Context, dir string) (*GitStat
 	} else if trimmed := strings.TrimSpace(branch); trimmed != "HEAD" {
 		state.Branch = trimmed
 	}
-	porcelain, err := gitOutput(ctx, dir, "status", "--porcelain")
+	porcelain, err := gitOutput(ctx, dir, "-c", "status.showUntrackedFiles=all", "status", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("git status: %w", err)
 	}
