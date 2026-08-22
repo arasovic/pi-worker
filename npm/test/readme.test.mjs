@@ -81,14 +81,15 @@ test("README is the concise public entry point with the approved contract", () =
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
   }
 
-  for (const check of ["pi-executable", "pi-version", "config", "model-catalog", "default-model"]) {
+  for (const check of ["pi-executable", "pi-version", "config", "model-catalog", "default-model", "workspace"]) {
     assert.ok(readme.includes(`\`${check}\``), `README includes doctor check: ${check}`);
   }
-  const doctorChecks = readme.slice(readme.indexOf("Its five checks"));
+  const doctorChecks = readme.slice(readme.indexOf("Its six checks"));
   assert.ok(doctorChecks.indexOf("pi-executable") < doctorChecks.indexOf("pi-version"));
   assert.ok(doctorChecks.indexOf("pi-version") < doctorChecks.indexOf("config"));
   assert.ok(doctorChecks.indexOf("config") < doctorChecks.indexOf("model-catalog"));
   assert.ok(doctorChecks.indexOf("model-catalog") < doctorChecks.indexOf("default-model"));
+  assert.ok(doctorChecks.indexOf("default-model") < doctorChecks.indexOf("workspace"));
 
   for (const safetyStatement of [
     "current writable workspace",

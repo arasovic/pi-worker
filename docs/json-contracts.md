@@ -57,9 +57,11 @@ Required fields:
 - root: `schemaVersion`, `ready`, `checks`
 - check: `name`, `status`, `message`
 
-`ready` is a boolean. Check `status` is `ok`, `warning`, or `failed`. The five
+`ready` is a boolean. Check `status` is `ok`, `warning`, or `failed`. The six
 check names and their order are `pi-executable`, `pi-version`, `config`,
-`model-catalog`, and `default-model`.
+`model-catalog`, `default-model`, and `workspace`. The `workspace` check is
+advisory: it reports `ok` or `warning`, never `failed`, and a warning never
+makes `ready` false.
 
 A completed inspection emits the document even when readiness exit code 3 is
 returned. A timed-out, cancelled, or internally aborted inspection emits no

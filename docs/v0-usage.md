@@ -130,7 +130,15 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   switches providers or models, reads Pi profile/auth files, invokes a model,
   or submits a prompt.
 - It performs these checks in this exact order: `pi-executable`, `pi-version`,
-  `config`, `model-catalog`, and `default-model`.
+  `config`, `model-catalog`, `default-model`, and `workspace`.
+- The `workspace` check is advisory and never makes the environment unready.
+  It asks the same guard a run asks, so `doctor` and `run` cannot disagree
+  about the same directory. A warning means the workspace is not inside a
+  confirmed git work tree (or its git state could not be fully measured): the
+  run still works, but it cannot prove what it changed — its change manifest
+  is omitted with the work-tree-unconfirmed reason and its declared-writes
+  check is skipped. A directory outside a work tree is not a broken
+  environment; it is a reduction in what a run can report.
 - Pi `0.84.1` is verified and reports `ok`. A different valid semantic version
   reports `warning` and leaves the environment ready. Unreadable or malformed
   version output reports `failed`. A missing configuration is a warning;
