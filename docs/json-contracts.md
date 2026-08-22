@@ -202,6 +202,14 @@ Entries are compared by identity, so a `stash@{N}` index shift is not
 a change.
 
 The change manifest is additive and optional, so `schemaVersion` stays `1`.
+The `omitted` enum is not byte-identical to 0.3.1's: `dirty before-state`
+retired — 0.4.0 measures a dirty tree instead of omitting it — and `work
+tree not confirmed` arrived. The retirement takes away no guarantee: no
+field was removed, no type changed, and no value a 0.4.0 document still
+emits means anything different than it did — a consumer branching on the
+retired reason finds that branch unreachable, not misread — while a bump
+to `2` would make every 0.3.1 consumer reject all output, a total break
+to signal a change that is not one.
 Root `changes` never vanishes from real output: the CLI always configures
 the git inspector, and with one configured the field always carries a
 value. Only a
@@ -256,9 +264,13 @@ git tracks, so a chmod between two non-executable modes does not register
 as a change — and the ones whose stamp never moved are subtracted from the
 result: they were equally dirty before the run and name no change it made.
 That subtraction accepts one false negative, and it is deliberate rather
-than an oversight: if the run restores an already-dirty file to its exact
-pre-run content, the path is absent from the manifest, which is defensible
-because net change is zero.
+than an oversight: on a coarse-granularity filesystem — FAT, exFAT, some
+NFS mounts, older ext3 — a restore that lands within the same tick as
+the pre-run stamp leaves size and modification time unchanged, so the
+path is absent from the manifest even though the run wrote it, which is
+defensible because net change is zero. On the sub-second-resolution
+filesystems that are the normal case, the write moves the modification
+time, the stamp does not match, and the path stays.
 
 The manifest covers the paths `git` tracks or would track. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
