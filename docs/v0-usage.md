@@ -36,7 +36,7 @@ npm install -g --foreground-scripts pi-worker
 The binary alone can be installed from the public Go module:
 
 ```sh
-go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.3.1
+go install github.com/arasovic/pi-worker/cmd/pi-worker@v0.4.0
 ```
 
 The binary lands in `go env GOBIN`, or in `$(go env GOPATH)/bin` when GOBIN
