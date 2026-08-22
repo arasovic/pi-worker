@@ -166,6 +166,75 @@ func TestWorkerScopeHeartbeatLifecycle(t *testing.T) {
 	}
 }
 
+// TestWorkerScopeHeartbeatEarlyTickStaysSilentAndKeepsSchedule pins the
+// heartbeat loop's early-return branch with both behaviours that branch
+// owns: a tick that arrives while the last visible line is still inside one
+// full interval must not report phase=waiting-for-pi (a heartbeat must
+// never claim silence that has not happened yet), and it must re-arm the
+// timer for the remaining silence rather than for a fresh full interval, so
+// the heartbeat still lands on its original schedule instead of being
+// pushed a whole interval into the future. Deleting the branch makes every
+// tick report immediately and re-arm with a full interval, failing both
+// assertions.
+func TestWorkerScopeHeartbeatEarlyTickStaysSilentAndKeepsSchedule(t *testing.T) {
+	clock := &fakeClock{t: time.Unix(0, 0)}
+	var buf bytes.Buffer
+	sink := newDebugSinkWithClock(&buf, clock.t, clock.now)
+	timer := &deterministicHeartbeatTimer{
+		ticks:  make(chan time.Time, 4),
+		resets: make(chan time.Duration, 8),
+		stops:  make(chan struct{}, 1),
+	}
+	sink.newHeartbeatTimer = func(time.Duration) debugTimer { return timer }
+	stop := sink.Worker(1).startHeartbeat(func() bool { return true })
+
+	// A tick only 10s after the last visible line is still inside the 30s
+	// interval. It must stay silent, and the re-arm must be for the
+	// remaining 20s, not for another full interval.
+	clock.advance(10 * time.Second)
+	timer.ticks <- clock.now()
+	select {
+	case reset := <-timer.resets:
+		if reset != debugHeartbeatInterval-10*time.Second {
+			t.Fatalf("early tick re-armed the timer with %v, want remaining %v", reset, debugHeartbeatInterval-10*time.Second)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("early tick did not re-arm its timer")
+	}
+	// The reset arrives after any report would have been written (the loop
+	// re-arms after logging), so the buffer is settled here.
+	if got := buf.String(); strings.Contains(got, "phase=waiting-for-pi") {
+		t.Fatalf("early tick reported silence that has not happened:\n%s", got)
+	}
+
+	// The remaining 20s still land the heartbeat on the original schedule:
+	// 30s after the last visible line, not a whole interval later.
+	clock.advance(20 * time.Second)
+	timer.ticks <- clock.now()
+	select {
+	case <-timer.resets:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat on schedule did not reset its timer")
+	}
+	bodies := debugBodies(t, buf.String())
+	if got, want := bodies[len(bodies)-1], "worker=1 phase=waiting-for-pi last-phase=starting silence=30s process=alive"; got != want {
+		t.Fatalf("heartbeat = %q, want %q", got, want)
+	}
+
+	stop()
+	clock.advance(debugHeartbeatInterval)
+	timer.ticks <- clock.now()
+	select {
+	case <-time.After(25 * time.Millisecond):
+		// stop joined the goroutine; this probe tick must not produce output.
+	case reset := <-timer.resets:
+		t.Fatalf("stopped heartbeat re-armed its timer with %v", reset)
+	}
+	if got := len(debugBodies(t, buf.String())); got != 1 {
+		t.Fatalf("lines after stop = %d, want 1", got)
+	}
+}
+
 func TestWorkerScopeHeartbeatStopsWhenProcessIsNotAlive(t *testing.T) {
 	var buf bytes.Buffer
 	sink := NewDebugSink(&buf)
