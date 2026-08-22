@@ -770,6 +770,10 @@ func TestRunWritesEmptySetSuppressesSharedWorkspaceWarning(t *testing.T) {
 
 func TestRunSuccessHuman(t *testing.T) {
 	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
+	// Anchor before the run so the 30-minute default is measured from a
+	// fixed reference instead of decaying toward "now" while the run
+	// executes.
+	start := time.Now()
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix the bug"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -793,9 +797,9 @@ func TestRunSuccessHuman(t *testing.T) {
 	if !ok {
 		t.Fatalf("worker 1 had no deadline")
 	}
-	remaining := time.Until(deadline)
-	if remaining < 29*time.Minute || remaining > 31*time.Minute {
-		t.Fatalf("default deadline is %v away, want about 30m", remaining)
+	fromStart := deadline.Sub(start)
+	if fromStart < 29*time.Minute || fromStart > 31*time.Minute {
+		t.Fatalf("default deadline is %v from run start, want about 30m", fromStart)
 	}
 }
 
@@ -1288,6 +1292,11 @@ func TestRunStatusErrorAndUnavailableExitCode9(t *testing.T) {
 
 func TestRunTimeoutFlag(t *testing.T) {
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
+	// Anchor the measurement before the run: the deadline is fixed at
+	// 250ms from when the run created it, so measuring against this
+	// anchor does not decay while the run completes the way
+	// time.Until(deadline) measured afterwards would.
+	start := time.Now()
 	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--timeout", "250ms"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -1296,9 +1305,12 @@ func TestRunTimeoutFlag(t *testing.T) {
 	if !ok {
 		t.Fatalf("worker had no deadline")
 	}
-	remaining := time.Until(deadline)
-	if remaining < 0 || remaining > 500*time.Millisecond {
-		t.Fatalf("deadline is %v away, want about 250ms", remaining)
+	// Distance from the pre-run anchor, not from now: the deadline was
+	// created during the run, so it is always at least 250ms past the
+	// anchor and at most ~250ms of run-setup overhead past it.
+	fromStart := deadline.Sub(start)
+	if fromStart < 250*time.Millisecond || fromStart > 500*time.Millisecond {
+		t.Fatalf("deadline is %v from run start, want about 250ms", fromStart)
 	}
 }
 
