@@ -242,7 +242,11 @@ test("security guidance states the current public reporting boundary", () => {
   assert.match(normalizedSecurity, /GitHub private vulnerability reporting/i);
   assert.match(security, /https:\/\/github\.com\/arasovic\/pi-worker\/security\/advisories\/new/);
   assert.match(normalizedSecurity, /if.*channel.*unavailable.*do not.*public/i);
-  assert.match(normalizedSecurity, /v0\.1/i);
+  assert.match(
+    normalizedSecurity,
+    /(?:supported release[^.]*latest published|latest published[^.]*supported release)/i,
+    "SECURITY.md states that the supported release is the latest published version",
+  );
   assert.match(normalizedSecurity, /workers?.*execute.*bash.*current user.*permissions/i);
   assert.match(normalizedSecurity, /current writable workspace/i);
   assert.match(normalizedSecurity, /not a sandbox/i);

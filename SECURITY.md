@@ -1,6 +1,6 @@
 # Security
 
-The supported release line is **v0.1.x**.
+The supported release is **the latest published version**. Releases have always moved forward from the previous one since v0.1.x; no release has ever been a backport to an older line.
 
 Workers execute `bash` with the current user's permissions in the current writable workspace. Pi Worker is not a sandbox.
 
