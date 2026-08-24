@@ -569,7 +569,7 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "empty task file", args: []string{"run", "--model", "acme/m-1", "--task-file", emptyFile}, stdin: ""},
 		{name: "too many tasks", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b", "--task", "c", "--task", "d"}, stdin: ""},
 		{name: "too many task files", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--task-file", "b", "--task-file", "c", "--task-file", "d"}, stdin: ""},
-		{name: "writes before any task", args: []string{"run", "--model", "acme/m-1", "--writes", "src/a"}, stdin: ""},
+		{name: "writes before multiple tasks", args: []string{"run", "--model", "acme/m-1", "--writes", "src/a", "--task", "a", "--task", "b"}, stdin: ""},
 		{name: "repeated writes for one task", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
 		{name: "repeated writes for one task file", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
 		{name: "empty writes element", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a,,src/b"}, stdin: ""},
@@ -744,8 +744,155 @@ func TestParseRunArgsEmptyWritesDeclaresEmptySet(t *testing.T) {
 	if _, err := parseRunArgs([]string{"--task", "a", "--writes", "", "--writes", "src/a"}); err == nil {
 		t.Fatalf("parseRunArgs accepted a repeated --writes after an empty declaration, want the duplicate error")
 	}
-	if _, err := parseRunArgs([]string{"--writes", "src/a"}); err == nil {
-		t.Fatalf("parseRunArgs accepted --writes before any task, want the ordering error")
+	// A --writes before any task is no longer a parse error: with
+	// exactly one task — a flag or a stdin prompt — its target is
+	// unambiguous, and the decision is deferred to resolveRunInput, where
+	// the final task count is known.
+	opts, err := parseRunArgs([]string{"--writes", "src/a"})
+	if err != nil {
+		t.Fatalf("parseRunArgs rejected a leading --writes: %v", err)
+	}
+	if len(opts.writesPending) != 1 || len(opts.writesPending[0].Paths) != 1 || opts.writesPending[0].Paths[0] != "src/a" {
+		t.Fatalf("writesPending = %#v, want the pending src/a declaration", opts.writesPending)
+	}
+	if _, err := parseRunArgs([]string{"--writes", ""}); err != nil {
+		t.Fatalf("parseRunArgs rejected a leading --writes \"\": %v", err)
+	}
+}
+
+func TestRunWritesBeforeSingleTaskReachesThatTask(t *testing.T) {
+	// With exactly one task the ordering rule carries no information, so
+	// a --writes placed before the --task or --task-file is that task's
+	// declaration and must reach it. The "writes: ok" verdict on a clean
+	// workspace only prints when the declaration was bound; one that
+	// reached no task skips the check instead.
+	taskFile := filepath.Join(t.TempDir(), "task.txt")
+	if err := os.WriteFile(taskFile, []byte("go"), 0o600); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	newGitWorkspace(t)
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	for _, args := range [][]string{
+		{"run", "--model", "acme/m-1", "--writes", "file.txt", "--task", "go"},
+		{"run", "--model", "acme/m-1", "--writes", "file.txt", "--task-file", taskFile},
+	} {
+		code, stdout, stderr := runCLI(t, args, "")
+		if code != 0 {
+			t.Fatalf("%v: exit = %d, want 0; stderr = %q", args, code, stderr)
+		}
+		if stderr != "" {
+			t.Fatalf("%v: stderr = %q", args, stderr)
+		}
+		const want = "worker 1: done\n" +
+			"changes: 0 files, +0/-0\n" +
+			"writes: ok\n" +
+			"outcome=completed\n"
+		if stdout != want {
+			t.Fatalf("%v: stdout = %q, want %q", args, stdout, want)
+		}
+	}
+}
+
+func TestRunWritesWithStdinPromptReachesTheStdinTask(t *testing.T) {
+	// A prompt on stdin has no --task flag for a positional --writes to
+	// follow, so the single-task rule is the only way the documented
+	// feature can be used at all in this input mode: the declaration
+	// must bind to the stdin task.
+	newGitWorkspace(t)
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--writes", "file.txt"}, "do it")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	const want = "worker 1: done\n" +
+		"changes: 0 files, +0/-0\n" +
+		"writes: ok\n" +
+		"outcome=completed\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "do it" {
+		t.Fatalf("worker prompt = %q, want the stdin prompt", req.Prompt)
+	}
+}
+
+func TestRunWritesBeforeMultipleTasksRejectedWithRemedy(t *testing.T) {
+	// A --writes that precedes more than one task has no knowable
+	// target, so the run stays rejected — but the message must say what
+	// to do, not only what is wrong: the declaration has to name its
+	// task by following it.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--writes", "src/a", "--task", "one", "--task", "two"}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--writes must follow the --task or --task-file it declares") {
+		t.Fatalf("stderr missing the ambiguous-target error: %q", stderr)
+	}
+	if !strings.Contains(stderr, "place each --writes directly after its task") {
+		t.Fatalf("stderr missing the remedy: %q", stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
+	}
+}
+
+func TestRunWritesTwiceForSingleTaskStillRejectedInAnyPosition(t *testing.T) {
+	// The once-per-task limit is unchanged: a declaration that arrives
+	// twice for the same task is rejected with the existing error,
+	// whatever positions the two occurrences took — pending colliding
+	// with positional, two pendings, and two pendings around a stdin
+	// prompt.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	for _, test := range []struct {
+		args  []string
+		stdin string
+	}{
+		{args: []string{"run", "--model", "acme/m-1", "--writes", "src/a", "--task", "one", "--writes", "src/b"}},
+		{args: []string{"run", "--model", "acme/m-1", "--writes", "src/a", "--writes", "src/b", "--task", "one"}},
+		{args: []string{"run", "--model", "acme/m-1", "--writes", "src/a", "--writes", "src/b"}, stdin: "do it"},
+	} {
+		code, stdout, stderr := runCLI(t, test.args, test.stdin)
+		if code != 2 {
+			t.Fatalf("%v: exit = %d, want 2; stderr = %q", test.args, code, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("%v: stdout = %q, want empty", test.args, stdout)
+		}
+		if !strings.Contains(stderr, "--writes specified more than once for task 1") {
+			t.Fatalf("%v: stderr = %q, want the more-than-once error", test.args, stderr)
+		}
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
+	}
+}
+
+func TestRunWritesNothingDeclarationAcceptedBeforeSingleTask(t *testing.T) {
+	// --writes "" behaves identically wherever it appears: placed before
+	// the single task it must still declare the writes-nothing set,
+	// which the "writes: ok" verdict on a clean workspace proves.
+	newGitWorkspace(t)
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--writes", "", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	const want = "worker 1: done\n" +
+		"changes: 0 files, +0/-0\n" +
+		"writes: ok\n" +
+		"outcome=completed\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }
 

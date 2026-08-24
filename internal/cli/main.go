@@ -155,9 +155,26 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 		return opts, nil, err
 	}
 	// --writes entries pair with the task most recently introduced when
-	// they appeared; pad what was declared to the final task count so the
-	// controller sees one entry per task, with a zero-value entry —
-	// Declared false — for every task that declared nothing.
+	// they appeared. A --writes that appeared before every task was held
+	// pending by the parser; it binds here, where the final task count is
+	// known. Exactly one task makes its target unambiguous — it can only
+	// be that task's declaration, and a prompt read from stdin has no
+	// other way to declare at all. More than one task leaves the target
+	// unknowable, so the run is rejected.
+	if len(opts.writesPending) > 0 {
+		if len(tasks) != 1 {
+			return opts, nil, fmt.Errorf("--writes must follow the --task or --task-file it declares: with more than one task, a --writes that precedes them all is ambiguous; place each --writes directly after its task")
+		}
+		if len(opts.writesPending) > 1 || (len(opts.writes) > 0 && opts.writes[0].Declared) {
+			return opts, nil, fmt.Errorf("--writes specified more than once for task 1")
+		}
+		pending := opts.writesPending[0]
+		pending.Declared = true
+		opts.writes = []run.WriteDeclaration{pending}
+	}
+	// Pad what was declared to the final task count so the controller
+	// sees one entry per task, with a zero-value entry — Declared false —
+	// for every task that declared nothing.
 	if opts.writes != nil {
 		for len(opts.writes) < len(tasks) {
 			opts.writes = append(opts.writes, run.WriteDeclaration{})
@@ -231,6 +248,13 @@ type runOptions struct {
 	// a task that declared nothing. --writes "" fills a Declared true
 	// entry with no paths, the writes-nothing declaration.
 	writes []run.WriteDeclaration
+	// writesPending holds --writes declarations that appeared before any
+	// --task or --task-file, in order. They cannot be indexed at parse
+	// time: the final task list is not known until resolveRunInput, and
+	// a prompt on stdin is introduced only there. A one-task run binds
+	// them to that single task; a run with more than one task rejects
+	// them, because no task can be named.
+	writesPending []run.WriteDeclaration
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
@@ -658,7 +682,13 @@ func parseRunArgs(args []string) (runOptions, error) {
 			}
 		case "--writes":
 			// Positional: applies to the task most recently introduced by
-			// --task or --task-file, at most once per task.
+			// --task or --task-file, at most once per task. One exception:
+			// a --writes that appears before any task cannot be indexed
+			// here — the task list is not known at parse time, and the task
+			// may even be a prompt arriving on stdin later — so it is held
+			// pending and bound in resolveRunInput, where the final task
+			// count decides: one task makes it that task's declaration,
+			// more than one makes it ambiguous and rejected.
 			if !hasValue {
 				if i+1 >= len(args) {
 					return opts, fmt.Errorf("flag %s requires a value", name)
@@ -666,28 +696,14 @@ func parseRunArgs(args []string) (runOptions, error) {
 				i++
 				value = args[i]
 			}
+			declaration, err := parseWritesDeclaration(value)
+			if err != nil {
+				return opts, err
+			}
 			index := len(opts.tasks) + len(opts.taskFiles) - 1
 			if index < 0 {
-				return opts, fmt.Errorf("--writes must follow a --task or --task-file")
-			}
-			// A trimmed-empty value is the one spelling that cannot
-			// collide with a real path: it is how a task declares that it
-			// writes nothing. Only a non-empty value is split on commas,
-			// so an empty element between commas keeps failing below.
-			var declaration run.WriteDeclaration
-			if strings.TrimSpace(value) != "" {
-				paths := strings.Split(value, ",")
-				for i, path := range paths {
-					// Trim surrounding whitespace immediately, before every other
-					// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
-					// validation as the same paths. A trimmed-empty element still
-					// gets the existing empty-element error below.
-					paths[i] = strings.TrimSpace(path)
-					if paths[i] == "" {
-						return opts, fmt.Errorf("invalid writes %q: empty element between commas", value)
-					}
-				}
-				declaration.Paths = paths
+				opts.writesPending = append(opts.writesPending, declaration)
+				break
 			}
 			for len(opts.writes) <= index {
 				opts.writes = append(opts.writes, run.WriteDeclaration{})
@@ -739,6 +755,30 @@ func parseRunArgs(args []string) (runOptions, error) {
 		}
 	}
 	return opts, nil
+}
+
+// parseWritesDeclaration parses a --writes value into the declaration it
+// carries. A trimmed-empty value is the one spelling that cannot collide
+// with a real path: it is how a task declares that it writes nothing.
+// Only a non-empty value is split on commas, so an empty element between
+// commas keeps failing below.
+func parseWritesDeclaration(value string) (run.WriteDeclaration, error) {
+	var declaration run.WriteDeclaration
+	if strings.TrimSpace(value) != "" {
+		paths := strings.Split(value, ",")
+		for i, path := range paths {
+			// Trim surrounding whitespace immediately, before every other
+			// check: "docs/a.md, src/x" and "docs/a.md,src/x" must reach
+			// validation as the same paths. A trimmed-empty element still
+			// gets the existing empty-element error below.
+			paths[i] = strings.TrimSpace(path)
+			if paths[i] == "" {
+				return declaration, fmt.Errorf("invalid writes %q: empty element between commas", value)
+			}
+		}
+		declaration.Paths = paths
+	}
+	return declaration, nil
 }
 
 // parseVerifyCommand validates the raw --verify value and splits it on

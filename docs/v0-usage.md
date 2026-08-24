@@ -401,14 +401,22 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 ### Declared writes
 
 - `--writes <paths>` optionally declares, as a comma-separated list, the
-  workspace-relative paths the most recently introduced task (`--task` or
-  `--task-file`) intends to write; whitespace around each comma-separated
-  path is ignored, and each value is cleaned where it is compared, so
+  workspace-relative paths a task intends to write; whitespace around
+  each comma-separated path is ignored, and each value is cleaned where
+  it is compared, so
   `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
   `..` all name `src/a`. An absolute path is rejected before any worker
   starts, and the rejection names the remedy — declare paths relative
-  to the workspace. It may appear at most once per task and must follow
-  the task it applies to. An empty value, `--writes ""`, declares
+  to the workspace. In a run with more than one task, `--writes` binds
+  positionally, to the task most recently introduced by `--task` or
+  `--task-file`, and must follow the task it applies to — placed before
+  them all, no task can be named and the run is rejected with the remedy
+  stated. In a run with exactly one task the order carries nothing:
+  `--writes` may appear anywhere in the argument list, before the
+  `--task` or `--task-file` included, and a prompt read from stdin — a
+  run with no task flag at all — declares its writes the same way. It
+  may appear at most once per task. An empty value, `--writes ""`,
+  declares
   that the task writes nothing; whitespace-only is the same declaration
   because the flag already trims. The empty string is the one spelling
   that cannot collide with a real path. A task that declared the empty
