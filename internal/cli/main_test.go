@@ -995,6 +995,161 @@ func TestRunAcceptsEveryDocumentedThinkingLevel(t *testing.T) {
 	}
 }
 
+func TestRunPerTaskModelsReachOwnWorkers(t *testing.T) {
+	// Three tasks, three different models, one run: every worker
+	// receives its own task's model, asserted per worker rather than in
+	// aggregate.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-2", Status: pi.StatusCompleted, Explanation: "two done"},
+		3: {Model: "acme/m-3", Status: pi.StatusCompleted, Explanation: "three done"},
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--task", "one", "--model", "acme/m-1", "--task", "two", "--model", "acme/m-2", "--task", "three", "--model", "acme/m-3"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	requireChangesTail(t, stdout, "worker 1: one done\nworker 2: two done\nworker 3: three done\n")
+	for i, want := range []string{"acme/m-1", "acme/m-2", "acme/m-3"} {
+		if req := mustWorkerRequest(t, fake, i+1); req.Model != want {
+			t.Fatalf("worker %d model = %q, want %q", i+1, req.Model, want)
+		}
+	}
+}
+
+func TestRunTaskThinkingLevelsDoNotLeak(t *testing.T) {
+	// Two tasks on the same model at different thinking levels: the
+	// levels bind to their own tasks and do not leak into one another.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--thinking", "low", "--task", "two", "--thinking", "max"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if got := mustWorkerRequest(t, fake, 1).ThinkingLevel; got != pi.ThinkingLow {
+		t.Fatalf("worker 1 thinking = %q, want low", got)
+	}
+	if got := mustWorkerRequest(t, fake, 2).ThinkingLevel; got != pi.ThinkingMax {
+		t.Fatalf("worker 2 thinking = %q, want max", got)
+	}
+}
+
+func TestRunTaskWithoutModelFallsBackToRunLevelModel(t *testing.T) {
+	// A task with no --model of its own falls back to the run-level
+	// --model; a task with its own keeps it.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-2", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two", "--model", "acme/m-2"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if got := mustWorkerRequest(t, fake, 1).Model; got != "acme/m-1" {
+		t.Fatalf("worker 1 model = %q, want the run-level acme/m-1", got)
+	}
+	if got := mustWorkerRequest(t, fake, 2).Model; got != "acme/m-2" {
+		t.Fatalf("worker 2 model = %q, want its own acme/m-2", got)
+	}
+}
+
+func TestRunTaskThinkingOffStaysOff(t *testing.T) {
+	// A task --thinking of "off" is an explicit level, not unset: it
+	// must not fall back to the run-level thinking.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "go", "--thinking", "off"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if got := mustWorkerRequest(t, fake, 1).ThinkingLevel; got != pi.ThinkingOff {
+		t.Fatalf("thinking = %q, want off", got)
+	}
+}
+
+func TestRunModelBeforeTasksIsRunLevelAcrossTasks(t *testing.T) {
+	// A --model that precedes every task keeps its run-level meaning on
+	// a multi-task run: every worker runs with it.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	for i := 1; i <= 2; i++ {
+		if got := mustWorkerRequest(t, fake, i).Model; got != "acme/m-1" {
+			t.Fatalf("worker %d model = %q, want run-level acme/m-1", i, got)
+		}
+	}
+}
+
+func TestRunSecondModelForSameTaskRejectedBeforeAnyWorkerStarts(t *testing.T) {
+	// A second --model bound to the same task is rejected with the
+	// task-naming error, before any worker starts.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--model", "acme/m-2", "--model", "acme/m-3"}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--model specified more than once for task 1") {
+		t.Fatalf("stderr = %q, want the more-than-once error", stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
+	}
+}
+
+func TestRunInvalidPerTaskModelUsesRunLevelErrorText(t *testing.T) {
+	// An invalid per-task model is rejected with the same error text as
+	// an invalid run-level one, before any worker starts.
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "no provider", value: "/m-1"},
+		{name: "no id", value: "acme/"},
+		{name: "thinking suffix", value: "acme/m-1:thinking"},
+		{name: "pattern", value: "acme*"},
+	}
+	errorLine := func(stderr string) string {
+		for _, line := range strings.Split(stderr, "\n") {
+			if strings.HasPrefix(line, "pi-worker: ") {
+				return line
+			}
+		}
+		return ""
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runLevel := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+			_, _, runLevelStderr := runCLI(t, []string{"run", "--model", test.value, "--task", "go"}, "")
+			perTask := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+			code, stdout, taskStderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--model", test.value}, "")
+			if code != 2 || stdout != "" {
+				t.Fatalf("invalid per-task model = (%d, %q, %q)", code, stdout, taskStderr)
+			}
+			if runLevel.callCount() != 0 || perTask.callCount() != 0 {
+				t.Fatalf("worker invoked for an invalid model")
+			}
+			if !strings.Contains(taskStderr, "invalid model") {
+				t.Fatalf("per-task stderr = %q, want the invalid-model error", taskStderr)
+			}
+			if want, got := errorLine(runLevelStderr), errorLine(taskStderr); got != want {
+				t.Fatalf("per-task error line = %q, want the run-level line %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRunThinkingFallbackWarnsAndKeepsSuccessfulExit(t *testing.T) {
 	warning := "requested thinking=max unavailable; continuing with Pi default thinking=medium"
 	result := pi.WorkerResult{

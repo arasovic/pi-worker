@@ -34,20 +34,23 @@ type WriteDeclaration struct {
 	Paths    []string
 }
 
-// Task is one accepted unit of work: the prompt a worker runs and,
-// optionally, what that task declares it will write.
+// Task is one accepted unit of work: the prompt a worker runs, the
+// model and thinking level it runs with — already resolved to the
+// effective values by the caller, so an empty Model is always an
+// error — and, optionally, what that task declares it will write.
 type Task struct {
-	Prompt string
-	Writes WriteDeclaration
+	Prompt        string
+	Model         string
+	ThinkingLevel pi.ThinkingLevel
+	Writes        WriteDeclaration
 }
 
 // Request describes one bounded parallel run: every accepted task runs
-// concurrently through the same worker with the same model and workspace.
+// concurrently through the same worker in the same workspace, each with
+// its own already-resolved model and thinking level.
 type Request struct {
-	Model         string
-	ThinkingLevel pi.ThinkingLevel
-	Tasks         []Task
-	Workspace     string
+	Tasks     []Task
+	Workspace string
 	// Verify is the command run in the workspace after a completed run
 	// to check the finished work, split into argv; empty disables
 	// verification.
@@ -199,8 +202,8 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		go func(index int, task Task) {
 			defer wg.Done()
 			results[index] = c.worker.Run(ctx, pi.WorkerRequest{
-				Model:         req.Model,
-				ThinkingLevel: req.ThinkingLevel,
+				Model:         task.Model,
+				ThinkingLevel: task.ThinkingLevel,
 				Prompt:        task.Prompt,
 				Workspace:     req.Workspace,
 				WorkerID:      index + 1,
@@ -290,20 +293,18 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
-// validate checks the request before any worker starts: a non-empty model,
-// a non-empty workspace, between 1 and MaxTasks tasks, no empty task after
-// trimming whitespace, and every declared write path normalized and
-// checked. A task record with Declared false declares nothing for that
-// task; a Declared true entry with an empty Paths — the writes-nothing
-// declaration — has no paths to reject and none to overlap with another
-// task's. The write declaration is pure input validation: nothing is read
-// from the workspace, and the declaration never reaches a worker and
-// restricts nothing while the run is in progress; once the run has ended it
-// is compared against the change manifest.
+// validate checks the request before any worker starts: a non-empty
+// workspace, between 1 and MaxTasks tasks, and every task carrying a
+// non-empty model and a non-empty prompt after trimming whitespace, plus
+// every declared write path normalized and checked. A task record with
+// Declared false declares nothing for that task; a Declared true entry
+// with an empty Paths — the writes-nothing declaration — has no paths to
+// reject and none to overlap with another task's. The write declaration
+// is pure input validation: nothing is read from the workspace, and the
+// declaration never reaches a worker and restricts nothing while the run
+// is in progress; once the run has ended it is compared against the
+// change manifest.
 func validate(req Request) error {
-	if req.Model == "" {
-		return fmt.Errorf("model is required")
-	}
 	if req.Workspace == "" {
 		return fmt.Errorf("workspace is required")
 	}
@@ -314,6 +315,9 @@ func validate(req Request) error {
 		return fmt.Errorf("at most %d tasks are supported, got %d", MaxTasks, len(req.Tasks))
 	}
 	for i, task := range req.Tasks {
+		if task.Model == "" {
+			return fmt.Errorf("task %d: model is required", i+1)
+		}
 		if strings.TrimSpace(task.Prompt) == "" {
 			return fmt.Errorf("task %d is empty", i+1)
 		}

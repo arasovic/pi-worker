@@ -144,7 +144,13 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 	if err != nil {
 		return opts, nil, err
 	}
-	if !opts.modelSpecified {
+	// The run-level model falls back to the configured default, and only
+	// when some task will need it: a task carrying --model of its own
+	// never consults the run-level value. The flag-introduced task list
+	// is known here; a prompt on stdin can never carry a per-task --model
+	// — a --model before it is the run-level value, not its own — so a
+	// stdin run always needs the run-level model.
+	if !opts.modelSpecified && runNeedsModel(opts) {
 		opts.model, err = configuredRunModel()
 		if err != nil {
 			return opts, nil, err
@@ -182,15 +188,41 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 	}
 	// The pairing stops here: each declaration is bound into the task
 	// record it belongs to, and nothing past this point indexes a task
-	// and its writes by position.
+	// and its writes by position. Model and thinking precedence — task,
+	// then run level, then the configured default — resolves in the same
+	// loop: the records carry the effective values, and the controller
+	// makes no decision about defaults.
 	records := make([]run.Task, len(tasks))
 	for i, task := range tasks {
-		records[i] = run.Task{Prompt: task}
+		records[i] = run.Task{Prompt: task, Model: opts.model, ThinkingLevel: opts.thinking}
+		if i < len(opts.taskModels) && opts.taskModelSpecified[i] {
+			records[i].Model = opts.taskModels[i]
+		}
+		if i < len(opts.taskThinking) && opts.taskThinking[i] != "" {
+			records[i].ThinkingLevel = opts.taskThinking[i]
+		}
 		if opts.writes != nil {
 			records[i].Writes = opts.writes[i]
 		}
 	}
 	return opts, records, nil
+}
+
+// runNeedsModel reports whether some task will fall back to the run-level
+// model, which must then resolve from the configured default when no
+// run-level --model specified it. A prompt read from stdin cannot carry a
+// per-task --model, so it always needs the run-level value; a
+// flag-introduced task needs it unless a --model bound to it directly.
+func runNeedsModel(opts runOptions) bool {
+	if len(opts.tasks)+len(opts.taskFiles) == 0 {
+		return true
+	}
+	for i := 0; i < len(opts.tasks)+len(opts.taskFiles); i++ {
+		if i >= len(opts.taskModelSpecified) || !opts.taskModelSpecified[i] {
+			return true
+		}
+	}
+	return false
 }
 
 func printUsage(w io.Writer) {
@@ -201,7 +233,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
 }
 
 type versionOutput struct {
@@ -244,15 +276,23 @@ func versionCommand(args []string, stdout, stderr io.Writer) int {
 
 // runOptions holds the parsed run command surface.
 type runOptions struct {
+	// model is the run-level value: a --model that appeared before any
+	// --task or --task-file. modelSpecified reports whether such a
+	// --model appeared: an explicitly empty value stays distinguishable
+	// from "no value", because only the unspecified run-level model falls
+	// back to the configured default.
 	model          string
 	modelSpecified bool
-	thinking       pi.ThinkingLevel
-	tasks          []string
-	taskFiles      []string
-	timeout        time.Duration
-	verify         []string
-	json           bool
-	debug          bool
+	// thinking is the run-level value: a --thinking that appeared before
+	// any --task or --task-file. The empty level means unset; off is an
+	// explicit level, never conflated with it.
+	thinking  pi.ThinkingLevel
+	tasks     []string
+	taskFiles []string
+	timeout   time.Duration
+	verify    []string
+	json      bool
+	debug     bool
 	// writes is the per-task declared write set in task order: nil when
 	// no --writes appeared, and a zero-value entry — Declared false — for
 	// a task that declared nothing. --writes "" fills a Declared true
@@ -265,6 +305,15 @@ type runOptions struct {
 	// them to that single task; a run with more than one task rejects
 	// them, because no task can be named.
 	writesPending []run.WriteDeclaration
+	// taskModels holds the per-task --model values in task order: "" for
+	// a task that specified none. taskModelSpecified marks each entry
+	// actually specified, so a --model "" still counts as specified for
+	// the once-per-task rule. taskThinking holds the per-task --thinking
+	// levels in task order, the empty level for a task that specified
+	// none; --thinking "" never lands here, parse rejects it.
+	taskModels         []string
+	taskModelSpecified []bool
+	taskThinking       []pi.ThinkingLevel
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
@@ -305,12 +354,10 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()))
 	}
 	result, err := controller.Run(ctx, run.Request{
-		Model:         opts.model,
-		ThinkingLevel: opts.thinking,
-		Tasks:         tasks,
-		Workspace:     workspace,
-		Verify:        opts.verify,
-		Debug:         debug,
+		Tasks:     tasks,
+		Workspace: workspace,
+		Verify:    opts.verify,
+		Debug:     debug,
 	})
 	if err != nil {
 		// Defensive: the CLI validates the input surface first, so a
@@ -638,7 +685,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 		arg := args[i]
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--model", "--thinking", "--timeout", "--verify":
+		case "--timeout", "--verify":
 			if !hasValue {
 				if i+1 >= len(args) {
 					return opts, fmt.Errorf("flag %s requires a value", name)
@@ -650,16 +697,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 				return opts, fmt.Errorf("flag %s specified more than once", name)
 			}
 			seen[name] = true
-			if name == "--model" {
-				opts.model = value
-				opts.modelSpecified = true
-			} else if name == "--thinking" {
-				level, ok := pi.ParseThinkingLevel(value)
-				if !ok {
-					return opts, fmt.Errorf("invalid thinking level %q: expected off, minimal, low, medium, high, xhigh, or max", value)
-				}
-				opts.thinking = level
-			} else if name == "--verify" {
+			if name == "--verify" {
 				argv, err := parseVerifyCommand(value)
 				if err != nil {
 					return opts, err
@@ -674,6 +712,66 @@ func parseRunArgs(args []string) (runOptions, error) {
 					return opts, fmt.Errorf("invalid timeout %q: must be positive", value)
 				}
 				opts.timeout = duration
+			}
+		case "--model", "--thinking":
+			// Positional, in exactly the way --writes is: a --model or
+			// --thinking that follows a --task or --task-file binds to
+			// that task, at most once per task. Unlike --writes, one that
+			// precedes every task is NOT ambiguous and NOT rejected: it is
+			// the run-level value, which is what it means today, at most
+			// once each.
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, fmt.Errorf("flag %s requires a value", name)
+				}
+				i++
+				value = args[i]
+			}
+			index := len(opts.tasks) + len(opts.taskFiles) - 1
+			if index < 0 {
+				// The run-level value: the current meaning of a flag that
+				// precedes every task, at most once each.
+				if name == "--model" {
+					if opts.modelSpecified {
+						return opts, fmt.Errorf("flag %s specified more than once", name)
+					}
+					opts.model = value
+					opts.modelSpecified = true
+				} else {
+					if opts.thinking != "" {
+						return opts, fmt.Errorf("flag %s specified more than once", name)
+					}
+					level, ok := pi.ParseThinkingLevel(value)
+					if !ok {
+						return opts, fmt.Errorf("invalid thinking level %q: expected off, minimal, low, medium, high, xhigh, or max", value)
+					}
+					opts.thinking = level
+				}
+				break
+			}
+			// After a task: binds to that task, at most once per task.
+			if name == "--model" {
+				for len(opts.taskModels) <= index {
+					opts.taskModels = append(opts.taskModels, "")
+					opts.taskModelSpecified = append(opts.taskModelSpecified, false)
+				}
+				if opts.taskModelSpecified[index] {
+					return opts, fmt.Errorf("--model specified more than once for task %d", index+1)
+				}
+				opts.taskModels[index] = value
+				opts.taskModelSpecified[index] = true
+			} else {
+				level, ok := pi.ParseThinkingLevel(value)
+				if !ok {
+					return opts, fmt.Errorf("invalid thinking level %q: expected off, minimal, low, medium, high, xhigh, or max", value)
+				}
+				for len(opts.taskThinking) <= index {
+					opts.taskThinking = append(opts.taskThinking, "")
+				}
+				if opts.taskThinking[index] != "" {
+					return opts, fmt.Errorf("--thinking specified more than once for task %d", index+1)
+				}
+				opts.taskThinking[index] = level
 			}
 		case "--task", "--task-file":
 			// Repeatable: one occurrence per accepted task.
@@ -744,6 +842,17 @@ func parseRunArgs(args []string) (runOptions, error) {
 	}
 	if opts.modelSpecified {
 		if err := validateModel(opts.model); err != nil {
+			return opts, err
+		}
+	}
+	// validateModel runs on every model that arrives on the command line:
+	// the run-level value and every per-task value alike, with the same
+	// error text.
+	for i, model := range opts.taskModels {
+		if !opts.taskModelSpecified[i] {
+			continue
+		}
+		if err := validateModel(model); err != nil {
 			return opts, err
 		}
 	}
