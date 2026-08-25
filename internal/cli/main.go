@@ -139,7 +139,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 // resolveRunInput parses the run flags and resolves the task list. It runs
 // before any signal interception: reading the task from stdin must keep the
 // default interrupt behavior.
-func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, error) {
+func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, error) {
 	opts, err := parseRunArgs(args)
 	if err != nil {
 		return opts, nil, err
@@ -172,15 +172,25 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []string, erro
 		pending.Declared = true
 		opts.writes = []run.WriteDeclaration{pending}
 	}
-	// Pad what was declared to the final task count so the controller
-	// sees one entry per task, with a zero-value entry — Declared false —
+	// Pad what was declared to the final task count so the declaration
+	// pairs with the task list, with a zero-value entry — Declared false —
 	// for every task that declared nothing.
 	if opts.writes != nil {
 		for len(opts.writes) < len(tasks) {
 			opts.writes = append(opts.writes, run.WriteDeclaration{})
 		}
 	}
-	return opts, tasks, nil
+	// The pairing stops here: each declaration is bound into the task
+	// record it belongs to, and nothing past this point indexes a task
+	// and its writes by position.
+	records := make([]run.Task, len(tasks))
+	for i, task := range tasks {
+		records[i] = run.Task{Prompt: task}
+		if opts.writes != nil {
+			records[i].Writes = opts.writes[i]
+		}
+	}
+	return opts, records, nil
 }
 
 func printUsage(w io.Writer) {
@@ -263,7 +273,7 @@ type runOptions struct {
 // cancels the run immediately, and the timeout bounds it when no signal
 // arrives. With --verify, a completed run's workspace is checked once
 // before returning.
-func runCommand(parent context.Context, opts runOptions, tasks []string, stdout, stderr io.Writer) int {
+func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
 	workspace, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
@@ -280,7 +290,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 
 	preflightPiVersion(ctx, stderr)
 
-	if len(tasks) > 1 && !allWritesDeclared(opts.writes) {
+	if len(tasks) > 1 && !allWritesDeclared(tasks) {
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
 	}
 
@@ -301,7 +311,6 @@ func runCommand(parent context.Context, opts runOptions, tasks []string, stdout,
 		Workspace:     workspace,
 		Verify:        opts.verify,
 		Debug:         debug,
-		Writes:        opts.writes,
 	})
 	if err != nil {
 		// Defensive: the CLI validates the input surface first, so a
@@ -586,12 +595,12 @@ func gitValue(value string) string {
 // the controller checked it before any worker started. A declared empty
 // set counts as declared — the task bounded itself to nothing — while
 // any task that did not declare keeps the warning.
-func allWritesDeclared(writes []run.WriteDeclaration) bool {
-	if len(writes) == 0 {
+func allWritesDeclared(tasks []run.Task) bool {
+	if len(tasks) == 0 {
 		return false
 	}
-	for _, entry := range writes {
-		if !entry.Declared {
+	for _, task := range tasks {
+		if !task.Writes.Declared {
 			return false
 		}
 	}

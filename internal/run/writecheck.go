@@ -36,23 +36,39 @@ const (
 	reasonManifestUnavailable = "change manifest unavailable"
 )
 
+// anyWritesDeclared reports whether at least one task carried a write
+// declaration — the run-level "did the caller declare at all" bit the
+// controller uses to decide whether the check runs at all. A task that
+// declared an empty set has declared, so it counts; the bit is about the
+// declaration happening at all, never about how many paths it named. It
+// must not degrade into a len(Paths) test: the writes-nothing declaration
+// carries zero paths and still declares.
+func anyWritesDeclared(tasks []Task) bool {
+	for _, task := range tasks {
+		if task.Writes.Declared {
+			return true
+		}
+	}
+	return false
+}
+
 // checkWrites compares the paths a run changed, as recorded in the
 // change manifest, against every task's declared write paths pooled
 // together, and returns the write check. A verdict or a skip reason is
 // always returned; the caller decides whether the check runs at all by
-// whether it passed a Writes declaration. The comparison is pure over
-// two in-memory slices: it runs no commands, so it takes no context and
-// has no timeout of its own.
-func checkWrites(changes *Changes, writes []WriteDeclaration) *WriteCheck {
-	if !writesDeclaredOnEveryTask(writes) {
+// whether at least one task carried a write declaration. The comparison
+// is pure over two in-memory slices: it runs no commands, so it takes no
+// context and has no timeout of its own.
+func checkWrites(changes *Changes, tasks []Task) *WriteCheck {
+	if !writesDeclaredOnEveryTask(tasks) {
 		return &WriteCheck{Skipped: reasonPartialDeclaration}
 	}
 	if changes == nil || changes.Omitted != "" {
 		return &WriteCheck{Skipped: reasonManifestUnavailable}
 	}
 	declared := make([]string, 0)
-	for _, task := range writes {
-		declared = append(declared, task.Paths...)
+	for _, task := range tasks {
+		declared = append(declared, task.Writes.Paths...)
 	}
 	var undeclared []string
 	for _, path := range changes.allPaths {
@@ -79,12 +95,12 @@ func checkWrites(changes *Changes, writes []WriteDeclaration) *WriteCheck {
 // nothing — and the check runs. An empty declaration list, no task
 // declaring anything, is the same partial state as a task that said
 // nothing.
-func writesDeclaredOnEveryTask(writes []WriteDeclaration) bool {
-	if len(writes) == 0 {
+func writesDeclaredOnEveryTask(tasks []Task) bool {
+	if len(tasks) == 0 {
 		return false
 	}
-	for _, task := range writes {
-		if !task.Declared {
+	for _, task := range tasks {
+		if !task.Writes.Declared {
 			return false
 		}
 	}

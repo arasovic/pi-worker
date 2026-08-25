@@ -22,7 +22,13 @@ func runWithWrites(t *testing.T, worker pi.Worker, dir string, tasks []string, w
 	t.Helper()
 	req := validRequest(tasks...)
 	req.Workspace = dir
-	req.Writes = writes
+	// The declaration pairs with the task list at this helper's boundary,
+	// exactly as the CLI pairs it into task records before the request.
+	if writes != nil {
+		for i := range req.Tasks {
+			req.Tasks[i].Writes = writes[i]
+		}
+	}
 	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -429,7 +435,7 @@ func TestControllerWritesCheckedOnTimedOutRun(t *testing.T) {
 	}}
 	req := validRequest("a")
 	req.Workspace = dir
-	req.Writes = []WriteDeclaration{declaredPaths("declared.txt")}
+	req.Tasks[0].Writes = declaredPaths("declared.txt")
 	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(ctx, req)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -463,7 +469,7 @@ func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
 	}
 	for _, declared := range tests {
 		t.Run(declared, func(t *testing.T) {
-			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, []WriteDeclaration{declaredPaths(declared)})
+			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, []Task{{Writes: declaredPaths(declared)}})
 			if check.Skipped != "" || check.UndeclaredCount != 0 || len(check.Undeclared) != 0 || check.Truncated {
 				t.Fatalf("writes = %#v, want checked-clean for declared %q", check, declared)
 			}
@@ -482,7 +488,7 @@ func TestWriteCheckUndeclaredListFullAtCapNotTruncated(t *testing.T) {
 	for i := range paths {
 		paths[i] = fmt.Sprintf("f%03d.txt", i)
 	}
-	check := checkWrites(&Changes{allPaths: paths}, []WriteDeclaration{declaredPaths("declared.txt")})
+	check := checkWrites(&Changes{allPaths: paths}, []Task{{Writes: declaredPaths("declared.txt")}})
 	if check.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", check)
 	}
@@ -502,7 +508,7 @@ func TestWriteCheckUndeclaredListCappedOnePastCap(t *testing.T) {
 	for i := range paths {
 		paths[i] = fmt.Sprintf("f%03d.txt", i)
 	}
-	check := checkWrites(&Changes{allPaths: paths}, []WriteDeclaration{declaredPaths("declared.txt")})
+	check := checkWrites(&Changes{allPaths: paths}, []Task{{Writes: declaredPaths("declared.txt")}})
 	if check.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", check)
 	}
@@ -526,7 +532,7 @@ func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T
 	// a manifest that was never measured — the partial-declaration
 	// reason wins: it is the caller's own input, and it is the one they
 	// can act on.
-	check := checkWrites(&Changes{Omitted: reasonMeasurementFail}, []WriteDeclaration{declaredPaths("file.txt"), {}})
+	check := checkWrites(&Changes{Omitted: reasonMeasurementFail}, []Task{{Writes: declaredPaths("file.txt")}, {}})
 	if check.Skipped != reasonPartialDeclaration {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonPartialDeclaration)
 	}
@@ -542,7 +548,7 @@ func TestWriteCheckNilManifestSkips(t *testing.T) {
 	// work-tree-unconfirmed omission, now that the controller states it
 	// rather than leaving the field absent. The skip reason must be the
 	// same either way.
-	check := checkWrites(nil, []WriteDeclaration{declaredPaths("file.txt")})
+	check := checkWrites(nil, []Task{{Writes: declaredPaths("file.txt")}})
 	if check.Skipped != reasonManifestUnavailable {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonManifestUnavailable)
 	}
