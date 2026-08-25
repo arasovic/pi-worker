@@ -21,39 +21,50 @@ integration decisions in the parent agent. Never ask a worker to delegate.
 pi-worker run --model <provider/model> --thinking <level> \
   --task-file <task-a.txt> --writes <paths-a> \
   --task-file <task-b.txt> --writes <paths-b> \
-  --timeout <duration> --json --debug [--verify <command>]
+  --timeout <duration> --json --debug [--verify <command>] \
+  2>/tmp/pi-worker-debug.log
 ```
+
+stdout carries only the JSON document; `--debug` stderr goes to a file outside
+the workspace (a file inside would read as an undeclared change). Do not pipe
+the command to another tool: the exit code is the signal when no document
+comes back, and a pipe hands it to the downstream tool instead.
 
 Add `--verify <command>` when the finished workspace must be proven green
 (e.g. `go test ./...`). The check runs once after the workers settle and
 is split on whitespace into argv: no shell is involved, so shell syntax
 is rejected up front, not executed.
 
-Parse the single JSON document. A run can end without producing a document: it
-was cut short before it could report, so say so and stop rather than treating
-empty output as any kind of success. Report each worker's model, effective
-`thinkingLevel`, status, explanation, and failure. When `thinkingFallback` is
-true, surface its warning: the selected model continued with Pi's confirmed
-default effort. Read root `outcome`: `completed` is the only done state — a
-`writes.skipped` value means a check could not run, unproven, not clean.
-When `writes.skipped` is `change manifest unavailable`, the manifest was
-not measured: read `changes.omitted`, which is always present on a real
-run — the CLI always configures the git inspector, so `changes` never
-vanishes from output. The reason decides the caller's next move:
-`unborn head`, `context already done`, `measurement failed`, or `work
-tree not confirmed` — the last meaning the workspace is not a git work
-tree, git is missing, or the guard failed transiently, which the reason
-does not claim to distinguish. Which reasons a retry can clear differs:
-`measurement failed` — a git command failure or a budget that expired —
-and the transient guard failure behind `work tree not confirmed` can
-clear on retry; the reason cannot tell that cause from a genuinely
-unconfirmed work tree, so one retry is a fair test and repeating it is
-not. `context already done` means the run's own context was already dead
-when it would have inspected, so re-run with a live context. `unborn
-head` means the repository has no commits, which no retry can change.
-`verification-failed` means the `verification` object is there; report it, fix
-the workspace, and re-run. Any other word means report it with its object when
-one exists (`writes`, `verification`, or the worker's `failure`) and stop.
+Parse the single JSON document. A run can end without producing a document;
+then the exit code is the signal. An exit of 2 always means the command was
+rejected — fix your argv and re-run; an exit of 9 is either a rejected write
+declaration or an internal failure, and the stderr message is what separates
+them; an exit of 7 or 8 means it was cut short before it could report, so say
+so and stop rather than treating empty output as any kind of success. The
+rejection message is on stderr, not stdout — the documented invocation sends
+its debug output there too — so read stderr when no document appears. Report
+each worker's model, effective `thinkingLevel`, status, explanation, and
+failure. When `thinkingFallback` is true, surface its warning: the selected
+model continued with Pi's confirmed default effort. Read root `outcome`:
+`completed` is the only done state — a `writes.skipped` value means a check
+could not run, unproven, not clean. When `writes.skipped` is `change manifest
+unavailable`, the manifest was not measured: read `changes.omitted`, which is
+always present on a real run — the CLI always configures the git inspector, so
+`changes` never vanishes from output. The reason decides the caller's next
+move: `unborn head`, `context already done`, `measurement failed`, or `work
+tree not confirmed` — the last meaning the workspace is not a git work tree,
+git is missing, or the guard failed transiently, which the reason does not
+claim to distinguish. Which reasons a retry can clear differs: `measurement
+failed` — a git command failure or a budget that expired — and the transient
+guard failure behind `work tree not confirmed` can clear on retry; the reason
+cannot tell that cause from a genuinely unconfirmed work tree, so one retry is
+a fair test and repeating it is not. `context already done` means the run's
+own context was already dead when it would have inspected, so re-run with a
+live context. `unborn head` means the repository has no commits, which no
+retry can change. `verification-failed` means the `verification` object is
+there; report it, fix the workspace, and re-run. Any other word means report
+it with its object when one exists (`writes`, `verification`, or the worker's
+`failure`) and stop.
 
 ## Boundaries
 

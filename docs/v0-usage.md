@@ -402,36 +402,34 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 
 - `--writes <paths>` optionally declares, as a comma-separated list, the
   workspace-relative paths a task intends to write; whitespace around
-  each comma-separated path is ignored, and each value is cleaned where
-  it is compared, so
-  `src/a/`, `./src/a`, `src//a`, `src/./a`, and a non-escaping interior
-  `..` all name `src/a`. An absolute path is rejected before any worker
-  starts, and the rejection names the remedy — declare paths relative
-  to the workspace. In a run with more than one task, `--writes` binds
-  positionally, to the task most recently introduced by `--task` or
-  `--task-file`, and must follow the task it applies to — placed before
-  them all, no task can be named and the run is rejected with the remedy
-  stated. In a run with exactly one task the order carries nothing:
-  `--writes` may appear anywhere in the argument list, before the
-  `--task` or `--task-file` included, and a prompt read from stdin — a
-  run with no task flag at all — declares its writes the same way. It
-  may appear at most once per task. An empty value, `--writes ""`,
-  declares
-  that the task writes nothing; whitespace-only is the same declaration
-  because the flag already trims. The empty string is the one spelling
-  that cannot collide with a real path. A task that declared the empty
-  set has declared: when every task in the run declared — the empty
+  each comma-separated path is ignored, and each value is cleaned
+  where it is compared, so `src/a/`, `./src/a`, `src//a`,
+  `src/./a`, and a non-escaping interior `..` all name `src/a`. An
+  absolute path is rejected before any worker starts, and the rejection
+  names the remedy — declare paths relative to the workspace. In a run
+  with more than one task, `--writes` binds positionally, to the task
+  most recently introduced by `--task` or `--task-file`, and must
+  follow the task it applies to — placed before them all, no task can
+  be named and the run is rejected with the remedy stated. In a run
+  with exactly one task the order carries nothing: `--writes` may
+  appear anywhere in the argument list, before the `--task` or
+  `--task-file` included, and a prompt read from stdin — a run with no
+  task flag at all — declares its writes the same way. It may appear at
+  most once per task. An empty value, `--writes ""`, declares that the
+  task writes nothing; whitespace-only is the same declaration because
+  the flag already trims. The empty string is the one spelling that
+  cannot collide with a real path. A task that declared the empty set
+  has declared: when every task in the run declared — the empty
   declaration included — and the change manifest was measured, the
   post-run check runs, so a read-only round can be proven to have
   written nothing rather than merely asserted to. Only a measured
   manifest makes that proof: on an unborn HEAD, a dead context, a
   failed measurement, an unconfirmed work tree, or a manifest omitted
-  for any of those reasons,
-  the check skips with `change manifest unavailable` and the run exits
-  `0`, whatever was declared. A dirty before-state is measured rather
-  than skipped, so there the check runs. A checked run that changed
-  nothing reports a clean verdict; one that changed a path reports it
-  undeclared and exits `4`.
+  for any of those reasons, the check skips with `change manifest
+  unavailable` and the run exits `0`, whatever was declared. A dirty
+  before-state is measured rather than skipped, so there the check
+  runs. A checked run that changed nothing reports a clean verdict; one
+  that changed a path reports it undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per
@@ -487,10 +485,12 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `git`, when the run moved HEAD, the branch, or the stash list:
     `before` and `after` states, each with `head`, `branch`, `dirty`,
     and `stashes`
-  A run that started can still emit no document: once the run itself fails
-  rather than merely finishing badly — it ran out of time, it was cancelled,
-  or it could not complete at all — no document is emitted, deliberately,
-  rather than a partial one, and only the exit code and stderr remain.
+  A run that started emits a document on every terminal status, timed-out
+  and cancelled included; the no-document shapes are only the aborted ones
+  — a usage or write-declaration rejection before any worker ran, an
+  internal failure, or a timeout or cancellation landing while the `--verify`
+  check runs — deliberately, rather than a partial one, and only the exit
+  code and stderr remain.
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
