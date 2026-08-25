@@ -152,8 +152,12 @@ func ensureCleanWorktree(ctx context.Context, root string) error {
 	if err != nil {
 		return fmt.Errorf("verify git repository root: %w", err)
 	}
-	reportedRoot := filepath.Clean(strings.TrimSpace(string(topLevel)))
-	if reportedRoot != filepath.Clean(root) {
+	reportedRoot := strings.TrimSpace(string(topLevel))
+	match, err := sameDirectory(root, reportedRoot)
+	if err != nil {
+		return fmt.Errorf("verify git repository root: %w", err)
+	}
+	if !match {
 		return fmt.Errorf("git repository root %q does not match discovered root %q", reportedRoot, root)
 	}
 
@@ -165,6 +169,23 @@ func ensureCleanWorktree(ctx context.Context, root string) error {
 		return fmt.Errorf("working tree has uncommitted changes")
 	}
 	return nil
+}
+
+// sameDirectory reports whether a and b name the same directory. It compares
+// directory identity rather than spelling, so that a symlinked path or a
+// different case spelling on a case-insensitive filesystem cannot defeat the
+// repository-root check. A path that cannot be stat'ed is a failure, not a
+// pass.
+func sameDirectory(a, b string) (bool, error) {
+	aInfo, err := os.Stat(a)
+	if err != nil {
+		return false, err
+	}
+	bInfo, err := os.Stat(b)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(aInfo, bInfo), nil
 }
 
 func resolveRepositoryHead(ctx context.Context, root string) (string, error) {

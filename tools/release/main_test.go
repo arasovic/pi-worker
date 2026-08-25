@@ -92,12 +92,18 @@ func TestSanitizedGitEnvironmentRemovesRepositoryRedirects(t *testing.T) {
 
 func TestEnsureCleanWorktreeRejectsMismatchedGitTopLevel(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "repo")
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	for _, dir := range []string{root, elsewhere} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	oldRunGitCommand := runGitCommand
 	calls := 0
 	runGitCommand = func(_ context.Context, cmd *exec.Cmd) ([]byte, error) {
 		calls++
 		if reflect.DeepEqual(cmd.Args, []string{"git", "-C", root, "rev-parse", "--show-toplevel"}) {
-			return []byte(filepath.Join(root, "elsewhere") + "\n"), nil
+			return []byte(elsewhere + "\n"), nil
 		}
 		t.Fatalf("unexpected git command after top-level mismatch: %q", cmd.Args)
 		return nil, nil
@@ -115,6 +121,9 @@ func TestEnsureCleanWorktreeRejectsMismatchedGitTopLevel(t *testing.T) {
 
 func TestEnsureCleanWorktreeRejectsUntrackedFileStatus(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	oldRunGitCommand := runGitCommand
 	runGitCommand = func(_ context.Context, cmd *exec.Cmd) ([]byte, error) {
 		switch {
@@ -268,7 +277,11 @@ func TestRunUsesRepositoryRootFromNestedWorkingDirectory(t *testing.T) {
 	oldBuild := runReleaseBuild
 	var got releaseartifact.Options
 	runGitCommand = func(_ context.Context, cmd *exec.Cmd) ([]byte, error) {
-		if len(cmd.Args) < 4 || cmd.Args[0] != "git" || cmd.Args[1] != "-C" || filepath.Clean(cmd.Args[2]) != repoRoot {
+		if len(cmd.Args) < 4 || cmd.Args[0] != "git" || cmd.Args[1] != "-C" {
+			t.Fatalf("git command = %q", cmd.Args)
+		}
+		rootMatch, rootErr := sameDirectory(cmd.Args[2], repoRoot)
+		if rootErr != nil || !rootMatch {
 			t.Fatalf("git command = %q, want repository root %q", cmd.Args, repoRoot)
 		}
 		switch {
@@ -284,7 +297,11 @@ func TestRunUsesRepositoryRootFromNestedWorkingDirectory(t *testing.T) {
 		}
 	}
 	runCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
-		if name == "go" && len(args) == 4 && args[0] == "-C" && filepath.Clean(args[1]) == repoRoot && args[2] == "mod" && args[3] == "verify" {
+		if name == "go" && len(args) == 4 && args[0] == "-C" && args[2] == "mod" && args[3] == "verify" {
+			rootMatch, rootErr := sameDirectory(args[1], repoRoot)
+			if rootErr != nil || !rootMatch {
+				t.Fatalf("command = %s %v, want repository root %q", name, args, repoRoot)
+			}
 			return []byte("all modules verified\n"), nil
 		}
 		if name == "go" && len(args) == 2 && args[0] == "env" && args[1] == "GOMODCACHE" {
@@ -320,6 +337,67 @@ func TestRunUsesRepositoryRootFromNestedWorkingDirectory(t *testing.T) {
 	}
 	if got.Version != "v0.1.0" {
 		t.Fatalf("release build was not invoked: %#v", got)
+	}
+}
+
+func TestEnsureCleanWorktreeAcceptsAlternativeSpellingOfSameRoot(t *testing.T) {
+	temp := t.TempDir()
+	realDir := filepath.Join(temp, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(temp, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	oldRunGitCommand := runGitCommand
+	runGitCommand = func(_ context.Context, cmd *exec.Cmd) ([]byte, error) {
+		switch {
+		case reflect.DeepEqual(cmd.Args, []string{"git", "-C", realDir, "rev-parse", "--show-toplevel"}):
+			return []byte(linkDir + "\n"), nil
+		case reflect.DeepEqual(cmd.Args, []string{"git", "-C", realDir, "status", "--short", "--untracked-files=all"}):
+			return nil, nil
+		default:
+			t.Fatalf("unexpected git command: %q", cmd.Args)
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() { runGitCommand = oldRunGitCommand })
+
+	if err := ensureCleanWorktree(context.Background(), realDir); err != nil {
+		t.Fatalf("ensureCleanWorktree() error = %v, want symlinked top-level accepted", err)
+	}
+}
+
+func TestEnsureCleanWorktreeRejectsUnstatableRepositoryRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reportedRoot := filepath.Join(t.TempDir(), "git-toplevel")
+	// Pin the stat failure on the *reported* root, not the discovered one:
+	// root comes from RepositoryRoot(), which just stat'ed go.mod inside it,
+	// and `git -C root` ran successfully, so the first stat in sameDirectory
+	// cannot fail in a real run. The path git reports is untrusted input and
+	// can name a worktree directory that no longer exists (the repository or
+	// a linked worktree was moved or deleted), so an un-stat-able reported
+	// root must fail closed rather than count as a match.
+	oldRunGitCommand := runGitCommand
+	runGitCommand = func(_ context.Context, cmd *exec.Cmd) ([]byte, error) {
+		switch {
+		case reflect.DeepEqual(cmd.Args, []string{"git", "-C", root, "rev-parse", "--show-toplevel"}):
+			return []byte(reportedRoot + "\n"), nil
+		case reflect.DeepEqual(cmd.Args, []string{"git", "-C", root, "status", "--short", "--untracked-files=all"}):
+			return nil, nil
+		default:
+			t.Fatalf("unexpected git command: %q", cmd.Args)
+			return nil, nil
+		}
+	}
+	t.Cleanup(func() { runGitCommand = oldRunGitCommand })
+
+	if err := ensureCleanWorktree(context.Background(), root); err == nil {
+		t.Fatal("ensureCleanWorktree() = nil, want an error for an un-stat-able reported repository root")
 	}
 }
 
