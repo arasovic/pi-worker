@@ -215,8 +215,12 @@ func waitGate(t *testing.T, gate chan struct{}) {
 }
 
 // validRequest is the minimal accepted controller request.
-func validRequest(tasks ...string) Request {
-	return Request{Model: "acme/m-1", Tasks: tasks, Workspace: "/workspace"}
+func validRequest(prompts ...string) Request {
+	records := make([]Task, len(prompts))
+	for i, prompt := range prompts {
+		records[i] = Task{Prompt: prompt}
+	}
+	return Request{Model: "acme/m-1", Tasks: records, Workspace: "/workspace"}
 }
 
 func TestControllerPassesOneThinkingLevelToAllWorkers(t *testing.T) {
@@ -224,7 +228,7 @@ func TestControllerPassesOneThinkingLevelToAllWorkers(t *testing.T) {
 	result, err := New(worker).Run(context.Background(), Request{
 		Model:         "acme/m-1",
 		ThinkingLevel: pi.ThinkingMax,
-		Tasks:         []string{"a", "b", "c"},
+		Tasks:         []Task{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}},
 		Workspace:     "/workspace",
 	})
 	if err != nil {
@@ -251,8 +255,8 @@ func TestControllerRejectsInvalidRequestsBeforeStartingWorkers(t *testing.T) {
 	}{
 		{name: "zero tasks", req: validRequest()},
 		{name: "four tasks", req: validRequest("a", "b", "c", "d")},
-		{name: "empty model", req: Request{Tasks: []string{"a"}, Workspace: "/workspace"}},
-		{name: "empty workspace", req: Request{Model: "acme/m-1", Tasks: []string{"a"}}},
+		{name: "empty model", req: Request{Tasks: []Task{{Prompt: "a"}}, Workspace: "/workspace"}},
+		{name: "empty workspace", req: Request{Model: "acme/m-1", Tasks: []Task{{Prompt: "a"}}}},
 		{name: "empty task", req: validRequest("a", " ")},
 		{name: "empty task first", req: validRequest(" ", "b")},
 	}
@@ -275,31 +279,27 @@ func TestControllerRejectsInvalidRequestsBeforeStartingWorkers(t *testing.T) {
 
 func TestControllerRejectsInvalidDeclaredWritesBeforeStartingWorkers(t *testing.T) {
 	tests := []struct {
-		name   string
-		tasks  []string
-		writes []WriteDeclaration
+		name  string
+		tasks []Task
 	}{
-		{name: "writes shorter than tasks", tasks: []string{"a", "b"}, writes: []WriteDeclaration{declaredPaths("src/a")}},
-		{name: "writes longer than tasks", tasks: []string{"a", "b"}, writes: []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b"), declaredPaths("src/c")}},
-		{name: "empty path", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("")}},
-		{name: "whitespace path", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("   ")}},
-		{name: "absolute path", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("/etc/passwd")}},
-		{name: "escapes workspace", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("../outside")}},
-		{name: "escapes workspace deep", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("src/../../outside")}},
-		{name: "cleans to workspace escape", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("a/../..")}},
-		{name: "whole workspace dot", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths(".")}},
-		{name: "whole workspace dot slash", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("./")}},
-		{name: "duplicate within task", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("src/a", "src/a")}},
-		{name: "duplicate after cleaning", tasks: []string{"a"}, writes: []WriteDeclaration{declaredPaths("src/a", "./src/a")}},
+		{name: "empty path", tasks: []Task{{Prompt: "a", Writes: declaredPaths("")}}},
+		{name: "whitespace path", tasks: []Task{{Prompt: "a", Writes: declaredPaths("   ")}}},
+		{name: "absolute path", tasks: []Task{{Prompt: "a", Writes: declaredPaths("/etc/passwd")}}},
+		{name: "escapes workspace", tasks: []Task{{Prompt: "a", Writes: declaredPaths("../outside")}}},
+		{name: "escapes workspace deep", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/../../outside")}}},
+		{name: "cleans to workspace escape", tasks: []Task{{Prompt: "a", Writes: declaredPaths("a/../..")}}},
+		{name: "whole workspace dot", tasks: []Task{{Prompt: "a", Writes: declaredPaths(".")}}},
+		{name: "whole workspace dot slash", tasks: []Task{{Prompt: "a", Writes: declaredPaths("./")}}},
+		{name: "duplicate within task", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a", "src/a")}}},
+		{name: "duplicate after cleaning", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a", "./src/a")}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			worker := newScriptedWorker()
-			req := validRequest(test.tasks...)
-			req.Writes = test.writes
+			req := Request{Model: "acme/m-1", Tasks: test.tasks, Workspace: "/workspace"}
 			result, err := New(worker).Run(context.Background(), req)
 			if err == nil {
-				t.Fatalf("Run accepted invalid writes %#v", test.writes)
+				t.Fatalf("Run accepted invalid writes %#v", test.tasks)
 			}
 			if result.Status != "" || len(result.Workers) != 0 {
 				t.Fatalf("invalid request returned a non-zero result: %#v", result)
@@ -314,53 +314,52 @@ func TestControllerRejectsInvalidDeclaredWritesBeforeStartingWorkers(t *testing.
 func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 	tests := []struct {
 		name    string
-		writes  []WriteDeclaration
+		tasks   []Task
 		wantErr string
 	}{
 		{
 			name:    "identical paths in two tasks",
-			writes:  []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/a")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "directory prefix on segment boundary",
-			writes:  []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/a/b.go")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/a/b.go")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`,
 		},
 		{
 			name:    "file under other task directory",
-			writes:  []WriteDeclaration{declaredPaths("src/a/b.go"), declaredPaths("src/a")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a/b.go")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a/b.go" and "src/a"`,
 		},
 		{
 			name:    "cleaning unifies paths",
-			writes:  []WriteDeclaration{declaredPaths("./src/a"), declaredPaths("src/a")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("./src/a")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "trailing slash unifies paths",
-			writes:  []WriteDeclaration{declaredPaths("src/a/"), declaredPaths("src/a")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a/")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "doubled separator unifies paths",
-			writes:  []WriteDeclaration{declaredPaths("src//a"), declaredPaths("src/a")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src//a")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "overlap inside multi-path task",
-			writes:  []WriteDeclaration{declaredPaths("src/a", "src/b"), declaredPaths("src/a/c.go")},
+			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Writes: declaredPaths("src/a/c.go")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/c.go"`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			worker := newScriptedWorker()
-			req := validRequest("a", "b")
-			req.Writes = test.writes
+			req := Request{Model: "acme/m-1", Tasks: test.tasks, Workspace: "/workspace"}
 			_, err := New(worker).Run(context.Background(), req)
 			if err == nil {
-				t.Fatalf("Run accepted overlapping writes %#v", test.writes)
+				t.Fatalf("Run accepted overlapping writes %#v", test.tasks)
 			}
 			if err.Error() != test.wantErr {
 				t.Fatalf("error = %q, want %q", err.Error(), test.wantErr)
@@ -374,22 +373,21 @@ func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 
 func TestControllerAcceptsDisjointDeclaredWrites(t *testing.T) {
 	tests := []struct {
-		name   string
-		writes []WriteDeclaration
+		name  string
+		tasks []Task
 	}{
-		{name: "no declaration", writes: nil},
-		{name: "declaration with nil entries", writes: []WriteDeclaration{{}, {}}},
-		{name: "disjoint files", writes: []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")}},
-		{name: "sibling prefix boundary", writes: []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/ab")}},
-		{name: "multi-path disjoint", writes: []WriteDeclaration{declaredPaths("src/a", "src/b"), declaredPaths("src/c")}},
-		{name: "one declares one does not", writes: []WriteDeclaration{declaredPaths("src/a"), {}}},
-		{name: "empty entry", writes: []WriteDeclaration{{Declared: true}, declaredPaths("src/a")}},
+		{name: "no declaration", tasks: []Task{{Prompt: "a"}, {Prompt: "b"}}},
+		{name: "declaration with nil entries", tasks: []Task{{Prompt: "a", Writes: WriteDeclaration{}}, {Prompt: "b", Writes: WriteDeclaration{}}}},
+		{name: "disjoint files", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/b")}}},
+		{name: "sibling prefix boundary", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/ab")}}},
+		{name: "multi-path disjoint", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Writes: declaredPaths("src/c")}}},
+		{name: "one declares one does not", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b"}}},
+		{name: "empty entry", tasks: []Task{{Prompt: "a", Writes: WriteDeclaration{Declared: true}}, {Prompt: "b", Writes: declaredPaths("src/a")}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			worker := newScriptedWorker()
-			req := validRequest("a", "b")
-			req.Writes = test.writes
+			req := Request{Model: "acme/m-1", Tasks: test.tasks, Workspace: "/workspace"}
 			result, err := New(worker).Run(context.Background(), req)
 			if err != nil {
 				t.Fatalf("run: %v", err)
@@ -758,7 +756,7 @@ func TestControllerLabelsDebugLinesWithWorkerIdentity(t *testing.T) {
 	worker := newScriptedWorker()
 	result, err := New(worker).Run(context.Background(), Request{
 		Model:     "acme/m-1",
-		Tasks:     []string{"a", "b", "c"},
+		Tasks:     []Task{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}},
 		Workspace: "/workspace",
 		Debug:     sink,
 	})

@@ -34,24 +34,24 @@ type WriteDeclaration struct {
 	Paths    []string
 }
 
+// Task is one accepted unit of work: the prompt a worker runs and,
+// optionally, what that task declares it will write.
+type Task struct {
+	Prompt string
+	Writes WriteDeclaration
+}
+
 // Request describes one bounded parallel run: every accepted task runs
 // concurrently through the same worker with the same model and workspace.
 type Request struct {
 	Model         string
 	ThinkingLevel pi.ThinkingLevel
-	Tasks         []string
+	Tasks         []Task
 	Workspace     string
 	// Verify is the command run in the workspace after a completed run
 	// to check the finished work, split into argv; empty disables
 	// verification.
 	Verify []string
-	// Writes optionally declares, per task, the workspace-relative paths
-	// that task intends to write. A zero-value entry — Declared false —
-	// declares nothing for that task, and an entry with Declared true
-	// and an empty Paths declares the task writes nothing. When two
-	// tasks declare overlapping paths the run is rejected before any
-	// worker starts.
-	Writes []WriteDeclaration
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
@@ -196,12 +196,12 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	var wg sync.WaitGroup
 	for i, task := range req.Tasks {
 		wg.Add(1)
-		go func(index int, task string) {
+		go func(index int, task Task) {
 			defer wg.Done()
 			results[index] = c.worker.Run(ctx, pi.WorkerRequest{
 				Model:         req.Model,
 				ThinkingLevel: req.ThinkingLevel,
-				Prompt:        task,
+				Prompt:        task.Prompt,
 				Workspace:     req.Workspace,
 				WorkerID:      index + 1,
 				Debug:         req.Debug,
@@ -267,14 +267,14 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 	// The write check runs after the change manifest, on every terminal
-	// status, whenever the request carried a write declaration: a run
-	// that stopped mid-edit is exactly the run whose stray writes a
-	// caller most needs to know about. It is pure comparison over the
+	// status, whenever the run carried a write declaration: a run that
+	// stopped mid-edit is exactly the run whose stray writes a caller
+	// most needs to know about. It is pure comparison over the
 	// manifest and the declaration in memory — no commands, so no
 	// context and no timeout of its own. No declaration, no field:
 	// silence means the caller never asked.
-	if req.Writes != nil {
-		result.Writes = checkWrites(result.Changes, req.Writes)
+	if anyWritesDeclared(req.Tasks) {
+		result.Writes = checkWrites(result.Changes, req.Tasks)
 	}
 	// Verification runs once for the whole run after every worker has
 	// settled, and only on a completed run with a live context: a partial
@@ -292,12 +292,14 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 
 // validate checks the request before any worker starts: a non-empty model,
 // a non-empty workspace, between 1 and MaxTasks tasks, no empty task after
-// trimming whitespace, and — when Writes is present — exactly one write
-// entry per task whose declared paths are normalized and checked. The
-// write declaration is pure input validation: nothing is read from the
-// workspace, and the declaration never reaches a worker and restricts
-// nothing while the run is in progress; once the run has ended it is
-// compared against the change manifest.
+// trimming whitespace, and every declared write path normalized and
+// checked. A task record with Declared false declares nothing for that
+// task; a Declared true entry with an empty Paths — the writes-nothing
+// declaration — has no paths to reject and none to overlap with another
+// task's. The write declaration is pure input validation: nothing is read
+// from the workspace, and the declaration never reaches a worker and
+// restricts nothing while the run is in progress; once the run has ended it
+// is compared against the change manifest.
 func validate(req Request) error {
 	if req.Model == "" {
 		return fmt.Errorf("model is required")
@@ -312,20 +314,13 @@ func validate(req Request) error {
 		return fmt.Errorf("at most %d tasks are supported, got %d", MaxTasks, len(req.Tasks))
 	}
 	for i, task := range req.Tasks {
-		if strings.TrimSpace(task) == "" {
+		if strings.TrimSpace(task.Prompt) == "" {
 			return fmt.Errorf("task %d is empty", i+1)
 		}
 	}
-	// Writes is either nil or exactly as long as Tasks; a shorter or
-	// longer slice is a validation error. An entry with Declared false
-	// declares nothing for that task, as today; a Declared true entry
-	// with an empty Paths — the writes-nothing declaration — has no
-	// paths to reject and none to overlap with another task's.
-	if req.Writes != nil && len(req.Writes) != len(req.Tasks) {
-		return fmt.Errorf("writes must declare one entry per task: got %d entries for %d tasks", len(req.Writes), len(req.Tasks))
-	}
 	normalized := make([][]string, len(req.Tasks))
-	for i, entry := range req.Writes {
+	for i, task := range req.Tasks {
+		entry := task.Writes
 		if !entry.Declared || len(entry.Paths) == 0 {
 			continue
 		}
