@@ -14,10 +14,12 @@ import (
 )
 
 // scriptedWorker is a concurrency-safe scripted Worker for controller
-// tests. It records every invocation and its prompt, tracks the peak
-// number of concurrently running calls, and returns the scripted result
-// for each prompt (a completed result by default). Optional gates
-// deterministically control timing:
+// tests. It records every invocation and its prompt, the model and
+// thinking level each worker was given (keyed by worker identity, which
+// the controller assigns 1..N), tracks the peak number of concurrently
+// running calls, and returns the scripted result for each prompt (a
+// completed result by default). Optional gates deterministically control
+// timing:
 //
 //   - gate, when set, is closed as soon as gateAt calls are concurrently
 //     running, and every call blocks until it closes. This proves all
@@ -42,12 +44,18 @@ import (
 type scriptedWorker struct {
 	mu        sync.Mutex
 	prompts   []string
-	thinking  []pi.ThinkingLevel
 	completed []string
 	ctxs      []context.Context
 	active    int
 	maxActive int
 	holding   int
+
+	// modelPerWorker and thinkingPerWorker record the request each
+	// worker identity received, so tests can assert per worker regardless
+	// of the nondeterministic order in which concurrent starts append to
+	// the ordered slices above.
+	modelPerWorker    map[int]string
+	thinkingPerWorker map[int]pi.ThinkingLevel
 
 	gate             chan struct{}
 	gateAt           int
@@ -61,13 +69,18 @@ type scriptedWorker struct {
 }
 
 func newScriptedWorker() *scriptedWorker {
-	return &scriptedWorker{results: map[string]pi.WorkerResult{}}
+	return &scriptedWorker{
+		results:           map[string]pi.WorkerResult{},
+		modelPerWorker:    map[int]string{},
+		thinkingPerWorker: map[int]pi.ThinkingLevel{},
+	}
 }
 
 func (w *scriptedWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
 	w.mu.Lock()
 	w.prompts = append(w.prompts, req.Prompt)
-	w.thinking = append(w.thinking, req.ThinkingLevel)
+	w.modelPerWorker[req.WorkerID] = req.Model
+	w.thinkingPerWorker[req.WorkerID] = req.ThinkingLevel
 	w.ctxs = append(w.ctxs, ctx)
 	w.active++
 	if w.active > w.maxActive {
@@ -137,10 +150,16 @@ func (w *scriptedWorker) promptsSeen() []string {
 	return append([]string(nil), w.prompts...)
 }
 
-func (w *scriptedWorker) thinkingSeen() []pi.ThinkingLevel {
+func (w *scriptedWorker) modelForWorker(id int) string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return append([]pi.ThinkingLevel(nil), w.thinking...)
+	return w.modelPerWorker[id]
+}
+
+func (w *scriptedWorker) thinkingForWorker(id int) pi.ThinkingLevel {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.thinkingPerWorker[id]
 }
 
 func (w *scriptedWorker) completionOrder() []string {
@@ -214,22 +233,27 @@ func waitGate(t *testing.T, gate chan struct{}) {
 	}
 }
 
-// validRequest is the minimal accepted controller request.
+// validRequest is the minimal accepted controller request: every task
+// carries the same valid model.
 func validRequest(prompts ...string) Request {
 	records := make([]Task, len(prompts))
 	for i, prompt := range prompts {
-		records[i] = Task{Prompt: prompt}
+		records[i] = Task{Prompt: prompt, Model: "acme/m-1"}
 	}
-	return Request{Model: "acme/m-1", Tasks: records, Workspace: "/workspace"}
+	return Request{Tasks: records, Workspace: "/workspace"}
 }
 
-func TestControllerPassesOneThinkingLevelToAllWorkers(t *testing.T) {
+func TestControllerPassesEachTaskThinkingLevelToItsWorker(t *testing.T) {
+	// Two tasks on the same model at different thinking levels: each
+	// worker receives its own task's level, and the levels do not leak
+	// into one another.
 	worker := newScriptedWorker()
 	result, err := New(worker).Run(context.Background(), Request{
-		Model:         "acme/m-1",
-		ThinkingLevel: pi.ThinkingMax,
-		Tasks:         []Task{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}},
-		Workspace:     "/workspace",
+		Tasks: []Task{
+			{Prompt: "a", Model: "acme/m-1", ThinkingLevel: pi.ThinkingOff},
+			{Prompt: "b", Model: "acme/m-1", ThinkingLevel: pi.ThinkingMax},
+		},
+		Workspace: "/workspace",
 	})
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -237,13 +261,35 @@ func TestControllerPassesOneThinkingLevelToAllWorkers(t *testing.T) {
 	if result.Status != contracts.RunCompleted {
 		t.Fatalf("status = %q", result.Status)
 	}
-	levels := worker.thinkingSeen()
-	if len(levels) != 3 {
-		t.Fatalf("thinking observations = %v", levels)
+	for i, want := range []pi.ThinkingLevel{pi.ThinkingOff, pi.ThinkingMax} {
+		if got := worker.thinkingForWorker(i + 1); got != want {
+			t.Fatalf("worker %d thinking = %q, want %q", i+1, got, want)
+		}
 	}
-	for i, level := range levels {
-		if level != pi.ThinkingMax {
-			t.Fatalf("worker %d thinking = %q, want max", i+1, level)
+}
+
+func TestControllerPassesEachTaskModelToItsWorker(t *testing.T) {
+	// Three tasks, three different models, one run: every worker
+	// receives its own task's model, asserted per worker rather than in
+	// aggregate.
+	worker := newScriptedWorker()
+	result, err := New(worker).Run(context.Background(), Request{
+		Tasks: []Task{
+			{Prompt: "a", Model: "acme/m-1"},
+			{Prompt: "b", Model: "acme/m-2"},
+			{Prompt: "c", Model: "acme/m-3"},
+		},
+		Workspace: "/workspace",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("status = %q", result.Status)
+	}
+	for i, want := range []string{"acme/m-1", "acme/m-2", "acme/m-3"} {
+		if got := worker.modelForWorker(i + 1); got != want {
+			t.Fatalf("worker %d model = %q, want %q", i+1, got, want)
 		}
 	}
 }
@@ -256,7 +302,8 @@ func TestControllerRejectsInvalidRequestsBeforeStartingWorkers(t *testing.T) {
 		{name: "zero tasks", req: validRequest()},
 		{name: "four tasks", req: validRequest("a", "b", "c", "d")},
 		{name: "empty model", req: Request{Tasks: []Task{{Prompt: "a"}}, Workspace: "/workspace"}},
-		{name: "empty workspace", req: Request{Model: "acme/m-1", Tasks: []Task{{Prompt: "a"}}}},
+		{name: "empty model on second task", req: Request{Tasks: []Task{{Prompt: "a", Model: "acme/m-1"}, {Prompt: "b"}}, Workspace: "/workspace"}},
+		{name: "empty workspace", req: Request{Tasks: []Task{{Prompt: "a", Model: "acme/m-1"}}, Workspace: ""}},
 		{name: "empty task", req: validRequest("a", " ")},
 		{name: "empty task first", req: validRequest(" ", "b")},
 	}
@@ -282,21 +329,21 @@ func TestControllerRejectsInvalidDeclaredWritesBeforeStartingWorkers(t *testing.
 		name  string
 		tasks []Task
 	}{
-		{name: "empty path", tasks: []Task{{Prompt: "a", Writes: declaredPaths("")}}},
-		{name: "whitespace path", tasks: []Task{{Prompt: "a", Writes: declaredPaths("   ")}}},
-		{name: "absolute path", tasks: []Task{{Prompt: "a", Writes: declaredPaths("/etc/passwd")}}},
-		{name: "escapes workspace", tasks: []Task{{Prompt: "a", Writes: declaredPaths("../outside")}}},
-		{name: "escapes workspace deep", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/../../outside")}}},
-		{name: "cleans to workspace escape", tasks: []Task{{Prompt: "a", Writes: declaredPaths("a/../..")}}},
-		{name: "whole workspace dot", tasks: []Task{{Prompt: "a", Writes: declaredPaths(".")}}},
-		{name: "whole workspace dot slash", tasks: []Task{{Prompt: "a", Writes: declaredPaths("./")}}},
-		{name: "duplicate within task", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a", "src/a")}}},
-		{name: "duplicate after cleaning", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a", "./src/a")}}},
+		{name: "empty path", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("")}}},
+		{name: "whitespace path", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("   ")}}},
+		{name: "absolute path", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("/etc/passwd")}}},
+		{name: "escapes workspace", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("../outside")}}},
+		{name: "escapes workspace deep", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/../../outside")}}},
+		{name: "cleans to workspace escape", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("a/../..")}}},
+		{name: "whole workspace dot", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths(".")}}},
+		{name: "whole workspace dot slash", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("./")}}},
+		{name: "duplicate within task", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a", "src/a")}}},
+		{name: "duplicate after cleaning", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a", "./src/a")}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			worker := newScriptedWorker()
-			req := Request{Model: "acme/m-1", Tasks: test.tasks, Workspace: "/workspace"}
+			req := Request{Tasks: test.tasks, Workspace: "/workspace"}
 			result, err := New(worker).Run(context.Background(), req)
 			if err == nil {
 				t.Fatalf("Run accepted invalid writes %#v", test.tasks)
@@ -319,44 +366,44 @@ func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 	}{
 		{
 			name:    "identical paths in two tasks",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "directory prefix on segment boundary",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/a/b.go")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a/b.go")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`,
 		},
 		{
 			name:    "file under other task directory",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a/b.go")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a/b.go")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a/b.go" and "src/a"`,
 		},
 		{
 			name:    "cleaning unifies paths",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("./src/a")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("./src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "trailing slash unifies paths",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a/")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a/")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "doubled separator unifies paths",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src//a")}, {Prompt: "b", Writes: declaredPaths("src/a")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src//a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a"`,
 		},
 		{
 			name:    "overlap inside multi-path task",
-			tasks:   []Task{{Prompt: "a", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Writes: declaredPaths("src/a/c.go")}},
+			tasks:   []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a/c.go")}},
 			wantErr: `task 1 and task 2 declare overlapping write paths "src/a" and "src/a/c.go"`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			worker := newScriptedWorker()
-			req := Request{Model: "acme/m-1", Tasks: test.tasks, Workspace: "/workspace"}
+			req := Request{Tasks: test.tasks, Workspace: "/workspace"}
 			_, err := New(worker).Run(context.Background(), req)
 			if err == nil {
 				t.Fatalf("Run accepted overlapping writes %#v", test.tasks)
@@ -376,18 +423,18 @@ func TestControllerAcceptsDisjointDeclaredWrites(t *testing.T) {
 		name  string
 		tasks []Task
 	}{
-		{name: "no declaration", tasks: []Task{{Prompt: "a"}, {Prompt: "b"}}},
-		{name: "declaration with nil entries", tasks: []Task{{Prompt: "a", Writes: WriteDeclaration{}}, {Prompt: "b", Writes: WriteDeclaration{}}}},
-		{name: "disjoint files", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/b")}}},
-		{name: "sibling prefix boundary", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b", Writes: declaredPaths("src/ab")}}},
-		{name: "multi-path disjoint", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Writes: declaredPaths("src/c")}}},
-		{name: "one declares one does not", tasks: []Task{{Prompt: "a", Writes: declaredPaths("src/a")}, {Prompt: "b"}}},
-		{name: "empty entry", tasks: []Task{{Prompt: "a", Writes: WriteDeclaration{Declared: true}}, {Prompt: "b", Writes: declaredPaths("src/a")}}},
+		{name: "no declaration", tasks: []Task{{Prompt: "a", Model: "acme/m-1"}, {Prompt: "b", Model: "acme/m-1"}}},
+		{name: "declaration with nil entries", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: WriteDeclaration{}}, {Prompt: "b", Model: "acme/m-1", Writes: WriteDeclaration{}}}},
+		{name: "disjoint files", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/b")}}},
+		{name: "sibling prefix boundary", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/ab")}}},
+		{name: "multi-path disjoint", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/c")}}},
+		{name: "one declares one does not", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1"}}},
+		{name: "empty entry", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: WriteDeclaration{Declared: true}}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			worker := newScriptedWorker()
-			req := Request{Model: "acme/m-1", Tasks: test.tasks, Workspace: "/workspace"}
+			req := Request{Tasks: test.tasks, Workspace: "/workspace"}
 			result, err := New(worker).Run(context.Background(), req)
 			if err != nil {
 				t.Fatalf("run: %v", err)
@@ -755,8 +802,7 @@ func TestControllerLabelsDebugLinesWithWorkerIdentity(t *testing.T) {
 	sink := pi.NewDebugSink(&buf)
 	worker := newScriptedWorker()
 	result, err := New(worker).Run(context.Background(), Request{
-		Model:     "acme/m-1",
-		Tasks:     []Task{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}},
+		Tasks:     []Task{{Prompt: "a", Model: "acme/m-1"}, {Prompt: "b", Model: "acme/m-1"}, {Prompt: "c", Model: "acme/m-1"}},
 		Workspace: "/workspace",
 		Debug:     sink,
 	})

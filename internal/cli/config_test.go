@@ -239,6 +239,27 @@ func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestRunModelDefaultAppliesToEveryTaskWithoutItsOwn(t *testing.T) {
+	// With neither a task nor a run --model, the configured defaultModel
+	// applies to every task on a multi-task run, not only to the first.
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+
+	code, _, stderr := runCLI(t, []string{"run", "--task", "one", "--task", "two"}, "")
+	if code != 0 {
+		t.Fatalf("run default = (%d, %q)", code, stderr)
+	}
+	for i := 1; i <= 2; i++ {
+		if req := mustWorkerRequest(t, fake, i); req.Model != "acme/default" {
+			t.Fatalf("worker %d model = %q, want the configured default", i, req.Model)
+		}
+	}
+}
+
 func TestRunThinkingUsesSavedModelWithoutPersistingEffort(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
