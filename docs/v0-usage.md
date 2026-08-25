@@ -189,7 +189,7 @@ pi-worker skill status [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--model <provider/model>] [--thinking <level>] [--task <prompt> | --task-file <path>]... [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]
+pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]
 ```
 
 ## Personal default model
@@ -216,9 +216,9 @@ Replace the provider/model placeholder with one exact selector printed by
   fallback.
 - Configuration writes use a same-directory temporary file, file sync, atomic
   replacement, and owner-only permissions where supported.
-- Model precedence is explicit `run --model`, then the configured
-  `defaultModel`, then a usage error (exit `2`). When no model resolves, stdin
-  is not read.
+- Model precedence is a task's own `--model`, then the run-level
+  `--model`, then the configured `defaultModel`, then a usage error
+  (exit `2`). When no model resolves, stdin is not read.
 
 ## Behavior
 
@@ -231,8 +231,11 @@ Replace the provider/model placeholder with one exact selector printed by
   effective model and thinking state fail-closed.
 
 - `--model` must be an exact `provider/model` string.
-- An explicit `--model` always wins over the configured default and does not
-  read or rewrite the configuration document.
+- A task's own `--model` wins over the run-level one, and an explicit
+  `--model` at either level always wins over the configured default.
+  `--model` never rewrites the configuration document, and the configured
+  default is read only when some task will fall back to it — never when
+  every task names its own model.
 - `run` resolves the model by:
   1. `get_available_models`
   2. exact catalog match
@@ -243,7 +246,9 @@ Replace the provider/model placeholder with one exact selector printed by
 ### Thinking level
 
 - `--thinking` accepts exactly `off`, `minimal`, `low`, `medium`, `high`,
-  `xhigh`, or `max` and applies to every worker in the run.
+  `xhigh`, or `max`, binding per task like `--model`: one that follows a
+  `--task` or `--task-file` is that task's level, at most once per task,
+  and one that precedes every task is the run-level value.
 - Model and effort are separate: `provider/model:max` remains invalid.
 - After exact model activation, every worker calls `get_state` to confirm the
   active model and capture Pi's default `thinkingLevel`.
@@ -255,8 +260,10 @@ Replace the provider/model placeholder with one exact selector printed by
   warning, and continues. A successful task still exits `0`.
 - Malformed RPC data, transport failure, active-model mismatch, or a successful
   set that is not confirmed are hard failures; they never fall back.
-- When the flag is omitted, Pi's confirmed default is used and reported. The
-  configuration file does not persist a thinking default.
+- Omitting the flag is not the same as `off`: `off` is an explicit choice.
+  A task without its own level takes the run-level value, and when no
+  level is given anywhere the run uses Pi's confirmed default and reports
+  it. The configuration file does not persist a thinking default.
 - `models` and `doctor` do not enumerate thinking support because doing so
   requires activating a model; both commands remain inspection-only.
 
@@ -591,6 +598,15 @@ pi-worker run --model provider/model-id --thinking high --task-file ./task-a.txt
 ```sh
 pi-worker run --model provider/model-id --thinking high --task-file ./task-a.txt --task-file ./task-b.txt --task-file ./task-c.txt
 ```
+
+### Mixed models and effort across tasks
+
+```sh
+pi-worker run --model provider/model-id --thinking high --task-file ./task-a.txt --task-file ./task-b.txt --model provider/other-id --thinking max
+```
+
+The flags that follow a task bind to it: task a inherits the run-level
+pair, and task b carries its own model and effort.
 
 ### Stdin fallback
 
