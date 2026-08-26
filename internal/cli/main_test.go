@@ -573,6 +573,10 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "repeated writes for one task", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
 		{name: "repeated writes for one task file", args: []string{"run", "--model", "acme/m-1", "--task-file", "a", "--writes", "src/a", "--writes", "src/b"}, stdin: ""},
 		{name: "empty writes element", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a,,src/b"}, stdin: ""},
+		{name: "whitespace-only writes element", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a, "}, stdin: ""},
+		{name: "absolute writes path", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "/etc/passwd"}, stdin: ""},
+		{name: "writes path escapes workspace", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "../outside"}, stdin: ""},
+		{name: "writes whole workspace dot", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "."}, stdin: ""},
 		{name: "writes without value", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--writes"}, stdin: ""},
 	}
 	for _, test := range tests {
@@ -679,16 +683,23 @@ func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
 func TestRunWritesOverlapRejectedBeforeAnyWorkerStarts(t *testing.T) {
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", "src/a/b.go"}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
 	if fake.callCount() != 0 {
 		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty for rejected run", stdout)
 	}
+	// Escaping 9 is the point: the declaration is a usage error like any
+	// other argv mistake, so the usage block is printed along with it.
+	if !strings.Contains(stderr, "usage:") {
+		t.Fatalf("stderr missing usage text: %q", stderr)
+	}
 	if !strings.Contains(stderr, `pi-worker: task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`) {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	_ = code
 }
 
 func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) {
@@ -696,8 +707,11 @@ func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) 
 	// "docs/a.md, src/x" must reach validation as the same paths as
 	// "docs/a.md,src/x": the space after the comma is formatting, not part
 	// of the path, so the overlap with task two's "src/x" is still rejected
-	// before any worker starts.
+	// before any worker starts, as a usage error exiting 2.
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "docs/a.md, src/x", "--task", "two", "--writes", "src/x"}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
 	if fake.callCount() != 0 {
 		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
 	}
@@ -712,7 +726,69 @@ func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) 
 	if strings.Contains(stderr, `" src/x"`) {
 		t.Fatalf("stderr reports the untrimmed path: %q", stderr)
 	}
-	_ = code
+}
+
+func TestRunRejectedWritesDeclarationsExitTwoWithUnchangedControllerMessage(t *testing.T) {
+	// A bad --writes declaration used to fail the controller's validate
+	// and exit 9 as an internal failure. The CLI now validates the
+	// declaration in resolveRunInput, so the rejection is a usage error
+	// exiting 2 like every other argv mistake. The message text is the
+	// controller's message verbatim and is pinned here, so a future edit
+	// cannot quietly reword it while only changing the exit path.
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{
+			name:       "absolute path",
+			args:       []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "/etc/passwd"},
+			wantStderr: `pi-worker: task 1: write path "/etc/passwd" is absolute; declare paths relative to the workspace`,
+		},
+		{
+			name:       "path escapes workspace",
+			args:       []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "../outside"},
+			wantStderr: `pi-worker: task 1: write path "../outside" escapes the workspace`,
+		},
+		{
+			name:       "whole workspace dot",
+			args:       []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "."},
+			wantStderr: `pi-worker: task 1: write path "." declares the whole workspace`,
+		},
+		{
+			name:       "same path twice in one task",
+			args:       []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "src/a,src/a"},
+			wantStderr: `pi-worker: task 1 declares write path "src/a" more than once`,
+		},
+		{
+			name:       "overlap between tasks",
+			args:       []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", "src/a/b.go"},
+			wantStderr: `pi-worker: task 1 and task 2 declare overlapping write paths "src/a" and "src/a/b.go"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+			code, stdout, stderr := runCLI(t, test.args, "")
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			// Usage errors from resolveRunInput print the usage block; the
+			// write-declaration rejection must behave exactly like them.
+			if !strings.Contains(stderr, "usage:") {
+				t.Fatalf("stderr missing usage text: %q", stderr)
+			}
+			if !strings.Contains(stderr, test.wantStderr) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, test.wantStderr)
+			}
+			if fake.callCount() != 0 {
+				t.Fatalf("worker invoked %d times before rejection", fake.callCount())
+			}
+		})
+	}
 }
 
 func TestParseRunArgsEmptyWritesDeclaresEmptySet(t *testing.T) {

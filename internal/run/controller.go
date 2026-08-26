@@ -296,14 +296,11 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 // validate checks the request before any worker starts: a non-empty
 // workspace, between 1 and MaxTasks tasks, and every task carrying a
 // non-empty model and a non-empty prompt after trimming whitespace, plus
-// every declared write path normalized and checked. A task record with
-// Declared false declares nothing for that task; a Declared true entry
-// with an empty Paths — the writes-nothing declaration — has no paths to
-// reject and none to overlap with another task's. The write declaration
-// is pure input validation: nothing is read from the workspace, and the
-// declaration never reaches a worker and restricts nothing while the run
-// is in progress; once the run has ended it is compared against the
-// change manifest.
+// every declared write path checked by ValidateWrites. The write
+// declaration is pure input validation: nothing is read from the
+// workspace, and the declaration never reaches a worker and restricts
+// nothing while the run is in progress; once the run has ended it is
+// compared against the change manifest.
 func validate(req Request) error {
 	if req.Workspace == "" {
 		return fmt.Errorf("workspace is required")
@@ -322,8 +319,23 @@ func validate(req Request) error {
 			return fmt.Errorf("task %d is empty", i+1)
 		}
 	}
-	normalized := make([][]string, len(req.Tasks))
-	for i, task := range req.Tasks {
+	return ValidateWrites(req.Tasks)
+}
+
+// ValidateWrites checks the write declaration of every task: each
+// declared path validated and normalized, the rule that one task must
+// not declare the same path twice, and the rule that two tasks must not
+// declare overlapping paths. The CLI calls it on the resolved task
+// records so a bad declaration is a usage error before the controller
+// runs; the controller calls it again through validate, so a library
+// caller that skips the CLI is still protected and nothing about Run's
+// behaviour changes. A task record with Declared false declares nothing
+// for that task; a Declared true entry with an empty Paths — the
+// writes-nothing declaration — has no paths to reject and none to
+// overlap with another task's.
+func ValidateWrites(tasks []Task) error {
+	normalized := make([][]string, len(tasks))
+	for i, task := range tasks {
 		entry := task.Writes
 		if !entry.Declared || len(entry.Paths) == 0 {
 			continue

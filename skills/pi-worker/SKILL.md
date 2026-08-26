@@ -37,10 +37,9 @@ is rejected up front, not executed.
 
 Parse the single JSON document. A run can end without producing a document;
 then the exit code is the signal. An exit of 2 always means the command was
-rejected — fix your argv and re-run; an exit of 9 is either a rejected write
-declaration or an internal failure, and the stderr message is what separates
-them; an exit of 7 or 8 means it was cut short before it could report, so say
-so and stop rather than treating empty output as any kind of success. The
+rejected — fix your argv and re-run; an exit of 9 is an internal failure; an
+exit of 7 or 8 means it was cut short before it could report, so say so and
+stop rather than treating empty output as any kind of success. The
 rejection message is on stderr, not stdout — the documented invocation sends
 its debug output there too — so read stderr when no document appears. Report
 each worker's model, effective `thinkingLevel`, status, explanation, and

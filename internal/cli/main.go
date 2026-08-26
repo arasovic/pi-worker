@@ -205,6 +205,14 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 			records[i].Writes = opts.writes[i]
 		}
 	}
+	// The write declaration is validated here, on the resolved records,
+	// where every task's declaration is knowable: the overlap rule needs
+	// the whole run's declarations together, so it cannot run during
+	// parse. A bad declaration is a usage error like any other argv
+	// mistake and exits 2, before the controller runs.
+	if err := run.ValidateWrites(records); err != nil {
+		return opts, nil, err
+	}
 	return opts, records, nil
 }
 
@@ -360,11 +368,13 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		Debug:     debug,
 	})
 	if err != nil {
-		// Defensive: the CLI validates the input surface first, so a
-		// controller validation error here is an internal failure. A
-		// verification context that expired mid-check is not a check
-		// failure: the run ran out of time and exits like a timed-out
-		// run.
+		// Defensive: the CLI validates the input surface first — the
+		// write declaration through run.ValidateWrites in resolveRunInput
+		// like every other field — so a controller validation error here
+		// is unreachable from CLI input and really is an internal
+		// failure. A verification context that expired mid-check is not
+		// a check failure: the run ran out of time and exits like a
+		// timed-out run.
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
 		switch {
 		case errors.Is(err, context.DeadlineExceeded):
