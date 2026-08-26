@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,13 @@ type FileChange struct {
 	// that was already there and the run's share cannot be separated
 	// out. It is additive and optional, so schemaVersion stays 1.
 	DirtyBefore bool `json:"dirtyBefore,omitempty"`
+	// NoFinalNewline is true when the file's last byte is not a
+	// newline. It is a measurement, never a verdict: it makes no claim
+	// that the file is wrong and no claim about who produced it, so a
+	// modified file may have been like that before the run while an
+	// added one was produced that way by the run itself. It is
+	// additive and optional, so schemaVersion stays 1.
+	NoFinalNewline bool `json:"noFinalNewline,omitempty"`
 }
 
 // The file status values in the manifest.
@@ -337,7 +345,58 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 		changes.Files = changes.Files[:maxChangeFiles]
 		changes.Truncated = true
 	}
+	// The field is measured only over the entries actually reported: a
+	// path the cap dropped — or an untracked path that was listed but
+	// never measured — carries no field at all, exactly as Binary
+	// behaves. This is the first place the manifest reads file content
+	// at all: fileStamp is deliberately size, modification time and
+	// executable bit only, and one byte per listed file is a
+	// deliberate, bounded exception.
+	for i := range changes.Files {
+		measureNoFinalNewline(dir, &changes.Files[i])
+	}
 	return changes, nil
+}
+
+// measureNoFinalNewline reads the file's last byte and sets the
+// NoFinalNewline field when it is not a newline. The read is one byte,
+// never the whole file: os.ReadFile would pull a multi-gigabyte
+// artifact into memory to look at its last byte, which is exactly why
+// the obvious shorter code is the wrong code here. The field is best
+// effort and that is the whole error story: an Lstat failure (a
+// deleted file lands here for free), a path that is not a regular file
+// (which excludes symlinks — following a symlink measures the target
+// rather than the listed entry), a zero-size file, an entry git
+// already reported binary, and an open, seek, or read failure all
+// simply leave the
+// field unset: none produces an error, none adds an omission reason,
+// and none may fail the measurement.
+func measureNoFinalNewline(dir string, f *FileChange) {
+	if f.Binary {
+		return
+	}
+	info, err := os.Lstat(filepath.Join(dir, f.Path))
+	if err != nil {
+		return
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return
+	}
+	file, err := os.Open(filepath.Join(dir, f.Path))
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	if _, err := file.Seek(-1, io.SeekEnd); err != nil {
+		return
+	}
+	var last [1]byte
+	if _, err := io.ReadFull(file, last[:]); err != nil {
+		return
+	}
+	if last[0] != '\n' {
+		f.NoFinalNewline = true
+	}
 }
 
 // fileStamp is the identity clue captured for one path that was

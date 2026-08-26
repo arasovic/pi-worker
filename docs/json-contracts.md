@@ -241,6 +241,15 @@ Each entry in `files` carries:
   before the run started; the line counts are measured against the last
   commit rather than against the pre-run content, so they include work
   that was already there and the run's share cannot be separated out
+- `noFinalNewline`: present and `true` only when the file's last byte is
+  not a newline; it is descriptive, not a verdict — it makes no claim
+  that this is wrong and no claim about who did it. Together with
+  `status: "added"` it means the run produced the file that way;
+  together with `status: "modified"` it is ambiguous, because the file
+  may have been like that before the run. It is an attribute of listed
+  files, so a path the cap dropped carries no field. An absent field
+  means either that the file ends with a newline or that it could not
+  be examined; the field asserts something only when present
 
 `work tree not confirmed` is the reason the inspector could not confirm a
 work tree: the directory is not a git work tree, git is missing entirely,

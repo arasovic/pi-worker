@@ -2204,6 +2204,40 @@ func TestPrintChangesDirtyBeforeClause(t *testing.T) {
 	}
 }
 
+func TestPrintChangesNoFinalNewlineClause(t *testing.T) {
+	// An entry whose last byte is not a newline names the count on the
+	// header line, in its own parenthetical and only when the count is
+	// above zero: the per-file listing lines below stay unchanged. The
+	// field is a measurement, never a verdict, so the clause claims no
+	// fault — and when both parentheticals apply they print separated by
+	// a space, the dirty-before one first.
+	var stdout bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 2,
+		Files: []run.FileChange{
+			{Path: "src/a.go", Status: "modified", Added: 3, Deleted: 1, NoFinalNewline: true},
+			{Path: "README.md", Status: "added", Added: 8},
+		},
+	}, &stdout)
+	want := "changes: 2 files, +11/-1 (1 without a final newline)\n  src/a.go  +3/-1\n  README.md  +8/-0\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+
+	var both bytes.Buffer
+	printChanges(&run.Changes{
+		TotalFiles: 2,
+		Files: []run.FileChange{
+			{Path: "a.go", Status: "modified", Added: 1, DirtyBefore: true, NoFinalNewline: true},
+			{Path: "b.go", Status: "added", Added: 1, NoFinalNewline: true},
+		},
+	}, &both)
+	wantBoth := "changes: 2 files, +2/-0 (1 already modified before the run) (2 without a final newline)\n  a.go  +1/-0\n  b.go  +1/-0\n"
+	if got := both.String(); got != wantBoth {
+		t.Fatalf("output = %q, want %q", got, wantBoth)
+	}
+}
+
 // TestPrintWrites* build the run.WriteCheck struct directly and pin the
 // exact human rendering: printWrites renders, it does not sort, so every
 // fixture is already in the order the check produces (sorted by path).
