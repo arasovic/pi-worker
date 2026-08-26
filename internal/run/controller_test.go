@@ -56,6 +56,7 @@ type scriptedWorker struct {
 	// the ordered slices above.
 	modelPerWorker    map[int]string
 	thinkingPerWorker map[int]pi.ThinkingLevel
+	promptPerWorker   map[int]string
 
 	gate             chan struct{}
 	gateAt           int
@@ -73,6 +74,7 @@ func newScriptedWorker() *scriptedWorker {
 		results:           map[string]pi.WorkerResult{},
 		modelPerWorker:    map[int]string{},
 		thinkingPerWorker: map[int]pi.ThinkingLevel{},
+		promptPerWorker:   map[int]string{},
 	}
 }
 
@@ -81,6 +83,7 @@ func (w *scriptedWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.Worke
 	w.prompts = append(w.prompts, req.Prompt)
 	w.modelPerWorker[req.WorkerID] = req.Model
 	w.thinkingPerWorker[req.WorkerID] = req.ThinkingLevel
+	w.promptPerWorker[req.WorkerID] = req.Prompt
 	w.ctxs = append(w.ctxs, ctx)
 	w.active++
 	if w.active > w.maxActive {
@@ -160,6 +163,12 @@ func (w *scriptedWorker) thinkingForWorker(id int) pi.ThinkingLevel {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.thinkingPerWorker[id]
+}
+
+func (w *scriptedWorker) promptForWorker(id int) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.promptPerWorker[id]
 }
 
 func (w *scriptedWorker) completionOrder() []string {

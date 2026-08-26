@@ -164,6 +164,20 @@ Worker fields are conditionally present:
 - `warning`: present with a fallback or other worker warning
 - `explanation`: present when final assistant text exists
 - `error`: present when the worker reports an error
+- `data`: present only when the task carried `--data` files; one entry
+  per carried file, each with `path` and `byteCount`
+
+Carried material is additive and optional, so `schemaVersion` stays `1`.
+Per worker, `data` appears only when the task carried `--data` files, in
+the same order the files were declared:
+
+- `path`: always present; the path as composed into the prompt as the
+  section label
+- `byteCount`: always present; the length of the content actually read
+  and composed
+
+Content is never reported: the document carries the path and the byte
+count, nothing more.
 
 Verification is additive and optional, so `schemaVersion` stays `1`. Root
 `verification` appears only when `--verify` ran on a completed run; a run

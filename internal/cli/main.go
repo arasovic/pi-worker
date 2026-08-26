@@ -186,6 +186,32 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 			opts.writes = append(opts.writes, run.WriteDeclaration{})
 		}
 	}
+	// --data entries pair with the task most recently introduced when
+	// they appeared, exactly like --writes. A --data that appeared before
+	// every task was held pending by the parser; it binds here, where the
+	// final task count is known: exactly one task makes its target
+	// unambiguous — it can only be that task's declaration, and a prompt
+	// read from stdin has no other way to declare at all — while more
+	// than one task leaves the target unknowable, so the run is rejected.
+	if len(opts.dataPending) > 0 {
+		if len(tasks) != 1 {
+			return opts, nil, fmt.Errorf("--data must follow the --task or --task-file it declares: with more than one task, a --data that precedes them all is ambiguous; place each --data directly after its task")
+		}
+		if len(opts.dataPending) > 1 || (len(opts.data) > 0 && opts.data[0].Declared) {
+			return opts, nil, fmt.Errorf("--data specified more than once for task 1")
+		}
+		pending := opts.dataPending[0]
+		pending.Declared = true
+		opts.data = []run.DataDeclaration{pending}
+	}
+	// Pad what was declared to the final task count, exactly like the
+	// writes padding above: a zero-value entry — Declared false — for
+	// every task that declared nothing.
+	if opts.data != nil {
+		for len(opts.data) < len(tasks) {
+			opts.data = append(opts.data, run.DataDeclaration{})
+		}
+	}
 	// The pairing stops here: each declaration is bound into the task
 	// record it belongs to, and nothing past this point indexes a task
 	// and its writes by position. Model and thinking precedence — task,
@@ -203,6 +229,20 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 		}
 		if opts.writes != nil {
 			records[i].Writes = opts.writes[i]
+		}
+		// Every declared data file is read here, once, up front, before
+		// any worker starts, in the same pass that validates the rest of
+		// the argv: a missing, unreadable, or otherwise failing file is a
+		// usage error like every other argv mistake and exits 2. Reading
+		// up front is not a protection against anything; it is
+		// determinism, so two tasks given the same path are guaranteed
+		// the same bytes even if a worker rewrites the file mid-run.
+		if opts.data != nil {
+			material, err := readDataDeclaration(opts.data[i])
+			if err != nil {
+				return opts, nil, fmt.Errorf("task %d: %v", i+1, err)
+			}
+			records[i].Data = material
 		}
 	}
 	// The write declaration is validated here, on the resolved records,
@@ -241,7 +281,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
 }
 
 type versionOutput struct {
@@ -313,6 +353,16 @@ type runOptions struct {
 	// them to that single task; a run with more than one task rejects
 	// them, because no task can be named.
 	writesPending []run.WriteDeclaration
+	// data is the per-task declared data file paths in task order: nil
+	// when no --data appeared, and a zero-value entry — Declared false —
+	// for a task that declared nothing. --data "" is rejected at parse
+	// time, so a declared entry always carries at least one path.
+	data []run.DataDeclaration
+	// dataPending holds --data declarations that appeared before any
+	// --task or --task-file, in order, exactly like writesPending: a
+	// one-task run binds them to that single task; a run with more than
+	// one task rejects them, because no task can be named.
+	dataPending []run.DataDeclaration
 	// taskModels holds the per-task --model values in task order: "" for
 	// a task that specified none. taskModelSpecified marks each entry
 	// actually specified, so a --model "" still counts as specified for
@@ -840,6 +890,43 @@ func parseRunArgs(args []string) (runOptions, error) {
 			}
 			declaration.Declared = true
 			opts.writes[index] = declaration
+		case "--data":
+			// Positional, exactly like --writes: applies to the task most
+			// recently introduced by --task or --task-file, at most once
+			// per task. One exception, again like --writes: a --data that
+			// appears before any task cannot be indexed here — the task
+			// list is not known at parse time, and the task may even be a
+			// prompt arriving on stdin later — so it is held pending and
+			// bound in resolveRunInput, where the final task count
+			// decides: one task makes it that task's declaration, more
+			// than one makes it ambiguous and rejected. Unlike --writes,
+			// an empty value is rejected here: omitting the flag already
+			// means "no material", so --data "" has no "carries nothing"
+			// meaning to declare.
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, fmt.Errorf("flag %s requires a value", name)
+				}
+				i++
+				value = args[i]
+			}
+			declaration, err := parseDataDeclaration(value)
+			if err != nil {
+				return opts, err
+			}
+			index := len(opts.tasks) + len(opts.taskFiles) - 1
+			if index < 0 {
+				opts.dataPending = append(opts.dataPending, declaration)
+				break
+			}
+			for len(opts.data) <= index {
+				opts.data = append(opts.data, run.DataDeclaration{})
+			}
+			if opts.data[index].Declared {
+				return opts, fmt.Errorf("--data specified more than once for task %d", index+1)
+			}
+			declaration.Declared = true
+			opts.data[index] = declaration
 		case "--json", "--debug":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)
@@ -919,6 +1006,31 @@ func parseWritesDeclaration(value string) (run.WriteDeclaration, error) {
 	return declaration, nil
 }
 
+// parseDataDeclaration parses a --data value into the declaration it
+// carries. Unlike --writes, a trimmed-empty value is a usage error:
+// omitting the flag already means "no material", so the empty spelling
+// has no "carries nothing" meaning. The value is split on commas, each
+// element trimmed; an empty element between commas keeps failing below.
+func parseDataDeclaration(value string) (run.DataDeclaration, error) {
+	var declaration run.DataDeclaration
+	if strings.TrimSpace(value) == "" {
+		return declaration, fmt.Errorf("invalid data %q: empty value", value)
+	}
+	paths := strings.Split(value, ",")
+	for i, path := range paths {
+		// Trim surrounding whitespace immediately, before every other
+		// check: "docs/a.md, src/x" and "docs/a.md,src/x" must arrive at
+		// the file read as the same paths. A trimmed-empty element still
+		// gets the existing empty-element error below.
+		paths[i] = strings.TrimSpace(path)
+		if paths[i] == "" {
+			return declaration, fmt.Errorf("invalid data %q: empty element between commas", value)
+		}
+	}
+	declaration.Paths = paths
+	return declaration, nil
+}
+
 // parseVerifyCommand validates the raw --verify value and splits it on
 // whitespace into argv. pi-worker never runs a shell and never assembles
 // a command string, so shell metacharacters cannot work: a value
@@ -977,6 +1089,29 @@ func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 		return nil, fmt.Errorf("no prompt provided on stdin")
 	}
 	return []string{string(data)}, nil
+}
+
+// readDataDeclaration reads every file a --data declaration names, once,
+// up front, before any worker starts. A missing or unreadable file is a
+// usage error returned to resolveRunInput like every other argv mistake,
+// so it exits 2. The content is attached as-is: no limit is imposed on
+// size or count, because pi-worker cannot know the caller's budget,
+// model, or context window. Absolute paths are allowed — --data reads a
+// file rather than declaring one, and the material usually sits in a
+// temp directory outside the workspace.
+func readDataDeclaration(declaration run.DataDeclaration) ([]run.DataFile, error) {
+	if !declaration.Declared {
+		return nil, nil
+	}
+	files := make([]run.DataFile, 0, len(declaration.Paths))
+	for _, path := range declaration.Paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read data file %q: %v", path, err)
+		}
+		files = append(files, run.DataFile{Path: path, Content: content})
+	}
+	return files, nil
 }
 
 // runFailure resolves which (status, error kind) pair describes the
