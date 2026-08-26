@@ -50,8 +50,11 @@ model continued with Pi's confirmed default effort. Read root `outcome`:
 could not run, unproven, not clean. When `writes.skipped` is `change manifest
 unavailable`, the manifest was not measured: read `changes.omitted`, which is
 always present on a real run — the CLI always configures the git inspector, so
-`changes` never vanishes from output. The reason decides the caller's next
-move: `unborn head`, `context already done`, `measurement failed`, or `work
+`changes` never vanishes from output. A listed file carrying
+`noFinalNewline: true` ends without a final newline; that is descriptive, not
+a verdict — `added` means the run produced it that way, `modified` means it
+may always have been so. The reason decides the caller's next move: `unborn
+head`, `context already done`, `measurement failed`, or `work
 tree not confirmed` — the last meaning the workspace is not a git work tree,
 git is missing, or the guard failed transiently, which the reason does not
 claim to distinguish. Which reasons a retry can clear differs: `measurement

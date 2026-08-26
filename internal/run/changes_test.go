@@ -611,6 +611,227 @@ func TestControllerChangesBinaryFiles(t *testing.T) {
 	})
 }
 
+func TestControllerChangesNoFinalNewlineAdded(t *testing.T) {
+	// For files the run itself produces, the field asserts exactly what
+	// it measures: the last byte is not a newline. A file ending in a
+	// carriage return is flagged, an empty file is not (there is no last
+	// byte), and a file ending in a newline carries no field.
+	tests := []struct {
+		name    string
+		content []byte
+		want    bool
+	}{
+		{name: "no final newline", content: []byte("no newline"), want: true},
+		{name: "ends in carriage return", content: []byte("ends\r"), want: true},
+		{name: "empty", content: nil, want: false},
+		{name: "ends in newline", content: []byte("ends\n"), want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := newGitRepo(t)
+			result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "new.txt"), test.content, 0o644)
+			}}, dir)
+			changes := result.Changes
+			if changes == nil || changes.Omitted != "" || changes.TotalFiles != 1 || len(changes.Files) != 1 {
+				t.Fatalf("changes = %#v, want one measured file", changes)
+			}
+			file := changes.Files[0]
+			if file.Path != "new.txt" || file.Status != statusAdded {
+				t.Fatalf("file = %#v, want new.txt added", file)
+			}
+			if file.NoFinalNewline != test.want {
+				t.Fatalf("noFinalNewline = %v, want %v", file.NoFinalNewline, test.want)
+			}
+		})
+	}
+}
+
+func TestControllerChangesNoFinalNewlineModified(t *testing.T) {
+	// A modified tracked file carries the field when the run left its
+	// last byte a non-newline, and no field when it ends in a newline.
+	// The manifest cannot say who made it that way — that is what the
+	// descriptive-not-a-verdict contract is about — only that it is so.
+	tests := []struct {
+		name    string
+		content []byte
+		want    bool
+	}{
+		{name: "no final newline", content: []byte("two"), want: true},
+		{name: "ends in newline", content: []byte("two\n"), want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := newGitRepo(t)
+			result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "file.txt"), test.content, 0o644)
+			}}, dir)
+			changes := result.Changes
+			if changes == nil || changes.Omitted != "" || changes.TotalFiles != 1 || len(changes.Files) != 1 {
+				t.Fatalf("changes = %#v, want one measured file", changes)
+			}
+			file := changes.Files[0]
+			if file.Path != "file.txt" || file.Status != statusModified {
+				t.Fatalf("file = %#v, want file.txt modified", file)
+			}
+			if file.NoFinalNewline != test.want {
+				t.Fatalf("noFinalNewline = %v, want %v", file.NoFinalNewline, test.want)
+			}
+		})
+	}
+}
+
+func TestControllerChangesNoFinalNewlineSymlinkExcluded(t *testing.T) {
+	// The regular-file guard exists for the symlink case: opening a
+	// symlink follows it and measures the last byte of a different
+	// file, so without the guard the entry for the link would report a
+	// property of its target. The binary field staying false proves git
+	// measured it as text and the guard is what kept the field off.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte("content"), 0o644); err != nil {
+			return err
+		}
+		return os.Symlink("target.txt", filepath.Join(dir, "link.txt"))
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" || changes.TotalFiles != 2 || len(changes.Files) != 2 {
+		t.Fatalf("changes = %#v, want the two measured files", changes)
+	}
+	var link *FileChange
+	for i := range changes.Files {
+		if changes.Files[i].Path == "link.txt" {
+			link = &changes.Files[i]
+		}
+	}
+	if link == nil {
+		t.Fatalf("manifest = %#v, want the symlink listed", changes.Files)
+	}
+	if link.Binary {
+		t.Fatalf("symlink = %#v, want git to count it as text", *link)
+	}
+	if link.NoFinalNewline {
+		t.Fatalf("symlink = %#v, want no noFinalNewline field on a symlink", *link)
+	}
+}
+
+func TestControllerChangesNoFinalNewlineDeletedAbsent(t *testing.T) {
+	// A deleted file has no content to examine: the Lstat fails and the
+	// field is simply not written, like every other best-effort miss.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.Remove(filepath.Join(dir, "file.txt"))
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" || changes.TotalFiles != 1 || len(changes.Files) != 1 {
+		t.Fatalf("changes = %#v, want one measured file", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != statusDeleted {
+		t.Fatalf("file = %#v, want file.txt deleted", file)
+	}
+	if file.NoFinalNewline {
+		t.Fatalf("file = %#v, want no field on a deleted file", file)
+	}
+}
+
+func TestControllerChangesNoFinalNewlineBinaryExcluded(t *testing.T) {
+	// An untracked binary file that was measured carries no field: git
+	// reports it binary and the guard skips the read entirely, so the
+	// field cannot ride on an entry whose counts are already unreadable.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "blob.bin"), []byte{0x00, 0x01, 0xff, 0x00}, 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" || changes.TotalFiles != 1 || len(changes.Files) != 1 {
+		t.Fatalf("changes = %#v, want one measured file", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "blob.bin" || !file.Binary {
+		t.Fatalf("file = %#v, want blob.bin binary", file)
+	}
+	if file.NoFinalNewline {
+		t.Fatalf("file = %#v, want no field on a binary entry", file)
+	}
+}
+
+func TestControllerChangesNoFinalNewlineNormalFileAbsentFromJSON(t *testing.T) {
+	// A normal file ending in a newline must serialize without the
+	// noFinalNewline key at all: omitempty is pinned by a test rather
+	// than by assumption, so a future struct change that drops the tag
+	// fails here instead of silently growing every entry.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" || changes.TotalFiles != 1 || len(changes.Files) != 1 {
+		t.Fatalf("changes = %#v, want one measured file", changes)
+	}
+	if changes.Files[0].NoFinalNewline {
+		t.Fatalf("file = %#v, want no field on a newline-terminated file", changes.Files[0])
+	}
+	data, err := json.Marshal(changes)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	entries, ok := document["files"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("files = %#v, want one serialized entry", document["files"])
+	}
+	entry, ok := entries[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entry = %#v, want a JSON object", entries[0])
+	}
+	if _, present := entry["noFinalNewline"]; present {
+		t.Fatalf("entry = %s, want no noFinalNewline key on a newline-terminated file", data)
+	}
+}
+
+func TestMeasureNoFinalNewlineUnreadableFileLeavesManifestIntact(t *testing.T) {
+	// A file that cannot be read gets no field, and the manifest it
+	// rides on stays exactly as it was: no error, no omission reason,
+	// and no other field touched. The guard is exercised directly
+	// because a full run cannot reach this state — git itself refuses to
+	// hash an unreadable file, which omits the whole manifest before the
+	// measurement ever ran.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locked.txt")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer os.Chmod(path, 0o644)
+	changes := &Changes{
+		Omitted:    "",
+		Files:      []FileChange{{Path: "locked.txt", Status: statusAdded, Added: 1, Deleted: 0}},
+		TotalFiles: 1,
+	}
+	for i := range changes.Files {
+		measureNoFinalNewline(dir, &changes.Files[i])
+	}
+	document := changes.Files[0]
+	if document.NoFinalNewline {
+		t.Fatalf("file = %#v, want no field on an unreadable file", document)
+	}
+	if changes.Omitted != "" {
+		t.Fatalf("omitted = %q, want the manifest free of any omission reason", changes.Omitted)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 {
+		t.Fatalf("changes = %#v, want the manifest untouched", changes)
+	}
+	if document.Path != "locked.txt" || document.Status != statusAdded || document.Added != 1 || document.Deleted != 0 || document.Binary || document.DirtyBefore {
+		t.Fatalf("file = %#v, want every other field intact", document)
+	}
+}
+
 func TestControllerChangesPathsWithSpaceAndNonASCII(t *testing.T) {
 	// -z output carries paths literally: a space and a multi-byte UTF-8
 	// character must round-trip through the actual git commands.

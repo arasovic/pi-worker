@@ -525,7 +525,11 @@ func gitStashEntries(entries []string) string {
 // measured against the last commit rather than against the pre-run
 // content, so they include work that was already there and the summed
 // +added/-deleted would otherwise read inflated by the caller's own
-// uncommitted work. The clause and the +added/-deleted sums describe
+// uncommitted work. When at least one listed entry carries
+// NoFinalNewline, a second parenthesised count, "N without a final
+// newline", follows, separated by a space: it is a measurement, never
+// a verdict, and it counts only the listed entries exactly as the
+// dirty-before count does. The clause and the +added/-deleted sums describe
 // the listed entries: they count only what the capped Files list
 // carries, while TotalFiles is the true count, so above the entry cap
 // the two can disagree. The clause still belongs on the header rather
@@ -540,12 +544,15 @@ func printChanges(changes *run.Changes, stdout io.Writer) {
 		fmt.Fprintf(stdout, "changes: omitted: %s\n", changes.Omitted)
 		return
 	}
-	added, deleted, dirtyBefore := 0, 0, 0
+	added, deleted, dirtyBefore, noFinalNewline := 0, 0, 0, 0
 	for _, file := range changes.Files {
 		added += file.Added
 		deleted += file.Deleted
 		if file.DirtyBefore {
 			dirtyBefore++
+		}
+		if file.NoFinalNewline {
+			noFinalNewline++
 		}
 	}
 	filesWord := "files"
@@ -555,6 +562,9 @@ func printChanges(changes *run.Changes, stdout io.Writer) {
 	fmt.Fprintf(stdout, "changes: %d %s, +%d/-%d", changes.TotalFiles, filesWord, added, deleted)
 	if dirtyBefore > 0 {
 		fmt.Fprintf(stdout, " (%d already modified before the run)", dirtyBefore)
+	}
+	if noFinalNewline > 0 {
+		fmt.Fprintf(stdout, " (%d without a final newline)", noFinalNewline)
 	}
 	fmt.Fprintln(stdout)
 	shown := min(len(changes.Files), 5)
