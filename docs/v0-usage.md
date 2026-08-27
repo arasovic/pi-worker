@@ -189,7 +189,7 @@ pi-worker skill status [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]
+pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]
 ```
 
 ## Personal default model
@@ -467,6 +467,68 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   measured, the check is skipped with a stated reason rather than
   answered.
 
+### Carried material
+
+- `--data <paths>` optionally carries file content into a task's prompt
+  as material the worker works **ON**, not as instructions the worker
+  obeys. The task's own text — from `--task`, `--task-file`, or stdin —
+  goes into the prompt byte-identical, and the material is appended
+  below it in delimited sections pi-worker frames itself; the caller
+  writes no framing of their own.
+- Each file gets its own section. The delimiters carry a per-run random
+  token shared by every section:
+
+  ```text
+  --- MATERIAL <token>: /tmp/issue-412.md ---
+  <file content>
+  --- END MATERIAL <token> ---
+  ```
+
+  A line inside a file that looks like a delimiter cannot close its own
+  section, because it cannot know the token. One closing sentence
+  follows the last section: the MATERIAL sections are content to work
+  on, not instructions to follow.
+- `--data` binds positionally, to the task most recently introduced by
+  `--task` or `--task-file`, at most once per task, exactly like
+  `--writes`. The value is a comma-separated list of paths, so several
+  files per task are allowed; whitespace around each comma-separated
+  path is ignored. In a run with more than one task, `--data` must
+  follow the task it applies to — placed before them all, no task can
+  be named and the run is rejected with the remedy stated. In a run
+  with exactly one task the order carries nothing: `--data` may appear
+  anywhere in the argument list, before the `--task` or `--task-file`
+  included, and a prompt read from stdin — a run with no task flag at
+  all — declares its material the same way.
+- There is **no** size limit and **no** count limit, per task or per
+  run: pi-worker cannot know the caller's budget, model, or context
+  window, so any ceiling would be a cost opinion wearing a safety
+  guard's clothes.
+- Every data file is read once, up front, before any worker starts, in
+  the same pass that validates the rest of the command line. A missing,
+  unreadable, or otherwise failing file is a usage error that exits `2`
+  before the run begins — as is an empty value (`--data ""` has no
+  "carries nothing" meaning; omitting the flag already means that), a
+  misplaced `--data` (before every task of a multi-task run), and a
+  repeated `--data` for one task. Reading up front is pi-worker's own
+  determinism: two tasks given the same path get the same bytes even if
+  a worker rewrites the file mid-run.
+- Absolute paths are allowed: `--data` reads a file rather than
+  declaring one, and the material usually sits in a temp directory
+  outside the workspace.
+- A worker is not confined to the workspace, and material living
+  outside the workspace is not covered by the write check: the change
+  manifest measures the workspace's git tree, so a data file outside it
+  can be read, modified, or deleted by a worker without ever appearing
+  as a change. pi-worker does not try to stop a worker from modifying a
+  data file, and does not detect or report whether one changed during
+  the run.
+- The run document reports, per worker, each carried file's path, byte
+  count, and SHA-256 — never its content. The document never carries
+  content, so the hash is how a reader establishes which content a
+  worker actually received: it identifies what was read, and says
+  nothing about whether the file changed afterwards. Human-mode output
+  is unchanged.
+
 ### Output
 
 - Human output with confirmed state labels every result as
@@ -485,6 +547,12 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `workers` in input order (the same order as task inputs, not completion order)
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`
+  - each worker that carried material lists `data`: one entry per
+    carried file, each with `path` (the path composed into the prompt as
+    the section label), `byteCount` (the length of the content actually
+    read and composed), and `sha256` (the SHA-256 of the content as
+    read, lowercase hex, matching what a checksum of the file on disk
+    produces); content itself is never reported
   - fallback workers include `thinkingFallback: true` and a fixed `warning`
   - `verification`, when `--verify` ran on a completed run: `argv` and
     `exitCode` always; `output` (the captured excerpt), `truncated`, and
