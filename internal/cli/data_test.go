@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -195,10 +197,11 @@ func TestRunDataWithStdinPromptReachesTheStdinTask(t *testing.T) {
 }
 
 func TestRunDataJSONCarriesPathAndByteCountNotContent(t *testing.T) {
-	// The run document reports, per worker, each carried file's path and
-	// byte count — and never the content. The byte count is the length of
-	// the content actually read and composed, and the path is the label
-	// composed into the prompt frame.
+	// The run document reports, per worker, each carried file's path,
+	// byte count, and SHA-256 — and never the content. The byte count is
+	// the length of the content actually read and composed, the hash is
+	// that same content's digest, and the path is the label composed
+	// into the prompt frame.
 	newGitWorkspace(t)
 	path := filepath.Join(t.TempDir(), "issue-412.md")
 	content := "title: API v2\n\nThe new endpoints.\n"
@@ -216,15 +219,19 @@ func TestRunDataJSONCarriesPathAndByteCountNotContent(t *testing.T) {
 		t.Fatalf("workers[0].data = %#v, want exactly one carried file", data)
 	}
 	entry := data[0].(map[string]any)
-	assertExactJSONKeys(t, entry, "path", "byteCount")
+	assertExactJSONKeys(t, entry, "path", "byteCount", "sha256")
 	if entry["path"] != path {
 		t.Fatalf("data.path = %v, want %q", entry["path"], path)
 	}
 	if entry["byteCount"] != float64(len(content)) {
 		t.Fatalf("data.byteCount = %v, want %d (the content actually read and composed)", entry["byteCount"], len(content))
 	}
-	// Content never appears in the document: only path and byte count
-	// ride in it.
+	sum := sha256.Sum256([]byte(content))
+	if entry["sha256"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("data.sha256 = %v, want %s (SHA-256 of the content as read)", entry["sha256"], hex.EncodeToString(sum[:]))
+	}
+	// Content never appears in the document: only path, byte count, and
+	// hash ride in it.
 	if strings.Contains(stdout, content) {
 		t.Fatalf("document contains the carried content: %q", stdout)
 	}
@@ -346,5 +353,56 @@ func TestRunDataAbsolutePathAccepted(t *testing.T) {
 	req := mustWorkerRequest(t, fake, 1)
 	if !strings.Contains(req.Prompt, path) {
 		t.Fatalf("worker prompt missing the absolute path label: %q", req.Prompt)
+	}
+}
+
+func TestRunDataJSONSha256DistinguishesSameLengthFiles(t *testing.T) {
+	// The --json document carries a sha256 per carried file, so two files
+	// that a byte count cannot tell apart report different hashes, and
+	// the document still carries no content and no material frame
+	// anywhere.
+	newGitWorkspace(t)
+	dir := t.TempDir()
+	first := filepath.Join(dir, "a.md")
+	second := filepath.Join(dir, "b.md")
+	writeFile(t, first, "aaaa")
+	writeFile(t, second, "bbbb")
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "t", "--data", first + "," + second, "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	workers := requireJSONArray(t, document["workers"], "workers")
+	data := requireJSONArray(t, workers[0].(map[string]any)["data"], "workers[0].data")
+	if len(data) != 2 {
+		t.Fatalf("workers[0].data = %#v, want two carried files", data)
+	}
+	firstEntry := data[0].(map[string]any)
+	secondEntry := data[1].(map[string]any)
+	assertExactJSONKeys(t, firstEntry, "path", "byteCount", "sha256")
+	assertExactJSONKeys(t, secondEntry, "path", "byteCount", "sha256")
+	if firstEntry["byteCount"] != secondEntry["byteCount"] {
+		t.Fatalf("byteCounts differ (%v and %v): the test needs equal lengths", firstEntry["byteCount"], secondEntry["byteCount"])
+	}
+	sumFirst := sha256.Sum256([]byte("aaaa"))
+	sumSecond := sha256.Sum256([]byte("bbbb"))
+	if firstEntry["sha256"] != hex.EncodeToString(sumFirst[:]) || secondEntry["sha256"] != hex.EncodeToString(sumSecond[:]) {
+		t.Fatalf("reported hashes = %v and %v, want %x and %x", firstEntry["sha256"], secondEntry["sha256"], sumFirst, sumSecond)
+	}
+	if firstEntry["sha256"] == secondEntry["sha256"] {
+		t.Fatalf("reported hashes are equal (%v) for different content of the same length", firstEntry["sha256"])
+	}
+	// Content never appears in the document: neither the bytes themselves
+	// nor the material frame that carries them.
+	for _, needle := range []string{"aaaa", "bbbb", "MATERIAL", "END MATERIAL"} {
+		if strings.Contains(stdout, needle) {
+			t.Fatalf("document contains %q; content and the material frame must never appear: %q", needle, stdout)
+		}
+	}
+	// The worker received the composed sections with both files.
+	req := mustWorkerRequest(t, fake, 1)
+	if !strings.Contains(req.Prompt, first) || !strings.Contains(req.Prompt, second) {
+		t.Fatalf("worker prompt missing both files' sections: %q", req.Prompt)
 	}
 }

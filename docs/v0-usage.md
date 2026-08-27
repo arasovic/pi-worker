@@ -522,8 +522,12 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   as a change. pi-worker does not try to stop a worker from modifying a
   data file, and does not detect or report whether one changed during
   the run.
-- The run document reports, per worker, each carried file's path and
-  byte count — never its content. Human-mode output is unchanged.
+- The run document reports, per worker, each carried file's path, byte
+  count, and SHA-256 — never its content. The document never carries
+  content, so the hash is how a reader establishes which content a
+  worker actually received: it identifies what was read, and says
+  nothing about whether the file changed afterwards. Human-mode output
+  is unchanged.
 
 ### Output
 
@@ -545,8 +549,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     include `requestedThinkingLevel`
   - each worker that carried material lists `data`: one entry per
     carried file, each with `path` (the path composed into the prompt as
-    the section label) and `byteCount` (the length of the content
-    actually read and composed); content itself is never reported
+    the section label), `byteCount` (the length of the content actually
+    read and composed), and `sha256` (the SHA-256 of the content as
+    read, lowercase hex, matching what a checksum of the file on disk
+    produces); content itself is never reported
   - fallback workers include `thinkingFallback: true` and a fixed `warning`
   - `verification`, when `--verify` ran on a completed run: `argv` and
     `exitCode` always; `output` (the captured excerpt), `truncated`, and

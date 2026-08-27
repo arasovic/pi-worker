@@ -33,14 +33,16 @@ type WorkerRequest struct {
 }
 
 // DataFile reports one file carried into a worker's prompt as material:
-// the path, composed into the prompt as the section label, and the byte
-// count of the content actually read and composed. It is never produced
-// by the worker — the worker receives only the composed prompt and has
-// no knowledge of data files — so the run layer records it in the result
-// from what it composed. Content is never reported.
+// the path, composed into the prompt as the section label, the byte
+// count of how much content was carried, and the SHA-256 of the content
+// as read, which identifies which content was carried. It is never
+// produced by the worker — the worker receives only the composed prompt
+// and has no knowledge of data files — so the run layer records it in
+// the result from what it composed. Content itself is never reported.
 type DataFile struct {
-	Path  string `json:"path"`
-	Bytes int    `json:"byteCount"`
+	Path   string `json:"path"`
+	Bytes  int    `json:"byteCount"`
+	SHA256 string `json:"sha256"`
 }
 
 // WorkerResult is the concise result of one worker invocation.

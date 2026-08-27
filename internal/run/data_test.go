@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"strings"
 	"testing"
@@ -9,6 +11,13 @@ import (
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 )
+
+// sha256Hex returns the lowercase hex SHA-256 of content, the digest the
+// report must carry for the bytes exactly as read.
+func sha256Hex(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
 
 func TestComposeTaskPromptWithoutMaterialIsByteIdentical(t *testing.T) {
 	// A task with no carried files composes to exactly its own text:
@@ -101,11 +110,11 @@ func TestComposeTaskPromptSeveralFiles(t *testing.T) {
 	if len(reports) != 2 {
 		t.Fatalf("reports = %#v, want two carried files", reports)
 	}
-	if reports[0] != (pi.DataFile{Path: "/tmp/issue-412.md", Bytes: len(first)}) {
-		t.Fatalf("reports[0] = %#v, want path and byte count %d", reports[0], len(first))
+	if reports[0] != (pi.DataFile{Path: "/tmp/issue-412.md", Bytes: len(first), SHA256: sha256Hex(first)}) {
+		t.Fatalf("reports[0] = %#v, want path, byte count %d, and SHA-256 %q", reports[0], len(first), sha256Hex(first))
 	}
-	if reports[1] != (pi.DataFile{Path: "/tmp/logs.txt", Bytes: len(second)}) {
-		t.Fatalf("reports[1] = %#v, want path and byte count %d", reports[1], len(second))
+	if reports[1] != (pi.DataFile{Path: "/tmp/logs.txt", Bytes: len(second), SHA256: sha256Hex(second)}) {
+		t.Fatalf("reports[1] = %#v, want path, byte count %d, and SHA-256 %q", reports[1], len(second), sha256Hex(second))
 	}
 }
 
@@ -275,4 +284,141 @@ func tokenFromPrompt(t *testing.T, prompt string) string {
 		t.Fatalf("prompt carries no MATERIAL token: %q", prompt)
 	}
 	return match[1]
+}
+
+func TestComposeTaskPromptReportedHashMatchesContentAsRead(t *testing.T) {
+	// The reported hash is the SHA-256 of the content exactly as read:
+	// the same value a checksum of the file on disk produces. The test
+	// arrives at the expected value on its own, over bytes it holds;
+	// it reads nothing out of the composed prompt or the report.
+	content := []byte("title: API v2\n\nThe new endpoints.\n")
+	prompt, reports := composeTaskPrompt(Task{
+		Prompt: "Summarize this issue.",
+		Data:   []DataFile{{Path: "/tmp/issue-412.md", Content: content}},
+	}, "token")
+	if len(reports) != 1 {
+		t.Fatalf("reports = %#v, want one carried file", reports)
+	}
+	sum := sha256.Sum256(content)
+	if reports[0].SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("reported sha256 = %q, want %x (SHA-256 of the content as read)", reports[0].SHA256, sum)
+	}
+	// The prompt carries the content verbatim between the delimiters, so
+	// the reported length and hash together describe exactly the bytes
+	// the worker received in the section.
+	if reports[0].Bytes != len(content) {
+		t.Fatalf("byteCount = %d, want %d", reports[0].Bytes, len(content))
+	}
+	if !strings.Contains(prompt, string(content)) {
+		t.Fatalf("prompt does not carry the content the report describes: %q", prompt)
+	}
+}
+
+func TestComposeTaskPromptHashCoversContentNotFramingNewline(t *testing.T) {
+	// A file without a trailing newline: the closing delimiter still
+	// starts on its own line in the composed prompt, but the appended
+	// newline is framing, not content, so the reported hash stays the
+	// hash of the unterminated content — the same invariant the byte
+	// count follows. Hashing the content plus the appended newline
+	// would produce a different digest and would not match the file on
+	// disk.
+	const token = "a1b2c3d4e5f60718"
+	content := []byte("no trailing newline")
+	prompt, reports := composeTaskPrompt(Task{
+		Prompt: "task",
+		Data:   []DataFile{{Path: "/tmp/logs.txt", Content: content}},
+	}, token)
+	// The prompt ends the section on its own line below the content.
+	if !strings.Contains(prompt, "no trailing newline\n--- END MATERIAL "+token+" ---") {
+		t.Fatalf("closing delimiter is not on its own line below the unterminated content: %q", prompt)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports = %#v, want one carried file", reports)
+	}
+	sum := sha256.Sum256(content)
+	if reports[0].SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("reported sha256 = %q, want %x (hash of the content without the appended newline)", reports[0].SHA256, sum)
+	}
+	appended := sha256.Sum256(append(append([]byte{}, content...), '\n'))
+	if reports[0].SHA256 == hex.EncodeToString(appended[:]) {
+		t.Fatalf("reported sha256 %q equals the hash of the content plus the framing newline", reports[0].SHA256)
+	}
+}
+
+func TestComposeTaskPromptSameLengthDifferentContentDifferentHashes(t *testing.T) {
+	// Two files with identical byte count and different content on one
+	// task's --data list: a byte count cannot tell them apart — this is
+	// the case the hash exists for. One task is the point: a hash
+	// computed once and reused for every file in the task would falsely
+	// match here.
+	first := []byte("abcd")
+	second := []byte("wxyz")
+	if len(first) != len(second) {
+		t.Fatalf("test setup: contents must have equal length")
+	}
+	_, reports := composeTaskPrompt(Task{
+		Prompt: "task",
+		Data: []DataFile{
+			{Path: "/tmp/a.md", Content: first},
+			{Path: "/tmp/b.md", Content: second},
+		},
+	}, "token")
+	if len(reports) != 2 {
+		t.Fatalf("reports = %#v, want two carried files", reports)
+	}
+	if reports[0].Bytes != reports[1].Bytes {
+		t.Fatalf("byte counts differ (%d and %d): the test needs equal lengths", reports[0].Bytes, reports[1].Bytes)
+	}
+	if reports[0].SHA256 == reports[1].SHA256 {
+		t.Fatalf("reported hashes are equal (%q) for different content of the same length", reports[0].SHA256)
+	}
+	wantFirst := sha256.Sum256(first)
+	wantSecond := sha256.Sum256(second)
+	if reports[0].SHA256 != hex.EncodeToString(wantFirst[:]) || reports[1].SHA256 != hex.EncodeToString(wantSecond[:]) {
+		t.Fatalf("reported hashes = %q and %q, want %x and %x", reports[0].SHA256, reports[1].SHA256, wantFirst, wantSecond)
+	}
+}
+
+func TestComposeTaskPromptIdenticalContentIdenticalHash(t *testing.T) {
+	// Identical content reports the same hash whether the two files
+	// ride in one task or across two tasks: the hash describes the
+	// content, not the task, the token, or the run.
+	content := []byte("the same bytes")
+	_, oneTask := composeTaskPrompt(Task{
+		Prompt: "task one",
+		Data: []DataFile{
+			{Path: "/tmp/x.md", Content: content},
+			{Path: "/tmp/y.md", Content: content},
+		},
+	}, "token-a")
+	_, otherTask := composeTaskPrompt(Task{
+		Prompt: "task two",
+		Data:   []DataFile{{Path: "/tmp/z.md", Content: content}},
+	}, "token-b")
+	want := sha256Hex(content)
+	if len(oneTask) != 2 || oneTask[0].SHA256 != want || oneTask[1].SHA256 != want {
+		t.Fatalf("one-task reports = %#v, want both to carry sha256 %q", oneTask, want)
+	}
+	if len(otherTask) != 1 || otherTask[0].SHA256 != want {
+		t.Fatalf("across-task report = %#v, want sha256 %q", otherTask, want)
+	}
+}
+
+func TestComposeTaskPromptEmptyFileReportsZeroBytesAndZeroByteHash(t *testing.T) {
+	// An empty file needs no special case: byteCount is 0 and the
+	// reported hash is the defined SHA-256 of zero bytes.
+	_, reports := composeTaskPrompt(Task{
+		Prompt: "task",
+		Data:   []DataFile{{Path: "/tmp/empty.txt", Content: nil}},
+	}, "token")
+	if len(reports) != 1 {
+		t.Fatalf("reports = %#v, want one carried file", reports)
+	}
+	if reports[0].Bytes != 0 {
+		t.Fatalf("byteCount = %d, want 0", reports[0].Bytes)
+	}
+	sum := sha256.Sum256(nil)
+	if reports[0].SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("reported sha256 = %q, want %q (SHA-256 of zero bytes)", reports[0].SHA256, hex.EncodeToString(sum[:]))
+	}
 }

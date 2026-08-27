@@ -165,7 +165,7 @@ Worker fields are conditionally present:
 - `explanation`: present when final assistant text exists
 - `error`: present when the worker reports an error
 - `data`: present only when the task carried `--data` files; one entry
-  per carried file, each with `path` and `byteCount`
+  per carried file, each with `path`, `byteCount`, and `sha256`
 
 Carried material is additive and optional, so `schemaVersion` stays `1`.
 Per worker, `data` appears only when the task carried `--data` files, in
@@ -175,9 +175,11 @@ the same order the files were declared:
   section label
 - `byteCount`: always present; the length of the content actually read
   and composed
+- `sha256`: always present; the SHA-256 of the content as read, lowercase
+  hex, matching what a checksum of the file on disk produces
 
-Content is never reported: the document carries the path and the byte
-count, nothing more.
+Content is never reported: the document carries the path, the byte
+count, and the hash, nothing more.
 
 Verification is additive and optional, so `schemaVersion` stays `1`. Root
 `verification` appears only when `--verify` ran on a completed run; a run
