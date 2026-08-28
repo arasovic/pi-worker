@@ -630,18 +630,19 @@ func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testi
 	}
 }
 
-func TestRunWritesKeepsSharedWorkspaceWarningWhenAnyTaskDeclaresNothing(t *testing.T) {
+func TestRunWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	fake.resultsByWorker = map[int]pi.WorkerResult{
 		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
 		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
 	}
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two"}, "")
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	// The --task two worker declared nothing, so the run is not fully
-	// contracted and the warning must stay.
+	// No task declared, so the run is not contracted at all and the warning
+	// must stay. A partial declaration can no longer reach this path: it is
+	// a usage error before any worker starts.
 	if count := strings.Count(stderr, "pi-worker: warning: 2 workers share the writable current workspace; tasks must use disjoint files"); count != 1 {
 		t.Fatalf("warning count = %d, want 1: %q", count, stderr)
 	}
@@ -2340,15 +2341,6 @@ func TestPrintWritesCleanVerdict(t *testing.T) {
 	}
 }
 
-func TestPrintWritesSkippedPartialDeclaration(t *testing.T) {
-	var stdout bytes.Buffer
-	printWrites(&run.WriteCheck{Skipped: "change manifest unavailable"}, &stdout)
-	want := "writes: skipped: change manifest unavailable\n"
-	if got := stdout.String(); got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
-}
-
 func TestPrintWritesSkippedManifestUnavailable(t *testing.T) {
 	var stdout bytes.Buffer
 	printWrites(&run.WriteCheck{Skipped: "change manifest unavailable"}, &stdout)
@@ -2435,7 +2427,6 @@ func TestRunExitCodePolicyOnUndeclaredWrites(t *testing.T) {
 	}{
 		{name: "no declaration", result: run.Result{Status: contracts.RunCompleted}, want: 0, wantOutcome: contracts.OutcomeCompleted},
 		{name: "clean verdict", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{UndeclaredCount: 0}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
-		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
 		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
 		{name: "undeclared paths", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}}, want: 4, wantOutcome: contracts.OutcomeUndeclaredWrites},
 	}

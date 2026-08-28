@@ -437,7 +437,6 @@ func TestControllerAcceptsDisjointDeclaredWrites(t *testing.T) {
 		{name: "disjoint files", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/b")}}},
 		{name: "sibling prefix boundary", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/ab")}}},
 		{name: "multi-path disjoint", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a", "src/b")}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/c")}}},
-		{name: "one declares one does not", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths("src/a")}, {Prompt: "b", Model: "acme/m-1"}}},
 		{name: "empty entry", tasks: []Task{{Prompt: "a", Model: "acme/m-1", Writes: WriteDeclaration{Declared: true}}, {Prompt: "b", Model: "acme/m-1", Writes: declaredPaths("src/a")}}},
 	}
 	for _, test := range tests {
