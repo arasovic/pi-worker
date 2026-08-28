@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	globalSkillRemoveCommand    = "npx --yes skills@1.5.22 remove pi-worker -g -y"
+	globalSkillRemoveCommand    = "npx --yes skills@" + skillinstall.PinnedSkillsVersion + " remove pi-worker -g -y"
 	globalSkillReinstallCommand = "npm install -g --foreground-scripts pi-worker"
 )
 

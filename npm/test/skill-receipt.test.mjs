@@ -19,6 +19,7 @@ import {
   receiptPathFromNative,
   writeReceipt,
 } from "../lib/skill-receipt.mjs";
+import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
 
 function nativeSpawn({ stdout = "", stderr = "", code = 0, signal = null }) {
   const calls = [];
@@ -41,7 +42,7 @@ function validReceipt(targetPath) {
   return {
     schemaVersion: 1,
     installerVersion: "0.1.0",
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     outcome: "installed",
     targets: [{
       path: targetPath,

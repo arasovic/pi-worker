@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { inspectExternalTargets } from "../lib/external-inspection.mjs";
+import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "pi-worker-external-inspection-"));
@@ -15,7 +16,7 @@ function fixture(t) {
 function rules() {
   return {
     schemaVersion: 3,
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     agentCount: 1,
     globalTargetCount: 1,
     noGlobalTargetCount: 0,

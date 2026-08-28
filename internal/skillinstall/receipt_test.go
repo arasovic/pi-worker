@@ -719,7 +719,7 @@ func TestInspectBlockedGlobalRecoveryPolicy(t *testing.T) {
 				},
 			}},
 			AffectedTargets: []AffectedTarget{{Path: managed, State: AffectedUnmanaged, Recovery: []string{"Inspect and back up " + managed + " before retrying."}}},
-			Recovery:        []string{"npx --yes skills@1.5.22 remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"},
+			Recovery:        []string{"npx --yes skills@" + PinnedSkillsVersion + " remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"},
 		}
 		if addDrifted {
 			req.AffectedTargets = append(req.AffectedTargets, AffectedTarget{Path: filepath.Join(root, "drifted"), State: AffectedDrifted, Recovery: []string{"backup drifted"}})
@@ -741,7 +741,7 @@ func TestInspectBlockedGlobalRecoveryPolicy(t *testing.T) {
 		if inspection.Status != StatusBlocked {
 			t.Fatalf("status = %q, want %q", inspection.Status, StatusBlocked)
 		}
-		wantRecovery := []string{"npx --yes skills@1.5.22 remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"}
+		wantRecovery := []string{"npx --yes skills@" + PinnedSkillsVersion + " remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"}
 		if !equalStringSlice(inspection.Recovery, wantRecovery) {
 			t.Fatalf("run-level recovery = %v, want %v", inspection.Recovery, wantRecovery)
 		}
@@ -1130,7 +1130,7 @@ func TestInspectExposesRecoveryForValidUnmanagedAndDriftedTargets(t *testing.T) 
 			SchemaVersion: SchemaVersion, InstallerVersion: "1", SkillsVersion: "1", Outcome: OutcomeBlocked,
 			Targets:         []Target{{Path: drifted, Kind: targetKindCanonical, Files: []FileHash{{Path: "tool.txt", SHA256: hashString("expected")}}}},
 			AffectedTargets: []AffectedTarget{{Path: unmanaged, State: AffectedUnmanaged, Recovery: []string{}}},
-			Recovery:        []string{"npx --yes skills@1.5.22 remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"},
+			Recovery:        []string{"npx --yes skills@" + PinnedSkillsVersion + " remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"},
 		}
 		inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
 		if err != nil {
@@ -1147,7 +1147,7 @@ func writeReceiptForRecoveryTest(t *testing.T, root, affected string, state Affe
 	receipt := Receipt{
 		SchemaVersion: SchemaVersion, InstallerVersion: "1", SkillsVersion: "1", Outcome: OutcomeBlocked,
 		AffectedTargets: []AffectedTarget{{Path: affected, State: state, Recovery: []string{"Inspect and back up " + affected + " before retrying."}}},
-		Recovery:        []string{"npx --yes skills@1.5.22 remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"},
+		Recovery:        []string{"npx --yes skills@" + PinnedSkillsVersion + " remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"},
 	}
 	if targetPath != "" {
 		files := []FileHash{{Path: "tool.txt", SHA256: hashString("expected")}}
@@ -1164,7 +1164,7 @@ func writeReceiptForRecoveryTest(t *testing.T, root, affected string, state Affe
 
 func assertGlobalRecoveryOrder(t *testing.T, got []string) {
 	t.Helper()
-	want := []string{"npx --yes skills@1.5.22 remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"}
+	want := []string{"npx --yes skills@" + PinnedSkillsVersion + " remove pi-worker -g -y", "npm install -g --foreground-scripts pi-worker"}
 	if !equalStringSlice(got, want) {
 		t.Fatalf("recovery = %v, want %v", got, want)
 	}

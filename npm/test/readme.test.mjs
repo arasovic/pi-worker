@@ -5,6 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
+import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
+
 const repository = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const readmePath = join(repository, "README.md");
 const usagePath = join(repository, "docs", "v0-usage.md");
@@ -76,8 +78,8 @@ test("README is the concise public entry point with the approved contract", () =
     "pi-worker skill status",
     "pi-worker skill status --json",
     "pi-worker skill receipt-path",
-    "npx --yes skills@1.5.22 list -g",
-    "npx --yes skills@1.5.22 remove pi-worker -g -y",
+    `npx --yes skills@${PINNED_SKILLS_VERSION} list -g`,
+    `npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`,
     "go install github.com/arasovic/pi-worker/cmd/pi-worker@latest",
   ]) {
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
@@ -125,7 +127,7 @@ test("README is the concise public entry point with the approved contract", () =
   assert.match(readme, /Windows[\s\S]*build from source[\s\S]*compile-checked[\s\S]*not runtime-tested/i);
   assert.match(readme, /native binary.*provider-neutral.*skill/is);
   assert.match(readme, /npm install attempts to install.*detected\s+coding agents/is);
-  assert.match(readme, /pinned `skills@1\.5\.22`/);
+  assert.match(readme, new RegExp(`pinned \`skills@${escapeRegex(PINNED_SKILLS_VERSION)}\``));
   assert.match(readme, /never\s+overwrites.*unrecognized.*skill/is);
   assert.match(readme, /Node\.js 22\.20\.0 or newer/);
   assert.match(usage, /Node\.js 22\.20\.0 or newer/);
