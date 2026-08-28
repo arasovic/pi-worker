@@ -1,8 +1,8 @@
 {
   "schemaVersion": 3,
-  "skillsVersion": "1.5.22",
-  "agentCount": 76,
-  "globalTargetCount": 74,
+  "skillsVersion": "1.5.23",
+  "agentCount": 77,
+  "globalTargetCount": 75,
   "noGlobalTargetCount": 2,
   "agents": [
     {
@@ -964,6 +964,27 @@
           {
             "kind": "home-relative",
             "path": ".pi/agent"
+          }
+        ]
+      }
+    },
+    {
+      "id": "posit-assistant",
+      "usesUniversalTarget": false,
+      "rule": {
+        "kind": "home-relative",
+        "path": ".posit/assistant/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".posit/assistant"
+          },
+          {
+            "kind": "home-relative",
+            "path": ".positai"
           }
         ]
       }
