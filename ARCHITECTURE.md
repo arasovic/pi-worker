@@ -85,40 +85,75 @@ Pi Worker packages those responsibilities behind one stable CLI contract.
 The `@parke.dev/pi-subagent@0.8.0` SDK can run Pi workers from an external Node
 process without a parent Pi model turn. It provides useful lifecycle,
 cancellation, stall detection, retry, worktree, usage, and cost machinery.
+Citations below are relative to the published `@parke.dev/pi-subagent@0.8.0`
+package.
 
 Its current public result surface does not expose the complete effective Pi
 state needed here:
 
 - `TaskResult.thinking` echoes the requested value rather than the effective
-  one;
+  one: it is declared `thinking?: TaskSpec["thinking"]` at `src/types.ts:91`
+  and assigned `spec.thinking` at `src/runner.ts:138`, `src/runner.ts:691`, and
+  `src/orchestrator.ts:131`;
 - the reported model comes from an assistant message rather than confirmed
-  session state;
+  session state: `this.model ||= message.model` at `src/protocol.ts:170`,
+  inside the `message_end` branch guarded by `message.role === "assistant"`,
+  surfaced at `src/protocol.ts:261`;
 - `get_state` is parsed for `sessionId`, while provider, model, and
-  `thinkingLevel` are not projected to the result.
+  `thinkingLevel` are not projected to the result: the response is parsed at
+  `src/protocol.ts:133-136`, which reads `event.data.sessionId` only.
 
-The public `ChildRunner` accepts a custom `BackendAdapter`, but the built-in Pi
-backend and protocol parser are not public exports. Using a custom adapter
+The public `ChildRunner` (`src/index.ts:11`) accepts a custom `BackendAdapter`
+(exported as a type at `src/index.ts:35-39`), but the built-in Pi backend and
+protocol parser are not public exports: `PiBackend` (`src/backends/pi.ts:29`)
+and `ProtocolParser` (`src/protocol.ts:18`) are exported by their own modules
+only, and the package's `exports` map (`package.json`) covers just `.`, `./sdk`
+and `./package.json`, so a deep import is not available. Using a custom adapter
 would therefore move Pi protocol ownership into another local implementation.
 
-Version 0.8.0 also exports TypeScript source rather than compiled JavaScript,
-so normal Node consumption requires a TypeScript loader or a bundling step.
+Version 0.8.0 also exports TypeScript source rather than compiled JavaScript:
+`package.json` sets `exports["."]` to `./src/index.ts`, so normal Node
+consumption requires a TypeScript loader or a bundling step.
 
 ### `pi-subagent-bridge`
 
 `pi-subagent-bridge` is prior art for the same external-orchestrator-to-Pi
-direction. Version 0.2.0 was published on 2026-07-12, before Pi Worker. The
-implementation evaluated here was version 0.4.0, which provides a broad MCP
-surface for model discovery, parallel runs, steering, cancellation, sessions,
-worktrees, events, and persisted run state.
+direction. `pi-subagent-bridge@0.2.0` was published on 2026-07-12, before Pi
+Worker. The implementation evaluated here was `pi-subagent-bridge@0.4.0`,
+which provides a broad MCP surface for model discovery, parallel runs,
+steering, cancellation, sessions, worktrees, events, and persisted run state.
+Both pinned versions in this section — `@parke.dev/pi-subagent@0.8.0` and
+`pi-subagent-bridge@0.4.0` — were the latest published on npm as of
+2026-08-28.
 
-The evaluated version's integration contract differs from Pi Worker:
+The evaluated version's integration contract differs from Pi Worker.
+Citations below are relative to `plugins/pi-subagent-bridge/server/dist/` in
+the published `pi-subagent-bridge@0.4.0` tarball; paths outside that root are
+given in full:
 
-- catalog lookup is available but is not a required gate for each run;
+- catalog lookup is available but is not a required gate for each run: the run
+  tool (`case "pi_run"` at `index.js:363-366`) calls `manager.start(...)` and
+  then `manager.wait(...)`, the catalog is a separate tool (`case
+  "pi_list_models"` at `index.js:367-376`), and the only other catalog call is
+  in the health check at `index.js:534`;
 - model and thinking arguments are forwarded without confirming effective
-  session state;
-- failures use MCP semantics instead of process exit codes;
-- consumers take on an MCP tool/schema surface and SQLite-backed state;
-- the packaged installation is oriented around a Codex plugin.
+  session state: `run-manager.js:867-874` pushes `--provider`, `--model` and
+  `--thinking` onto the child argv, and `get_state` does not appear anywhere
+  in the shipped `dist/`;
+- failures use MCP semantics instead of process exit codes: tool results are
+  returned through `jsonResult(...)` in the `index.js` request handler, with
+  `@modelcontextprotocol/sdk@^1.13.3` as the transport dependency
+  (`plugins/pi-subagent-bridge/server/package.json`);
+- consumers take on an MCP tool/schema surface and SQLite-backed state:
+  `plugins/pi-subagent-bridge/server/package.json` depends on
+  `@modelcontextprotocol/sdk`, `zod` and `better-sqlite3`,
+  `plugins/pi-subagent-bridge/.mcp.json` is shipped, and the `runs` table is
+  created at `tool-call-store.js:17-32` with columns including `provider`,
+  `model_id` and `thinking_level`;
+- the packaged installation is oriented around a Codex plugin:
+  `plugins/pi-subagent-bridge/.codex-plugin/plugin.json` and the root
+  `.agents/plugins/marketplace.json` are shipped, and the root `package.json`
+  maps the `pi-subagent-bridge` bin to `scripts/install.mjs`.
 
 The bridge is a strong option when its richer MCP workflow is desired. Pi
 Worker instead favors a small, portable CLI and mandatory state validation.
@@ -144,7 +179,11 @@ The standalone Pi RPC layer can be reconsidered if an SDK provides:
 
 - effective provider, model, and thinking state through a stable public result;
 - compiled JavaScript exports that can be consumed directly;
-- a reproducible, integration-tested Pi compatibility range.
+- a reproducible, integration-tested Pi compatibility range; the evaluated
+  SDK's `peerDependencies` are the wildcard `"*"` for
+  `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
+  `@earendil-works/pi-tui` and `typebox`
+  (`@parke.dev/pi-subagent@0.8.0/package.json`).
 
 Any replacement should preserve exact model selection, confirmed thinking, no
 silent fallback, stable JSON and exit semantics, bounded diagnostics,
