@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/arasovic/pi-worker/internal/piversion"
 )
 
 const eventAgentSettled = "agent_settled"
@@ -91,7 +93,7 @@ func (c *Client) GetAvailableModels(ctx context.Context) ([]ModelProjection, err
 	if err != nil {
 		var transportErr *transportError
 		if errors.As(err, &transportErr) {
-			return nil, &ReadinessError{Message: "pi exited before returning the model catalog; verify Pi 0.84.2 compatibility and provider login"}
+			return nil, &ReadinessError{Message: fmt.Sprintf("pi exited before returning the model catalog; verify Pi %s compatibility and provider login", piversion.VerifiedVersion)}
 		}
 		return nil, err
 	}

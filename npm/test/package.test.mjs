@@ -125,7 +125,7 @@ function runStage(packageRoot, dist = join(packageRoot, "dist")) {
 }
 
 function copyPackageFixture(root) {
-  for (const path of ["package.json", "README.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES", "skills", "npm/bin", "npm/generated", "npm/lib", "npm/scripts", "npm/test", "go.mod", "go.sum", "tools", "internal/releasenotice"]) {
+  for (const path of ["package.json", "README.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES", "skills", "npm/bin", "npm/generated", "npm/lib", "npm/scripts", "npm/test", "go.mod", "go.sum", "tools", "compat", "internal/pipin", "internal/piversion", "internal/releasenotice"]) {
     cpSync(join(repository, path), join(root, path), { recursive: true });
   }
   const initialized = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
@@ -429,14 +429,15 @@ test("never replaces a pre-existing npm/native directory", (t) => {
   assert.equal(readFileSync(join(native, "stale"), "utf8"), "keep me");
 });
 
-test("prepack executes the configured notice, skill-rule, and hygiene checks", (t) => {
+test("prepack executes the configured notice, skill-rule, hygiene, and Pi-version checks", (t) => {
   const manifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
-  assert.equal(manifest.scripts.prepack, "npm run check:notices && npm run check:rules && npm run check:hygiene");
+  assert.equal(manifest.scripts.prepack, "npm run check:notices && npm run check:rules && npm run check:hygiene && npm run check:piversion");
 
   const cases = [
     ["notice", (root) => writeFileSync(join(root, "THIRD_PARTY_NOTICES"), "controlled failure\n")],
     ["skills rules", (root) => writeFileSync(join(root, "npm/generated/skills-rules.json"), "{}\n")],
     ["hygiene", (root) => writeFileSync(join(root, "README.md"), `private ${["/Us", "ers/example"].join("")}\n`)],
+    ["Pi pin", (root) => writeFileSync(join(root, "compat/pi/package.json"), `{\n  \"dependencies\": {\n    \"@earendil-works/pi-coding-agent\": \"9.9.9\"\n  }\n}\n`)],
   ];
   for (const [name, corrupt] of cases) {
     const root = mkdtempSync(join(tmpdir(), "pi-worker-package-prepack-"));
@@ -461,9 +462,10 @@ test("manifest exposes one non-duplicated local verification pipeline", () => {
   const manifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
   assert.equal(manifest.scripts["check:rules"], "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json");
   assert.equal(manifest.scripts["check:notices"], "go run ./tools/notices --check THIRD_PARTY_NOTICES");
+  assert.equal(manifest.scripts["check:piversion"], "go run ./tools/piversion --check");
   assert.equal(manifest.scripts["check:hygiene"], "node npm/scripts/check-hygiene.mjs");
   assert.match(manifest.scripts.test, /npm\/test\/\*\.test\.mjs/);
-  assert.equal(manifest.scripts.verify, "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene");
+  assert.equal(manifest.scripts.verify, "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion");
 });
 
 test("npm pack has the exact allowlisted inventory, modes, and identity bytes", (t) => {

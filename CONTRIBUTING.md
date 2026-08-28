@@ -15,7 +15,7 @@ documentation, and commit messages.
 Run checks appropriate to the changed surface:
 
 - Go: `gofmt` formatting, `go vet ./...`, `go test -race -count=1 ./...`, and `go build ./...`.
-- npm: `npm test` and `npm run verify`; focused checks are `npm run check:rules`, `npm run check:notices`, and `npm run check:hygiene`.
+- npm: `npm test` and `npm run verify`; focused checks are `npm run check:rules`, `npm run check:notices`, `npm run check:piversion`, and `npm run check:hygiene`.
 - All changes: `git diff --check`.
 
 The hygiene command is a narrow accidental-artifact gate, not a general secret scanner. Inspect staged changes before every commit.
@@ -58,6 +58,17 @@ on its own branch:
   the dependency: read the new floor from the installed `skills` package and
   write the same number in `package.json`, `README.md`, `docs/v0-usage.md`,
   `docs/releasing.md`, and the literal in `npm/test/readme.test.mjs`.
+- Pi: the pin lives in `compat/pi/package.json`, which Dependabot watches
+  weekly. The coupled artifacts are `internal/piversion/version.go` and the
+  prose mentions, and `npm run check:piversion` is what goes red. The
+  companion commit is not just running `--write`: `VerifiedVersion` claims a
+  version was verified, and a bot bumping the pin verifies nothing. Exercise
+  the new Pi release and re-probe the surface first, then run
+  `go run ./tools/piversion --write`. Running `--write` on its own converts
+  an unverified bump into a false claim of verification.
+  `docs/pi-cli-surface.md` is deliberately not rewritten by the tool: it
+  records what was actually observed when the surface was probed, not claims
+  about the current pin, and rewriting it would falsify history.
 
 The red run is the intended signal, not a failure to work around. Do not relax
 a check to make the update merge.
