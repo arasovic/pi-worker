@@ -47,10 +47,11 @@
     "test": "node --test npm/test/*.test.mjs",
     "check:rules": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json",
     "check:notices": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
+    "check:piversion": "go run ./tools/piversion --check",
     "check:hygiene": "node npm/scripts/check-hygiene.mjs",
     "notices:check": "npm run check:notices",
     "skills-rules:check": "npm run check:rules",
-    "verify": "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene",
-    "prepack": "npm run check:notices && npm run check:rules && npm run check:hygiene"
+    "verify": "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion",
+    "prepack": "npm run check:notices && npm run check:rules && npm run check:hygiene && npm run check:piversion"
   }
 }

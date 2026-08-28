@@ -48,3 +48,15 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+
+  # The Pi release pin here is coupled to `internal/piversion/version.go` and
+  # the Markdown prose mentions; the bump lands red until
+  # `go run ./tools/piversion --write` propagates the new version.
+  - package-ecosystem: "npm"
+    directory: "/compat/pi"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:45"
+      timezone: "Europe/Istanbul"
+    open-pull-requests-limit: 1

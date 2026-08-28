@@ -143,6 +143,8 @@ jobs:
         run: npm run check:rules
       - name: Check tracked-file hygiene
         run: npm run check:hygiene
+      - name: Check Pi version pin
+        run: npm run check:piversion
       - name: Build release snapshot
         run: |
           go run ./tools/release \

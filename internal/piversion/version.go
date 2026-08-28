@@ -39,7 +39,7 @@ type Classification struct {
 // A valid version other than VerifiedVersion is unverified rather than fatal.
 func Classify(output string) Classification {
 	version := strings.TrimSpace(output)
-	if !validSemanticVersion(version) {
+	if !ValidSemanticVersion(version) {
 		return Classification{Status: StatusInvalid}
 	}
 	if version == VerifiedVersion {
@@ -88,9 +88,9 @@ func (b *boundedBuffer) Write(data []byte) (int, error) {
 
 func (b *boundedBuffer) String() string { return b.buffer.String() }
 
-// validSemanticVersion implements the SemVer 2.0.0 grammar without a
-// dependency. It intentionally does not accept a leading v or display text.
-func validSemanticVersion(version string) bool {
+// ValidSemanticVersion implements the SemVer 2.0.0 grammar with no leading
+// v and no display text.
+func ValidSemanticVersion(version string) bool {
 	if version == "" {
 		return false
 	}
