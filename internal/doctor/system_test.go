@@ -16,9 +16,9 @@ import (
 )
 
 func TestSystemVersionTrimsBoundedStdoutAndDiscardsStderr(t *testing.T) {
-	command := writeVersionCommand(t, "0.84.2\n", "child-stderr-must-not-leak")
+	command := writeVersionCommand(t, "1.2.3\n", "child-stderr-must-not-leak")
 	version, err := systemVersion(context.Background(), command)
-	if err != nil || version != "0.84.2" {
+	if err != nil || version != "1.2.3" {
 		t.Fatalf("version = %q, err = %v", version, err)
 	}
 }

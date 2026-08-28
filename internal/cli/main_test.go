@@ -18,6 +18,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/piversion"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/skillinstall"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
@@ -48,7 +49,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	originalRunVersionProbe := runVersionProbe
-	runVersionProbe = func(context.Context) (string, error) { return "0.84.2", nil }
+	runVersionProbe = func(context.Context) (string, error) { return piversion.VerifiedVersion, nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
 	os.RemoveAll(dir)
@@ -1283,7 +1284,7 @@ func TestRunSuccessJSON(t *testing.T) {
 
 func TestRunVerifiedPiVersionProbesOnceBeforeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "version-probed")
-	logPath := installProcessVersionProbe(t, "0.84.2\n", "", 0)
+	logPath := installProcessVersionProbe(t, piversion.VerifiedVersion+"\n", "", 0)
 	t.Setenv("PI_WORKER_VERSION_MARKER", marker)
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
 	fake.runHook = func() {
@@ -1315,7 +1316,7 @@ func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
 	if got := versionProbeCount(t, logPath); got != 1 {
 		t.Fatalf("version probe count = %d, want 1", got)
 	}
-	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is 0.84.2; continuing\n"
+	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is " + piversion.VerifiedVersion + "; continuing\n"
 	if stderr != wantWarning || strings.Contains(stderr, "child-secret-must-not-leak") {
 		t.Fatalf("stderr = %q", stderr)
 	}

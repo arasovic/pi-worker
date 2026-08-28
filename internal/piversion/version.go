@@ -88,8 +88,8 @@ func (b *boundedBuffer) Write(data []byte) (int, error) {
 
 func (b *boundedBuffer) String() string { return b.buffer.String() }
 
-// ValidSemanticVersion implements the SemVer 2.0.0 grammar with no leading
-// v and no display text.
+// ValidSemanticVersion implements the SemVer 2.0.0 grammar by hand, with no
+// leading v and no display text.
 func ValidSemanticVersion(version string) bool {
 	if version == "" {
 		return false
