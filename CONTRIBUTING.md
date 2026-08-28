@@ -51,9 +51,19 @@ on its own branch:
 - GitHub Actions: update the expected reference in `npm/test/hygiene.test.mjs`,
   which asserts the exact action versions the release workflows use. Read the
   action's release notes first: these pins guard the publication path.
-- `skills`: run `node npm/scripts/extract-skills-rules.mjs --write npm/generated/skills-rules.json`.
-  The generated rules record the version they were extracted from, and
-  `check:rules` rejects a mismatch. If the `engines.node` derivation assertion in
+- `skills`: the pin is declared twice — `PINNED_SKILLS_VERSION` in
+  `npm/lib/skill-rules.mjs` (JavaScript) and `PinnedSkillsVersion` in
+  `internal/skillinstall/receipt.go` (Go) — and a Dependabot bump of the npm
+  dependency lands red until both move together. The companion commit updates
+  the two constants, writes the measured
+  `EXPECTED_AGENT_COUNT`, `EXPECTED_GLOBAL_TARGET_COUNT`, and
+  `EXPECTED_NO_GLOBAL_TARGET_COUNT` in `npm/lib/skill-rules.mjs`, updates the
+  `skills@…` prose in `README.md` and `docs/v0-usage.md`, and regenerates the
+  bundle with `node npm/scripts/extract-skills-rules.mjs --write
+  npm/generated/skills-rules.json`. The counts are not to be guessed: the
+  generator prints the measured values in its
+  `rule count mismatch (agents=…, global=…, no-global=…)` error, and those are
+  what gets written. If the `engines.node` derivation assertion in
   `npm/test/hygiene.test.mjs` goes red, the package's Node floor has moved with
   the dependency: read the new floor from the installed `skills` package and
   write the same number in `package.json`, `README.md`, `docs/v0-usage.md`,

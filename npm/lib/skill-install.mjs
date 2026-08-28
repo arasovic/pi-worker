@@ -36,7 +36,7 @@ import {
 const SKILL_NAME = "pi-worker";
 const OUTPUT_LIMIT = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 30 * 1000;
-const GLOBAL_REMOVE = "npx --yes skills@1.5.22 remove pi-worker -g -y";
+const GLOBAL_REMOVE = `npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`;
 const GLOBAL_RETRY = "npm install -g --foreground-scripts pi-worker";
 const MAX_RECEIPT_BYTES = 1024 * 1024;
 const CHILD_GRACE_MS = 100;

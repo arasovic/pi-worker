@@ -14,7 +14,11 @@ import {
 import {
   detectInstalledAgents,
   evaluateDetector,
+  EXPECTED_AGENT_COUNT,
+  EXPECTED_GLOBAL_TARGET_COUNT,
+  EXPECTED_NO_GLOBAL_TARGET_COUNT,
   loadRules,
+  PINNED_SKILLS_VERSION,
   resolveAllTargets,
   resolveRule,
 } from "../lib/skill-rules.mjs";
@@ -41,14 +45,14 @@ function expectExtractionFailure(source, pattern) {
 function validDocument(rules) {
   const globalRules = rules.filter((rule) => rule.kind !== "no-global-target");
   const noGlobalRules = rules.filter((rule) => rule.kind === "no-global-target");
-  while (globalRules.length < 74) {
+  while (globalRules.length < EXPECTED_GLOBAL_TARGET_COUNT) {
     globalRules.push({ kind: "home-relative", path: `.generated-${globalRules.length}/skills` });
   }
-  while (noGlobalRules.length < 2) {
+  while (noGlobalRules.length < EXPECTED_NO_GLOBAL_TARGET_COUNT) {
     noGlobalRules.push({ kind: "no-global-target" });
   }
-  assert.equal(globalRules.length, 74);
-  assert.equal(noGlobalRules.length, 2);
+  assert.equal(globalRules.length, EXPECTED_GLOBAL_TARGET_COUNT);
+  assert.equal(noGlobalRules.length, EXPECTED_NO_GLOBAL_TARGET_COUNT);
   const agents = [...globalRules, ...noGlobalRules].map((rule, index) => ({
     id: `agent-${index}`,
     usesUniversalTarget: false,
@@ -57,10 +61,10 @@ function validDocument(rules) {
   }));
   return {
     schemaVersion: 3,
-    skillsVersion: "1.5.22",
-    agentCount: 76,
-    globalTargetCount: 74,
-    noGlobalTargetCount: 2,
+    skillsVersion: PINNED_SKILLS_VERSION,
+    agentCount: EXPECTED_AGENT_COUNT,
+    globalTargetCount: EXPECTED_GLOBAL_TARGET_COUNT,
+    noGlobalTargetCount: EXPECTED_NO_GLOBAL_TARGET_COUNT,
     agents,
   };
 }
@@ -82,15 +86,15 @@ describe("pinned skills target-rule extraction contract", () => {
     const claudeCode = document.agents.find((agent) => agent.id === "claude-code");
 
     assert.equal(document.schemaVersion, 3);
-    assert.equal(document.skillsVersion, "1.5.22");
-    assert.equal(document.agentCount, 76);
-    assert.equal(document.globalTargetCount, 74);
-    assert.equal(document.noGlobalTargetCount, 2);
-    assert.equal(ids.length, 76);
-    assert.equal(new Set(ids).size, 76);
-    assert.equal(rules.length, 76);
-    assert.equal(rules.filter((rule) => rule.kind === "no-global-target").length, 2);
-    assert.equal(rules.filter((rule) => rule.kind !== "no-global-target").length, 74);
+    assert.equal(document.skillsVersion, PINNED_SKILLS_VERSION);
+    assert.equal(document.agentCount, EXPECTED_AGENT_COUNT);
+    assert.equal(document.globalTargetCount, EXPECTED_GLOBAL_TARGET_COUNT);
+    assert.equal(document.noGlobalTargetCount, EXPECTED_NO_GLOBAL_TARGET_COUNT);
+    assert.equal(ids.length, EXPECTED_AGENT_COUNT);
+    assert.equal(new Set(ids).size, EXPECTED_AGENT_COUNT);
+    assert.equal(rules.length, EXPECTED_AGENT_COUNT);
+    assert.equal(rules.filter((rule) => rule.kind === "no-global-target").length, EXPECTED_NO_GLOBAL_TARGET_COUNT);
+    assert.equal(rules.filter((rule) => rule.kind !== "no-global-target").length, EXPECTED_GLOBAL_TARGET_COUNT);
     assert.ok(rules.every((rule) => [
       "home-relative",
       "config-home-relative",
@@ -138,7 +142,7 @@ describe("pinned skills target-rule extraction contract", () => {
 
   test("rejects a bundle version mismatch", () => {
     const source = sourceFixture().replace(
-      'var version$1 = "1.5.22";',
+      `var version$1 = "${PINNED_SKILLS_VERSION}";`,
       'var version$1 = "1.5.21";'
     );
     expectExtractionFailure(source, /version/i);
@@ -319,7 +323,7 @@ describe("runtime target resolution", () => {
   test("filters no-global detections and preserves generated order", () => {
     const document = {
       schemaVersion: 3,
-      skillsVersion: "1.5.22",
+      skillsVersion: PINNED_SKILLS_VERSION,
       agentCount: 3,
       globalTargetCount: 2,
       noGlobalTargetCount: 1,

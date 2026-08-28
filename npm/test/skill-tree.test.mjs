@@ -16,6 +16,7 @@ import { createServer } from "node:net";
 import { test } from "node:test";
 
 import { classifyTarget, hashSkillTree } from "../lib/skill-tree.mjs";
+import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
 
 const IDENTITY_FILE = "PI_WORKER_IDENTITY";
 const IDENTITY_CONTENT = "pi-worker-skill/v1\n";
@@ -53,7 +54,7 @@ function receiptWithTargets(targets) {
   return {
     schemaVersion: 1,
     installerVersion: "0.1.0",
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     outcome: "installed",
     targets: targets.map(({ path, kind, files }) => ({
       path,

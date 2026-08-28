@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { installSkill } from "../lib/skill-install.mjs";
 import { writeReceipt } from "../lib/skill-receipt.mjs";
+import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
 
 const realRulesPath = fileURLToPath(new URL("../generated/skills-rules.json", import.meta.url));
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -16,7 +17,7 @@ const SAFE_RETRY = "npm install -g --foreground-scripts pi-worker";
 
 const rules = {
   schemaVersion: 3,
-  skillsVersion: "1.5.22",
+  skillsVersion: PINNED_SKILLS_VERSION,
   agentCount: 1,
   globalTargetCount: 1,
   noGlobalTargetCount: 0,
@@ -139,7 +140,7 @@ test("passes only detected global-capable agent ids in generated order", async (
   const secondCopy = join(f.home, ".second", "skills", "pi-worker");
   const detectedRules = {
     schemaVersion: 3,
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     agentCount: 3,
     globalTargetCount: 2,
     noGlobalTargetCount: 1,
@@ -197,7 +198,7 @@ test("fails when a detected global-capable agent target is absent despite a zero
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const detectedRules = {
     schemaVersion: 3,
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     agentCount: 1,
     globalTargetCount: 1,
     noGlobalTargetCount: 0,
@@ -228,7 +229,7 @@ test("does not spawn when a detected target is absent from the conservative pref
   const f = fixture(t);
   const detectedRules = {
     schemaVersion: 3,
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     agentCount: 1,
     globalTargetCount: 1,
     noGlobalTargetCount: 0,
@@ -257,7 +258,7 @@ test("falls back to universal when only no-global agents are detected", async (t
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const noGlobalRules = {
     schemaVersion: 3,
-    skillsVersion: "1.5.22",
+    skillsVersion: PINNED_SKILLS_VERSION,
     agentCount: 1,
     globalTargetCount: 0,
     noGlobalTargetCount: 1,
@@ -519,7 +520,7 @@ test("records receipt-tracked drifted Pi Worker targets with exact global recove
   const driftedReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
   assert.equal(driftedReceipt.affectedTargets.find(({ path }) => path === canonical).state, "drifted");
   assert.deepEqual(driftedReceipt.recovery, [
-    "npx --yes skills@1.5.22 remove pi-worker -g -y",
+    `npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`,
     "npm install -g --foreground-scripts pi-worker",
   ]);
 });
