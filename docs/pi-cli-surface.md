@@ -267,17 +267,21 @@ Relevant events include:
 
 ```json
 {"type":"agent_start"}
-{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"..."}}
+{"type":"message_update","usage":{"input":1200,"output":340,"cacheRead":0,"cacheWrite":0,"totalTokens":1540,"cost":{"input":0.0012,"output":0.0017,"cacheRead":0,"cacheWrite":0,"total":0.0029}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"..."}}
 {"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"..."}]}}
 {"type":"turn_end","message":{},"toolResults":[]}
 {"type":"agent_end","messages":[],"willRetry":false}
 {"type":"agent_settled"}
 ```
 
-`message_update` is delta-only. Reconstruct live text by `contentIndex` from
-`message_start` plus update events; do not expect a cumulative `message`
-field. Assistant `stopReason` can be `stop`, `length`, `toolUse`, `error`, or
-`aborted`; it is not the session terminal condition.
+`message_update` is delta-only for message content: reconstruct live text
+by `contentIndex` from `message_start` plus update events, and do not
+expect a cumulative `message` field. Its `usage` field is the exception to
+the delta semantics: every frame carries the cumulative usage of the
+message so far, never a delta, and the frame whose
+`assistantMessageEvent.type` is `done` or `error` carries the message's
+final usage. Assistant `stopReason` can be `stop`, `length`, `toolUse`,
+`error`, or `aborted`; it is not the session terminal condition.
 
 ## Tool semantics
 

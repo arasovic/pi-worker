@@ -59,6 +59,12 @@ type WorkerResult struct {
 	// populated by the run layer from what it composed; absent when the
 	// task carried no material.
 	DataFiles []DataFile `json:"data,omitempty"`
+	// Usage is the summed usage of the worker's assistant messages as Pi
+	// reported it: token counts and US-dollar cost figures pass through
+	// unchanged, and pi-worker derives no price of its own. It is nil
+	// when no message reported a terminal usage frame, so "never
+	// measured" stays distinct from "measured, and it was free".
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // Worker runs one foreground worker through Pi JSONL RPC.
@@ -86,7 +92,13 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return WorkerResult{Status: StatusFailed, Error: "model is required"}
 	}
 	thinking := thinkingOutcome{requested: req.ThinkingLevel}
+	// Usage is measured on every path: every return funnels through
+	// withThinking, so a failed or timed-out run still reports what it
+	// spent. Validation failures before the client is created snapshot
+	// nil: no frame was observed, so usage is absent rather than zero.
+	usage := &usageAccumulator{}
 	withThinking := func(result WorkerResult) WorkerResult {
+		result.Usage = usage.snapshot()
 		return thinking.apply(result)
 	}
 	if req.ThinkingLevel != "" {
@@ -144,7 +156,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	}
 	stopHeartbeat = debug.startHeartbeat(proc.Running)
 
-	client := NewClient(proc.Stdin(), proc.Stdout(), nil, debug)
+	client := NewClient(proc.Stdin(), proc.Stdout(), usage, debug)
 
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
