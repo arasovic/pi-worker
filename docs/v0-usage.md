@@ -68,7 +68,7 @@ commands in this document.
 ## npm postinstall
 
 During `npm install`, npm attempts to install the bundled provider-neutral
-`pi-worker` skill for detected agent targets via pinned `skills@1.5.22`. It
+`pi-worker` skill for detected agent targets via pinned `skills@1.5.23`. It
 records an `installed`, `blocked`, `skipped`, or `failed` outcome in the durable
 receipt. Existing conflicts may block, skip, or fail without overwriting them.
 On an unsupported npm platform or architecture, setup can skip before the

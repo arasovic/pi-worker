@@ -39,7 +39,7 @@
     "THIRD_PARTY_NOTICES"
   ],
   "dependencies": {
-    "skills": "1.5.22"
+    "skills": "1.5.23"
   },
   "scripts": {
     "postinstall": "node npm/scripts/postinstall.mjs",

@@ -63,6 +63,10 @@ const DETECTOR_HELPERS = Object.freeze({
     { kind: "home-relative", path: ".minimax" },
     { kind: "absolute", path: "/Applications/MiniMax Code.app" },
   ]),
+  isPositAssistantInstalled: Object.freeze([
+    { kind: "home-relative", path: ".posit/assistant" },
+    { kind: "home-relative", path: ".positai" },
+  ]),
 });
 
 function extractionError(message) {
@@ -428,7 +432,7 @@ function parseDetectorExpression(source, start, end) {
   const [trimmedStart, trimmedEnd] = trimRange(source, start, end);
   const expression = source.slice(trimmedStart, trimmedEnd);
   if (expression === "false") return { kind: "never" };
-  if (expression === "isZCodeInstalled()" || expression === "isKimchiInstalled()" || expression === "isMiniMaxCodeInstalled()") {
+  if (expression.endsWith("()") && Object.hasOwn(DETECTOR_HELPERS, expression.slice(0, -2))) {
     const paths = DETECTOR_HELPERS[expression.slice(0, -2)];
     return { kind: "any-existing", paths: paths.map((path) => ({ ...path })) };
   }
@@ -591,6 +595,9 @@ function assertRecognizedAnchors(source, expectedVersion) {
     ]],
     ["MiniMax Code helper", "function isMiniMaxCodeInstalled(homeDir = home, pathExists = existsSync) {", [
       'return pathExists(join(homeDir, ".minimax")) || pathExists("/Applications/MiniMax Code.app");',
+    ]],
+    ["Posit Assistant helper", "function isPositAssistantInstalled(homeDir = home, pathExists = existsSync) {", [
+      'return pathExists(join(homeDir, ".posit/assistant")) || pathExists(join(homeDir, ".positai"));',
     ]],
   ];
   for (const [name, anchor, expectedLines] of helperAnchors) {
