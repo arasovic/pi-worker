@@ -18,6 +18,8 @@ const security = existsSync(securityPath) ? readFileSync(securityPath, "utf8") :
 const skill = readFileSync(skillPath, "utf8");
 const normalizedSecurity = security.replace(/\s+/g, " ");
 const packageManifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
+const piPin = JSON.parse(readFileSync(join(repository, "compat", "pi", "package.json"), "utf8"));
+const piVersion = piPin.dependencies["@earendil-works/pi-coding-agent"];
 const npmReadmeTargets = ["CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES"];
 
 const sections = [
@@ -218,7 +220,7 @@ test("contribution guidance covers the public workflow and local checks", () => 
   assert.match(contributing, /go\.mod|Go toolchain/i);
   assert.match(contributing, /Node(?:\.js)?\s*>=?\s*22\.20\.0/i);
   assert.match(contributing, /npm/i);
-  assert.match(contributing, /Pi\s+(?:CLI\s+)?0\.84\.2.*(?:integration|dogfood)/is);
+  assert.match(contributing, new RegExp(`Pi\\s+(?:CLI\\s+)?${escapeRegex(piVersion)}.*(?:integration|dogfood)`, "is"));
   assert.match(contributing, /fork/i);
   assert.match(contributing, /purpose[- ]named branch/i);
   assert.match(contributing, /focused changes/i);
