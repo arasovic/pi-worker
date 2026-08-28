@@ -150,10 +150,13 @@ given in full:
   `plugins/pi-subagent-bridge/.mcp.json` is shipped, and the `runs` table is
   created at `tool-call-store.js:17-32` with columns including `provider`,
   `model_id` and `thinking_level`;
-- the packaged installation is oriented around a Codex plugin:
-  `plugins/pi-subagent-bridge/.codex-plugin/plugin.json` and the root
-  `.agents/plugins/marketplace.json` are shipped, and the root `package.json`
-  maps the `pi-subagent-bridge` bin to `scripts/install.mjs`.
+- the packaged installation is oriented around a Codex plugin: at
+  the root `scripts/install.mjs:46` the installer probes for the agent
+  binary, and at the root `scripts/install.mjs:86` it registers itself
+  through that agent's plugin command; the root
+  `.agents/plugins/marketplace.json` is shipped, and the root
+  `package.json` maps the `pi-subagent-bridge` bin to
+  `scripts/install.mjs`.
 
 The bridge is a strong option when its richer MCP workflow is desired. Pi
 Worker instead favors a small, portable CLI and mandatory state validation.
