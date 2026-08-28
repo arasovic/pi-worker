@@ -232,31 +232,32 @@ func TestControllerWritesOneTaskDeclaresOneDeclaresWritesNothing(t *testing.T) {
 	}
 }
 
-func TestControllerWritesPartialDeclarationSkips(t *testing.T) {
+func TestControllerRejectsPartialWriteDeclaration(t *testing.T) {
+	// A partial write declaration is a usage error, not a state worth
+	// running: the request is rejected before any worker starts, and
+	// the error names the first task that declared nothing. The
+	// writes-nothing declaration is how a task that will not write
+	// takes part, so no expressible intent is lost to the rejection.
 	dir := newGitRepo(t)
-	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+	req := validRequest("a", "b")
+	req.Workspace = dir
+	req.Tasks[0].Writes = declaredPaths("file.txt")
+	_, err := New(&changesMutatingWorker{mutate: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644)
-	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("file.txt"), {}})
-	writes := result.Writes
-	if writes == nil {
-		t.Fatalf("writes = nil, want the partial-declaration skip reason")
+	}}, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+	const want = "task 2 declared no writes while another task declared: the declaration is all-or-none; declare this task's paths, or declare the empty set if it writes nothing"
+	if err == nil || err.Error() != want {
+		t.Fatalf("run error = %v, want %q", err, want)
 	}
-	if writes.Skipped != reasonPartialDeclaration {
-		t.Fatalf("skipped = %q, want %q", writes.Skipped, reasonPartialDeclaration)
+	// No worker ran: file.txt still holds the four bytes newGitRepo
+	// committed. That is independent evidence — a worker that ran
+	// would have replaced them with "changed\n".
+	got, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("read file.txt: %v", err)
 	}
-	if writes.UndeclaredCount != 0 || writes.Undeclared != nil || writes.Truncated {
-		t.Fatalf("writes = %#v, want no fields alongside the skip reason", writes)
-	}
-	// UndeclaredCount carries no omitempty, so the serialized document
-	// still carries its meaningless zero beside the reason; the reason
-	// is the field a caller must read first.
-	document := writeCheckDocument(t, writes)
-	assertExactJSONKeys(t, document, "skipped", "undeclaredCount")
-	if document["skipped"] != reasonPartialDeclaration {
-		t.Fatalf("skipped = %v, want %q", document["skipped"], reasonPartialDeclaration)
-	}
-	if document["undeclaredCount"] != float64(0) {
-		t.Fatalf("undeclaredCount = %v, want meaningless zero", document["undeclaredCount"])
+	if string(got) != "one\n" {
+		t.Fatalf("file.txt = %q, want %q: a worker must not have run", got, "one\n")
 	}
 }
 
@@ -526,21 +527,6 @@ func TestWriteCheckUndeclaredListCappedOnePastCap(t *testing.T) {
 		t.Fatalf("last undeclared = %q, want f099.txt", check.Undeclared[maxChangeFiles-1])
 	}
 }
-
-func TestWriteCheckPartialDeclarationReasonBeatsUnavailableManifest(t *testing.T) {
-	// When both skips apply at once — a task that declared nothing and
-	// a manifest that was never measured — the partial-declaration
-	// reason wins: it is the caller's own input, and it is the one they
-	// can act on.
-	check := checkWrites(&Changes{Omitted: reasonMeasurementFail}, []Task{{Writes: declaredPaths("file.txt")}, {}})
-	if check.Skipped != reasonPartialDeclaration {
-		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonPartialDeclaration)
-	}
-	if check.UndeclaredCount != 0 || check.Undeclared != nil || check.Truncated {
-		t.Fatalf("writes = %#v, want no fields alongside the skip reason", check)
-	}
-}
-
 func TestWriteCheckNilManifestSkips(t *testing.T) {
 	// A nil *Changes only reaches the check when the run carried no git
 	// inspector at all, which every controller-driven run with one does

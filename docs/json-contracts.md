@@ -333,15 +333,14 @@ run is measuring, so while any run declares `--writes`, that workspace must
 have one run at a time. Root `writes` carries either a reason it could not run
 or the verdict, never both:
 
-- `skipped`: present only when the check could not run; a short reason,
-  `not all tasks declared writes` — some task said nothing at all, the
-  only state that triggers it, since a task that declared an empty set
-  has declared — or `change manifest unavailable`, reached by the four
-  manifest omissions above and by an absent manifest, which carries no
-  `omitted` field to consult (the run had no git inspector): a dirty
-  before-state is measured now, so it never triggers the skip.
-  `undeclaredCount`, `undeclared`, and
-  `truncated` carry no meaning when it is present
+- `skipped`: present only when the check could not run, with the single
+  reason `change manifest unavailable`, reached by the four manifest
+  omissions above and by an absent manifest, which carries no `omitted`
+  field to consult (the run had no git inspector): a dirty before-state
+  is measured now, so it never triggers the skip. A declaration where
+  some tasks declare and others do not is rejected before the run as a
+  usage error, never reported as a skip. `undeclaredCount`, `undeclared`,
+  and `truncated` carry no meaning when `skipped` is present
 - `undeclaredCount`: always present on a verdict; the true number of
   changed paths no task declared, before the entry cap. A checked run that
   wrote nothing undeclared carries `0` rather than omitting the field

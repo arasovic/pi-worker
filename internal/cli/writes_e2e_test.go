@@ -524,3 +524,28 @@ func TestRunDirtyBeforeJSONCarriesFieldOnlyOnDirtyEntry(t *testing.T) {
 		t.Fatalf("changes.files = %v, want one dirty-before entry and one clean entry", changes["files"])
 	}
 }
+
+func TestRunPartialWriteDeclarationExitsTwoBeforeAnyWorkerStarts(t *testing.T) {
+	// A partial write declaration is a usage error, decided in the same
+	// pass that validates the rest of the argv: the run exits 2 and no
+	// worker starts. The rejection names the task that declared
+	// nothing, and the writes-nothing declaration is the legal way a
+	// task that will not write takes part — nothing expressible is
+	// lost.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	newGitWorkspace(t)
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "file.txt", "--task", "b"}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times before the run started", fake.callCount())
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	const want = "task 2 declared no writes while another task declared: the declaration is all-or-none; declare this task's paths, or declare the empty set if it writes nothing"
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr missing the rejection naming task 2: %q", stderr)
+	}
+}
