@@ -8,7 +8,7 @@ func TestClassifyVersion(t *testing.T) {
 		output string
 		status Status
 	}{
-		{name: "verified", output: "0.84.2\n", status: StatusVerified},
+		{name: "verified", output: VerifiedVersion + "\n", status: StatusVerified},
 		{name: "unverified release", output: "0.99.0", status: StatusUnverified},
 		{name: "unverified prerelease", output: "1.2.3-alpha.1+build.5", status: StatusUnverified},
 		{name: "empty", output: "", status: StatusInvalid},
@@ -28,9 +28,9 @@ func TestClassifyVersion(t *testing.T) {
 }
 
 func TestClassifyTrimsOnlyOuterWhitespace(t *testing.T) {
-	got := Classify("\t0.84.2 \n")
-	if got.Status != StatusVerified || got.Version != "0.84.2" {
-		t.Fatalf("classification = %#v, want verified 0.84.2", got)
+	got := Classify("\t" + VerifiedVersion + " \n")
+	if got.Status != StatusVerified || got.Version != VerifiedVersion {
+		t.Fatalf("classification = %#v, want verified %s", got, VerifiedVersion)
 	}
 
 	if got := Classify("0.84.1\nextra"); got.Status != StatusInvalid {

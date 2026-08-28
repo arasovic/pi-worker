@@ -12,6 +12,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/doctor"
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/piversion"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
@@ -19,7 +20,7 @@ import (
 func readyDoctorDependencies() doctor.Dependencies {
 	return doctor.Dependencies{
 		Lookup:  func(string) (string, error) { return "pi", nil },
-		Version: func(context.Context, string) (string, error) { return "0.84.2", nil },
+		Version: func(context.Context, string) (string, error) { return piversion.VerifiedVersion, nil },
 		LoadConfig: func() (config.Config, error) {
 			return config.Config{SchemaVersion: 1, DefaultModel: "acme/model"}, nil
 		},
@@ -62,7 +63,7 @@ func TestDoctorHumanOutputKeepsSixChecksInOrder(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	want := []string{
-		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version 0.84.2 is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "workspace: ok - Workspace is inside a confirmed git work tree", "ready: yes",
+		"pi-executable: ok - Pi executable found", "pi-version: ok - Pi version " + piversion.VerifiedVersion + " is supported", "config: ok - Pi-worker configuration is valid", "model-catalog: ok - Pi model catalog is available", "default-model: ok - Configured default model is available", "workspace: ok - Workspace is inside a confirmed git work tree", "ready: yes",
 	}
 	for i, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		if i >= len(want) || line != want[i] {
@@ -247,7 +248,7 @@ func TestDoctorRealFakePiUsesOnlyCatalogRequest(t *testing.T) {
 	logPath := os.Getenv("FAKEPI_LOG")
 	deps := readyDoctorDependencies()
 	deps.Lookup = func(string) (string, error) { return fakePiBin, nil }
-	deps.Version = func(context.Context, string) (string, error) { return "0.84.2", nil }
+	deps.Version = func(context.Context, string) (string, error) { return piversion.VerifiedVersion, nil }
 	deps.Catalog = pi.NewCatalog(fakePiBin)
 	deps.Workspace = func() (string, error) { return t.TempDir(), nil }
 	installDoctorDependencies(t, deps)
