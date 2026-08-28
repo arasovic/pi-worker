@@ -34,7 +34,7 @@ level.
 
 You need Node.js 22.20.0 or newer and a [Pi](https://pi.dev/) CLI with
 provider authentication.
-Pi `0.84.3` is verified; other semantic versions run with an explicit warning.
+Pi `0.84.4` is verified; other semantic versions run with an explicit warning.
 
 Install the npm package:
 

@@ -3,6 +3,6 @@
   "private": true,
   "description": "Pins the Pi release pi-worker is verified against. Not installed; it exists so Dependabot can watch the version.",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.3"
+    "@earendil-works/pi-coding-agent": "0.84.4"
   }
 }
