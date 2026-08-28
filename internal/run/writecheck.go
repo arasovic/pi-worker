@@ -27,12 +27,12 @@ type WriteCheck struct {
 	Truncated       bool     `json:"truncated,omitempty"`
 }
 
-// The write-check skip reasons, short lowercase phrases in the style of
-// the change-manifest omission reasons. When both apply the first is
-// reported: it is the caller's own input, and it is the one they can
-// act on.
+// The write-check skip reason, a short lowercase phrase in the style of
+// the change-manifest omission reasons. Only one reason remains: a
+// partial declaration is rejected before the run ever starts, so a
+// check that runs can only be skipped by a manifest it never got to
+// compare against.
 const (
-	reasonPartialDeclaration  = "not all tasks declared writes"
 	reasonManifestUnavailable = "change manifest unavailable"
 )
 
@@ -60,9 +60,6 @@ func anyWritesDeclared(tasks []Task) bool {
 // is pure over two in-memory slices: it runs no commands, so it takes no
 // context and has no timeout of its own.
 func checkWrites(changes *Changes, tasks []Task) *WriteCheck {
-	if !writesDeclaredOnEveryTask(tasks) {
-		return &WriteCheck{Skipped: reasonPartialDeclaration}
-	}
 	if changes == nil || changes.Omitted != "" {
 		return &WriteCheck{Skipped: reasonManifestUnavailable}
 	}
@@ -88,13 +85,13 @@ func checkWrites(changes *Changes, tasks []Task) *WriteCheck {
 }
 
 // writesDeclaredOnEveryTask reports whether every task carried a write
-// declaration, exactly the condition the CLI's shared-workspace warning
-// uses. A task that declared nothing may legitimately have written any
-// path, so no changed path in the run can be called undeclared; a task
-// that declared an empty set has declared — the task bounded itself to
-// nothing — and the check runs. An empty declaration list, no task
-// declaring anything, is the same partial state as a task that said
-// nothing.
+// declaration, the all-or-none condition ValidateWrites enforces: a run
+// where some tasks declared and others did not is rejected before any
+// worker starts, while a run where every task declared — the empty set
+// included — or none did stays legal. A task that declared an empty set
+// has declared, so a writes-nothing task counts; the empty declaration
+// list counts as none declared, which is why anyWritesDeclared guards
+// the rejection in ValidateWrites.
 func writesDeclaredOnEveryTask(tasks []Task) bool {
 	if len(tasks) == 0 {
 		return false

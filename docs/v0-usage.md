@@ -448,24 +448,25 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 - The declaration is optional and is checked twice: before any worker
   starts, a run whose declared sets overlap is rejected up front as a
   usage error (exit `2`), and after the run the declaration is compared
-  against the paths the run actually changed. A run where some tasks
-  declare and others do not is allowed; a task that did not declare is
-  excluded from the pre-flight overlap check and makes the post-run check
-  skip entirely. It is a pre-flight contract, not a sandbox or worktree:
+  against the paths the run actually changed. The declaration is
+  all-or-none: every task in the run declares, or none does. A run where
+  some tasks declared and others did not is rejected up front as a usage
+  error (exit `2`) before any worker starts, and the empty declaration
+  is how a task that writes nothing takes part. It is a pre-flight
+  contract, not a sandbox or worktree:
   pi-worker does not enforce it during the run.
 - While any run declares `--writes`, that workspace must have one run at a
   time: the check compares against the whole workspace's pre-run git
   state, so a concurrent writer lands in whichever run is measuring.
 - When every task declared — empty set or not — and the check passes,
-  the shared workspace warning is suppressed; when any task did not
-  declare, the warning stays.
+  the shared workspace warning is suppressed; when no task declared, the
+  warning stays.
 - The run reports the changed paths no task declared, and exits `4`
   (policy) when it found any. The run `status` field is unaffected: a run
   whose workers all succeeded stays `completed`, and the process exit
   code, the reported error, and the root `outcome` carry the failure.
-  When not every task declared writes, or the change manifest was not
-  measured, the check is skipped with a stated reason rather than
-  answered.
+  When the change manifest was not measured, the check is skipped with a
+  stated reason rather than answered.
 
 ### Carried material
 

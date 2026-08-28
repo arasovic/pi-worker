@@ -426,9 +426,10 @@ func validate(req Request) error {
 	return ValidateWrites(req.Tasks)
 }
 
-// ValidateWrites checks the write declaration of every task: each
-// declared path validated and normalized, the rule that one task must
-// not declare the same path twice, and the rule that two tasks must not
+// ValidateWrites checks the write declaration of every task: the
+// all-or-none rule that every task declares or none does, each declared
+// path validated and normalized, the rule that one task must not
+// declare the same path twice, and the rule that two tasks must not
 // declare overlapping paths. The CLI calls it on the resolved task
 // records so a bad declaration is a usage error before the controller
 // runs; the controller calls it again through validate, so a library
@@ -438,6 +439,18 @@ func validate(req Request) error {
 // writes-nothing declaration — has no paths to reject and none to
 // overlap with another task's.
 func ValidateWrites(tasks []Task) error {
+	// The all-or-none rule comes before path contents: a partially
+	// declared run is rejected for its shape, and that rejection must
+	// win deterministically over any invalid path the same run also
+	// carries. anyWritesDeclared short-circuits, so a run where no
+	// task declared at all stays legal.
+	if anyWritesDeclared(tasks) && !writesDeclaredOnEveryTask(tasks) {
+		for i, task := range tasks {
+			if !task.Writes.Declared {
+				return fmt.Errorf("task %d declared no writes while another task declared: the declaration is all-or-none; declare this task's paths, or declare the empty set if it writes nothing", i+1)
+			}
+		}
+	}
 	normalized := make([][]string, len(tasks))
 	for i, task := range tasks {
 		entry := task.Writes

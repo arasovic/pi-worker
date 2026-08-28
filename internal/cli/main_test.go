@@ -2342,8 +2342,8 @@ func TestPrintWritesCleanVerdict(t *testing.T) {
 
 func TestPrintWritesSkippedPartialDeclaration(t *testing.T) {
 	var stdout bytes.Buffer
-	printWrites(&run.WriteCheck{Skipped: "not all tasks declared writes"}, &stdout)
-	want := "writes: skipped: not all tasks declared writes\n"
+	printWrites(&run.WriteCheck{Skipped: "change manifest unavailable"}, &stdout)
+	want := "writes: skipped: change manifest unavailable\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -2435,7 +2435,7 @@ func TestRunExitCodePolicyOnUndeclaredWrites(t *testing.T) {
 	}{
 		{name: "no declaration", result: run.Result{Status: contracts.RunCompleted}, want: 0, wantOutcome: contracts.OutcomeCompleted},
 		{name: "clean verdict", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{UndeclaredCount: 0}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
-		{name: "skipped partial declaration", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "not all tasks declared writes"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
+		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
 		{name: "skipped manifest unavailable", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Skipped: "change manifest unavailable"}}, want: 0, wantOutcome: contracts.OutcomeCompleted},
 		{name: "undeclared paths", result: run.Result{Status: contracts.RunCompleted, Writes: &run.WriteCheck{Undeclared: []string{"stray.txt"}, UndeclaredCount: 1}}, want: 4, wantOutcome: contracts.OutcomeUndeclaredWrites},
 	}
