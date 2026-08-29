@@ -10,9 +10,12 @@ import (
 // TestRunJSONCarriesWorkerUsageEndToEnd drives a real worker against a
 // scripted fakepi message_update stream and asserts Pi's usage lands in
 // the run --json document, field names and values unchanged. The raw
-// frame travels the same path a real Pi frame does: fakepi writes it
-// verbatim, the client delivers it to the worker's handler, and the
-// document carries what the handler summed.
+// frames travel the same path real Pi frames do: fakepi writes them
+// verbatim, the client delivers them to the worker's handler, and the
+// document carries what the handler summed. The scripted frame uses the
+// real vocabulary — a message_start/message_end bounded message whose
+// text_end frame carries the numbers — so the path exercised is the path
+// a real run takes, not a fallback.
 func TestRunJSONCarriesWorkerUsageEndToEnd(t *testing.T) {
 	installRealFakePiWorker(t)
 	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
@@ -24,7 +27,9 @@ func TestRunJSONCarriesWorkerUsageEndToEnd(t *testing.T) {
 		},
 		"prompt": {
 			{Response: &script.Response{Success: true}},
-			{Event: json.RawMessage(`{"type":"message_update","usage":{"input":1200,"output":340,"cacheRead":80,"cacheWrite":6,"cacheWrite1h":3,"reasoning":200,"totalTokens":1829,"cost":{"input":0.012,"output":0.017,"cacheRead":0.0008,"cacheWrite":0.0003,"total":0.0301}},"assistantMessageEvent":{"type":"done"}}`)},
+			{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+			{Event: json.RawMessage(`{"type":"message_update","usage":{"input":1200,"output":340,"cacheRead":80,"cacheWrite":6,"cacheWrite1h":3,"reasoning":200,"totalTokens":1829,"cost":{"input":0.012,"output":0.017,"cacheRead":0.0008,"cacheWrite":0.0003,"total":0.0301}},"assistantMessageEvent":{"type":"text_end","contentIndex":0}}`)},
+			{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`)},
 			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
 		},
 		"get_last_assistant_text": {
