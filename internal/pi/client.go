@@ -169,7 +169,8 @@ func (c *Client) SetModel(ctx context.Context, provider, modelID string) error {
 
 // GetAvailableThinkingLevels returns the exact unique thinking levels Pi
 // reports for the active model. Unknown or duplicate values are protocol
-// violations because pi-worker is pinned to the verified pin's vocabulary.
+// violations: pi-worker accepts only the vocabulary of the Pi version
+// recorded in the pin.
 func (c *Client) GetAvailableThinkingLevels(ctx context.Context) ([]ThinkingLevel, error) {
 	req, err := newRequest(requestGetAvailableThinkingLevels)
 	if err != nil {
