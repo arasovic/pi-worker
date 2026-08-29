@@ -100,17 +100,20 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return WorkerResult{Status: StatusFailed, Error: "model is required"}
 	}
 	thinking := thinkingOutcome{requested: req.ThinkingLevel}
-	// Usage is measured on every path: every return funnels through
-	// withThinking, so a failed or timed-out run still reports what it
-	// spent. Validation failures before the client is created snapshot
-	// nil: no frame was observed, so usage is absent rather than zero.
+	// Usage is measured on every path after the model guard: every
+	// return funnels through withThinking, so a failed or timed-out run
+	// still reports what it spent. Only the model-required return above
+	// is outside that rule. Validation failures before the client is
+	// created snapshot nil: no frame was observed, so usage is absent
+	// rather than zero.
 	usage := &usageAccumulator{}
 	// transcript holds the last assistant message's text as it streams,
 	// the partial counterpart of explanation: withThinking reports it when
 	// the run ends without a final text, so a failed or timed-out run
 	// still carries the text it produced. It obeys the same rule as usage:
-	// every return funnels through withThinking. Validation failures
-	// before the client is created snapshot empty: no frame was observed.
+	// every return after the model guard funnels through withThinking.
+	// Validation failures before the client is created snapshot empty: no
+	// frame was observed.
 	transcript := &transcriptAccumulator{}
 	withThinking := func(result WorkerResult) WorkerResult {
 		result.Usage = usage.snapshot()
