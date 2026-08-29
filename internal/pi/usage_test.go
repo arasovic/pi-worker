@@ -9,7 +9,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
-// zeroUsage is the all-zero usage object openai-codex reported on every
+// zeroUsage is the all-zero usage object one provider reported on every
 // frame of a tool-using run: that provider sends no numbers, ever.
 const zeroUsage = `{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
 
@@ -34,7 +34,7 @@ func messageUpdate(usage, subtype string) Event {
 }
 
 func TestUsageAccumulatorMeasuredTraceEndToEnd(t *testing.T) {
-	// The exact qwen-token-plan stream observed on the wire against Pi
+	// The exact measured stream observed on the wire against Pi
 	// 0.84.4, frame for frame. The first message carries no message_update
 	// frames at all; the second message's text_start and text_delta frames
 	// report all-zero usage, and only its text_end frame carries numbers.
@@ -76,16 +76,16 @@ func TestUsageAccumulatorMeasuredTraceEndToEnd(t *testing.T) {
 }
 
 func TestUsageAccumulatorSilentProviderUsageAbsent(t *testing.T) {
-	// openai-codex reported an all-zero usage object on every frame of a
+	// The same provider reported an all-zero usage object on every frame of a
 	// tool-using run: that provider sends no numbers, ever. A message
 	// bounded by message_start and message_end that reports only zeros was
 	// never measured, so the snapshot must be nil — asserted as nil, not
 	// as a struct of zero fields.
 	a := &usageAccumulator{}
 	stream := []Event{event("message_start")}
-	// All eight observed subtypes: none of them carries a measurement here.
+	// All nine subtypes observed so far: none of them carries a measurement here.
 	for _, subtype := range []string{
-		"thinking_start", "thinking_end",
+		"thinking_start", "thinking_delta", "thinking_end",
 		"text_start", "text_delta", "text_end",
 		"toolcall_start", "toolcall_delta", "toolcall_end",
 	} {
@@ -170,7 +170,7 @@ func TestUsageAccumulatorZeroFramesBeforeFinalFigureCountOnce(t *testing.T) {
 }
 
 func TestUsageAccumulatorMeasuredToolRunSumsMessagesOnce(t *testing.T) {
-	// The qwen-token-plan tool-using run measured against Pi 0.84.4, frame
+	// The tool-using run measured against Pi 0.84.4, frame
 	// for frame: two empty messages (message_start straight to
 	// message_end) commit nothing, and the two messages that carry numbers
 	// report them on the end frame of each content block — thinking_end
