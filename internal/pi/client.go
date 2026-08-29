@@ -135,7 +135,7 @@ func (c *Client) GetAvailableModels(ctx context.Context) ([]ModelProjection, err
 	return data.Models, nil
 }
 
-// SetModel activates the exact catalog provider/id. Pi 0.84.1 confirms a
+// SetModel activates the exact catalog provider/id. Pi confirms a
 // successful set_model with data:Model, so v0 requires that confirmation to
 // be a non-null object whose provider and id strings exactly equal the
 // requested catalog pair. A missing, null, mistyped, or mismatched
@@ -169,7 +169,7 @@ func (c *Client) SetModel(ctx context.Context, provider, modelID string) error {
 
 // GetAvailableThinkingLevels returns the exact unique thinking levels Pi
 // reports for the active model. Unknown or duplicate values are protocol
-// violations because pi-worker is pinned to the Pi 0.84.1 vocabulary.
+// violations because pi-worker is pinned to the verified pin's vocabulary.
 func (c *Client) GetAvailableThinkingLevels(ctx context.Context) ([]ThinkingLevel, error) {
 	req, err := newRequest(requestGetAvailableThinkingLevels)
 	if err != nil {
@@ -311,7 +311,7 @@ func (c *Client) Prompt(ctx context.Context, message string) error {
 }
 
 // GetLastAssistantText returns the final assistant text, or "" when Pi
-// explicitly reports text:null. Pi 0.84.1 serializes the undefined "no
+// explicitly reports text:null. Pi serializes the undefined "no
 // assistant text" value as an omitted text key (data:{}), so a missing
 // text field is treated the same as an explicit null: empty text, never a
 // protocol violation. A missing, null, or mistyped data object is still a
@@ -597,7 +597,7 @@ func toolName(name string) string {
 }
 
 // modelPhase maps only the assistantMessageEvent.type vocabulary that Pi
-// 0.84.1 emits. Missing, malformed, and unknown subtypes intentionally share
+// emits. Missing, malformed, and unknown subtypes intentionally share
 // model-activity; no other frame field participates in this projection.
 func modelPhase(subtype string) string {
 	switch subtype {

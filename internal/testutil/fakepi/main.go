@@ -1,4 +1,4 @@
-// Command fakepi is a deterministic scripted stand-in for the Pi 0.84.1 RPC
+// Command fakepi is a deterministic scripted stand-in for the Pi RPC
 // mode that internal/pi tests drive as a child process. It accepts the exact
 // pi CLI flags passed by internal/pi/process.go, reads one JSON object per
 // stdin line, and emits one JSON object per stdout line. Test configuration
