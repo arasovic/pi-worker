@@ -14,9 +14,9 @@ documentation, and commit messages.
 
 Run checks appropriate to the changed surface:
 
-- Go: `gofmt` formatting, `go vet ./...`, `go test -race -count=1 ./...`, and `go build ./...`.
-- npm: `npm test` and `npm run verify`; focused checks are `npm run check:rules`, `npm run check:notices`, `npm run check:piversion`, and `npm run check:hygiene`.
-- All changes: `git diff --check`.
+- `npm run verify` covers formatting (`gofmt`), vetting (`go vet ./...`), the Go suite with race detection (`go test -race -count=1 ./...`), the JavaScript suite (`npm test`), and the four project checks (`check:rules`, `check:notices`, `check:piversion`, `check:hygiene`).
+- Focused per-check commands: `npm run check:gofmt`, `npm run check:govet`, `npm run check:gotest`, `npm run check:rules`, `npm run check:notices`, `npm run check:piversion`, and `npm run check:hygiene`.
+- `verify` does not cover `go build ./...`, which CI runs, or `git diff --check`, which you run before every commit.
 
 The hygiene command is a narrow accidental-artifact gate, not a general secret scanner. Inspect staged changes before every commit.
 

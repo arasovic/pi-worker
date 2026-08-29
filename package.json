@@ -49,9 +49,12 @@
     "check:notices": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
     "check:piversion": "go run ./tools/piversion --check",
     "check:hygiene": "node npm/scripts/check-hygiene.mjs",
+    "check:gofmt": "! gofmt -l $(git ls-files '*.go') | grep .",
+    "check:govet": "go vet ./...",
+    "check:gotest": "go test -race -count=1 ./...",
     "notices:check": "npm run check:notices",
     "skills-rules:check": "npm run check:rules",
-    "verify": "npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion",
+    "verify": "npm run check:gofmt && npm run check:govet && npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion && npm run check:gotest",
     "prepack": "npm run check:notices && npm run check:rules && npm run check:hygiene && npm run check:piversion"
   }
 }
