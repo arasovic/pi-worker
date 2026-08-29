@@ -62,8 +62,9 @@ type WorkerResult struct {
 	// Usage is the summed usage of the worker's assistant messages as Pi
 	// reported it: token counts and US-dollar cost figures pass through
 	// unchanged, and pi-worker derives no price of its own. It is nil
-	// when no message reported a terminal usage frame, so "never
-	// measured" stays distinct from "measured, and it was free".
+	// when no message reported a non-zero usage figure — never measured,
+	// or only zeros reported — so a provider that reports no numbers
+	// leaves the field absent rather than claiming a free run.
 	Usage *Usage `json:"usage,omitempty"`
 }
 

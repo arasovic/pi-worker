@@ -166,10 +166,9 @@ Worker fields are conditionally present:
 - `error`: present when the worker reports an error
 - `data`: present only when the task carried `--data` files; one entry
   per carried file, each with `path`, `byteCount`, and `sha256`
-- `usage`: present only when Pi reported a terminal usage frame
-  (`assistantMessageEvent.type` is `done` or `error`) for the worker;
-  the token counts and dollar figures Pi computed, passed through
-  unchanged
+- `usage`: present only when at least one assistant message reported a
+  non-zero usage figure; the token counts and dollar figures Pi
+  computed, passed through unchanged
 
 Carried material is additive and optional, so `schemaVersion` stays `1`.
 Per worker, `data` appears only when the task carried `--data` files, in
@@ -186,13 +185,14 @@ Content is never reported: the document carries the path, the byte
 count, and the hash, nothing more.
 
 Usage reporting is additive and optional, so `schemaVersion` stays `1`.
-Worker `usage` appears only when a terminal `message_update` frame was
-observed; the numbers are Pi's own, copied unchanged — `cost` is in US
-dollars as Pi computed it, and pi-worker derives no price of its own.
-Presence asserts measurement: an absent field means no message reported
-usage, an all-zero field means a message reported free usage, and
-`cacheWrite1h` and `reasoning` are omitted unless some message reported
-them.
+Worker `usage` appears only when at least one assistant message reported
+a non-zero usage figure; the numbers are Pi's own, copied unchanged —
+`cost` is in US dollars as Pi computed it, and pi-worker derives no
+price of its own. The field is present when a message reported a
+non-zero figure, and absent otherwise — including when the provider
+reported nothing but zeros: a completed run cannot genuinely consume
+zero tokens, so an all-zero report is no measurement. `cacheWrite1h`
+and `reasoning` are present only when some message reported them.
 
 Verification is additive and optional, so `schemaVersion` stays `1`. Root
 `verification` appears only when `--verify` ran on a completed run; a run

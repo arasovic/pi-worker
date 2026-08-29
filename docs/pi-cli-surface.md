@@ -27,6 +27,15 @@ every required flag still present; the RPC command names, thinking levels,
 and response container shapes were re-checked in the installed package and
 all held; no authentication command, model catalog call, prompt, or other
 billable operation was run in the re-probe.
+The usage frame vocabulary was re-measured on 2026-08-29 against 0.84.4
+with an instrumented pi-worker build running real prompt workloads on two
+providers; the only `assistantMessageEvent.type` subtypes observed on the
+wire were `thinking_start`, `thinking_end`, `text_start`, `text_delta`,
+`text_end`, `toolcall_start`, `toolcall_delta`, and `toolcall_end` — no
+`done` or `error` subtype was ever forwarded by the RPC transport. Only
+the last frame of a message carried numbers; earlier frames reported
+all-zero usage, and one provider reported all-zero usage on every frame of
+a tool-using run.
 
 ## Compatibility gate
 
@@ -289,11 +298,14 @@ Relevant events include:
 `message_update` is delta-only for message content: reconstruct live text
 by `contentIndex` from `message_start` plus update events, and do not
 expect a cumulative `message` field. Its `usage` field is the exception to
-the delta semantics: every frame carries the cumulative usage of the
-message so far, never a delta, and the frame whose
-`assistantMessageEvent.type` is `done` or `error` carries the message's
-final usage. Assistant `stopReason` can be `stop`, `length`, `toolUse`,
-`error`, or `aborted`; it is not the session terminal condition.
+the delta semantics in the other direction: only the last `message_update`
+frame of a message carries that message's final usage, and earlier frames
+carried all-zero usage objects in the observed runs — never a running
+total and never a delta. No `message_update` frame type terminates the
+measurement; pi-worker reads the latest usage a message reported, bounded
+by `message_start` and `message_end`. Assistant `stopReason` can be
+`stop`, `length`, `toolUse`, `error`, or `aborted`; it is not the session
+terminal condition.
 
 ## Tool semantics
 
