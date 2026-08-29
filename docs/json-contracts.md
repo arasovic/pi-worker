@@ -163,12 +163,25 @@ Worker fields are conditionally present:
 - `thinkingFallback`: present and `true` only for a reported fallback
 - `warning`: present with a fallback or other worker warning
 - `explanation`: present when final assistant text exists
+- `partialExplanation`: present when the run ended without a final
+  assistant text but assistant text was already observed; carries the
+  text as it streamed, and never appears together with `explanation`
 - `error`: present when the worker reports an error
 - `data`: present only when the task carried `--data` files; one entry
   per carried file, each with `path`, `byteCount`, and `sha256`
 - `usage`: present only when at least one assistant message reported a
   non-zero usage figure; the token counts and dollar figures Pi
   computed, passed through unchanged
+
+Partial text reporting is additive and optional, so `schemaVersion`
+stays `1`. Worker `partialExplanation` appears only when a run ended
+without a final text — timed out, cancelled, or failed before
+settlement — and the last assistant message had already streamed text;
+it carries exactly the `text_delta` content observed, in stream order,
+and nothing more. It is never present together with `explanation`: a
+consumer reading `explanation` can always assume the model finished, so
+truncated text under that name can never turn an interrupted run into a
+complete-looking answer.
 
 Carried material is additive and optional, so `schemaVersion` stays `1`.
 Per worker, `data` appears only when the task carried `--data` files, in
