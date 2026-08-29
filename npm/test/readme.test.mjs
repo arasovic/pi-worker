@@ -135,6 +135,11 @@ test("README is the concise public entry point with the approved contract", () =
   assert.match(usage, /`\.\/bin\/pi-worker`/);
   assert.match(usage, /human version output is `pi-worker dev`/i);
   assert.match(usage, /unsupported npm platform[\s\S]*skip before[\s\S]*receipt/i);
+  assert.ok(
+    usage.includes("go install github.com/arasovic/pi-worker/cmd/pi-worker@latest"),
+    "docs/v0-usage.md installs the module at @latest",
+  );
+  assert.doesNotMatch(usage, /cmd\/pi-worker@v\d/, "docs/v0-usage.md pins no release version");
   assert.doesNotMatch(readme, /branding\/publication gate/i);
   assert.match(readme, /durable\s+receipt/);
   assert.match(readme, /identity\s+marker/);
