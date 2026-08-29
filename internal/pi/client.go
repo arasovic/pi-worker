@@ -22,6 +22,21 @@ type EventHandler interface {
 	OnEvent(Event) error
 }
 
+// eventHandlers fans one event stream out to several EventHandlers in
+// order, returning the first error. It is itself an EventHandler, so a
+// client with a single handler slot can let two accumulators observe the
+// same stream through one value.
+type eventHandlers []EventHandler
+
+func (h eventHandlers) OnEvent(event Event) error {
+	for _, handler := range h {
+		if err := handler.OnEvent(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // debugHeartbeatInterval is the visible-line silence interval for the
 // worker-scoped lifecycle heartbeat.
 const debugHeartbeatInterval = 30 * time.Second

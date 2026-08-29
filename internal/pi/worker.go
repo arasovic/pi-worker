@@ -53,8 +53,15 @@ type WorkerResult struct {
 	ThinkingFallback       bool          `json:"thinkingFallback,omitempty"`
 	Warning                string        `json:"warning,omitempty"`
 	Explanation            string        `json:"explanation,omitempty"`
-	Status                 string        `json:"status"`
-	Error                  string        `json:"error,omitempty"`
+	// PartialExplanation is the assistant text observed before the run ended
+	// without a final text: the concatenated text_delta content of the last
+	// assistant message, captured while it streamed. It is present only when
+	// explanation is absent — a run that ended mid-message still reports
+	// what it produced, while a completed run never carries it — so a
+	// consumer reading explanation can always assume the model finished.
+	PartialExplanation string `json:"partialExplanation,omitempty"`
+	Status             string `json:"status"`
+	Error              string `json:"error,omitempty"`
 	// DataFiles lists each file carried into the prompt as material,
 	// populated by the run layer from what it composed; absent when the
 	// task carried no material.
@@ -98,8 +105,18 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// spent. Validation failures before the client is created snapshot
 	// nil: no frame was observed, so usage is absent rather than zero.
 	usage := &usageAccumulator{}
+	// transcript holds the last assistant message's text as it streams,
+	// the partial counterpart of explanation: withThinking reports it when
+	// the run ends without a final text, so a failed or timed-out run
+	// still carries the text it produced. It obeys the same rule as usage:
+	// every return funnels through withThinking. Validation failures
+	// before the client is created snapshot empty: no frame was observed.
+	transcript := &transcriptAccumulator{}
 	withThinking := func(result WorkerResult) WorkerResult {
 		result.Usage = usage.snapshot()
+		if result.Explanation == "" {
+			result.PartialExplanation = transcript.snapshot()
+		}
 		return thinking.apply(result)
 	}
 	if req.ThinkingLevel != "" {
@@ -157,7 +174,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	}
 	stopHeartbeat = debug.startHeartbeat(proc.Running)
 
-	client := NewClient(proc.Stdin(), proc.Stdout(), usage, debug)
+	client := NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript}, debug)
 
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
