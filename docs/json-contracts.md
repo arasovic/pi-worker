@@ -75,9 +75,12 @@ The config document is both public output and durable input:
 {"schemaVersion":1,"defaultModel":"provider/model"}
 ```
 
-Both fields are required. `defaultModel` may be an empty string; otherwise it
-must be one exact provider/model selector. Loading rejects unknown fields,
-trailing data, invalid selectors, and unsupported schema versions.
+On input, `schemaVersion` is required and `defaultModel` is optional; a
+missing `defaultModel` key means the same thing as an empty string. On
+output both keys always appear. `defaultModel` may be an empty string;
+otherwise it must be one exact provider/model selector. Loading rejects
+unknown fields, trailing data, invalid selectors, and unsupported schema
+versions.
 
 ## `skill receipt-path --json`
 

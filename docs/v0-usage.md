@@ -472,10 +472,13 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 
 - `--data <paths>` optionally carries file content into a task's prompt
   as material the worker works **ON**, not as instructions the worker
-  obeys. The task's own text — from `--task`, `--task-file`, or stdin —
-  goes into the prompt byte-identical, and the material is appended
-  below it in delimited sections pi-worker frames itself; the caller
-  writes no framing of their own.
+  obeys. That boundary is advisory: pi-worker frames the material and
+  declares the boundary in the prompt, and honouring it is the model's
+  behavior, not a property pi-worker enforces. The task's own text —
+  from `--task`, `--task-file`, or stdin — goes into the prompt
+  byte-identical, and the material is appended below it in delimited
+  sections pi-worker frames itself; the caller writes no framing of
+  their own.
 - Each file gets its own section. The delimiters carry a per-run random
   token shared by every section:
 
