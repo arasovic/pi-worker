@@ -1,5 +1,5 @@
 // Package pi implements the pi-worker v0 foreground worker: it launches the
-// host Pi 0.84.1 executable in RPC mode and drives it through a closed set of
+// host Pi executable in RPC mode and drives it through a closed set of
 // documented outbound JSONL request types.
 package pi
 

@@ -17,7 +17,7 @@ type Script struct {
 type Step struct {
 	// Response writes a response frame for the incoming request. When ID or
 	// Command are empty, the request id and request type are echoed, matching
-	// Pi 0.84.1 response correlation.
+	// Pi response correlation.
 	Response *Response `json:"response,omitempty"`
 	// Event writes an event frame verbatim.
 	Event json.RawMessage `json:"event,omitempty"`

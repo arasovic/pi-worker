@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-// ThinkingLevel is one Pi 0.84.1 reasoning-effort value.
+// ThinkingLevel is one Pi reasoning-effort value.
 type ThinkingLevel string
 
 const (
@@ -18,7 +18,7 @@ const (
 	ThinkingMax     ThinkingLevel = "max"
 )
 
-// ParseThinkingLevel accepts only the exact Pi 0.84.1 thinking vocabulary.
+// ParseThinkingLevel accepts only the exact Pi thinking vocabulary.
 func ParseThinkingLevel(value string) (ThinkingLevel, bool) {
 	level := ThinkingLevel(value)
 	switch level {
