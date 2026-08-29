@@ -21,10 +21,11 @@ func event(typ string) Event {
 // messageUpdate builds one message_update event frame carrying usage and
 // the given assistantMessageEvent subtype. Tests pass their own expected
 // numbers as literals and never read them back out of this helper. The
-// subtypes are the ones actually observed on the wire against Pi 0.84.4 —
-// thinking_start, thinking_end, text_start, text_delta, text_end,
-// toolcall_start, toolcall_delta, toolcall_end — none of which is the
-// "done" or "error" the old tests assumed.
+// subtypes observed so far on the wire against Pi 0.84.4 are
+// thinking_start, thinking_delta, thinking_end, text_start, text_delta,
+// text_end, toolcall_start, toolcall_delta, and toolcall_end — that list
+// is what has been observed, not a closed set, and none of its members is
+// the "done" or "error" the old tests assumed.
 func messageUpdate(usage, subtype string) Event {
 	return Event{
 		Type: "message_update",
@@ -165,6 +166,72 @@ func TestUsageAccumulatorZeroFramesBeforeFinalFigureCountOnce(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot = %#v, want the final frame's numbers %#v (replaced, not summed)", got, want)
+	}
+}
+
+func TestUsageAccumulatorMeasuredToolRunSumsMessagesOnce(t *testing.T) {
+	// The qwen-token-plan tool-using run measured against Pi 0.84.4, frame
+	// for frame: two empty messages (message_start straight to
+	// message_end) commit nothing, and the two messages that carry numbers
+	// report them on the end frame of each content block — thinking_end
+	// and toolcall_end both carry the tool message's cumulative 2302, and
+	// text_end carries the text message's 2329. The latest reported figure
+	// is each message's: summing the frames instead would produce
+	// 2302+2302+2329 = 6933, while the measured document reported 4631.
+	// The delta repeat counts are condensed (three thinking_delta and two
+	// toolcall_delta frames instead of eleven and four); the shape is the
+	// measured one — all-zero delta frames, then two end frames carrying
+	// the same figure. reasoning was reported (19, plus the text message's
+	// reported zero), so it is present; cacheWrite1h was never reported by
+	// any frame, so it stays absent.
+	a := &usageAccumulator{}
+	toolMessage := `{"input":2239,"output":63,"cacheRead":0,"cacheWrite":0,"reasoning":19,"totalTokens":2302,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+	textMessage := `{"input":268,"output":13,"cacheRead":2048,"cacheWrite":0,"reasoning":0,"totalTokens":2329,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+	stream := []Event{
+		event("agent_start"),
+		event("turn_start"),
+		event("message_start"),
+		event("message_end"),
+		event("message_start"),
+		messageUpdate(zeroUsage, "thinking_start"),
+		messageUpdate(zeroUsage, "thinking_delta"),
+		messageUpdate(zeroUsage, "thinking_delta"),
+		messageUpdate(zeroUsage, "thinking_delta"),
+		messageUpdate(zeroUsage, "toolcall_start"),
+		messageUpdate(zeroUsage, "toolcall_delta"),
+		messageUpdate(zeroUsage, "toolcall_delta"),
+		messageUpdate(toolMessage, "thinking_end"),
+		messageUpdate(toolMessage, "toolcall_end"),
+		event("message_end"),
+		event("tool_execution_start"),
+		event("tool_execution_end"),
+		event("message_start"),
+		event("message_end"),
+		event("turn_end"),
+		event("turn_start"),
+		event("message_start"),
+		messageUpdate(zeroUsage, "text_start"),
+		messageUpdate(zeroUsage, "text_delta"),
+		messageUpdate(zeroUsage, "text_delta"),
+		messageUpdate(textMessage, "text_end"),
+		event("message_end"),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 2507, Output: 76, CacheRead: 2048, CacheWrite: 0, TotalTokens: 4631,
+		Reasoning: intPtr(19),
+		Cost:      UsageCost{},
+	}
+	if got == nil {
+		t.Fatalf("snapshot = nil, want the measured tool run's usage present")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want %#v: each message's latest reported figure, summed once", got, want)
 	}
 }
 
