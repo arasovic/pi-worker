@@ -17,6 +17,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/piversion"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // defaultRunTimeout bounds one foreground worker run.
@@ -42,6 +43,13 @@ func defaultRunVersionProbe(parent context.Context) (string, error) {
 // newCatalog is the private dependency-injection seam for the read-only
 // model catalog command.
 var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
+
+// runlogDir and runlogStart are the private dependency-injection seams
+// for the run record written while a run is in flight. Tests replace
+// them with a temporary directory and with scripted failures; the
+// production values write the record into the user's config directory.
+var runlogDir = runlog.Dir
+var runlogStart = runlog.Start
 
 // shutdownSignals are the signals that request an orderly shutdown. SIGINT
 // is the interactive Ctrl-C; SIGTERM is what process supervisors, container
@@ -405,6 +413,25 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// task that moves HEAD, the branch, or the stash list shows up in
 	// the result whether or not --verify was passed; there is no flag
 	// for this feature.
+	// The run record is written while the run is in flight: the start
+	// line reaches disk before any worker starts, and Finish appends the
+	// finish line on the way out, so a run killed without warning —
+	// Ctrl-C, timeout, a closed terminal, a killed supervisor — still
+	// leaves its record with no finish line, which is how a later reader
+	// recognizes the interruption. A record that cannot be written must
+	// never fail or block a run: the warning is printed and the run
+	// continues with no recorder, on which Finish is a no-op.
+	startedAt := time.Now()
+	var recorder *runlog.Recorder
+	dir, err := runlogDir()
+	if err == nil {
+		recorder, err = runlogStart(dir, startedAt, workspace, tasks)
+	}
+	if err != nil {
+		recorder = nil
+		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", err)
+	}
+
 	var controller *run.Controller
 	if len(opts.verify) > 0 {
 		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()))
@@ -417,7 +444,14 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		Verify:    opts.verify,
 		Debug:     debug,
 	})
+	finishedAt := time.Now()
 	if err != nil {
+		// The finish line carries the run-level error text, so a failed
+		// run is still fully recorded; a record write failure is the
+		// same kind of warning and changes no exit code.
+		if recordErr := recorder.Finish(finishedAt, nil, err); recordErr != nil {
+			fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", recordErr)
+		}
 		// Defensive: the CLI validates the input surface first — the
 		// write declaration through run.ValidateWrites in resolveRunInput
 		// like every other field — so a controller validation error here
@@ -438,6 +472,11 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 
 	outcome, code := runOutcome(result)
 	result.Outcome = outcome
+	// The finish line rides the normal path after the outcome is
+	// assigned, so the record carries exactly what the run reports.
+	if recordErr := recorder.Finish(finishedAt, &result, nil); recordErr != nil {
+		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", recordErr)
+	}
 	for i, worker := range result.Workers {
 		if worker.Warning != "" {
 			fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Warning)
