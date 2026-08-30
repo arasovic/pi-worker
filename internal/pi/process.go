@@ -119,6 +119,23 @@ func (p *Process) Running() bool {
 	return p.started && !p.reaped
 }
 
+// Pid returns the process id of the live child, mirroring Running's
+// condition exactly: 0 before the child has started, the child's real
+// number while it is started and not yet reaped, and 0 again after
+// Wait has reaped it, when the number may already have been reused by
+// an unrelated process. It never returns a pid for a process that was
+// never started. On Unix the child leads its own process group, so the
+// group id equals the pid and a separate group field would carry the
+// same number twice; the pid alone identifies the group's leader.
+func (p *Process) Pid() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.started || p.reaped {
+		return 0
+	}
+	return p.cmd.Process.Pid
+}
+
 // argv is the exact launch from docs/pi-cli-surface.md with the process
 // profile's tool allowlist.
 func (p *Process) argv() []string {

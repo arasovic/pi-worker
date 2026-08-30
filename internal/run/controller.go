@@ -84,6 +84,10 @@ type Request struct {
 	// Debug is the shared run-level sink every worker labels with its own
 	// identity; nil disables all debug logging.
 	Debug *pi.DebugSink
+	// OnProcessStart, when non-nil, is passed to every worker so each
+	// reports the identity of the process it launched while the run is in
+	// flight; nil disables the report.
+	OnProcessStart pi.ProcessObserver
 }
 
 // Result is the aggregate outcome of one run. Workers preserve input
@@ -240,12 +244,13 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			defer wg.Done()
 			prompt, dataFiles := composeTaskPrompt(task, token)
 			result := c.worker.Run(ctx, pi.WorkerRequest{
-				Model:         task.Model,
-				ThinkingLevel: task.ThinkingLevel,
-				Prompt:        prompt,
-				Workspace:     req.Workspace,
-				WorkerID:      index + 1,
-				Debug:         req.Debug,
+				Model:          task.Model,
+				ThinkingLevel:  task.ThinkingLevel,
+				Prompt:         prompt,
+				Workspace:      req.Workspace,
+				WorkerID:       index + 1,
+				Debug:          req.Debug,
+				OnProcessStart: req.OnProcessStart,
 			})
 			// The carried-file report is the run layer's own record of
 			// what it composed: the worker receives only the composed

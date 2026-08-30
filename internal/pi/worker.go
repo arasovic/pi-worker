@@ -18,6 +18,13 @@ const (
 	StatusError       = "error"
 )
 
+// ProcessObserver is told the identity of the process one worker
+// started, at the moment it starts: the worker id it ran under and the
+// launched process's pid. It is the run-level passenger that carries
+// the identity out of the worker while the run is in flight — the
+// identity exists only then, so it can never be recovered later.
+type ProcessObserver func(workerID int, pid int)
+
 // WorkerRequest describes one foreground worker invocation.
 type WorkerRequest struct {
 	Model         string
@@ -30,6 +37,11 @@ type WorkerRequest struct {
 	WorkerID int
 	// Debug is the lifecycle sink; nil disables all debug logging.
 	Debug *DebugSink
+	// OnProcessStart, when non-nil, is called once per worker with the
+	// identity of the process it launched, immediately after the process
+	// starts. It is separate from Debug: the record must be written on
+	// every run, while debug output is off unless requested.
+	OnProcessStart ProcessObserver
 }
 
 // DataFile reports one file carried into a worker's prompt as material:
@@ -176,6 +188,17 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("start pi: %v", err)})
 	}
 	stopHeartbeat = debug.startHeartbeat(proc.Running)
+	if req.OnProcessStart != nil {
+		// The observer receives the raw WorkerID, never the debug-label
+		// normalization on the line above: the record must pair the pid
+		// with the identity the caller assigned, not the label a direct
+		// caller's zero value would map to worker 1. The pid guard
+		// mirrors Pid's condition: no identity exists before the child
+		// starts, and Pid never reports one after it is reaped.
+		if pid := proc.Pid(); pid != 0 {
+			req.OnProcessStart(req.WorkerID, pid)
+		}
+	}
 
 	client := NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript}, debug)
 

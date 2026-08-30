@@ -66,6 +66,68 @@ func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunLogRecordsWorkerProcessEndToEnd drives a run whose fake worker
+// reports a process identity through OnProcessStart and asserts the
+// record carries exactly one worker line with the exact pid the test
+// passed in. This is the only test that proves the whole chain from the
+// CLI through the controller into the record.
+func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	fake.onRequest = func(req pi.WorkerRequest) {
+		if req.OnProcessStart != nil {
+			req.OnProcessStart(req.WorkerID, 4242)
+		}
+	}
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "write the answer", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read record dir: %v", err)
+	}
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			files = append(files, entry.Name())
+		}
+	}
+	if len(files) != 1 {
+		t.Fatalf("record files = %v, want exactly one", files)
+	}
+	content, err := os.ReadFile(filepath.Join(logDir, files[0]))
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	workerLines := 0
+	for i, line := range lines {
+		worker := decodeJSONObject(t, line)
+		if worker["event"] != "worker" {
+			continue
+		}
+		workerLines++
+		if workerLines > 1 {
+			t.Fatalf("line %d: more than one worker line", i)
+		}
+		if worker["workerId"] != float64(1) {
+			t.Fatalf("worker line workerId = %v, want 1", worker["workerId"])
+		}
+		if worker["pid"] != float64(4242) {
+			t.Fatalf("worker line pid = %v, want 4242", worker["pid"])
+		}
+	}
+	if workerLines != 1 {
+		t.Fatalf("worker lines = %d, want exactly 1", workerLines)
+	}
+}
+
 // TestRunLogUnavailableDoesNotFailRun drives a run with runlogDir
 // failing and asserts the run still completes with its normal exit code
 // and the record-unavailable warning appears on stderr: a record that
