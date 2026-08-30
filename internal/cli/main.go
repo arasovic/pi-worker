@@ -44,12 +44,15 @@ func defaultRunVersionProbe(parent context.Context) (string, error) {
 // model catalog command.
 var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
 
-// runlogDir and runlogStart are the private dependency-injection seams
-// for the run record written while a run is in flight. Tests replace
-// them with a temporary directory and with scripted failures; the
-// production values write the record into the user's config directory.
+// runlogDir, runlogStart, and runlogInterrupted are the private
+// dependency-injection seams for the run record written while a run is
+// in flight and for the reader that scans earlier records for
+// interrupted runs before a run starts. Tests replace them with a
+// temporary directory and with scripted failures; the production
+// values write and read records in the user's config directory.
 var runlogDir = runlog.Dir
 var runlogStart = runlog.Start
+var runlogInterrupted = runlog.Interrupted
 
 // shutdownSignals are the signals that request an orderly shutdown. SIGINT
 // is the interactive Ctrl-C; SIGTERM is what process supervisors, container
@@ -422,6 +425,18 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	var recorder *runlog.Recorder
 	dir, err := runlogDir()
 	if err == nil {
+		// Earlier runs are scanned for interruptions before this run's
+		// own record exists, so the current run cannot block its own
+		// watermark. A scan failure — an unreadable records directory
+		// or an unwritable marker — is one warning in the existing
+		// style, the interrupted runs the scan did find are still
+		// printed, and the run continues: a record problem never fails
+		// a run.
+		paths, scanErr := runlogInterrupted(dir)
+		if scanErr != nil {
+			fmt.Fprintf(stderr, "pi-worker: warning: interrupted-run check unavailable: %v\n", scanErr)
+		}
+		warnInterruptedRuns(paths, dir, stderr)
 		recorder, err = runlogStart(dir, startedAt, workspace, tasks)
 	}
 	if err != nil {
@@ -542,6 +557,23 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	}
 	fmt.Fprintf(stdout, "outcome=%s\n", result.Outcome)
 	return code
+}
+
+// warnInterruptedRuns prints one stderr warning line per interrupted
+// run the pre-run scan found, capped at five, and one summary line for
+// the remainder. The full record path is the point of each line: the
+// reader's model is "there are records, I will open one if I care",
+// and a warning without a path is not a signal. The cap keeps a long
+// interrupted history from flooding the terminal; the summary names
+// the records directory so the caller knows where to look.
+func warnInterruptedRuns(paths []string, dir string, stderr io.Writer) {
+	shown := min(len(paths), 5)
+	for _, path := range paths[:shown] {
+		fmt.Fprintf(stderr, "pi-worker: warning: an earlier run was interrupted: %s\n", path)
+	}
+	if len(paths) > shown {
+		fmt.Fprintf(stderr, "pi-worker: warning: %d more interrupted runs in %s\n", len(paths)-shown, dir)
+	}
 }
 
 // printVerification prints the run-level verification outcome after the

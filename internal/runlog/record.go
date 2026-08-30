@@ -8,8 +8,16 @@
 // starts, one worker line per started worker while the run is in
 // flight, the finish line after the run returns, and a record whose
 // finish line never arrived is how a later reader learns the run was
-// interrupted. Nothing in this package reads records; it only writes
-// them, one record per run.
+// interrupted.
+//
+// This package both writes and reads records. The writer stores one
+// record per run while the run is in flight; Interrupted, the reader,
+// scans a records directory for earlier runs that were interrupted — a
+// record with no finish line whose process is no longer alive — and
+// the CLI warns about them once. Ctrl-C is deliberately not an
+// interruption by that definition: a Ctrl-C'd run writes its finish
+// line with outcome cancelled, so only a no-grace kill leaves a record
+// without one.
 package runlog
 
 import (
@@ -55,8 +63,12 @@ func Dir() (string, error) {
 // start line at Start, one worker line per started worker while the run
 // is in flight, and the finish line at Finish. A Recorder is shared
 // between the goroutine that called Start and will call Finish and up
-// to three worker goroutines calling WorkerProcess concurrently, so
-// every write is guarded by a mutex.
+// to three worker goroutines calling WorkerProcess concurrently. The
+// mutex guards the shared write-error slot and the ordering between a
+// worker line and the final write-and-close, exactly as the field
+// comment below states; appending to a file opened in append mode
+// already keeps each line whole, so no write needs guarding for its
+// own sake.
 type Recorder struct {
 	file  *os.File
 	runID string
