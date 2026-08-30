@@ -128,6 +128,27 @@ func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunlogDirStaysUnderSystemTemp asserts that this package's tests
+// never write run records into the user's real records directory:
+// TestMain redirects the runlogDir seam to a temporary directory for
+// the whole package test run. The expectation is derived from
+// os.TempDir(), not from a copy of whatever path TestMain built, so
+// this test fails if that redirect is ever removed and the seam falls
+// back to the production directory.
+func TestRunlogDirStaysUnderSystemTemp(t *testing.T) {
+	dir, err := runlogDir()
+	if err != nil {
+		t.Fatalf("runlogDir: %v", err)
+	}
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("runlogDir() = %q, want an absolute path under the system temporary directory %q", dir, os.TempDir())
+	}
+	temp := filepath.Clean(os.TempDir())
+	if dir != temp && !strings.HasPrefix(dir, temp+string(filepath.Separator)) {
+		t.Fatalf("runlogDir() = %q, want a path under the system temporary directory %q", dir, os.TempDir())
+	}
+}
+
 // TestRunLogUnavailableDoesNotFailRun drives a run with runlogDir
 // failing and asserts the run still completes with its normal exit code
 // and the record-unavailable warning appears on stderr: a record that

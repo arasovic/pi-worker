@@ -61,10 +61,10 @@ type Recorder struct {
 	file  *os.File
 	runID string
 
-	// mu guards every file write and the write-error slot below:
-	// WorkerProcess runs concurrently from up to three worker
-	// goroutines while the run is in flight, and Finish runs after the
-	// run returns.
+	// mu guards the shared write-error slot and the ordering between a
+	// worker line and the final write-and-close: appending to a file
+	// opened in append mode already keeps each line whole, so no write
+	// needs guarding for its own sake.
 	mu sync.Mutex
 	// writeErr is the first write error any worker line saw. It is kept
 	// rather than warned about inline because a warning printed from
@@ -287,8 +287,8 @@ type workerLine struct {
 	PID           int    `json:"pid"`
 }
 
-// finishLine is the second and final line of a run record. Result and
-// Error are mutually exclusive: the run returned exactly one of them.
+// finishLine is the final line of a run record. Result and Error are
+// mutually exclusive: the run returned exactly one of them.
 type finishLine struct {
 	SchemaVersion int         `json:"schemaVersion"`
 	Event         string      `json:"event"`
