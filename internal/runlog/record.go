@@ -97,11 +97,10 @@ type Recorder struct {
 // returns, so a run killed at any later instant still leaves its start
 // line on disk.
 //
-// The record deliberately does not carry the identity of the process
-// the worker starts: the worker is an implementation detail of one
-// run's execution, invisible to the record's readers, so a later
-// cleanup feature must search records by workspace and time window
-// instead. Records are never deleted, not on success and not on
+// The record carries the identity of the process each worker starts:
+// one worker line per started worker, appended by WorkerProcess while
+// the run is in flight — the only moment that identity exists and can
+// be recorded. Records are never deleted, not on success and not on
 // failure.
 func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
