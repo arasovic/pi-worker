@@ -409,10 +409,6 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
 	}
 
-	// Every run records the workspace git state before and after, so a
-	// task that moves HEAD, the branch, or the stash list shows up in
-	// the result whether or not --verify was passed; there is no flag
-	// for this feature.
 	// The run record is written while the run is in flight: the start
 	// line reaches disk before any worker starts, and Finish appends the
 	// finish line on the way out, so a run killed without warning —
@@ -420,7 +416,8 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// leaves its record with no finish line, which is how a later reader
 	// recognizes the interruption. A record that cannot be written must
 	// never fail or block a run: the warning is printed and the run
-	// continues with no recorder, on which Finish is a no-op.
+	// continues with no recorder, on which Finish and WorkerProcess are
+	// no-ops.
 	startedAt := time.Now()
 	var recorder *runlog.Recorder
 	dir, err := runlogDir()
@@ -432,6 +429,10 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", err)
 	}
 
+	// Every run records the workspace git state before and after, so a
+	// task that moves HEAD, the branch, or the stash list shows up in
+	// the result whether or not --verify was passed; there is no flag
+	// for this feature.
 	var controller *run.Controller
 	if len(opts.verify) > 0 {
 		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()))
@@ -443,6 +444,11 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		Workspace: workspace,
 		Verify:    opts.verify,
 		Debug:     debug,
+		OnProcessStart: func(workerID int, pid int) {
+			// The closure is safe on a nil recorder: WorkerProcess is a
+			// no-op then, exactly like Finish.
+			recorder.WorkerProcess(time.Now(), workerID, pid)
+		},
 	})
 	finishedAt := time.Now()
 	if err != nil {

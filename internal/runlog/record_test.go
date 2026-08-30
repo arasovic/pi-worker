@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -234,6 +235,138 @@ func TestPromptOverCapIsTruncated(t *testing.T) {
 	}
 	if task["promptTruncated"] != true {
 		t.Fatalf("promptTruncated = %v, want true", task["promptTruncated"])
+	}
+}
+
+// TestWorkerProcessAppendsThirdLine asserts WorkerProcess appends one
+// line carrying the worker event, the worker id and the pid the test
+// passed in, with the start and finish lines unchanged around it.
+func TestWorkerProcessAppendsThirdLine(t *testing.T) {
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC), 2, 4832)
+	result := run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}
+	if err := recorder.Finish(time.Date(2026, 8, 30, 4, 15, 40, 0, time.UTC), &result, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	lines := recordLines(t, readRecord(t, dir))
+	if len(lines) != 3 {
+		t.Fatalf("record lines = %d, want 3", len(lines))
+	}
+	start := decodeLine(t, lines[0])
+	if start["event"] != "start" {
+		t.Fatalf("start line event = %v, want start", start["event"])
+	}
+	worker := decodeLine(t, lines[1])
+	if worker["event"] != "worker" {
+		t.Fatalf("second line event = %v, want worker", worker["event"])
+	}
+	if worker["runId"] != start["runId"] {
+		t.Fatalf("worker runId = %v, start runId = %v", worker["runId"], start["runId"])
+	}
+	if worker["at"] != "2026-08-30T04:15:35Z" {
+		t.Fatalf("at = %v, want 2026-08-30T04:15:35Z", worker["at"])
+	}
+	if worker["workerId"] != float64(2) {
+		t.Fatalf("workerId = %v, want 2", worker["workerId"])
+	}
+	if worker["pid"] != float64(4832) {
+		t.Fatalf("pid = %v, want 4832", worker["pid"])
+	}
+	finish := decodeLine(t, lines[2])
+	if finish["event"] != "finish" {
+		t.Fatalf("finish line event = %v, want finish", finish["event"])
+	}
+}
+
+// TestWorkerProcessNilRecorderIsNoOp asserts WorkerProcess on a nil
+// Recorder is a no-op and panics on nothing.
+func TestWorkerProcessNilRecorderIsNoOp(t *testing.T) {
+	var recorder *Recorder
+	recorder.WorkerProcess(time.Now(), 1, 4832)
+}
+
+// TestConcurrentWorkerProcessLinesRemainOneJSONObjectEach asserts many
+// goroutines calling WorkerProcess at once leave a file whose every
+// line still parses as one JSON object, with as many worker lines as
+// there were calls. The mutex on Recorder is what makes this test pass
+// under -race; without it the concurrent write-error slot access is a
+// detected race and interleaved writes would corrupt lines.
+func TestConcurrentWorkerProcessLinesRemainOneJSONObjectEach(t *testing.T) {
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	at := time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC)
+	const calls = 50
+	var wg sync.WaitGroup
+	for i := 0; i < calls; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			recorder.WorkerProcess(at, workerID, 1000+workerID)
+		}(i)
+	}
+	wg.Wait()
+	result := run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}
+	if err := recorder.Finish(time.Now(), &result, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	lines := recordLines(t, readRecord(t, dir))
+	if len(lines) != calls+2 {
+		t.Fatalf("record lines = %d, want %d", len(lines), calls+2)
+	}
+	// decodeLine runs on every line and fails the test if any line is
+	// not exactly one JSON object.
+	if decodeLine(t, lines[0])["event"] != "start" {
+		t.Fatalf("first line event = %v, want start", decodeLine(t, lines[0])["event"])
+	}
+	if decodeLine(t, lines[len(lines)-1])["event"] != "finish" {
+		t.Fatalf("last line event = %v, want finish", decodeLine(t, lines[len(lines)-1])["event"])
+	}
+	workerLines := 0
+	for _, line := range lines[1 : len(lines)-1] {
+		object := decodeLine(t, line)
+		if object["event"] != "worker" {
+			t.Fatalf("middle line event = %v, want worker", object["event"])
+		}
+		workerLines++
+	}
+	if workerLines != calls {
+		t.Fatalf("worker lines = %d, want %d", workerLines, calls)
+	}
+}
+
+// TestDeclaredEmptyWritesStayDistinctFromNoDeclaration asserts a task
+// that declared it writes nothing — Declared true with no paths — is
+// recorded as writesDeclared true with no writes field at all. Every
+// other test uses a task that declared nothing, where both a correct
+// and a collapsed implementation agree; this is the only test that
+// proves the two facts stay independent. A collapsed implementation
+// reading len(Paths) > 0 records writesDeclared false and fails here.
+func TestDeclaredEmptyWritesStayDistinctFromNoDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Start(dir, time.Now(), "/workspace", []run.Task{{
+		Prompt: "p",
+		Model:  "acme/m-1",
+		Writes: run.WriteDeclaration{Declared: true},
+	}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	lines := recordLines(t, readRecord(t, dir))
+	tasks := decodeLine(t, lines[0])["tasks"].([]any)
+	task := tasks[0].(map[string]any)
+	if task["writesDeclared"] != true {
+		t.Fatalf("writesDeclared = %v, want true", task["writesDeclared"])
+	}
+	if _, present := task["writes"]; present {
+		t.Fatalf("writes field present for a declared-empty task: %#v", task["writes"])
 	}
 }
 

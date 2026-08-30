@@ -547,3 +547,105 @@ func TestWorkerTimeoutTerminatesDescendantTree(t *testing.T) {
 		t.Fatalf("session directory left behind after timeout: %v", err)
 	}
 }
+
+// TestProcessPidTracksPublishedLifecycle asserts Pid() mirrors
+// Running()'s condition: 0 before Start, the child's real number after
+// a successful Start, and 0 again after the child is reaped, when the
+// number may already have been reused by an unrelated process. The
+// expected number never comes from the code under test: the fake writes
+// its own process id to the FAKEPI_PIDFILE file, which this test reads
+// as the independent source.
+func TestProcessPidTracksPublishedLifecycle(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "fakepi.pid")
+	t.Setenv("FAKEPI_PIDFILE", pidFile)
+
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if got := proc.Pid(); got != 0 {
+		t.Fatalf("Pid before Start = %d, want 0", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := proc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if want := readPIDFile(t, pidFile); proc.Pid() != want {
+		t.Fatalf("Pid after Start = %d, want %d", proc.Pid(), want)
+	}
+	cancel()
+	if err := proc.Wait(); err == nil {
+		t.Fatal("wait after cancellation returned nil")
+	}
+	if got := proc.Pid(); got != 0 {
+		t.Fatalf("Pid after reap = %d, want 0", got)
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if got := proc.Pid(); got != 0 {
+		t.Fatalf("Pid after Close = %d, want 0", got)
+	}
+}
+
+// TestWorkerOnProcessStartReportsRawWorkerIDExactlyOnce drives a worker
+// whose request carries OnProcessStart and asserts the observer is
+// called exactly once, with the raw WorkerID — never the debug-label
+// normalization that maps a zero identity to worker 1 — and with a
+// non-zero pid taken from the independent FAKEPI_PIDFILE record, never
+// from the code under test.
+func TestWorkerOnProcessStartReportsRawWorkerIDExactlyOnce(t *testing.T) {
+	setupFakePiEnv(t, happyPathScript("pid answer"))
+	pidFile := filepath.Join(t.TempDir(), "fakepi.pid")
+	t.Setenv("FAKEPI_PIDFILE", pidFile)
+
+	var observed []int
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		// A zero identity: the debug path labels this worker 1, but the
+		// observer must receive the raw 0 unchanged.
+		OnProcessStart: func(workerID int, pid int) {
+			observed = append(observed, workerID, pid)
+		},
+	})
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed; error = %q", result.Status, result.Error)
+	}
+	if len(observed) != 2 {
+		t.Fatalf("observer calls = %v, want exactly one (workerID, pid) pair", observed)
+	}
+	if observed[0] != 0 {
+		t.Fatalf("observer workerID = %d, want raw 0", observed[0])
+	}
+	if observed[1] == 0 {
+		t.Fatalf("observer pid = 0, want the started child's real pid")
+	}
+	if want := readPIDFile(t, pidFile); observed[1] != want {
+		t.Fatalf("observer pid = %d, want %d", observed[1], want)
+	}
+}
+
+// TestWorkerOnProcessStartNotCalledWhenStartFails asserts the observer
+// is not called when the process fails to start: a process that never
+// started has no identity to report.
+func TestWorkerOnProcessStartNotCalledWhenStartFails(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	called := false
+	result := New(missing).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		OnProcessStart: func(workerID int, pid int) {
+			called = true
+		},
+	})
+	if result.Status != StatusUnavailable {
+		t.Fatalf("status = %q, want unavailable; error = %q", result.Status, result.Error)
+	}
+	if called {
+		t.Fatal("observer called for a process that failed to start")
+	}
+}

@@ -75,6 +75,7 @@ type fakeWorker struct {
 	completed       chan int
 	ignoreContext   bool
 	runHook         func()
+	onRequest       func(pi.WorkerRequest)
 	mu              sync.Mutex
 }
 
@@ -97,6 +98,12 @@ func (f *fakeWorker) Run(ctx context.Context, req pi.WorkerRequest) (result pi.W
 		f.startGateClosed = true
 	}
 	f.mu.Unlock()
+
+	// onRequest observes the request right after it was stored. It is nil
+	// on every existing test; a test that needs it sets it explicitly.
+	if f.onRequest != nil {
+		f.onRequest(req)
+	}
 
 	if f.runHook != nil {
 		f.runHook()

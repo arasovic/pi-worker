@@ -5,7 +5,8 @@
 // code of ours runs afterwards, so no signal handler can save the run.
 // The only design that survives that is a record written as the run
 // progresses and left on disk: the start line is written before the run
-// starts, the finish line after the run returns, and a record whose
+// starts, one worker line per started worker while the run is in
+// flight, the finish line after the run returns, and a record whose
 // finish line never arrived is how a later reader learns the run was
 // interrupted. Nothing in this package reads records; it only writes
 // them, one record per run.
@@ -18,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -49,13 +51,28 @@ func Dir() (string, error) {
 	return filepath.Join(userDir, "runs"), nil
 }
 
-// Recorder writes the two lines of one run's record: the start line at
-// Start, the finish line at Finish. Exactly one goroutine uses a
-// Recorder — the one that called Start and then Finish after the run
-// returned — so it needs no locking.
+// Recorder writes the three kinds of lines of one run's record: the
+// start line at Start, one worker line per started worker while the run
+// is in flight, and the finish line at Finish. A Recorder is shared
+// between the goroutine that called Start and will call Finish and up
+// to three worker goroutines calling WorkerProcess concurrently, so
+// every write is guarded by a mutex.
 type Recorder struct {
 	file  *os.File
 	runID string
+
+	// mu guards every file write and the write-error slot below:
+	// WorkerProcess runs concurrently from up to three worker
+	// goroutines while the run is in flight, and Finish runs after the
+	// run returns.
+	mu sync.Mutex
+	// writeErr is the first write error any worker line saw. It is kept
+	// rather than warned about inline because a warning printed from
+	// three concurrent workers would interleave with the run's own
+	// output; Finish returns it once its own write succeeded, so a
+	// dropped worker line still surfaces once, through the warning the
+	// CLI already prints.
+	writeErr error
 }
 
 // Start writes the start line of one run's record before the run
@@ -106,13 +123,51 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	return &Recorder{file: file, runID: runID}, nil
 }
 
+// WorkerProcess appends the worker line of the run's record: the
+// identity of the process one worker started, written while the run is
+// in flight — the only moment that identity exists and can be recorded.
+// It appends one line and returns nothing; a write failure is kept as
+// the recorder's first write error and surfaced once by Finish, never
+// printed from the concurrent worker goroutine. WorkerProcess on a nil
+// Recorder is a no-op, like Finish.
+func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
+	if r == nil {
+		return
+	}
+	line := workerLine{
+		SchemaVersion: schemaVersion,
+		Event:         "worker",
+		RunID:         r.runID,
+		At:            at.UTC().Format(time.RFC3339),
+		WorkerID:      workerID,
+		PID:           pid,
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		r.mu.Lock()
+		if r.writeErr == nil {
+			r.writeErr = err
+		}
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.file.Write(append(data, '\n')); err != nil && r.writeErr == nil {
+		r.writeErr = err
+	}
+}
+
 // Finish appends the finish line of the run's record, the only
 // completion marker: the run's result marshalled exactly as the run
 // already marshals it, or the run-level error text when the run
 // returned an error instead of a result. Exactly one of the two is
 // present. The complete line including its newline is one Write call.
-// Finish on a nil Recorder is a no-op returning nil, so callers never
-// branch on whether the record could be started.
+// When the finish line itself wrote and closed cleanly but a worker
+// line written earlier failed, Finish returns that first error, so the
+// dropped worker line still surfaces through the caller's existing
+// warning. Finish on a nil Recorder is a no-op returning nil, so
+// callers never branch on whether the record could be started.
 func (r *Recorder) Finish(finishedAt time.Time, result *run.Result, runErr error) error {
 	if r == nil {
 		return nil
@@ -132,10 +187,18 @@ func (r *Recorder) Finish(finishedAt time.Time, result *run.Result, runErr error
 	if err != nil {
 		return err
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, err := r.file.Write(append(data, '\n')); err != nil {
 		return err
 	}
-	return r.file.Close()
+	if err := r.file.Close(); err != nil {
+		return err
+	}
+	if r.writeErr != nil {
+		return r.writeErr
+	}
+	return nil
 }
 
 // projectTasks projects the run's tasks into the start line. This is
@@ -210,6 +273,18 @@ type startTask struct {
 	WritesDeclared  bool          `json:"writesDeclared"`
 	Writes          []string      `json:"writes,omitempty"`
 	Data            []pi.DataFile `json:"data,omitempty"`
+}
+
+// workerLine is the line of a run record written while the run is in
+// flight, one per started worker, carrying the identity of the process
+// that worker launched.
+type workerLine struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Event         string `json:"event"`
+	RunID         string `json:"runId"`
+	At            string `json:"at"`
+	WorkerID      int    `json:"workerId"`
+	PID           int    `json:"pid"`
 }
 
 // finishLine is the second and final line of a run record. Result and
