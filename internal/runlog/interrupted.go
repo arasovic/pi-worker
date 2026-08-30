@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/shirou/gopsutil/v4/process"
 )
@@ -231,8 +230,7 @@ func loadMarker(dir string) (marker, bool) {
 // writeMarker writes the marker document into dir with the atomic
 // pattern the config store uses: a temporary file in the same
 // directory, owner-only permissions, write, sync, close, rename over
-// the destination, then a sync of the parent directory so the rename
-// itself is durable. A reader in flight can never see a half-written
+// the destination. A reader in flight can never see a half-written
 // marker, which is what makes a concurrent last-write-wins loss cost
 // at most one duplicate warning.
 func writeMarker(dir string, m marker) error {
@@ -276,26 +274,5 @@ func writeMarker(dir string, m marker) error {
 		os.Remove(tmpName)
 		return err
 	}
-	if runtime.GOOS != "windows" {
-		if err := syncParentDirectory(dir); err != nil {
-			return err
-		}
-	}
 	return nil
-}
-
-// syncParentDirectory syncs the directory the marker was renamed into,
-// so the rename itself is durable. A directory sync the platform does
-// not support is not an error: the rename still happened.
-func syncParentDirectory(dir string) error {
-	handle, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	syncErr := handle.Sync()
-	closeErr := handle.Close()
-	if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
-		return closeErr
-	}
-	return errors.Join(syncErr, closeErr)
 }

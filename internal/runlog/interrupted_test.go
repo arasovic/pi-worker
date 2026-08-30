@@ -362,10 +362,20 @@ func TestInterruptedMarkerWriteFailureReturnsPathsAndError(t *testing.T) {
 // TestInterruptedWritesOnlyIntoGivenDir asserts the marker path is
 // built from the dir argument only, never derived from the user's
 // config directory again: after a scan of a temporary directory, the
-// real records directory holds no marker. This mirrors the CLI's
+// records directory Dir() resolves to — pointed at a temporary home
+// inside the test, so the machine's real one is never consulted, let
+// alone polluted — holds no marker. This mirrors the CLI's
 // TestRunlogDirStaysUnderSystemTemp; a regression here would silently
 // pollute the user's real records directory.
 func TestInterruptedWritesOnlyIntoGivenDir(t *testing.T) {
+	// os.UserConfigDir derives its answer from a different variable
+	// per platform; setting all three keeps Dir() under this test's
+	// temporary home everywhere. The machine's real records directory
+	// is off limits: the first real run writes a marker into it, so
+	// consulting it here would fail the test forever after.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
 	realDir, err := Dir()
 	if err != nil {
 		t.Skipf("real records directory unavailable: %v", err)
