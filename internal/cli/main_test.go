@@ -50,9 +50,23 @@ func TestMain(m *testing.M) {
 	}
 	originalRunVersionProbe := runVersionProbe
 	runVersionProbe = func(context.Context) (string, error) { return piversion.VerifiedVersion, nil }
+	// Point the runlogDir seam at one temporary directory for the whole
+	// package test run, so no test that reaches the recorder writes into
+	// the user's real records directory. The redirect is restored on the
+	// same path where the fakepi build directory is removed below.
+	recordDir, err := os.MkdirTemp("", "pi-worker-cli-runlog-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create runlog directory: %v\n", err)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	originalRunlogDir := runlogDir
+	runlogDir = func() (string, error) { return recordDir, nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
+	runlogDir = originalRunlogDir
 	os.RemoveAll(dir)
+	os.RemoveAll(recordDir)
 	os.Exit(code)
 }
 
