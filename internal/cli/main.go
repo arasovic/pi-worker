@@ -18,6 +18,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/piversion"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/runlog"
+	"golang.org/x/term"
 )
 
 // defaultRunTimeout bounds one foreground worker run.
@@ -63,19 +64,19 @@ var runlogList = runlog.List
 // interactive terminal — the one question a bare io.Reader cannot
 // answer, so runs prune asks it here instead of reaching for os.Stdin
 // behind the caller's back. Tests replace it with a scripted answer;
-// the production value asks os.Stdin itself. A Stat that errors means
-// not a terminal, so the command refuses rather than prompting into a
-// stream that will never answer — the same fail-safe direction the
-// interrupted-run scan uses for its own uncertain check: both resolve
-// doubt toward doing nothing.
+// the production value asks os.Stdin itself. The question is the
+// kernel's: term.IsTerminal ioctls the descriptor itself, so only a
+// real terminal answers yes, and a character-device mode check would
+// not have been enough — /dev/null and /dev/zero are character
+// devices that can never answer a prompt. A descriptor the ioctl
+// cannot answer is not a terminal, so the command refuses rather than
+// prompting into a stream that will never answer — the same fail-safe
+// direction the interrupted-run scan uses for its own uncertain
+// check: both resolve doubt toward doing nothing.
 var stdinIsTerminal = defaultStdinIsTerminal
 
 func defaultStdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // shutdownSignals are the signals that request an orderly shutdown. SIGINT
