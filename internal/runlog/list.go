@@ -35,8 +35,10 @@ type Run struct {
 //   - "error" when the finish line carries the error arm instead — the
 //     writer guarantees exactly one of the two;
 //   - "running" when there is no finish line and the start line's
-//     process is still alive, a liveness error counting as alive, the
-//     same fail-safe direction as the interrupted-run warning;
+//     process — its pid paired with the line's creation time, when
+//     one is recorded — is still alive, a doubtful lookup counting
+//     as alive, the same fail-safe direction as the interrupted-run
+//     warning;
 //   - "interrupted" when there is no finish line and that process is
 //     no longer alive;
 //   - "unknown" when the record has no start line that parses — the
@@ -96,13 +98,14 @@ func List(dir string) ([]Run, error) {
 			run.Outcome = "error"
 		default:
 			// No finish line: the run is either still in progress or was
-			// interrupted, decided by the same two-armed liveness test
-			// the interrupted-run scan makes, through the same seam. A
-			// liveness error counts as alive — doubtful cases resolve
-			// toward a live run, never toward a wrong accusation of
-			// interruption.
-			alive, err := pidAlive(int32(rec.pid))
-			if err != nil || alive {
+			// interrupted, decided by the same liveness question the
+			// interrupted-run scan and the leftover reader ask, answered
+			// by the shared recordProcessAlive helper. A doubtful case
+			// counts as alive — a liveness error, a creation-time lookup
+			// error, a record without a creation time — so doubtful
+			// cases resolve toward a live run, never toward a wrong
+			// accusation of interruption.
+			if recordProcessAlive(rec.pid, rec.createTime) {
 				run.Outcome = "running"
 			} else {
 				run.Outcome = "interrupted"
@@ -127,6 +130,11 @@ func List(dir string) ([]Run, error) {
 type recordFacts struct {
 	// pid is the process that wrote the record, from the start line.
 	pid int
+	// createTime is that process's creation time from the same line,
+	// the second half of the pid's identity. Zero means the line
+	// carried no creation time: a lookup that failed at write time or
+	// a record written before the field existed.
+	createTime int64
 	// workers holds every worker line's process identity, in record
 	// order: the pid each worker launched paired with its creation
 	// time. A record can carry up to three worker lines, one per
@@ -188,10 +196,10 @@ func readRecordFile(path string) ([]byte, error) {
 // that includes a start line that is not a start line or carries no
 // usable pid.
 //
-// The classification facts — the start line's event and pid, the last
-// line's finish event — are decoded exactly as the interrupted-run
-// scan always decoded them, so the scan's answers cannot move. The
-// display fields (started-at, workspace, task count) and the finish
+// The classification facts — the start line's event, pid and
+// creation time, the last line's finish event — are decoded exactly
+// as the interrupted-run scan always decoded them, so the scan's
+// answers cannot move. The display fields (started-at, workspace, task count) and the finish
 // line's result are decoded separately and best-effort: a malformed
 // display field must not change what the scan reports, and a record
 // being written right now can end in a partial last line, which never
@@ -227,13 +235,14 @@ func parseRecord(path string) (recordFacts, error) {
 		return recordFacts{}, errors.New("record has no lines")
 	}
 	var start struct {
-		Event string `json:"event"`
-		PID   int    `json:"pid"`
+		Event      string `json:"event"`
+		PID        int    `json:"pid"`
+		CreateTime int64  `json:"createTime"`
 	}
 	if err := json.Unmarshal([]byte(lines[first]), &start); err != nil || start.Event != "start" || start.PID <= 0 {
 		return recordFacts{}, errors.New("record has no usable start line")
 	}
-	rec := recordFacts{pid: start.PID, workers: workers}
+	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers}
 	// The display fields are best-effort: a malformed one leaves them
 	// zero without touching the classification, which is decided by the
 	// minimal facts above.
@@ -265,4 +274,45 @@ func parseRecord(path string) (recordFacts, error) {
 		rec.resultOutcome = string(lastLine.Result.Outcome)
 	}
 	return rec, nil
+}
+
+// recordProcessAlive answers the one liveness question the three
+// readers ask of a record's start-line process: is that process still
+// the process that wrote the record? The answer is decided by the
+// pid and, when the record carries one, the creation time paired with
+// it — the pair is the identity, and an unrelated process holding a
+// reused number carries a different creation time. Every doubtful
+// case resolves toward alive, the same fail-safe direction as every
+// reader here: silence, never a wrong accusation of a dead run.
+//
+// The decision, row for row:
+//
+//   - pidAlive errors: alive.
+//   - pidAlive reports not alive: dead.
+//   - pidAlive reports alive, the record carries no creation time
+//     (zero): alive — the number alone decides, so a record written
+//     before the field existed behaves exactly as it always did.
+//   - pidAlive reports alive, the record carries one, and the
+//     creation-time lookup errors: alive.
+//   - pidAlive reports alive, the record carries one, and the
+//     creation-time lookup differs: dead — the number was reused by
+//     an unrelated process.
+//   - pidAlive reports alive, the record carries one, and the
+//     creation-time lookup matches: alive.
+func recordProcessAlive(pid int, createTime int64) bool {
+	alive, err := pidAlive(int32(pid))
+	if err != nil {
+		return true
+	}
+	if !alive {
+		return false
+	}
+	if createTime == 0 {
+		return true
+	}
+	seen, err := pidCreateTime(pid)
+	if err != nil {
+		return true
+	}
+	return seen == createTime
 }

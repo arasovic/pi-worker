@@ -54,7 +54,8 @@ type liveProcess struct {
 //
 // A record is settled exactly when the interrupted-run reader
 // considers it over — it carries its finish line, or the process that
-// wrote it is no longer alive, measured through the same liveness
+// wrote it is no longer the process it was — the start line's pid
+// paired with its creation time — measured through the same liveness
 // seam. A run still in flight has not left anything behind. A worker
 // line without a creation time is never reportable: the identity pair
 // is incomplete, so the number alone cannot name a group. And when a
@@ -193,14 +194,15 @@ func Leftovers(dir string) ([]Leftover, error) {
 
 // isSettled reports whether a run is over, measured exactly as the
 // interrupted-run reader measures it: the record carries its finish
-// line, or the process that wrote the record — the start line's pid —
-// is no longer alive. A liveness error counts as alive, so the run
-// counts as still going and is skipped: doubtful cases resolve toward
-// silence, never toward reporting a live run's processes as leftover.
+// line, or the process that wrote the record — the start line's pid
+// paired with its creation time — is no longer the same process, a
+// reused number reading as dead because the pair does not match.
+// Every doubtful lookup counts as alive, so the run counts as still
+// going and is skipped: uncertainty resolves toward silence, never
+// toward reporting a live run's processes as leftover.
 func isSettled(rec recordFacts) bool {
 	if rec.finished {
 		return true
 	}
-	alive, err := pidAlive(int32(rec.pid))
-	return err == nil && !alive
+	return !recordProcessAlive(rec.pid, rec.createTime)
 }

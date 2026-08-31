@@ -49,10 +49,12 @@ const schemaVersion = 1
 const promptCap = 4096
 
 // pidCreateTime is the private dependency-injection seam behind the
-// worker line's createTime field: the creation time of the process a
-// worker started, in milliseconds since the Unix epoch exactly as
-// gopsutil reports it. Tests replace it with a scripted answer so the
-// records they write stay hermetic; production never does. The value
+// start line's and worker line's createTime fields: the creation
+// time of the process that wrote the record — the pi-worker itself
+// for the start line, the process a worker started for a worker line
+// — in milliseconds since the Unix epoch exactly as gopsutil reports
+// it. Tests replace it with a scripted answer so the records they
+// write stay hermetic; production never does. The value
 // is an exact-equality identity check, never a formatted time: a
 // string round-trip would lose sub-second precision and the equality
 // against process.CreateTime would silently stop matching.
@@ -123,8 +125,11 @@ type Recorder struct {
 // The record carries the identity of the process each worker starts:
 // one worker line per started worker, appended by WorkerProcess while
 // the run is in flight — the only moment that identity exists and can
-// be recorded. Records are never deleted, not on success and not on
-// failure.
+// be recorded. The start line carries the writer's own process
+// identity, the same pid paired with its creation time, so a later
+// reader can still tell the run from a number that was reused by an
+// unrelated process. Records are never deleted, not on success and
+// not on failure.
 func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -137,6 +142,12 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	if err != nil {
 		return nil, err
 	}
+	// The creation-time lookup happens before the line is built: a
+	// failure leaves the createTime key off the start line, exactly as
+	// it leaves it off a worker line — the identity is weaker then,
+	// never an error. The process is this worker itself, the same
+	// process whose pid the line records.
+	createTime, _ := pidCreateTime(os.Getpid())
 	line, err := json.Marshal(startLine{
 		SchemaVersion: schemaVersion,
 		Event:         "start",
@@ -145,6 +156,7 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 		Workspace:     workspace,
 		PID:           os.Getpid(),
 		Tasks:         projectTasks(tasks),
+		CreateTime:    createTime,
 	})
 	if err != nil {
 		file.Close()
@@ -302,6 +314,13 @@ type startLine struct {
 	Workspace     string      `json:"workspace"`
 	PID           int         `json:"pid"`
 	Tasks         []startTask `json:"tasks"`
+	// CreateTime is the process creation time of the process that
+	// wrote the start line — the pi-worker itself — in milliseconds
+	// since the Unix epoch, exactly as gopsutil reports it, for exact
+	// equality against a later Process.CreateTime. Absent when the
+	// lookup failed at write time, which is also the shape of every
+	// record written before this field existed.
+	CreateTime int64 `json:"createTime,omitempty"`
 }
 
 // startTask is one task's projection in the start line. WritesDeclared
