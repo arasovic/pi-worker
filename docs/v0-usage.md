@@ -89,6 +89,8 @@ one plain diagnostic line.
 - `pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]`
 - `pi-worker skill status [--json]`
 - `pi-worker skill receipt-path [--json]`
+- `pi-worker runs list [--json]`
+- `pi-worker runs prune --keep <n> [--yes] [--json]`
 - `pi-worker run ...`
 
 ## Version
@@ -185,6 +187,57 @@ pi-worker skill status [--json]
 - A missing receipt file reports `status: "missing"` and exits `3` with a complete JSON document.
 - Malformed or unreadable receipts return code `9`.
 - Usage, cancellation, and internal failures emit no `stdout` document.
+
+## Run records
+
+```text
+pi-worker runs list [--json]
+pi-worker runs prune --keep <n> [--yes] [--json]
+```
+
+- A run record is one `.jsonl` file per run, one line per event: the
+  start line written before any worker starts, one line per started
+  worker, and the finish line when the run completes. Records live in
+  the `runs` directory inside pi-worker's user configuration directory
+  — the operating system's user configuration directory plus
+  `pi-worker/runs`, the location `runlog.Dir()` resolves. Only
+  `*.jsonl` files in that directory are records; `reported.json`, its
+  `.tmp-*` stages, and any other file are not.
+- `runs list` is read-only: it prints one line per record, newest
+  first, and writes nothing — no marker, no watermark, no
+  interrupted-run warning.
+- A record's outcome is one of: the run's own outcome, verbatim, when
+  its finish line carried a result; `error` when the finish line
+  carried the error arm instead; `running` when there is no finish
+  line and the start line's process is still alive (a liveness error
+  counts as alive); `interrupted` when there is no finish line and
+  that process is gone; `unknown` when the record has no usable start
+  line at all.
+- `runs prune --keep <n>` keeps the newest `n` records and deletes the
+  rest — `unknown` ones included — one file at a time, and never
+  deletes a record whose run is still running, whatever its age.
+  `--keep 0` keeps none by age; running runs are still spared. Pruned
+  ids are never removed from the interrupted-run marker, and the
+  marker itself is never a deletion target.
+- Without `--yes`, prune lists on stderr the records it is about to
+  delete and asks `delete <n> run records? [y/N]`; only `y` or `yes`
+  (case-insensitive, after trimming spaces) proceeds, and anything
+  else — `n`, an empty line, an EOF — deletes nothing, prints
+  `nothing deleted`, and exits `0`. With neither `--yes` nor a
+  terminal on stdin, and always with `--json` without `--yes`, prune
+  refuses, deletes nothing, and exits `2`.
+- Both commands emit one `schemaVersion: 1` document with `--json`.
+  `runs list --json` carries a `runs` array — empty, never null, when
+  there are no records. `runs prune --json` (which requires `--yes`)
+  carries `deleted`, the run ids actually deleted, and `keptRunning`,
+  the still-running runs spared — both arrays, empty, never null —
+  and `keptNewest`, how many records the `--keep` rule kept (capped
+  by the records that exist).
+- Exit codes: `0` on success — for prune, that includes nothing to
+  prune and the user declining; `2` for a usage error or the prune
+  refusal; `9` when the records directory cannot be resolved or read,
+  or when a prune delete fails (a failure is reported on stderr, does
+  not stop the other deletions, and the exit is `9`).
 
 ## Exact run command
 
