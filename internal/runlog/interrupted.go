@@ -2,7 +2,6 @@ package runlog
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -176,40 +175,15 @@ func Interrupted(dir string) ([]string, error) {
 // carries its finish line — its last non-empty line decodes with event
 // "finish". A record that cannot be read or parsed returns an error,
 // so the caller treats it as settled; that includes a start line that
-// is not a start line or carries no usable pid.
+// is not a start line or carries no usable pid. It answers through
+// parseRecord, the shared parse the list reader uses too: the two
+// readers must classify the same record the same way.
 func inspectRecord(path string) (pid int, finished bool, err error) {
-	data, err := os.ReadFile(path)
+	rec, err := parseRecord(path)
 	if err != nil {
 		return 0, false, err
 	}
-	lines := strings.Split(string(data), "\n")
-	first, last := -1, -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if first == -1 {
-			first = i
-		}
-		last = i
-	}
-	if first == -1 {
-		return 0, false, errors.New("record has no lines")
-	}
-	var start struct {
-		Event string `json:"event"`
-		PID   int    `json:"pid"`
-	}
-	if err := json.Unmarshal([]byte(lines[first]), &start); err != nil || start.Event != "start" || start.PID <= 0 {
-		return 0, false, errors.New("record has no usable start line")
-	}
-	var finish struct {
-		Event string `json:"event"`
-	}
-	if err := json.Unmarshal([]byte(lines[last]), &finish); err != nil || finish.Event != "finish" {
-		return start.PID, false, nil
-	}
-	return start.PID, true, nil
+	return rec.pid, rec.finished, nil
 }
 
 // loadMarker reads the marker document. A missing file, an unreadable
