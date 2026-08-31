@@ -54,6 +54,11 @@ var runlogDir = runlog.Dir
 var runlogStart = runlog.Start
 var runlogInterrupted = runlog.Interrupted
 
+// runlogList is the private dependency-injection seam for the read-only
+// runs list command. Tests replace it with a scripted failure; the
+// production value reads the records newest first.
+var runlogList = runlog.List
+
 // shutdownSignals are the signals that request an orderly shutdown. SIGINT
 // is the interactive Ctrl-C; SIGTERM is what process supervisors, container
 // runtimes, and agent harness timeouts send first. Both must reach the run
@@ -108,6 +113,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := interruptContext()
 		defer stop()
 		return skillCommand(ctx, args[1:], stdout, stderr)
+	case "runs":
+		ctx, stop := interruptContext()
+		defer stop()
+		return runsCommand(ctx, args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -141,6 +150,8 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		return runCommand(ctx, opts, tasks, stdout, stderr)
 	case "skill":
 		return skillCommand(ctx, args[1:], stdout, stderr)
+	case "runs":
+		return runsCommand(ctx, args[1:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -292,6 +303,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
+	fmt.Fprintln(w, "       pi-worker runs list [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
 }
 
