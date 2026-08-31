@@ -123,7 +123,7 @@ func Leftovers(dir string) ([]Leftover, error) {
 			// incomplete, and the group number alone cannot be
 			// attributed to the run. Every record written before the
 			// field existed is exactly this class.
-			if w.createTime != 0 {
+			if w.createTime > 0 {
 				workers = append(workers, w)
 			}
 		}

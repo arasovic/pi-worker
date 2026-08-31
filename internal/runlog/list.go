@@ -148,6 +148,37 @@ type recordFacts struct {
 	resultOutcome string
 }
 
+// maxRecordBytes is the ceiling on one record file's size, in bytes.
+// A real record is a handful of lines of JSON — kilobytes — so 32 MiB
+// is four orders of magnitude of headroom and still cannot exhaust
+// memory. readRecordFile refuses a record above the ceiling before it
+// is read.
+const maxRecordBytes int64 = 32 << 20
+
+// readRecordFile reads one record file, refusing anything that is not
+// a regular file and anything above maxRecordBytes before it opens or
+// reads the path. The regular-file check comes from os.Lstat, never
+// os.Stat: Lstat does not follow a symlink, so a symlink reports mode
+// ModeSymlink and is refused outright, while Stat would follow it to
+// its target and let the escape through. A FIFO with no writer blocks
+// in the open — not the read — so the refusal must happen before any
+// open, or one planted record name hangs the whole product. A record
+// that changes under the reader needs no re-stat: a torn last line is
+// explicitly expected and documented in parseRecord.
+func readRecordFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("record is not a regular file")
+	}
+	if info.Size() < 0 || info.Size() > maxRecordBytes {
+		return nil, errors.New("record is too large")
+	}
+	return os.ReadFile(path)
+}
+
 // parseRecord reads one record and answers everything the three
 // readers ask of it. It is the shared parse underneath inspectRecord
 // and Leftovers: List needs more than the interrupted-run scan does,
@@ -167,7 +198,7 @@ type recordFacts struct {
 // makes a live run look interrupted — the start line decides the
 // classification whenever it parses.
 func parseRecord(path string) (recordFacts, error) {
-	data, err := os.ReadFile(path)
+	data, err := readRecordFile(path)
 	if err != nil {
 		return recordFacts{}, err
 	}
