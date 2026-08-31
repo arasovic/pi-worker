@@ -34,6 +34,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // schemaVersion is the run-record document version. It is the record's
@@ -46,6 +47,28 @@ const schemaVersion = 1
 // in the record; the run itself is unaffected — the worker always
 // receives the full prompt. The cap bounds the record, not the run.
 const promptCap = 4096
+
+// pidCreateTime is the private dependency-injection seam behind the
+// worker line's createTime field: the creation time of the process a
+// worker started, in milliseconds since the Unix epoch exactly as
+// gopsutil reports it. Tests replace it with a scripted answer so the
+// records they write stay hermetic; production never does. The value
+// is an exact-equality identity check, never a formatted time: a
+// string round-trip would lose sub-second precision and the equality
+// against process.CreateTime would silently stop matching.
+var pidCreateTime = defaultPidCreateTime
+
+// defaultPidCreateTime returns the creation time of the process with
+// the given pid, in milliseconds since the Unix epoch. A process that
+// cannot be looked up returns an error; the caller leaves the field
+// off the record instead of inventing a value.
+func defaultPidCreateTime(pid int) (int64, error) {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return 0, err
+	}
+	return p.CreateTime()
+}
 
 // Dir returns the directory run records live in. Records are never put
 // inside a workspace: a workspace is caller-owned and may be ephemeral
@@ -145,6 +168,14 @@ func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
 	if r == nil {
 		return
 	}
+	// The creation-time lookup happens before the lock: reading the
+	// process table takes real time, and the lock only guards the
+	// shared write-error slot and the ordering between a worker line
+	// and the final write-and-close. A lookup failure leaves the
+	// createTime key off the line — the identity is weaker then, never
+	// an error — because the caller has just started the child, so
+	// this pid cannot yet have been reused by an unrelated process.
+	createTime, _ := pidCreateTime(pid)
 	line := workerLine{
 		SchemaVersion: schemaVersion,
 		Event:         "worker",
@@ -152,6 +183,7 @@ func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
 		At:            at.UTC().Format(time.RFC3339),
 		WorkerID:      workerID,
 		PID:           pid,
+		CreateTime:    createTime,
 	}
 	data, err := json.Marshal(line)
 	if err != nil {
@@ -288,7 +320,9 @@ type startTask struct {
 
 // workerLine is the line of a run record written while the run is in
 // flight, one per started worker, carrying the identity of the process
-// that worker launched.
+// that worker launched: the pid paired with the process's creation
+// time, the pair being the identity — a pid alone is reused, so it
+// cannot name a process on its own.
 type workerLine struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Event         string `json:"event"`
@@ -296,6 +330,12 @@ type workerLine struct {
 	At            string `json:"at"`
 	WorkerID      int    `json:"workerId"`
 	PID           int    `json:"pid"`
+	// CreateTime is the process creation time in milliseconds since
+	// the Unix epoch, exactly as gopsutil reports it, for exact
+	// equality against a later Process.CreateTime. Absent when the
+	// lookup failed at write time, which is also the shape of every
+	// record written before this field existed.
+	CreateTime int64 `json:"createTime,omitempty"`
 }
 
 // finishLine is the final line of a run record. Result and Error are
