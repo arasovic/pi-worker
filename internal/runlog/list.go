@@ -117,15 +117,23 @@ func List(dir string) ([]Run, error) {
 }
 
 // recordFacts is the shared parse of one record file, answering
-// everything both readers ask of it: the process identity and the
-// display fields from the start line, and the completion facts from
-// the finish line. List reads all of it; InspectRecord needs only the
-// pid and the finished flag, and the two readers must agree on those
-// two facts — the interrupted-run warning and the list classify the
-// same record the same way.
+// everything the three readers ask of it: the process identity and
+// the display fields from the start line, the completion facts from
+// the finish line, and every worker line's process identity. List
+// reads all of it; InspectRecord needs only the pid and the finished
+// flag, and the readers must agree on those facts — the interrupted-
+// run warning, the list, and the leftover report classify the same
+// record the same way.
 type recordFacts struct {
 	// pid is the process that wrote the record, from the start line.
 	pid int
+	// workers holds every worker line's process identity, in record
+	// order: the pid each worker launched paired with its creation
+	// time. A record can carry up to three worker lines, one per
+	// worker goroutine, and the leftover reader needs each group
+	// under the run — a leftover in the second worker's group must
+	// still be found.
+	workers []workerFacts
 	// startedAt, workspace, and tasks are the start line's display
 	// fields, copied verbatim.
 	startedAt string
@@ -140,13 +148,14 @@ type recordFacts struct {
 	resultOutcome string
 }
 
-// parseRecord reads one record and answers everything both readers ask
-// of it. It is the shared parse underneath inspectRecord: List needs
-// more than the interrupted-run scan does, and duplicating the read
-// and the line walk would give the two readers a second chance to
-// disagree. A record that cannot be read or parsed returns an error,
-// which both callers treat as settled; that includes a start line that
-// is not a start line or carries no usable pid.
+// parseRecord reads one record and answers everything the three
+// readers ask of it. It is the shared parse underneath inspectRecord
+// and Leftovers: List needs more than the interrupted-run scan does,
+// and duplicating the read and the line walk would give the readers a
+// second chance to disagree about one record. A record that cannot be
+// read or parsed returns an error, which all callers treat as settled;
+// that includes a start line that is not a start line or carries no
+// usable pid.
 //
 // The classification facts — the start line's event and pid, the last
 // line's finish event — are decoded exactly as the interrupted-run
@@ -164,6 +173,7 @@ func parseRecord(path string) (recordFacts, error) {
 	}
 	lines := strings.Split(string(data), "\n")
 	first, last := -1, -1
+	var workers []workerFacts
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -172,6 +182,15 @@ func parseRecord(path string) (recordFacts, error) {
 			first = i
 		}
 		last = i
+		// Every non-empty line is a potential worker line, collected
+		// independently of the classification facts: a record can
+		// carry up to three of them, and a worker line between the
+		// first and the last must still be collected, or a leftover
+		// in its group would be invisible.
+		var worker workerLine
+		if err := json.Unmarshal([]byte(line), &worker); err == nil && worker.Event == "worker" && worker.PID > 0 {
+			workers = append(workers, workerFacts{pid: worker.PID, createTime: worker.CreateTime})
+		}
 	}
 	if first == -1 {
 		return recordFacts{}, errors.New("record has no lines")
@@ -183,7 +202,7 @@ func parseRecord(path string) (recordFacts, error) {
 	if err := json.Unmarshal([]byte(lines[first]), &start); err != nil || start.Event != "start" || start.PID <= 0 {
 		return recordFacts{}, errors.New("record has no usable start line")
 	}
-	rec := recordFacts{pid: start.PID}
+	rec := recordFacts{pid: start.PID, workers: workers}
 	// The display fields are best-effort: a malformed one leaves them
 	// zero without touching the classification, which is decided by the
 	// minimal facts above.
