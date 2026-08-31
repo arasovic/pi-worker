@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1139,4 +1141,98 @@ func TestRunsPruneResolverAndReadFailuresExit9(t *testing.T) {
 			t.Fatalf("unreadable dir = (%d, %q, %q), want exit 9", code, stdout, stderr)
 		}
 	})
+}
+
+// swapRecordsDirOnFirstRead swaps the records directory out from under
+// the command on the first stdin Read: dir is renamed to aside and a
+// symlink to other is put in its place, then the answer "y" is
+// returned. The prompt's ReadString is the first read of stdin, so the
+// swap lands exactly while the question is on screen — deterministic,
+// no sleeps, no timing. The one Read that matters carries the answer
+// and the newline, so bufio never reads again; a failed rename or
+// symlink is returned as the Read error and checked by the test after
+// the command returns.
+//
+// Because the first Read happens inside the prompt, the swap also
+// proves the order the fix pins: a records directory resolved before
+// the question cannot be redirected afterwards, and a delete that
+// resolved the directory again after the swap would land in other.
+// All three paths are t.TempDir-managed, and cleanup removes the
+// symlink as a link, never through it.
+//
+// The records directory here is the one runlogDir reports; the swap
+// renames it to aside and symlinks other into its place.
+type swapRecordsDirOnFirstRead struct {
+	dir, aside, other string
+	swapped           bool
+	err               error
+}
+
+func (s *swapRecordsDirOnFirstRead) Read(p []byte) (int, error) {
+	if !s.swapped {
+		s.swapped = true
+		if err := os.Rename(s.dir, s.aside); err != nil {
+			s.err = err
+			return 0, err
+		}
+		if err := os.Symlink(s.other, s.dir); err != nil {
+			s.err = err
+			return 0, err
+		}
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneSwapDuringPromptCannotRedirectTheDelete swaps the
+// records directory out from under the prune while the deletion
+// question is on screen — the directory is renamed aside, a symlink
+// to an unrelated directory is put in its place, and then "y" is
+// answered — and pins that the delete still lands only inside the
+// directory the listing named: the unrelated directory's file with
+// the same base name survives, the record the command named is gone
+// from the renamed-aside directory, and the exit is 0. A prune that
+// resolved the directory again after the prompt would delete the
+// unrelated directory's file instead.
+func TestRunsPruneSwapDuringPromptCannotRedirectTheDelete(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	recordName := "20260830T101500Z-1.jsonl"
+	writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	// The unrelated directory holds a file with the same base name as
+	// the record being deleted; a delete redirected by the swap would
+	// land on exactly this file.
+	other := t.TempDir()
+	otherPath := filepath.Join(other, recordName)
+	if err := os.WriteFile(otherPath, []byte("not a record"), 0o600); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+
+	// aside receives the records directory when the swap renames it
+	// away from dir; the empty placeholder is removed so the rename
+	// replaces it, and the whole swap stays inside t.TempDir-managed
+	// paths — cleanup removes the symlink as a link and the renamed
+	// directory with its contents.
+	aside := t.TempDir()
+	if err := os.Remove(aside); err != nil {
+		t.Fatalf("vacate aside: %v", err)
+	}
+
+	stdin := &swapRecordsDirOnFirstRead{dir: dir, aside: aside, other: other}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("swap during the prompt failed: %v", stdin.err)
+	}
+	if code != 0 {
+		t.Fatalf("prune with the swap during the prompt = (%d, %q, %q), want exit 0", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(otherPath); err != nil {
+		t.Fatalf("%s was deleted although prune never listed %s: %v", otherPath, dir, err)
+	}
+	if _, err := os.Stat(filepath.Join(aside, recordName)); err == nil {
+		t.Fatalf("record %s still exists in the listed directory after the prune", filepath.Join(aside, recordName))
+	}
 }

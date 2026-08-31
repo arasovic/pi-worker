@@ -211,6 +211,37 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		return 0
 	}
 
+	// The records directory is resolved exactly once, here, before the
+	// question is asked, and every deletion goes through that one
+	// handle by bare name. os.Remove resolves every parent component of
+	// the path it is given, so a full-path remove could be redirected
+	// at a file the listing never named by a records directory swapped
+	// before the removal; a remove relative to this handle cannot be
+	// redirected by any swap that comes after the handle is taken —
+	// during the question, or mid-delete — because nothing after this
+	// point resolves the directory again. os.OpenRoot follows a symlink
+	// in the name it is given, so a deliberately symlinked records
+	// directory keeps working. The root is opened only now that there
+	// is something to delete, so a missing records directory with
+	// nothing to prune behaves exactly as it did before, and it is
+	// closed on the way out.
+	//
+	// One window stays open, and is accepted by design, in the style of
+	// the limits in internal/runlog/interrupted.go:
+	//
+	//   - The directory can still be swapped between runlogList's walk
+	//     above and this open. No human wait sits in that window —
+	//     nothing between the listing and the open blocks on a person —
+	//     and the open itself resolves whatever the name points at
+	//     then, so a swap there would send the deletes at the
+	//     swapped-in directory's files under the listed names.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: open records directory: %v\n", err)
+		return 9
+	}
+	defer root.Close()
+
 	// Without --yes the deletion must be approved. A non-terminal stdin
 	// cannot answer a prompt, so it refuses verbatim rather than ask
 	// into the void; the --json arm of the refusal already returned
@@ -252,26 +283,6 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	if parent.Err() != nil {
 		return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
 	}
-
-	// The records directory is resolved once here, before the first
-	// delete, and every deletion goes through that one handle by bare
-	// name. os.Remove resolves every parent component of the path it is
-	// given, so a records directory swapped between selection and
-	// deletion could redirect a later full-path remove at a file the
-	// list never named; a remove relative to the opened handle cannot be
-	// redirected by a later swap. os.OpenRoot follows a symlink in the
-	// name it receives — resolving the directory once is the point, and
-	// a deliberately symlinked records directory keeps working — while
-	// everything after that is relative to the handle. The root is
-	// opened only now that there is something to delete, so a missing
-	// records directory behaves exactly as it did before, and it is
-	// closed on the way out.
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: open records directory: %v\n", err)
-		return 9
-	}
-	defer root.Close()
 
 	// Each candidate is deleted one at a time, oldest first, and a
 	// failure never stops the others: every selected record is tried,
