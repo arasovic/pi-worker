@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
@@ -350,7 +351,9 @@ func TestRunsPruneSparesRunningCandidateOlderThanCutoff(t *testing.T) {
 // means "keep none by age", not "empty the directory": completed,
 // interrupted, and unknown records all go — an unreadable record is
 // exactly the junk the command exists to clear — while the running
-// record is still spared.
+// record is still spared. The unknown record's file is deliberately
+// aged past the grace window, because a fresh one is spared and has
+// its own test.
 func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -360,6 +363,10 @@ func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 	unknownPath := filepath.Join(dir, "20260830T101000Z-4.jsonl")
 	if err := os.WriteFile(unknownPath, []byte("not json at all\n"), 0o600); err != nil {
 		t.Fatalf("write unknown record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(unknownPath, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
 	}
 
 	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
@@ -377,6 +384,86 @@ func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 	}
 	if _, err := os.Stat(runningPath); err != nil {
 		t.Fatalf("running record %s was deleted: %v", runningPath, err)
+	}
+}
+
+// TestRunsPruneSparesFreshUnknownCandidate asserts the live-window
+// rule for records that cannot be classified: an unknown candidate
+// whose file was modified within the grace window may be a run that
+// just created its record and has not yet written its start line, so
+// it is kept — not deleted. With nothing selected the human summary
+// says nothing to prune; the spared record is visible to a caller in
+// the --json document, whose keptRunning array carries its id the way
+// it carries a still-running run's.
+func TestRunsPruneSparesFreshUnknownCandidate(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	unknownPath := filepath.Join(dir, "20260831T120000Z-1.jsonl")
+	if err := os.WriteFile(unknownPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write empty record: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	if stdout != "nothing to prune\n" {
+		t.Fatalf("stdout = %q, want \"nothing to prune\\n\"", stdout)
+	}
+	if _, err := os.Stat(unknownPath); err != nil {
+		t.Fatalf("fresh unknown record %s was deleted: %v", unknownPath, err)
+	}
+
+	// The second call runs prune --json: the spared record is visible
+	// to a caller only in the document, and the document is decoded,
+	// never compared as a raw string.
+	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune --json = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	var document struct {
+		SchemaVersion int      `json:"schemaVersion"`
+		Deleted       []string `json:"deleted"`
+		KeptNewest    int      `json:"keptNewest"`
+		KeptRunning   []string `json:"keptRunning"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode document %q: %v", stdout, err)
+	}
+	if document.SchemaVersion != 1 || len(document.Deleted) != 0 || document.KeptNewest != 0 || len(document.KeptRunning) != 1 || document.KeptRunning[0] != "20260831T120000Z-1" {
+		t.Fatalf("document = %#v, want the spared record in keptRunning", document)
+	}
+	if _, err := os.Stat(unknownPath); err != nil {
+		t.Fatalf("fresh unknown record %s was deleted by the --json prune: %v", unknownPath, err)
+	}
+}
+
+// TestRunsPruneDeletesStaleUnknownCandidate asserts the live-window
+// rule's far side: the same empty record, its modification time pushed
+// two hours into the past, is unreadable junk and is deleted — the
+// junk-clearing behaviour survives the grace window.
+func TestRunsPruneDeletesStaleUnknownCandidate(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	unknownPath := filepath.Join(dir, "20260831T120000Z-1.jsonl")
+	if err := os.WriteFile(unknownPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write empty record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(unknownPath, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	const want = "deleted 20260831T120000Z-1\nkept 0 newest\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if _, err := os.Stat(unknownPath); !os.IsNotExist(err) {
+		t.Fatalf("stale unknown record %s still exists: %v", unknownPath, err)
 	}
 }
 
@@ -567,6 +654,24 @@ func TestRunsPruneJSONWithoutYesRefusesEvenOnTerminal(t *testing.T) {
 				t.Fatalf("record %s vanished: %v", path, err)
 			}
 		})
+	}
+}
+
+// TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected asserts the
+// --json refusal does not depend on what is on disk: with --json and
+// no --yes in an empty records directory, prune still exits 2 with the
+// verbatim refusal on stderr and no JSON document on stdout — a script
+// must be able to tell "refused" from "succeeded, nothing to do".
+func TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("runs prune --json = (%d, %q), want exit 2 with nothing on stdout", code, stdout)
+	}
+	if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
 

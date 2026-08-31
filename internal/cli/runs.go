@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
@@ -21,6 +22,14 @@ import (
 // output renders, not the run record's version and not the run
 // result's — each document versions itself.
 const runsSchemaVersion = 1
+
+// pruneGraceWindow is how recent an unclassifiable record's file must
+// be to count as possibly still being written. A record that was
+// modified within the last hour and cannot be read may be a run that
+// just created its record and has not yet written its start line; no
+// record is legitimately left half-written for an hour, so an older
+// unreadable record is still exactly the junk prune exists to clear.
+const pruneGraceWindow = time.Hour
 
 type runsOptions struct {
 	command string
@@ -149,9 +158,11 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// never candidates. Every later entry is a candidate; a candidate
 	// whose run is still running is kept and reported separately — a run
 	// still writing to its record must never have that record pulled out
-	// from under it — and every other candidate is deleted, unknown ones
-	// included: an unreadable record is exactly the junk this command
-	// exists to clear.
+	// from under it. A candidate too unreadable to classify is spared
+	// the same way while its file is fresh: a record modified within the
+	// grace window may be in the middle of being written. Every other
+	// candidate is deleted, stale unknown ones included: an unreadable
+	// record is exactly the junk this command exists to clear.
 	keptNewest := opts.keep
 	if keptNewest > len(runs) {
 		keptNewest = len(runs)
@@ -166,11 +177,26 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 			keptRunning = append(keptRunning, run)
 			continue
 		}
+		if run.Outcome == "unknown" && recordRecentlyModified(run.Path) {
+			keptRunning = append(keptRunning, run)
+			continue
+		}
 		toDelete = append(toDelete, run)
 	}
 	keptRunningIDs := make([]string, 0, len(keptRunning))
 	for _, run := range keptRunning {
 		keptRunningIDs = append(keptRunningIDs, run.RunID)
+	}
+
+	// --json without --yes refuses up front, before the
+	// nothing-selected shortcut: a --json caller is never handed a
+	// prompt, and the promise "always with --json without --yes, prune
+	// refuses, deletes nothing, and exits 2" must hold whatever the
+	// selection is — an empty selection must not turn a refusal into a
+	// success.
+	if !opts.yes && opts.json {
+		fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
+		return 2
 	}
 
 	// Nothing selected is not an error: a missing or empty records
@@ -185,11 +211,12 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		return 0
 	}
 
-	// Without --yes the deletion must be approved. A --json caller is
-	// never handed a prompt, and a non-terminal stdin cannot answer one,
-	// so both refuse verbatim rather than ask into the void.
+	// Without --yes the deletion must be approved. A non-terminal stdin
+	// cannot answer a prompt, so it refuses verbatim rather than ask
+	// into the void; the --json arm of the refusal already returned
+	// above.
 	if !opts.yes {
-		if opts.json || !stdinIsTerminal() {
+		if !stdinIsTerminal() {
 			fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
 			return 2
 		}
@@ -283,6 +310,20 @@ func renderPruneDocument(stdout, stderr io.Writer, deleted, keptRunning []string
 	}
 	fmt.Fprintln(stdout, string(data))
 	return 0
+}
+
+// recordRecentlyModified reports whether the record's file exists and
+// was modified within the grace window. Only an existing, fresh file
+// can be a record in the middle of being written; a file that cannot
+// be stated is treated as before — stale, and deleted by the caller,
+// which is exactly the fail-safe direction the junk-clearing behaviour
+// pins.
+func recordRecentlyModified(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) <= pruneGraceWindow
 }
 
 // removeRunRecord deletes one record after re-validating the two facts
