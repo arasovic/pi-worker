@@ -754,6 +754,57 @@ func TestRunsPruneDeleteFailureContinuesAndExits9(t *testing.T) {
 	}
 }
 
+// TestRunsPruneDeleteFailureNonJSONLContinuesAndExits9 asserts the
+// second refusal arm of the delete path the same way the outside-path
+// test asserts the first: a listed record whose path is a real
+// non-.jsonl file inside the records directory is refused — the
+// .jsonl rule re-validates every path immediately before os.Remove —
+// stays on disk byte-identical, and is named on stderr, while the
+// listed record that is a real .jsonl record is still deleted and the
+// exit is 9. The refusal is injected through the runlogList seam,
+// exactly as the seam exists to be.
+func TestRunsPruneDeleteFailureNonJSONLContinuesAndExits9(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	realPath := writeListRecord(t, dir, "20260830T103000Z-1", deadPID, "2026-08-30T10:30:00Z", "/ws-a", 1, true, "completed", "")
+	notesPath := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(notesPath, []byte("not a record\n"), 0o600); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	original := runlogList
+	runlogList = func(string) ([]runlog.Run, error) {
+		return []runlog.Run{
+			{RunID: "20260830T103000Z-1", Outcome: "completed", Path: realPath},
+			{RunID: "20260830T101500Z-0", Outcome: "completed", Path: notesPath},
+		}, nil
+	}
+	t.Cleanup(func() { runlogList = original })
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 9 {
+		t.Fatalf("exit = %d, want 9; stdout = %q; stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "deleted 20260830T103000Z-1\n") {
+		t.Fatalf("stdout = %q, want the deleted line for the record that went", stdout)
+	}
+	if !strings.Contains(stdout, "kept 0 newest\n") {
+		t.Fatalf("stdout = %q, want the summary line", stdout)
+	}
+	if !strings.Contains(stderr, "refusing to delete") || !strings.Contains(stderr, notesPath) {
+		t.Fatalf("stderr = %q, want the refusal naming the non-.jsonl path", stderr)
+	}
+	data, err := os.ReadFile(notesPath)
+	if err != nil {
+		t.Fatalf("the non-record file was deleted: %v", err)
+	}
+	if string(data) != "not a record\n" {
+		t.Fatalf("the non-record file changed by the prune: %q", data)
+	}
+	if _, err := os.Stat(realPath); !os.IsNotExist(err) {
+		t.Fatalf("in-directory record %s still exists: %v", realPath, err)
+	}
+}
+
 // TestRunsPruneNothingToPrune asserts the empty cases are successes,
 // not errors, and need neither --yes nor a terminal: nothing was
 // selected, so there is nothing to ask about. That includes a records

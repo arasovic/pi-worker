@@ -22,6 +22,7 @@ var fixedInventory = []Dependency{
 	{Module: "github.com/tklauser/go-sysconf", Version: "v0.3.16", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
 	{Module: "github.com/ebitengine/purego", Version: "v0.10.2", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
 	{Module: "github.com/tklauser/numcpus", Version: "v0.11.0", Targets: []string{"linux"}, LicenseFiles: []string{"LICENSE"}},
+	{Module: "golang.org/x/term", Version: "v0.45.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
 }
 
 // Inventory returns the exact dependency set included in release artifacts.

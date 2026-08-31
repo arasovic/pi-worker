@@ -23,6 +23,7 @@ func TestInventoryMatchesFixedModuleSet(t *testing.T) {
 		{Module: "github.com/tklauser/go-sysconf", Version: "v0.3.16", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
 		{Module: "github.com/ebitengine/purego", Version: "v0.10.2", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
 		{Module: "github.com/tklauser/numcpus", Version: "v0.11.0", Targets: []string{"linux"}, LicenseFiles: []string{"LICENSE"}},
+		{Module: "golang.org/x/term", Version: "v0.45.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -60,6 +61,10 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 		"github.com/tklauser/numcpus@v0.11.0": {
 			"LICENSE": "numcpus license\n",
 		},
+		"golang.org/x/term@v0.45.0": {
+			"LICENSE": "term license\n",
+			"PATENTS": "term patents\n",
+		},
 	}
 	for moduleVersion, files := range fixtures {
 		for file, content := range files {
@@ -92,6 +97,7 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 		"## github.com/tklauser/go-sysconf v0.3.16",
 		"## github.com/ebitengine/purego v0.10.2",
 		"## github.com/tklauser/numcpus v0.11.0",
+		"## golang.org/x/term v0.45.0",
 	}
 	last := -1
 	for _, header := range order {
@@ -272,6 +278,10 @@ func writeNoticeFixtureFiles(t *testing.T, moduleCache string) {
 		},
 		"github.com/tklauser/numcpus@v0.11.0": {
 			"LICENSE": "numcpus license\n",
+		},
+		"golang.org/x/term@v0.45.0": {
+			"LICENSE": "term license\n",
+			"PATENTS": "term patents\n",
 		},
 	}
 	for moduleVersion, files := range fixtures {
