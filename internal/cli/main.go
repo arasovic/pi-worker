@@ -59,6 +59,25 @@ var runlogInterrupted = runlog.Interrupted
 // production value reads the records newest first.
 var runlogList = runlog.List
 
+// stdinIsTerminal reports whether the command's stdin is an
+// interactive terminal — the one question a bare io.Reader cannot
+// answer, so runs prune asks it here instead of reaching for os.Stdin
+// behind the caller's back. Tests replace it with a scripted answer;
+// the production value asks os.Stdin itself. A Stat that errors means
+// not a terminal, so the command refuses rather than prompting into a
+// stream that will never answer — the same fail-safe direction the
+// interrupted-run scan uses for its own uncertain check: both resolve
+// doubt toward doing nothing.
+var stdinIsTerminal = defaultStdinIsTerminal
+
+func defaultStdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
 // shutdownSignals are the signals that request an orderly shutdown. SIGINT
 // is the interactive Ctrl-C; SIGTERM is what process supervisors, container
 // runtimes, and agent harness timeouts send first. Both must reach the run
@@ -116,7 +135,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "runs":
 		ctx, stop := interruptContext()
 		defer stop()
-		return runsCommand(ctx, args[1:], stdout, stderr)
+		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -151,7 +170,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "skill":
 		return skillCommand(ctx, args[1:], stdout, stderr)
 	case "runs":
-		return runsCommand(ctx, args[1:], stdout, stderr)
+		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -304,6 +323,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
 	fmt.Fprintln(w, "       pi-worker runs list [--json]")
+	fmt.Fprintln(w, "       pi-worker runs prune --keep <n> [--yes] [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
 }
 
