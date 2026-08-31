@@ -247,6 +247,14 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   start of the next run and is repeated on every run for as long as
   the processes are still running; it only reports, and never kills
   or signals the processes it names.
+- A process the worker started in a group of its own is not reported:
+  the warning finds survivors by the process group the run's worker
+  led, and a command started in a fresh group carries no link back to
+  the run once the worker is gone.
+- After a run's group has fully emptied, the operating system may hand
+  its number to something else, and the warning can then name a
+  process that has nothing to do with the run. It is rare, and it
+  costs one wrong line of text — the product never acts on the number.
 
 ## Exact run command
 

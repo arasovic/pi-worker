@@ -1037,6 +1037,76 @@ func TestRunsPruneWiredIntoMainWithContext(t *testing.T) {
 	}
 }
 
+// TestRunsPruneCancelledBeforeStartDeletesNothingAndExits9 asserts a
+// prune whose context is already done deletes nothing: the context is
+// read immediately after the prompt returns and again before every
+// individual delete, so a cancellation that arrived before the command
+// started means no record is removed, the verbatim message goes to
+// stderr, and the exit is 9. Three paths are pinned: --yes (the check
+// sitting in front of the first delete), the y answer to the prompt
+// (the check on the way out of it), and --json (the document still
+// reports what was deleted — an empty deleted array — on the way to
+// exit 9).
+func TestRunsPruneCancelledBeforeStartDeletesNothingAndExits9(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("--yes", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 9 || stdout != "" {
+			t.Fatalf("cancelled prune --yes = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+		}
+	})
+
+	t.Run("prompt answered y", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+		withStdinIsTerminal(t, true)
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0"}, "y\n")
+		if code != 9 || stdout != "" {
+			t.Fatalf("cancelled prune after y = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; !strings.HasSuffix(stderr, want) {
+			t.Fatalf("stderr = %q, want it to end with %q", stderr, want)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+		}
+	})
+
+	t.Run("--json", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 9 {
+			t.Fatalf("cancelled prune --json = (%d, %q, %q), want exit 9", code, stdout, stderr)
+		}
+		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[]}\n"; stdout != want {
+			t.Fatalf("stdout = %q, want the empty document %q", stdout, want)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+		}
+	})
+}
+
 // TestRunsPruneResolverAndReadFailuresExit9 asserts both failure
 // classes exit 9 before anything is deleted: a records directory that
 // cannot be resolved and one that exists but cannot be read.

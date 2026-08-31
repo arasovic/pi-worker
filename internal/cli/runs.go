@@ -137,8 +137,8 @@ func renderRunTable(w io.Writer, runs []runlog.Run) {
 // which runs are still alive, and the records directory is never
 // walked a second time. This is the first code in pi-worker that
 // deletes a user's files; removeRunRecord re-validates every path
-// against the directory and the .jsonl rule immediately before
-// os.Remove.
+// against the directory and the .jsonl rule immediately before the
+// removal.
 func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader, stdout, stderr io.Writer) int {
 	dir, err := runlogDir()
 	if err != nil {
@@ -240,6 +240,39 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		}
 	}
 
+	// The context is read immediately after the prompt returned (or the
+	// --yes shortcut past it) and again before every individual delete
+	// below: a Ctrl-C that lands before the first delete stops the prune
+	// before anything is removed, and one that lands mid-prune stops the
+	// deletes where it landed. The prompt itself stays uninterruptible
+	// while it blocks on stdin — interrupting that read needs a
+	// goroutine and a select over the context and the reader, which is
+	// out of scope — so these checks on either side of it are where a
+	// cancellation lands.
+	if parent.Err() != nil {
+		return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+	}
+
+	// The records directory is resolved once here, before the first
+	// delete, and every deletion goes through that one handle by bare
+	// name. os.Remove resolves every parent component of the path it is
+	// given, so a records directory swapped between selection and
+	// deletion could redirect a later full-path remove at a file the
+	// list never named; a remove relative to the opened handle cannot be
+	// redirected by a later swap. os.OpenRoot follows a symlink in the
+	// name it receives — resolving the directory once is the point, and
+	// a deliberately symlinked records directory keeps working — while
+	// everything after that is relative to the handle. The root is
+	// opened only now that there is something to delete, so a missing
+	// records directory behaves exactly as it did before, and it is
+	// closed on the way out.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: open records directory: %v\n", err)
+		return 9
+	}
+	defer root.Close()
+
 	// Each candidate is deleted one at a time, oldest first, and a
 	// failure never stops the others: every selected record is tried,
 	// each failure is reported on stderr, and the exit code is 9 at the
@@ -248,8 +281,14 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	code := 0
 	deletedIDs := make([]string, 0, len(toDelete))
 	for i := len(toDelete) - 1; i >= 0; i-- {
+		// A cancelled context stops the prune before this delete: what
+		// was already deleted stays deleted and is reported, nothing
+		// further is removed, and the exit is 9.
+		if parent.Err() != nil {
+			return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptNewest)
+		}
 		run := toDelete[i]
-		if err := removeRunRecord(dir, run.Path); err != nil {
+		if err := removeRunRecord(root, dir, run.Path); err != nil {
 			fmt.Fprintf(stderr, "pi-worker: delete %s: %v\n", run.RunID, err)
 			code = 9
 			continue
@@ -285,6 +324,22 @@ type pruneDocument struct {
 	Deleted       []string `json:"deleted"`
 	KeptNewest    int      `json:"keptNewest"`
 	KeptRunning   []string `json:"keptRunning"`
+}
+
+// cancelledPrune reports a prune stopped by a finished context:
+// nothing further is deleted, what was already deleted stays deleted
+// and is reported — the human mode printed one deleted line per record
+// as it went, and the --json document carries the deleted ids — and
+// the exit is 9 with the verbatim message on stderr, the same exit
+// code a delete failure uses.
+func cancelledPrune(stdout, stderr io.Writer, opts runsOptions, deleted, keptRunning []string, keptNewest int) int {
+	if opts.json {
+		if docCode := renderPruneDocument(stdout, stderr, deleted, keptRunning, keptNewest); docCode != 0 {
+			return docCode
+		}
+	}
+	fmt.Fprintln(stderr, "pi-worker: runs prune cancelled")
+	return 9
 }
 
 // renderPruneDocument writes the prune document: one line on stdout,
@@ -330,12 +385,17 @@ func recordRecentlyModified(path string) bool {
 // the delete is allowed to rely on, against the exact path being
 // removed even though runlogList already produced it: the path is
 // inside the records directory — compared lexically, so a symlink is
-// never followed, and os.Remove removes a link itself, never its
+// never followed, and the removal removes a link itself, never its
 // target — and its name ends in .jsonl. The reader's filter is the
 // primary guard; this is cheap defence in depth for the product's
 // first delete, and it means reported.json, a .reported.json.tmp-*
 // stage, a directory, or any other file can never be reached here.
-func removeRunRecord(dir, path string) error {
+// The removal goes through the caller's single opened root, by bare
+// name: os.Remove would resolve every parent component of the full
+// path, so a records directory swapped after selection could redirect
+// it at a file prune never listed, while a remove relative to the
+// handle is pinned to the directory resolved before the first delete.
+func removeRunRecord(root *os.Root, dir, path string) error {
 	rel, err := filepath.Rel(dir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return fmt.Errorf("refusing to delete %q: outside the records directory", path)
@@ -343,7 +403,7 @@ func removeRunRecord(dir, path string) error {
 	if !strings.HasSuffix(path, ".jsonl") {
 		return fmt.Errorf("refusing to delete %q: not a .jsonl record", path)
 	}
-	return os.Remove(path)
+	return root.Remove(filepath.Base(path))
 }
 
 func parseRunsArgs(args []string) (runsOptions, error) {
