@@ -238,6 +238,15 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   refusal; `9` when the records directory cannot be resolved or read,
   or when a prune delete fails (a failure is reported on stderr, does
   not stop the other deletions, and the exit is `9`).
+- At the start of every run, pi-worker also checks whether an earlier
+  settled run left processes running, and warns on stderr when it
+  finds any: one line per run naming the record's full path and the
+  leftover pids — up to ten, then a count of the rest, inside the same
+  parentheses — capped at five runs with one summary line naming the
+  records directory for the remainder. The warning appears at the
+  start of the next run and is repeated on every run for as long as
+  the processes are still running; it only reports, and never kills
+  or signals the processes it names.
 
 ## Exact run command
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // TestRunLogRecordsSuccessfulRunEndToEnd drives a completed run with the
@@ -387,5 +388,191 @@ func TestRunInterruptedCheckFailureWarnsAndContinues(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRunWarnsAboutLeftoverProcessesEndToEnd drives a run with the
+// leftover-process scan scripted to one run carrying two pids and
+// asserts the exact warning line appears on stderr — the full record
+// path and the pids — while stdout carries only the run's own JSON
+// document.
+func TestRunWarnsAboutLeftoverProcessesEndToEnd(t *testing.T) {
+	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+	recordPath := filepath.Join(logDir, "20260830T101500Z-1.jsonl")
+	originalLeftovers := runlogLeftovers
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) {
+		return []runlog.Leftover{{RunID: "20260830T101500Z-1", Path: recordPath, PIDs: []int{4111, 4112}}}, nil
+	}
+	t.Cleanup(func() { runlogLeftovers = originalLeftovers })
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	want := "pi-worker: warning: an earlier run left processes running: " + recordPath + " (pids 4111, 4112)\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+	// decodeJSONObject fails unless stdout is exactly one JSON document:
+	// the warning must not have touched it.
+	decodeJSONObject(t, stdout)
+}
+
+// TestRunWarnsFiveLeftoverRunsPlusCountEndToEnd drives a run with the
+// leftover-process scan scripted to six runs and asserts the CLI prints
+// five path lines and one summary line naming the remainder and the
+// records directory.
+func TestRunWarnsFiveLeftoverRunsPlusCountEndToEnd(t *testing.T) {
+	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+	leftovers := make([]runlog.Leftover, 0, 6)
+	for i := 0; i < 6; i++ {
+		leftovers = append(leftovers, runlog.Leftover{
+			RunID: fmt.Sprintf("20260830T10%02d00Z-%d", i+10, i),
+			Path:  filepath.Join(logDir, fmt.Sprintf("20260830T10%02d00Z-%d.jsonl", i+10, i)),
+			PIDs:  []int{4100 + i},
+		})
+	}
+	originalLeftovers := runlogLeftovers
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) { return leftovers, nil }
+	t.Cleanup(func() { runlogLeftovers = originalLeftovers })
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	var want strings.Builder
+	for _, leftover := range leftovers[:5] {
+		fmt.Fprintf(&want, "pi-worker: warning: an earlier run left processes running: %s (pids %d)\n", leftover.Path, leftover.PIDs[0])
+	}
+	fmt.Fprintf(&want, "pi-worker: warning: 1 more runs left processes running in %s\n", logDir)
+	if stderr != want.String() {
+		t.Fatalf("stderr = %q, want %q", stderr, want.String())
+	}
+}
+
+// TestRunWarnsCapsLeftoverPidsAtTenEndToEnd drives a run with the
+// leftover-process scan scripted to one run carrying fourteen pids and
+// asserts the warning line lists ten, comma-separated, and summarizes
+// the rest inside the same parentheses, verbatim.
+func TestRunWarnsCapsLeftoverPidsAtTenEndToEnd(t *testing.T) {
+	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+	recordPath := filepath.Join(logDir, "20260830T101500Z-1.jsonl")
+	pids := make([]int, 14)
+	for i := range pids {
+		pids[i] = i + 1
+	}
+	originalLeftovers := runlogLeftovers
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) {
+		return []runlog.Leftover{{RunID: "20260830T101500Z-1", Path: recordPath, PIDs: pids}}, nil
+	}
+	t.Cleanup(func() { runlogLeftovers = originalLeftovers })
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	want := "pi-worker: warning: an earlier run left processes running: " + recordPath + " (pids 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 4 more)\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+}
+
+// TestRunLeftoverCheckFailureWarnsAndContinues drives a run with the
+// leftover-process scan scripted to fail and asserts the exit code is
+// unchanged, the failure is one warning in the existing style, and the
+// run still proceeds to start its record: a records problem never
+// fails a run.
+func TestRunLeftoverCheckFailureWarnsAndContinues(t *testing.T) {
+	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+	originalLeftovers := runlogLeftovers
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) { return nil, errors.New("process table unreadable") }
+	t.Cleanup(func() { runlogLeftovers = originalLeftovers })
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "pi-worker: warning: leftover-process check unavailable: process table unreadable\n" {
+		t.Fatalf("stderr = %q, want the check-unavailable warning", stderr)
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read record dir: %v", err)
+	}
+	// Only *.jsonl files are records; the interrupted-run scan's
+	// one-shot marker (reported.json) shares the directory and must be
+	// filtered out, exactly as the reader filters it.
+	files := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			files++
+		}
+	}
+	if files != 1 {
+		t.Fatalf("record files = %d, want exactly one: the run must still start its record", files)
+	}
+}
+
+// TestRunSilentWithNoLeftoversEndToEnd drives a run with the
+// leftover-process scan scripted to no runs at all and asserts nothing
+// is printed: no leftovers is no warning.
+func TestRunSilentWithNoLeftoversEndToEnd(t *testing.T) {
+	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+	originalLeftovers := runlogLeftovers
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) { return nil, nil }
+	t.Cleanup(func() { runlogLeftovers = originalLeftovers })
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want no warning", stderr)
+	}
+}
+
+// TestRunSilentAboutLeftoverWithNoPidsEndToEnd drives a run with the
+// leftover-process scan scripted to a run carrying no pids — a shape
+// the reader never returns, but a scripted fake might — and asserts
+// nothing is printed: a run with no pids is skipped silently, never
+// printed with an empty list.
+func TestRunSilentAboutLeftoverWithNoPidsEndToEnd(t *testing.T) {
+	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+	originalLeftovers := runlogLeftovers
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) {
+		return []runlog.Leftover{{RunID: "20260830T101500Z-1", Path: filepath.Join(logDir, "20260830T101500Z-1.jsonl")}}, nil
+	}
+	t.Cleanup(func() { runlogLeftovers = originalLeftovers })
+
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want no warning", stderr)
 	}
 }
