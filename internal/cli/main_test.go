@@ -1785,6 +1785,79 @@ func TestRunTimedOutContextHumanPrintsOutcomeLineLast(t *testing.T) {
 	}
 }
 
+func TestRunTimedOutHumanPrintsPartialTextOnStdout(t *testing.T) {
+	// A run killed mid-answer: the worker result carries the salvaged
+	// text, the error line still goes to stderr exactly as before, and
+	// the salvaged text is printed on stdout in full, marked
+	// (incomplete) so it cannot read as a finished answer. The context
+	// is already expired and the fake worker ignores it, so the
+	// controller reports a real timed-out run while the scripted result
+	// — the only way PartialExplanation can reach the renderer —
+	// survives.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	fake := installFakeWorker(t, pi.WorkerResult{
+		Model:              "acme/m-1",
+		Status:             pi.StatusTimedOut,
+		Error:              "timed out",
+		PartialExplanation: "partial text from the interrupted run",
+	})
+	fake.ignoreContext = true
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if code != 7 {
+		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
+	}
+	requireChangesTail(t, stdout, "worker 1 (incomplete): partial text from the interrupted run\n")
+	if !strings.Contains(stderr, "pi-worker: worker 1: timed out\n") {
+		t.Fatalf("stderr = %q, want the timed-out error line", stderr)
+	}
+}
+
+func TestRunTimedOutHumanPrintsNothingExtraWhenPartialTextEmpty(t *testing.T) {
+	// A timed-out worker with no salvaged text prints nothing extra:
+	// stdout stays exactly the change-manifest line followed by the
+	// final outcome line, and the error line still names the timeout.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"})
+	fake.ignoreContext = true
+	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if code != 7 {
+		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=timeout" {
+		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=timeout", stdout)
+	}
+	if strings.Contains(stdout, "(incomplete)") {
+		t.Fatalf("human stdout = %q, want no (incomplete) line", stdout)
+	}
+	if !strings.Contains(stderr, "pi-worker: worker 1: timed out\n") {
+		t.Fatalf("stderr = %q, want the timed-out error line", stderr)
+	}
+}
+
+func TestRunCompletedHumanOutputUnchanged(t *testing.T) {
+	// A completed worker's output is byte-identical to before the
+	// salvage renderer: only the plain explanation line, even when the
+	// result also carries partial text — which the worker never emits
+	// on completion, but the renderer must not depend on that guard.
+	installFakeWorker(t, pi.WorkerResult{
+		Model:              "acme/m-1",
+		Status:             pi.StatusCompleted,
+		Explanation:        "All done.",
+		PartialExplanation: "must never print",
+	})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix the bug"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	requireChangesTail(t, stdout, "worker 1: All done.\n")
+	if strings.Contains(stdout, "(incomplete)") {
+		t.Fatalf("stdout = %q, want no (incomplete) line for a completed worker", stdout)
+	}
+}
+
 func TestRunCancelledContextHumanPrintsOutcomeLineLast(t *testing.T) {
 	// The cancelled worker's message goes to stderr; stdout is exactly
 	// the change-manifest line followed by the final outcome line, and
