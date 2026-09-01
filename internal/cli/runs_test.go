@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -677,6 +678,49 @@ func TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected(t *testing.T) {
 	}
 }
 
+// TestRunsPruneJSONWithoutYesRefusesBeforeDirectoryResolved asserts
+// the --json refusal does not depend on the records directory at all:
+// with --json and no --yes, prune refuses with exit 2 before the
+// directory is even resolved, so a resolver failure or an unreadable
+// directory cannot turn the refusal into an exit 9. The refusal
+// depends on nothing but the flags.
+func TestRunsPruneJSONWithoutYesRefusesBeforeDirectoryResolved(t *testing.T) {
+	t.Run("resolver failure", func(t *testing.T) {
+		original := runlogDir
+		runlogDir = func() (string, error) { return "", fmt.Errorf("config unavailable") }
+		t.Cleanup(func() { runlogDir = original })
+
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+		if code != 2 || stdout != "" {
+			t.Fatalf("resolver failure with --json and no --yes = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+
+	t.Run("unreadable records directory", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("permission bits are not enforced on Windows")
+		}
+		dir := t.TempDir()
+		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+		if err := os.Chmod(dir, 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		withRunlogDir(t, dir)
+
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+		if code != 2 || stdout != "" {
+			t.Fatalf("unreadable dir with --json and no --yes = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+}
+
 // TestRunsPruneKeepZeroYesSparesMarkerAndTempStages asserts the marker
 // file and a left-behind .reported.json.tmp-* stage survive a --keep 0
 // --yes prune unchanged: neither is a record, and the prune must not
@@ -1107,6 +1151,230 @@ func TestRunsPruneCancelledBeforeStartDeletesNothingAndExits9(t *testing.T) {
 			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
 		}
 	})
+}
+
+// promptRecorder records stderr writes and closes a channel the
+// moment the question line has been written in full, so a test can
+// cancel a blocked prompt exactly when it is on screen — never after
+// a sleep. The recorded bytes are read back only after the command
+// has returned, when the channel the command's exit travels on has
+// already ordered the writes.
+type promptRecorder struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	question string
+	seen     chan struct{}
+	reported bool
+}
+
+func (p *promptRecorder) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.buf.Write(b)
+	if !p.reported && strings.Contains(p.buf.String(), p.question) {
+		p.reported = true
+		close(p.seen)
+	}
+	return len(b), nil
+}
+
+func (p *promptRecorder) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buf.String()
+}
+
+// TestRunsPruneCancelledWhilePromptBlockedExits9AndDeletesNothing
+// pins the prompt's interruptibility: stdin is a pipe whose write end
+// never receives a byte, the command blocks on the question, and the
+// test cancels the context the moment the question has been written.
+// The cancelled context wins over the never-arriving answer: exit 9,
+// the verbatim cancelled message on stderr, nothing on stdout, and
+// the record still on disk. The reader goroutine stays parked on the
+// pipe for the rest of the test process's life — the accepted ceiling
+// — and the pipe's write end is closed in cleanup so the goroutine
+// can leave once the test is done with it.
+func TestRunsPruneCancelledWhilePromptBlockedExits9AndDeletesNothing(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	withStdinIsTerminal(t, true)
+
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	recorder := &promptRecorder{question: "delete 1 run records? [y/N] ", seen: make(chan struct{})}
+	var stdout bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- mainWithContext(ctx, []string{"runs", "prune", "--keep", "0"}, pr, &stdout, recorder)
+	}()
+
+	select {
+	case <-recorder.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the deletion question never appeared on stderr")
+	}
+	cancel()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("prune did not stop after the cancellation while the prompt was blocked")
+	}
+	if code != 9 {
+		t.Fatalf("exit = %d, want 9; stdout = %q; stderr = %q", code, stdout.String(), recorder.String())
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want nothing", stdout.String())
+	}
+	const wantStderr = "RUN ID                STARTED                 OUTCOME      TASKS    WORKSPACE\n" +
+		"20260830T101500Z-1    2026-08-30T10:15:00Z    completed    1        /ws-a\n" +
+		"delete 1 run records? [y/N] " +
+		"pi-worker: runs prune cancelled\n"
+	if recorder.String() != wantStderr {
+		t.Fatalf("stderr = %q, want %q", recorder.String(), wantStderr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+	}
+}
+
+// TestRunsPruneCancelledWithEmptySelectionExits9 asserts a prune
+// whose context is cancelled and whose selection is empty exits 9,
+// never 0: the listing may take a while, the person cancels during
+// it, and the empty selection must not turn the cancelled command
+// into a finished one. Both report arms are pinned — the human
+// "nothing to prune" line must not appear, and the --json arm still
+// renders the empty document, the way the cancelled path always
+// reports what was deleted.
+func TestRunsPruneCancelledWithEmptySelectionExits9(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("human", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 9 || stdout != "" {
+			t.Fatalf("cancelled prune with empty selection = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+
+	t.Run("--json", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 9 {
+			t.Fatalf("cancelled prune --json with empty selection = (%d, %q, %q), want exit 9", code, stdout, stderr)
+		}
+		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[]}\n"; stdout != want {
+			t.Fatalf("stdout = %q, want the empty document %q", stdout, want)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+}
+
+// cancelAfterDeletedLine cancels the context the moment the deleted
+// line for targetID has been written in full, so a test can land a
+// cancellation exactly after the final delete — deterministic, no
+// sleeps. The buffer is written only by the goroutine running the
+// command, which is the same goroutine calling cancel, so no locking
+// is needed.
+type cancelAfterDeletedLine struct {
+	buf      bytes.Buffer
+	targetID string
+	cancel   context.CancelFunc
+}
+
+func (c *cancelAfterDeletedLine) Write(b []byte) (int, error) {
+	c.buf.Write(b)
+	if c.targetID != "" && strings.Contains(c.buf.String(), "deleted "+c.targetID+"\n") {
+		c.targetID = ""
+		c.cancel()
+	}
+	return len(b), nil
+}
+
+// TestRunsPruneCancelledAfterFinalDeleteExits9AndReportsDeleted
+// asserts a cancellation that lands after the last delete still exits
+// 9 and never claims the prune finished: the loop's context check
+// sits before each delete, so the command needs one more check after
+// the loop. The deleted lines are already on stdout — each record
+// reported as it went — and cancelledPrune adds the verbatim message
+// on stderr; the summary line must not appear.
+func TestRunsPruneCancelledAfterFinalDeleteExits9AndReportsDeleted(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	oldPath := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	newestPath := writeListRecord(t, dir, "20260830T103000Z-3", deadPID, "2026-08-30T10:30:00Z", "/ws-c", 1, true, "completed", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stderr bytes.Buffer
+	// --keep 0 selects both records; deleting oldest first, the newest
+	// record's deleted line is the last one written, so the cancel
+	// lands after the final delete.
+	stdout := &cancelAfterDeletedLine{targetID: "20260830T103000Z-3", cancel: cancel}
+	code := mainWithContext(ctx, []string{"runs", "prune", "--keep", "0", "--yes"}, strings.NewReader(""), stdout, &stderr)
+	if code != 9 {
+		t.Fatalf("prune cancelled after the final delete = (%d, %q, %q), want exit 9", code, stdout.buf.String(), stderr.String())
+	}
+	if want := "deleted 20260830T101500Z-1\ndeleted 20260830T103000Z-3\n"; stdout.buf.String() != want {
+		t.Fatalf("stdout = %q, want the deleted lines %q and no summary", stdout.buf.String(), want)
+	}
+	if want := "pi-worker: runs prune cancelled\n"; stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
+	}
+	for _, gone := range []string{oldPath, newestPath} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("record %s still exists: %v", gone, err)
+		}
+	}
+}
+
+// cancelledButDoneSilentContext is the one context combination that
+// reaches the prompt's answer path with a cancelled context: Err
+// reports the cancellation while Done never closes, so the select
+// cannot see the cancellation and the answer is taken. The check
+// after the answer reads Err, which is the only thing that can catch
+// a cancellation this context reports — pinning that check
+// deterministically, where a real cancelled context would leave the
+// select to flip a coin between two ready cases.
+type cancelledButDoneSilentContext struct{}
+
+func (cancelledButDoneSilentContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (cancelledButDoneSilentContext) Done() <-chan struct{}       { return nil }
+func (cancelledButDoneSilentContext) Err() error                  { return context.Canceled }
+func (cancelledButDoneSilentContext) Value(any) any               { return nil }
+
+// TestRunsPruneDecliningAnswerAfterCancellationExits9 asserts the
+// prompt's answer path re-reads the context before reporting success:
+// a declining answer taken while the context reports cancelled must
+// end in the cancelled path — nothing deleted, the verbatim message
+// on stderr, exit 9 — never in a finished "nothing deleted".
+func TestRunsPruneDecliningAnswerAfterCancellationExits9(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	withStdinIsTerminal(t, true)
+
+	code, stdout, stderr := runCLIWithContext(t, cancelledButDoneSilentContext{}, []string{"runs", "prune", "--keep", "0"}, "n\n")
+	if code != 9 || stdout != "" {
+		t.Fatalf("declining answer with a cancelled context = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+	}
+	if want := "pi-worker: runs prune cancelled\n"; !strings.HasSuffix(stderr, want) {
+		t.Fatalf("stderr = %q, want it to end with %q", stderr, want)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("record %s vanished: %v", path, err)
+	}
 }
 
 // TestRunsPruneResolverAndReadFailuresExit9 asserts both failure

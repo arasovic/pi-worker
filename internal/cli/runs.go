@@ -141,6 +141,22 @@ func renderRunTable(w io.Writer, runs []runlog.Run) {
 // refers to, and re-asks the grace-window question of unknown
 // records, immediately before the removal.
 func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader, stdout, stderr io.Writer) int {
+	// --json without --yes refuses up front, before anything else and
+	// before the records directory is even resolved: a --json caller
+	// is never handed a prompt, and the promise "always with --json
+	// without --yes, prune refuses, deletes nothing, and exits 2"
+	// must hold whatever the records directory holds — a missing or
+	// unreadable directory must not win the exit code. The refusal
+	// depends on nothing but the flags, so it comes before
+	// everything, not just before the nothing-selected shortcut: an
+	// empty selection can no longer turn a refusal into a success
+	// either, and neither can a directory that cannot be resolved or
+	// read.
+	if !opts.yes && opts.json {
+		fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
+		return 2
+	}
+
 	dir, err := runlogDir()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: determine records directory: %v\n", err)
@@ -155,19 +171,19 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		runs = []runlog.Run{}
 	}
 
-	// The first --keep entries are kept whatever their outcome and are
-	// never candidates. Every later entry is a candidate; a candidate
-	// whose run is still running is kept and reported separately — a run
-	// still writing to its record must never have that record pulled out
-	// from under it. A candidate too unreadable to classify is spared
-	// the same way while its file is fresh: a record modified within the
-	// grace window may be in the middle of being written. The same
-	// freshness question is asked a second time, at the moment of each
-	// delete, because the prompt below can wait on a person: a record
-	// stale when listed may be being written now — see removeRunRecord.
-	// Every other
-	// candidate is deleted, stale unknown ones included: an unreadable
-	// record is exactly the junk this command exists to clear.
+	// The first --keep entries are kept whatever their outcome and
+	// are never candidates. Every later entry is a candidate; a
+	// candidate whose run is still running is kept and reported
+	// separately — a run still writing to its record must never have
+	// that record pulled out from under it. A candidate too
+	// unreadable to classify is spared the same way while its file is
+	// fresh: a record modified within the grace window may be in the
+	// middle of being written. The same freshness question is asked a
+	// second time, at the moment of each delete, because the prompt
+	// below can wait on a person: a record stale when listed may be
+	// being written now — see removeRunRecord. Every other candidate
+	// is deleted, stale unknown ones included: an unreadable record
+	// is exactly the junk this command exists to clear.
 	keptNewest := opts.keep
 	if keptNewest > len(runs) {
 		keptNewest = len(runs)
@@ -193,22 +209,19 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		keptRunningIDs = append(keptRunningIDs, run.RunID)
 	}
 
-	// --json without --yes refuses up front, before the
-	// nothing-selected shortcut: a --json caller is never handed a
-	// prompt, and the promise "always with --json without --yes, prune
-	// refuses, deletes nothing, and exits 2" must hold whatever the
-	// selection is — an empty selection must not turn a refusal into a
-	// success.
-	if !opts.yes && opts.json {
-		fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
-		return 2
-	}
-
 	// Nothing selected is not an error: a missing or empty records
 	// directory lists no runs, and every later record may belong to a
-	// still-running run. There is nothing to ask about, so neither --yes
-	// nor a terminal is required.
+	// still-running run. There is nothing to ask about, so neither
+	// --yes nor a terminal is required. But a context cancelled while
+	// the listing ran must not be reported as a finished prune: the
+	// empty selection still takes the cancelled path — the verbatim
+	// message on stderr and exit 9, with nothing claimed deleted, and
+	// the --json arm still rendering the empty document the way the
+	// cancelled path always reports what was deleted.
 	if len(toDelete) == 0 {
+		if parent.Err() != nil {
+			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+		}
 		if opts.json {
 			return renderPruneDocument(stdout, stderr, nil, keptRunningIDs, keptNewest)
 		}
@@ -256,35 +269,63 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 			fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
 			return 2
 		}
-		// The prompt shows exactly what it is about to delete before it
-		// asks, and both the listing and the question go to stderr: a
-		// person who redirected stdout must still see the question they
-		// are expected to answer.
+		// The prompt shows exactly what it is about to delete before
+		// it asks, and both the listing and the question go to stderr:
+		// a person who redirected stdout must still see the question
+		// they are expected to answer.
 		renderRunTable(stderr, toDelete)
 		fmt.Fprintf(stderr, "delete %d run records? [y/N] ", len(toDelete))
-		answer, err := bufio.NewReader(stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			// An unreadable stdin counts as no answer.
-			answer = ""
-		}
-		answer = strings.ToLower(strings.TrimSpace(answer))
-		if answer != "y" && answer != "yes" {
-			// Any other answer — n, an empty line, an EOF — deletes
-			// nothing: the user got the outcome they asked for.
-			fmt.Fprintln(stdout, "nothing deleted")
-			return 0
+		// The answer is read on its own goroutine, and the command
+		// takes whichever arrives first — the answer or a cancelled
+		// context — so a Ctrl-C while the question is on screen ends
+		// the prune through the same cancelled path as everywhere
+		// else: nothing deleted, the verbatim cancelled message on
+		// stderr, exit 9. One limit is accepted by design, in the
+		// style of the limits in internal/runlog/interrupted.go:
+		//
+		//   - The reader goroutine stays blocked on stdin for the
+		//     rest of the process's life. Nothing can unblock a read
+		//     that is already in the kernel, and the process is
+		//     exiting anyway; the goroutine holds nothing the command
+		//     still needs — the answer channel is buffered so the
+		//     send never blocks, and the command has already
+		//     returned.
+		answerCh := make(chan string, 1)
+		go func() {
+			answer, err := bufio.NewReader(stdin).ReadString('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				// An unreadable stdin counts as no answer.
+				answer = ""
+			}
+			answerCh <- strings.ToLower(strings.TrimSpace(answer))
+		}()
+		select {
+		case <-parent.Done():
+			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+		case answer := <-answerCh:
+			if answer != "y" && answer != "yes" {
+				// Any other answer — n, an empty line, an EOF —
+				// deletes nothing: the user got the outcome they
+				// asked for. A context already cancelled when the
+				// answer is taken still ends in the cancelled path:
+				// a command that was told to stop never reports a
+				// finished prune.
+				if parent.Err() != nil {
+					return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+				}
+				fmt.Fprintln(stdout, "nothing deleted")
+				return 0
+			}
 		}
 	}
 
-	// The context is read immediately after the prompt returned (or the
-	// --yes shortcut past it) and again before every individual delete
-	// below: a Ctrl-C that lands before the first delete stops the prune
-	// before anything is removed, and one that lands mid-prune stops the
-	// deletes where it landed. The prompt itself stays uninterruptible
-	// while it blocks on stdin — interrupting that read needs a
-	// goroutine and a select over the context and the reader, which is
-	// out of scope — so these checks on either side of it are where a
-	// cancellation lands.
+	// The context is read immediately after the prompt returned (or
+	// the --yes shortcut past it) and again before every individual
+	// delete below: a Ctrl-C that lands before the first delete stops
+	// the prune before anything is removed, and one that lands
+	// mid-prune stops the deletes where it landed. The prompt itself
+	// is covered by the select above, which takes a cancelled context
+	// while the question is on screen.
 	if parent.Err() != nil {
 		return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
 	}
@@ -329,6 +370,16 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		if !opts.json {
 			fmt.Fprintf(stdout, "deleted %s\n", run.RunID)
 		}
+	}
+
+	// A cancellation that lands after the last delete must not report
+	// the prune as finished: nothing is deleted after it, what was
+	// already deleted is already reported — the human mode printed one
+	// deleted line per record as it went, and the --json document
+	// carries the ids — and the cancelled path adds the verbatim
+	// message on stderr and exit 9.
+	if parent.Err() != nil {
+		return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptNewest)
 	}
 
 	if opts.json {
