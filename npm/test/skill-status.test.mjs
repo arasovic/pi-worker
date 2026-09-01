@@ -68,12 +68,61 @@ test("reports unavailable atomically and keeps informational findings out of exi
   assert.match(stderr, /external skill inspection unavailable/);
 });
 
+test("parses a stale document and names both versions and the recovery line", async () => {
+  const document = nativeDocument("stale");
+  document.installerVersion = "0.5.0";
+  document.programVersion = "0.6.0";
+  let stdout = "";
+  let stderr = "";
+  const code = await runSkillStatus({
+    binary: "/native/pi-worker",
+    json: false,
+    runCaptured: async () => ({
+      code: 3,
+      signal: null,
+      stdout: `${JSON.stringify(document)}\n`,
+      stderr: "",
+    }),
+    inspect: async () => ({ state: "performed", targets: [] }),
+    writeStdout: (value) => { stdout += value; },
+    writeStderr: (value) => { stderr += value; },
+  });
+
+  assert.equal(code, 3);
+  assert.equal(stderr, "");
+  assert.match(stdout, /status: stale/);
+  assert.match(stdout, /installed by 0\.5\.0, running 0\.6\.0/);
+  assert.match(stdout, /recovery: npm install -g --foreground-scripts pi-worker/);
+});
+
+test("parses a document without the version fields exactly as before", async () => {
+  let stdout = "";
+  const code = await runSkillStatus({
+    binary: "/native/pi-worker",
+    json: false,
+    runCaptured: async () => ({
+      code: 0,
+      signal: null,
+      stdout: `${JSON.stringify(nativeDocument())}\n`,
+      stderr: "",
+    }),
+    inspect: async () => ({ state: "unavailable", targets: [] }),
+    writeStdout: (value) => { stdout += value; },
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout, /status: verified/);
+  assert.doesNotMatch(stdout, /stale: installed by/);
+});
+
 test("rejects unknown or malformed fields in the native status document", async (t) => {
   const cases = [
     { ...nativeDocument(), unexpected: true },
     { ...nativeDocument(), status: "other" },
     { ...nativeDocument(), recovery: [7] },
     { ...nativeDocument(), externalInspection: { state: "performed", targets: null } },
+    { ...nativeDocument(), installerVersion: 7 },
+    { ...nativeDocument(), programVersion: ["0.6.0"] },
     {
       ...nativeDocument(),
       affectedTargets: [{ path: "/affected", state: "drifted", recovery: [], extra: true }],

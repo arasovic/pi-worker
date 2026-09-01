@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/arasovic/pi-worker/internal/buildinfo"
 )
 
 const SchemaVersion = 1
@@ -62,6 +64,7 @@ const (
 	StatusDrifted  InspectionStatus = "drifted"
 	StatusSkipped  InspectionStatus = "skipped"
 	StatusFailed   InspectionStatus = "failed"
+	StatusStale    InspectionStatus = "stale"
 )
 
 type FileHash struct {
@@ -121,6 +124,8 @@ type Inspection struct {
 	SchemaVersion      int                `json:"schemaVersion"`
 	ReceiptPath        string             `json:"receiptPath"`
 	Status             InspectionStatus   `json:"status"`
+	InstallerVersion   string             `json:"installerVersion,omitempty"`
+	ProgramVersion     string             `json:"programVersion,omitempty"`
 	VerifiedTargets    []string           `json:"verifiedTargets"`
 	TrackedTargets     []string           `json:"trackedTargets"`
 	AffectedTargets    []AffectedTarget   `json:"affectedTargets"`
@@ -172,15 +177,26 @@ func Inspect(path string) (Inspection, error) {
 			status = StatusFailed
 		}
 	}
+	current := buildinfo.Current()
+	// An intact tree is stale when the receipt names an installer version
+	// different from the running program's: the files match the older
+	// receipt, not necessarily the skill this program ships. A source build
+	// names itself "dev", which is not a release identity, so it cannot
+	// claim the skill is older than the program and the check does not run.
+	if status == StatusVerified && current.Version != "dev" && receipt.InstallerVersion != current.Version {
+		status = StatusStale
+	}
 
 	insp := Inspection{
-		SchemaVersion:   SchemaVersion,
-		ReceiptPath:     path,
-		Status:          status,
-		VerifiedTargets: append([]string{}, verifiedTargets...),
-		TrackedTargets:  trackedTargetPaths(receipt.Targets),
-		AffectedTargets: cloneAffectedTargets(receipt.AffectedTargets),
-		Recovery:        []string{},
+		SchemaVersion:    SchemaVersion,
+		ReceiptPath:      path,
+		Status:           status,
+		InstallerVersion: receipt.InstallerVersion,
+		ProgramVersion:   current.Version,
+		VerifiedTargets:  append([]string{}, verifiedTargets...),
+		TrackedTargets:   trackedTargetPaths(receipt.Targets),
+		AffectedTargets:  cloneAffectedTargets(receipt.AffectedTargets),
+		Recovery:         []string{},
 		ExternalInspection: ExternalInspection{
 			State:   ExternalInspectionUnavailable,
 			Targets: []ExternalTarget{},
@@ -189,6 +205,8 @@ func Inspect(path string) (Inspection, error) {
 	sort.Strings(insp.VerifiedTargets)
 
 	switch {
+	case status == StatusStale:
+		insp.Recovery = []string{SafeRecoveryCommand}
 	case (receipt.Outcome == OutcomeFailed || receipt.Outcome == OutcomeSkipped) && isExactSafeRecovery(receipt.Recovery):
 		insp.Recovery = []string{SafeRecoveryCommand}
 	case receipt.Outcome != OutcomeFailed && receipt.Outcome != OutcomeSkipped && len(missingTargets) > 0:

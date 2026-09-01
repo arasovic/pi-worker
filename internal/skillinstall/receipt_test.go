@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arasovic/pi-worker/internal/buildinfo"
 )
 
 func TestLoadRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
@@ -209,6 +211,7 @@ func TestLoadAcceptsConflictingBlockedStateWithGlobalRecovery(t *testing.T) {
 }
 
 func TestInspectVerifiesAndClassifiesTargets(t *testing.T) {
+	withBuildVersion(t, "1")
 	root := t.TempDir()
 	target := filepath.Join(root, "canonical")
 	writeFile(t, filepath.Join(target, "a.txt"), "one")
@@ -1140,6 +1143,159 @@ func TestInspectExposesRecoveryForValidUnmanagedAndDriftedTargets(t *testing.T) 
 			t.Fatalf("recovery = %v, want empty", inspection.Recovery)
 		}
 	})
+}
+
+func TestInspectReportsStaleWhenInstallerVersionDiffers(t *testing.T) {
+	withBuildVersion(t, "0.6.0")
+	root := t.TempDir()
+	target := filepath.Join(root, "canonical")
+	writeFile(t, filepath.Join(target, "a.txt"), "one")
+	writeFile(t, filepath.Join(target, IdentityFile), IdentityContent)
+	writeFile(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+
+	receipt := Receipt{
+		SchemaVersion:    SchemaVersion,
+		InstallerVersion: "0.5.0",
+		SkillsVersion:    PinnedSkillsVersion,
+		Outcome:          OutcomeInstalled,
+		Targets: []Target{{
+			Path: target,
+			Kind: targetKindCanonical,
+			Files: []FileHash{
+				{Path: "a.txt", SHA256: hashString("one")},
+				{Path: IdentityFile, SHA256: hashString(IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString("---\nname: pi-worker\n---\n")},
+			},
+		}},
+	}
+	inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	if err != nil {
+		t.Fatalf("Inspect() = %v, want nil", err)
+	}
+	if inspection.Status != StatusStale {
+		t.Fatalf("status = %q, want %q", inspection.Status, StatusStale)
+	}
+	if inspection.InstallerVersion != "0.5.0" || inspection.ProgramVersion != "0.6.0" {
+		t.Fatalf("versions = (%q, %q), want (0.5.0, 0.6.0)", inspection.InstallerVersion, inspection.ProgramVersion)
+	}
+	if !equalStringSlice(inspection.Recovery, []string{SafeRecoveryCommand}) {
+		t.Fatalf("recovery = %v, want safe recovery", inspection.Recovery)
+	}
+	if !equalStringSlice(inspection.VerifiedTargets, []string{filepath.Clean(target)}) {
+		t.Fatalf("verified targets = %v, want intact target", inspection.VerifiedTargets)
+	}
+}
+
+func TestInspectStaysVerifiedWhenInstallerVersionMatches(t *testing.T) {
+	withBuildVersion(t, "0.5.0")
+	root := t.TempDir()
+	target := filepath.Join(root, "canonical")
+	writeFile(t, filepath.Join(target, "a.txt"), "one")
+	writeFile(t, filepath.Join(target, IdentityFile), IdentityContent)
+	writeFile(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+
+	receipt := Receipt{
+		SchemaVersion:    SchemaVersion,
+		InstallerVersion: "0.5.0",
+		SkillsVersion:    PinnedSkillsVersion,
+		Outcome:          OutcomeInstalled,
+		Targets: []Target{{
+			Path: target,
+			Kind: targetKindCanonical,
+			Files: []FileHash{
+				{Path: "a.txt", SHA256: hashString("one")},
+				{Path: IdentityFile, SHA256: hashString(IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString("---\nname: pi-worker\n---\n")},
+			},
+		}},
+	}
+	inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	if err != nil {
+		t.Fatalf("Inspect() = %v, want nil", err)
+	}
+	if inspection.Status != StatusVerified {
+		t.Fatalf("status = %q, want %q", inspection.Status, StatusVerified)
+	}
+}
+
+func TestInspectKeepsExistingStatusWhenVersionsDiffer(t *testing.T) {
+	withBuildVersion(t, "0.6.0")
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	writeFile(t, filepath.Join(target, "a.txt"), "one")
+
+	t.Run("missing", func(t *testing.T) {
+		receipt := validReceipt(filepath.Join(root, "missing"), OutcomeInstalled)
+		receipt.InstallerVersion = "0.5.0"
+		inspection, err := Inspect(writeReceiptFromReceipt(t, t.TempDir(), receipt))
+		if err != nil {
+			t.Fatalf("Inspect() = %v, want nil", err)
+		}
+		if inspection.Status != StatusMissing {
+			t.Fatalf("status = %q, want %q", inspection.Status, StatusMissing)
+		}
+	})
+
+	t.Run("drifted", func(t *testing.T) {
+		receipt := validReceipt(target, OutcomeInstalled)
+		receipt.InstallerVersion = "0.5.0"
+		receipt.Targets[0].Files = []FileHash{{Path: "a.txt", SHA256: hashString("different")}}
+		inspection, err := Inspect(writeReceiptFromReceipt(t, t.TempDir(), receipt))
+		if err != nil {
+			t.Fatalf("Inspect() = %v, want nil", err)
+		}
+		if inspection.Status != StatusDrifted {
+			t.Fatalf("status = %q, want %q", inspection.Status, StatusDrifted)
+		}
+	})
+
+	t.Run("blocked", func(t *testing.T) {
+		receipt := Receipt{
+			SchemaVersion:    SchemaVersion,
+			InstallerVersion: "0.5.0",
+			SkillsVersion:    "1",
+			Outcome:          OutcomeBlocked,
+			Targets:          []Target{{Path: target, Kind: targetKindCanonical, Files: []FileHash{{Path: "a.txt", SHA256: hashString("one")}}}},
+			AffectedTargets:  []AffectedTarget{{Path: target, State: AffectedUnmanaged, Recovery: []string{"Inspect and back up " + target + " before retrying."}}},
+			Recovery:         []string{"npx --yes skills@" + PinnedSkillsVersion + " remove pi-worker -g -y", SafeRecoveryCommand},
+		}
+		inspection, err := Inspect(writeReceiptFromReceipt(t, t.TempDir(), receipt))
+		if err != nil {
+			t.Fatalf("Inspect() = %v, want nil", err)
+		}
+		if inspection.Status != StatusBlocked {
+			t.Fatalf("status = %q, want %q", inspection.Status, StatusBlocked)
+		}
+	})
+
+	t.Run("skipped", func(t *testing.T) {
+		receipt := Receipt{SchemaVersion: SchemaVersion, InstallerVersion: "0.5.0", SkillsVersion: "1", Outcome: OutcomeSkipped, Recovery: []string{SafeRecoveryCommand}}
+		inspection, err := Inspect(writeReceiptFromReceipt(t, t.TempDir(), receipt))
+		if err != nil {
+			t.Fatalf("Inspect() = %v, want nil", err)
+		}
+		if inspection.Status != StatusSkipped {
+			t.Fatalf("status = %q, want %q", inspection.Status, StatusSkipped)
+		}
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		receipt := Receipt{SchemaVersion: SchemaVersion, InstallerVersion: "0.5.0", SkillsVersion: "1", Outcome: OutcomeFailed, Recovery: []string{SafeRecoveryCommand}}
+		inspection, err := Inspect(writeReceiptFromReceipt(t, t.TempDir(), receipt))
+		if err != nil {
+			t.Fatalf("Inspect() = %v, want nil", err)
+		}
+		if inspection.Status != StatusFailed {
+			t.Fatalf("status = %q, want %q", inspection.Status, StatusFailed)
+		}
+	})
+}
+
+func withBuildVersion(t *testing.T, version string) {
+	t.Helper()
+	original := buildinfo.Version
+	buildinfo.Version = version
+	t.Cleanup(func() { buildinfo.Version = original })
 }
 
 func writeReceiptForRecoveryTest(t *testing.T, root, affected string, state AffectedState, targetPath string) string {

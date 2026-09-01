@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 )
@@ -81,177 +80,90 @@ func TestParseRecordRefusesOversizedRecord(t *testing.T) {
 // TestParseRecordRefusesSwappedRecord pins the re-check that
 // readRecordFile performs on the file it opened: a record whose name
 // is replaced between the check and the open is refused even though
-// the replacement is a regular file of the same size. There is no
-// seam between the check and the open to drive the replacement
-// through, so the test races the two on purpose: one goroutine parses
-// the record path in a loop while the test writes a fresh copy of the
-// record and renames it over the path again and again. A swap that
-// lands between the check and the open hands the open a different
-// file from the one the checks described, and only the re-check can
-// refuse it — the decoy has the same size, so the size arms stay
-// silent, and it is a regular file like the record, so the
-// regular-file arms stay silent too. Every other landing place is
-// invisible: a swap before the check or after the open changes
-// nothing the parser can see. The test needs two threads to race
-// against each other; on a machine that can run only one, the swap
-// could never land inside the window and the test skips.
+// the replacement is a regular file of the same size. The seam
+// beforeRecordOpen performs the replacement where it is called,
+// between the check and the open, so the open always meets the
+// decoy on every run. The decoy has the record's exact bytes and
+// size, so the pre-open regular-file and size arms stay silent, and
+// it is a regular file like the record, so the post-open
+// regular-file arm stays silent too — only the same-file re-check
+// can refuse it.
 func TestParseRecordRefusesSwappedRecord(t *testing.T) {
-	if runtime.GOMAXPROCS(0) < 2 {
-		t.Skip("swapping the record under the reader needs a second thread")
-	}
 	dir := t.TempDir()
 	path := writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 1, false, "", "")
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read record: %v", err)
 	}
-
-	stop := make(chan struct{})
-	refused := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if _, err := parseRecord(path); err != nil && err.Error() == "record changed before reading" {
-				close(refused)
-				return
-			}
-		}
-	}()
 
 	// The decoy is a fresh file carrying the record's exact bytes,
-	// renamed over the record path: same size, same content, a
-	// different file.
-	decoy := filepath.Join(dir, "decoy")
-	const swaps = 5000
-	for i := 0; i < swaps; i++ {
-		select {
-		case <-refused:
-			close(stop)
-			<-done
-			return
-		default:
-		}
-		if err := os.WriteFile(decoy, content, 0o600); err != nil {
-			t.Fatalf("write decoy: %v", err)
-		}
-		if err := os.Rename(decoy, path); err != nil {
-			t.Fatalf("rename decoy over record: %v", err)
-		}
-	}
-	close(stop)
-	<-done
-	select {
-	case <-refused:
-	default:
-		t.Fatalf("parseRecord never refused the swapped record in %d swaps", swaps)
-	}
-}
-
-// TestParseRecordRefusesNamedPipeInsteadOfBlocking pins the
-// non-blocking open: a record name replaced by a named pipe with no
-// writer between the check and the open must be refused, and the
-// read must return instead of blocking forever. There is no seam
-// between the check and the open to drive the replacement through,
-// so the test races the two on purpose: two goroutines parse the
-// record path in a loop while the main goroutine plants a pipe with
-// no writer over the record name and puts the record back, again
-// and again. Opening a writerless pipe read-only blocks until a
-// writer appears — which never happens here — unless the open is
-// non-blocking, so the re-check's refusal is the proof that the
-// open returned: the pipe was refused for what it is. A refusal can
-// come from no other landing place — the restored record is the
-// very file the checks described, so a landing that hands the open
-// the regular file reads it fine, and a pipe already in place
-// before the check is refused by the pre-open check. The timeout
-// guard turns a regression — a blocked open, which cannot be
-// interrupted — into a failed test rather than a hung suite.
-func TestParseRecordRefusesNamedPipeInsteadOfBlocking(t *testing.T) {
-	if runtime.GOMAXPROCS(0) < 2 {
-		t.Skip("planting the pipe under the reader needs a second thread")
-	}
-	dir := t.TempDir()
-	path := writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 1, false, "", "")
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read record: %v", err)
-	}
-	// The planted name: a named pipe with no writer.
-	pipe := filepath.Join(dir, "pipe")
-	if err := mkfifo(pipe); err != nil {
-		t.Skipf("cannot create a named pipe on %s: %v", runtime.GOOS, err)
-	}
-	// The storage slot the record is moved into while the pipe holds
-	// the record name: the same file shuttles between the two names,
-	// so nothing is ever created or unlinked inside the loop — only
-	// renamed.
+	// renamed over the record path inside the seam: same size, same
+	// content, a different file, met by the open every time.
 	decoy := filepath.Join(dir, "decoy")
 	if err := os.WriteFile(decoy, content, 0o600); err != nil {
 		t.Fatalf("write decoy: %v", err)
 	}
 
-	refused := make(chan struct{}, 1)
-	stop := make(chan struct{})
-	var readers sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		readers.Add(1)
-		go func() {
-			defer readers.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				if _, err := parseRecord(path); err != nil && err.Error() == "record changed before reading" {
-					select {
-					case refused <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}()
-	}
-	done := make(chan struct{})
-	go func() {
-		readers.Wait()
-		close(done)
-	}()
-
-	// One swap cycle: move the record into the storage slot, plant
-	// the pipe over the record name, retract it, and put the record
-	// back. Only a planting that lands between the reader's check
-	// and its open hands the open the pipe.
-	const swaps = 20000
-	for i := 0; i < swaps; i++ {
-		if err := os.Rename(path, decoy); err != nil {
-			t.Fatalf("move the record aside: %v", err)
-		}
-		if err := os.Rename(pipe, path); err != nil {
-			t.Fatalf("plant the pipe: %v", err)
-		}
-		if err := os.Rename(path, pipe); err != nil {
-			t.Fatalf("retract the pipe: %v", err)
-		}
+	beforeRecordOpen = func() {
 		if err := os.Rename(decoy, path); err != nil {
-			t.Fatalf("restore the record: %v", err)
+			t.Errorf("swap the decoy over the record name: %v", err)
 		}
 	}
-	close(stop)
+	t.Cleanup(func() { beforeRecordOpen = func() {} })
+
+	if _, err := parseRecord(path); err == nil || err.Error() != "record changed before reading" {
+		t.Fatalf("parseRecord(swapped) = %v, want error %q", err, "record changed before reading")
+	}
+}
+
+// TestParseRecordRefusesNamedPipeInsteadOfBlocking pins the
+// non-blocking open and the re-check after it: the seam renames a
+// writerless named pipe over the record name, where it is called,
+// so the open always meets the pipe on every run. The read must
+// return — O_NONBLOCK keeps the open of a writerless pipe from
+// blocking forever — and the re-check must refuse the pipe with the
+// existing error: a pipe is not a regular file. On the platforms
+// whose open carries no non-blocking flag, the open of a planted
+// pipe hangs by the design readRecordFile documents, so there is
+// nothing to assert and the test skips.
+func TestParseRecordRefusesNamedPipeInsteadOfBlocking(t *testing.T) {
+	if openNonBlock == 0 {
+		t.Skip("the record open is blocking on this platform by design; a planted writerless pipe would hang the reader")
+	}
+	dir := t.TempDir()
+	path := writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 1, false, "", "")
+	pipe := filepath.Join(dir, "pipe")
+	if err := mkfifo(pipe); err != nil {
+		t.Skipf("cannot create a named pipe on %s: %v", runtime.GOOS, err)
+	}
+
+	beforeRecordOpen = func() {
+		if err := os.Rename(pipe, path); err != nil {
+			t.Errorf("plant the pipe over the record name: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeRecordOpen = func() {} })
+
+	// The open of a planted writerless pipe cannot be interrupted, so
+	// the read runs in a goroutine and a deadline turns a blocked
+	// open into the named failure below instead of a hung suite.
+	type outcome struct {
+		facts recordFacts
+		err   error
+	}
+	read := make(chan outcome, 1)
+	go func() {
+		facts, err := parseRecord(path)
+		read <- outcome{facts, err}
+	}()
+	var got outcome
 	select {
-	case <-done:
+	case got = <-read:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("parseRecord blocked in the open of a planted named pipe")
 	}
-	select {
-	case <-refused:
-	default:
-		t.Fatalf("parseRecord never refused the planted named pipe in %d swaps", swaps)
+	if got.err == nil || got.err.Error() != "record changed before reading" {
+		t.Fatalf("parseRecord(pipe) = %v, want error %q", got.err, "record changed before reading")
 	}
 }
 

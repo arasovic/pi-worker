@@ -172,8 +172,17 @@ pi-worker skill status [--json]
 - The command is read-only: it never installs, repairs, removes, or adopts a
   skill.
 - `--json` emits one complete `schemaVersion: 1` document with `status`,
-  `receiptPath`, verified and receipt-tracked targets, affected targets,
-  recovery instructions, and `externalInspection`.
+  `receiptPath`, `installerVersion` (the version recorded when the install
+  ran), `programVersion` (the version of the binary producing the document),
+  verified and receipt-tracked targets, affected targets, recovery
+  instructions, and `externalInspection`.
+- `status` is `stale` when every managed file still matches the receipt but
+  the receipt's `installerVersion` differs from the running program's
+  `programVersion`: the skill on disk is the one the older installer shipped,
+  while the program running now ships a newer skill. The document carries
+  both versions, and `recovery` names the safe reinstall command. A source
+  build reports `programVersion` `dev` and never reports `stale`, because a
+  dev build does not name a release it could compare against.
 - `externalInspection.state` is always `performed` or `unavailable`, and
   `targets` is always an array. Standalone native binaries report
   `unavailable`; the npm launcher reports `performed` only after every global
@@ -182,8 +191,9 @@ pi-worker skill status [--json]
 - External findings are informational and never change the receipt-derived
   exit code. Known identity markers are externally managed and may be stale;
   unknown or absent markers require manual inspection.
-- Exit code `0` means all managed targets verified. Completion results for blocked,
-  missing target, drifted target, skipped, and failed outcomes exit `3`.
+- Exit code `0` means the inspection reports `verified`. Missing receipts,
+  missing or drifted targets, blocked, skipped, and failed completions, and
+  `stale` reports exit `3`.
 - A missing receipt file reports `status: "missing"` and exits `3` with a complete JSON document.
 - Malformed or unreadable receipts return code `9`.
 - Usage, cancellation, and internal failures emit no `stdout` document.

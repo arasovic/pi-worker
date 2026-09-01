@@ -170,6 +170,14 @@ type recordFacts struct {
 // is read.
 const maxRecordBytes int64 = 32 << 20
 
+// beforeRecordOpen is called once by readRecordFile between its
+// check of the record name and the open of that name. The product
+// never assigns to it and always runs the no-op below; the variable
+// exists only so a test can replace it with a function that changes
+// the name's target inside that window and pin the re-check after
+// the open.
+var beforeRecordOpen = func() {}
+
 // readRecordFile reads one record file, refusing anything that is not
 // a regular file and anything above maxRecordBytes before it opens or
 // reads the path. The regular-file check comes from os.Lstat, never
@@ -184,7 +192,9 @@ const maxRecordBytes int64 = 32 << 20
 // replaced between the check and the open is thereby refused rather
 // than read: nothing ties the file that was checked to the file that
 // the open returns, so without the re-check the checks describe one
-// file and the read opens another. A record that stays the same file
+// file and the read opens another. The test-only seam
+// beforeRecordOpen runs in that gap, a no-op in the product. A
+// record that stays the same file
 // but grows under the reader needs no further guard — a torn last
 // line is explicitly expected and documented in parseRecord.
 //
@@ -210,6 +220,10 @@ func readRecordFile(path string) (data []byte, err error) {
 	if before.Size() < 0 || before.Size() > maxRecordBytes {
 		return nil, errors.New("record is too large")
 	}
+
+	// The test-only seam: between the checks above and the open
+	// below, a no-op in the product.
+	beforeRecordOpen()
 
 	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
 	if err != nil {

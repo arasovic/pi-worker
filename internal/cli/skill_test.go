@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/skillinstall"
 )
 
@@ -117,6 +118,7 @@ func TestSkillReceiptPathCancellationAfterResolutionDoesNotRenderResult(t *testi
 }
 
 func TestSkillStatusVerifiedOutputsExit0AndCanonicalTarget(t *testing.T) {
+	installBuildVersion(t, "1")
 	root := t.TempDir()
 	target := filepath.Join(root, "canonical")
 	writeFileForSkillTest(t, filepath.Join(target, "one.txt"), "one")
@@ -632,6 +634,75 @@ func TestSkillStatusCancellationAfterInspectionDoesNotRenderResult(t *testing.T)
 	if got.code != 8 || got.stdout != "" || !strings.Contains(got.stderr, "skill cancelled") {
 		t.Fatalf("status cancelled after inspection = (%d, %q, %q)", got.code, got.stdout, got.stderr)
 	}
+}
+
+func TestSkillStatusStaleReportsVersionsAndRecovery(t *testing.T) {
+	installBuildVersion(t, "0.6.0")
+	root := t.TempDir()
+	target := filepath.Join(root, "canonical")
+	writeFileForSkillTest(t, filepath.Join(target, "one.txt"), "one")
+	writeFileForSkillTest(t, filepath.Join(target, skillinstall.IdentityFile), skillinstall.IdentityContent)
+	writeFileForSkillTest(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+
+	receipt := skillinstall.Receipt{
+		SchemaVersion:    skillinstall.SchemaVersion,
+		InstallerVersion: "0.5.0",
+		SkillsVersion:    skillinstall.PinnedSkillsVersion,
+		Outcome:          skillinstall.OutcomeInstalled,
+		Targets: []skillinstall.Target{{
+			Path: target,
+			Kind: "canonical",
+			Files: []skillinstall.FileHash{
+				{Path: "one.txt", SHA256: hashString(t, "one")},
+				{Path: skillinstall.IdentityFile, SHA256: hashString(t, skillinstall.IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString(t, "---\nname: pi-worker\n---\n")},
+			},
+		}},
+	}
+	path := filepath.Join(root, "skill-install.json")
+	writeReceiptForSkillTest(t, path, receipt)
+	installSkillReceiptPath(t, path)
+
+	code, stdout, stderr := runCLI(t, []string{"skill", "status", "--json"}, "")
+	if code != 3 || stderr != "" {
+		t.Fatalf("status stale json = (%d, %q, %q)", code, stdout, stderr)
+	}
+	var got skillinstall.Inspection
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode status JSON %q: %v", stdout, err)
+	}
+	if got.Status != skillinstall.StatusStale {
+		t.Fatalf("status = %s, want %s", got.Status, skillinstall.StatusStale)
+	}
+	if got.InstallerVersion != "0.5.0" || got.ProgramVersion != "0.6.0" {
+		t.Fatalf("versions = (%q, %q), want (0.5.0, 0.6.0)", got.InstallerVersion, got.ProgramVersion)
+	}
+	if !equalStringSlice(got.Recovery, []string{skillinstall.SafeRecoveryCommand}) {
+		t.Fatalf("recovery = %v, want safe recovery", got.Recovery)
+	}
+	var document map[string]any
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode status document %q: %v", stdout, err)
+	}
+	if document["installerVersion"] != "0.5.0" || document["programVersion"] != "0.6.0" {
+		t.Fatalf("document versions = (%v, %v)", document["installerVersion"], document["programVersion"])
+	}
+
+	code, stdout, stderr = runCLI(t, []string{"skill", "status"}, "")
+	if code != 3 || stderr != "" {
+		t.Fatalf("status stale human = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "status: stale") || !strings.Contains(stdout, "0.5.0") ||
+		!strings.Contains(stdout, "0.6.0") || !strings.Contains(stdout, skillinstall.SafeRecoveryCommand) {
+		t.Fatalf("human status = %q", stdout)
+	}
+}
+
+func installBuildVersion(t *testing.T, version string) {
+	t.Helper()
+	original := buildinfo.Version
+	buildinfo.Version = version
+	t.Cleanup(func() { buildinfo.Version = original })
 }
 
 func installSkillReceiptPathFunc(t *testing.T, resolver func() (string, error)) {

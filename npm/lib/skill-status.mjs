@@ -6,10 +6,12 @@ import { runNativeCaptured } from "./native.mjs";
 const CAPTURE_LIMIT = 1024 * 1024;
 const NORMAL_STATUS_CODES = new Set([0, 3]);
 const HUMAN_VALUE_LIMIT = 1024;
-const STATUS_VALUES = new Set(["verified", "missing", "blocked", "drifted", "skipped", "failed"]);
+const STATUS_VALUES = new Set(["verified", "missing", "blocked", "drifted", "skipped", "failed", "stale"]);
+const OPTIONAL_VERSION_FIELDS = new Set(["installerVersion", "programVersion"]);
 const AFFECTED_STATE_VALUES = new Set(["unmanaged", "drifted", "conflicting"]);
 const EXTERNAL_STATE_VALUES = new Set(["performed", "unavailable"]);
 const EXTERNAL_IDENTITY_VALUES = new Set(["current", "legacy", "unknown", "none"]);
+const SAFE_RECOVERY_COMMAND = "npm install -g --foreground-scripts pi-worker";
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -23,6 +25,16 @@ function hasExactKeys(value, keys) {
 
 function isStringArray(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function hasDocumentKeys(value) {
+  const required = [
+    "schemaVersion", "receiptPath", "status", "verifiedTargets", "trackedTargets",
+    "affectedTargets", "recovery", "externalInspection",
+  ];
+  const keys = Object.keys(value);
+  return required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || OPTIONAL_VERSION_FIELDS.has(key));
 }
 
 function isAffectedTarget(value) {
@@ -45,14 +57,13 @@ function isExternalInspection(value) {
 
 function parseNativeStatus(text) {
   const value = JSON.parse(text);
-  if (!isObject(value) || !hasExactKeys(value, [
-    "schemaVersion", "receiptPath", "status", "verifiedTargets", "trackedTargets",
-    "affectedTargets", "recovery", "externalInspection",
-  ]) || value.schemaVersion !== 1 || typeof value.receiptPath !== "string" ||
-    !STATUS_VALUES.has(value.status) || !isStringArray(value.verifiedTargets) ||
-    !isStringArray(value.trackedTargets) || !Array.isArray(value.affectedTargets) ||
-    !value.affectedTargets.every(isAffectedTarget) || !isStringArray(value.recovery) ||
-    !isExternalInspection(value.externalInspection)) {
+  if (!isObject(value) || !hasDocumentKeys(value) || value.schemaVersion !== 1 ||
+    typeof value.receiptPath !== "string" || !STATUS_VALUES.has(value.status) ||
+    !isStringArray(value.verifiedTargets) || !isStringArray(value.trackedTargets) ||
+    !Array.isArray(value.affectedTargets) || !value.affectedTargets.every(isAffectedTarget) ||
+    !isStringArray(value.recovery) || !isExternalInspection(value.externalInspection) ||
+    (value.installerVersion !== undefined && typeof value.installerVersion !== "string") ||
+    (value.programVersion !== undefined && typeof value.programVersion !== "string")) {
     throw new Error("native skill status document is invalid");
   }
   return value;
@@ -82,8 +93,12 @@ function humanValue(value) {
 function renderHuman(document) {
   const lines = [
     `status: ${humanValue(document.status)}`,
-    `receipt-path: ${humanValue(document.receiptPath)}`,
   ];
+  if (document.status === "stale") {
+    lines.push(`stale: installed by ${humanValue(document.installerVersion ?? "")}, ` +
+      `running ${humanValue(document.programVersion ?? "")}; recovery: ${SAFE_RECOVERY_COMMAND}`);
+  }
+  lines.push(`receipt-path: ${humanValue(document.receiptPath)}`);
   if (document.verifiedTargets.length > 0) {
     lines.push("verified-targets:", ...document.verifiedTargets.map((target) => `- ${humanValue(target)}`));
   }
