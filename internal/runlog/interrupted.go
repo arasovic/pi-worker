@@ -63,8 +63,8 @@ type marker struct {
 // records directory that cannot be read returns an error with no
 // records.
 //
-// Three limits are accepted by design, and all resolve toward
-// silence, never toward a wrong accusation:
+// Four limits are accepted by design, and each names its own
+// failure direction:
 //
 //   - A record whose start line carries the writer's creation time is
 //     not fooled by a reused pid: the pair is the identity, and an
@@ -81,6 +81,13 @@ type marker struct {
 //     last write wins and one watermark advance can be lost. The worst
 //     outcome is one duplicate warning — the atomic rename means the
 //     file is never half-written, so there is no lock and no retry.
+//   - A record is parsed and then its process is probed: the two are
+//     not one snapshot, and a run that finishes between them is
+//     reported as interrupted although its record is now complete.
+//     Nothing here locks or re-reads to close the gap — that is the
+//     accepted ceiling of reading a file another process is still
+//     appending to. The cost is one warning line about a run that had
+//     just finished, never an action.
 func Interrupted(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

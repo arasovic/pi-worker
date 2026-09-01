@@ -214,6 +214,86 @@ func TestCreationTimeLookupErrorMeansAlive(t *testing.T) {
 	}
 }
 
+// TestNegativeCreateTimeClassifiesLivePidAsRunning asserts a recorded
+// creation time of -1 is treated exactly like an absent one: no real
+// process has a negative creation time, so the recorded value says
+// nothing about the writer, and the pid alone decides — the pid is
+// alive here, so the run reads as running, never interrupted. A
+// negative value compared against a real creation time would always
+// differ, and a live run would be declared dead.
+func TestNegativeCreateTimeClassifiesLivePidAsRunning(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	withPidCreateTime(t, func(pid int) (int64, error) {
+		t.Fatalf("pidCreateTime consulted for a record with a negative createTime")
+		return 0, nil
+	})
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4242, -1, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
+// TestNonPositiveLookupResultMeansAlive asserts a creation-time lookup
+// that succeeds but reports a value no real process can have — here a
+// zero creation time — resolves toward alive, exactly like a lookup
+// error: the observed value proves nothing, so it must not be compared
+// against the recorded one, where it would always differ and declare a
+// live run dead. Only a positive observed creation time can
+// contradict the record.
+func TestNonPositiveLookupResultMeansAlive(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	withPidCreateTime(t, func(pid int) (int64, error) { return 0, nil })
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4242, 1000, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
+// TestOutOfRangePidNeverReachesTheLookup asserts a recorded pid that
+// does not fit the range the liveness lookup takes is not a pid this
+// reader can answer for: it resolves fail-safe — the same answer as
+// an errored lookup — and is never truncated into the lookup's range,
+// where it would name a different process. 4294967297 is one past the
+// 32-bit range, and int32(4294967297) truncates to 1 — the identity
+// of whatever process holds pid 1 — so the seam fails the test if it
+// is consulted at all. The writer only ever records its own pid,
+// which always fits the range; this guard is for a record corrupted
+// or edited by hand, never one the product wrote.
+func TestOutOfRangePidNeverReachesTheLookup(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) {
+		t.Fatalf("pidAlive consulted with %d for an out-of-range record pid", pid)
+		return false, nil
+	})
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4294967297, 0, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
 // TestLeftoversReportsRunWhoseStartPidWasReused asserts the leftover
 // reader now reports the processes of a run it previously hid forever:
 // the writer's pid was given to an unrelated long-lived process, so

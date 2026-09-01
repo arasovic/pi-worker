@@ -76,6 +76,81 @@ func TestParseRecordRefusesOversizedRecord(t *testing.T) {
 	}
 }
 
+// TestParseRecordRefusesSwappedRecord pins the re-check that
+// readRecordFile performs on the file it opened: a record whose name
+// is replaced between the check and the open is refused even though
+// the replacement is a regular file of the same size. There is no
+// seam between the check and the open to drive the replacement
+// through, so the test races the two on purpose: one goroutine parses
+// the record path in a loop while the test writes a fresh copy of the
+// record and renames it over the path again and again. A swap that
+// lands between the check and the open hands the open a different
+// file from the one the checks described, and only the re-check can
+// refuse it — the decoy has the same size, so the size arms stay
+// silent, and it is a regular file like the record, so the
+// regular-file arms stay silent too. Every other landing place is
+// invisible: a swap before the check or after the open changes
+// nothing the parser can see. The test needs two threads to race
+// against each other; on a machine that can run only one, the swap
+// could never land inside the window and the test skips.
+func TestParseRecordRefusesSwappedRecord(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("swapping the record under the reader needs a second thread")
+	}
+	dir := t.TempDir()
+	path := writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 1, false, "", "")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+
+	stop := make(chan struct{})
+	refused := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := parseRecord(path); err != nil && err.Error() == "record changed before reading" {
+				close(refused)
+				return
+			}
+		}
+	}()
+
+	// The decoy is a fresh file carrying the record's exact bytes,
+	// renamed over the record path: same size, same content, a
+	// different file.
+	decoy := filepath.Join(dir, "decoy")
+	const swaps = 5000
+	for i := 0; i < swaps; i++ {
+		select {
+		case <-refused:
+			close(stop)
+			<-done
+			return
+		default:
+		}
+		if err := os.WriteFile(decoy, content, 0o600); err != nil {
+			t.Fatalf("write decoy: %v", err)
+		}
+		if err := os.Rename(decoy, path); err != nil {
+			t.Fatalf("rename decoy over record: %v", err)
+		}
+	}
+	close(stop)
+	<-done
+	select {
+	case <-refused:
+	default:
+		t.Fatalf("parseRecord never refused the swapped record in %d swaps", swaps)
+	}
+}
+
 // TestLeftoversSkipsWorkerWithNegativeCreateTime asserts a worker
 // line whose creation time is negative is never reportable, even when
 // the scripted process table holds a live process in that group: a

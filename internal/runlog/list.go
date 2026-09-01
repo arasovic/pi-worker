@@ -3,6 +3,8 @@ package runlog
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -133,7 +135,10 @@ type recordFacts struct {
 	// createTime is that process's creation time from the same line,
 	// the second half of the pid's identity. Zero means the line
 	// carried no creation time: a lookup that failed at write time or
-	// a record written before the field existed.
+	// a record written before the field existed. Only a positive
+	// value is ever compared — a non-positive one, absent, zero, or
+	// negative, is no real creation time and carries no identity to
+	// compare.
 	createTime int64
 	// workers holds every worker line's process identity, in record
 	// order: the pid each worker launched paired with its creation
@@ -170,21 +175,73 @@ const maxRecordBytes int64 = 32 << 20
 // ModeSymlink and is refused outright, while Stat would follow it to
 // its target and let the escape through. A FIFO with no writer blocks
 // in the open — not the read — so the refusal must happen before any
-// open, or one planted record name hangs the whole product. A record
-// that changes under the reader needs no re-stat: a torn last line is
-// explicitly expected and documented in parseRecord.
-func readRecordFile(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
+// open, or one planted record name hangs the whole product.
+//
+// After the open, the file that was opened is checked itself — the
+// pattern of readStableRegularFile in internal/skillinstall: it must
+// still be a regular file, it must be the very file the checks
+// described, and it must still be within the size ceiling. A name
+// replaced between the check and the open is thereby refused rather
+// than read: nothing ties the file that was checked to the file that
+// the open returns, so without the re-check the checks describe one
+// file and the read opens another. A record that stays the same file
+// but grows under the reader needs no further guard — a torn last
+// line is explicitly expected and documented in parseRecord.
+//
+// One ceiling is accepted by design, and its failure direction is a
+// stall, never a wrong answer: the checks refuse a name that was
+// already a named pipe before them, but a name that becomes one
+// between the check and the open blocks the open itself, and an open
+// that blocks cannot be interrupted from here. The cost is this
+// reader hanging on that one planted name — nothing is ever read
+// from the pipe, and no classification is made: the reader simply
+// does not return.
+func readRecordFile(path string) (data []byte, err error) {
+	before, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	if !before.Mode().IsRegular() {
 		return nil, errors.New("record is not a regular file")
 	}
-	if info.Size() < 0 || info.Size() > maxRecordBytes {
+	if before.Size() < 0 || before.Size() > maxRecordBytes {
 		return nil, errors.New("record is too large")
 	}
-	return os.ReadFile(path)
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+			if err != nil {
+				data = nil
+			}
+		}
+	}()
+
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	// The re-check of the open file: a name replaced between the
+	// check and the open hands the open a different file, and a file
+	// that grew past the ceiling after the check must not be read
+	// whole. The first condition also refuses a symlink that
+	// appeared in the gap.
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, errors.New("record changed before reading")
+	}
+	if opened.Size() < 0 || opened.Size() > maxRecordBytes {
+		return nil, errors.New("record is too large")
+	}
+
+	data, err = io.ReadAll(io.LimitReader(f, maxRecordBytes))
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 // parseRecord reads one record and answers everything the three
@@ -279,27 +336,54 @@ func parseRecord(path string) (recordFacts, error) {
 // recordProcessAlive answers the one liveness question the three
 // readers ask of a record's start-line process: is that process still
 // the process that wrote the record? The answer is decided by the
-// pid and, when the record carries one, the creation time paired with
-// it — the pair is the identity, and an unrelated process holding a
-// reused number carries a different creation time. Every doubtful
-// case resolves toward alive, the same fail-safe direction as every
-// reader here: silence, never a wrong accusation of a dead run.
+// pid and, when the record carries a positive one, the creation time
+// paired with it — the pair is the identity, and an unrelated process
+// holding a reused number carries a different creation time. Every
+// doubtful case resolves toward alive, the same fail-safe direction
+// as every reader here: silence, never a wrong accusation of a dead
+// run.
 //
 // The decision, row for row:
 //
 //   - pidAlive errors: alive.
 //   - pidAlive reports not alive: dead.
-//   - pidAlive reports alive, the record carries no creation time
-//     (zero): alive — the number alone decides, so a record written
-//     before the field existed behaves exactly as it always did.
-//   - pidAlive reports alive, the record carries one, and the
-//     creation-time lookup errors: alive.
-//   - pidAlive reports alive, the record carries one, and the
-//     creation-time lookup differs: dead — the number was reused by
-//     an unrelated process.
-//   - pidAlive reports alive, the record carries one, and the
-//     creation-time lookup matches: alive.
+//   - the pid does not fit the range the lookup takes — not
+//     positive, or beyond its int32 range: alive, the fail-safe
+//     answer exactly like an errored lookup, and never truncated
+//     into the lookup's range, where it would name a different
+//     process. The writer only ever records its own pid, which
+//     always fits, so this row guards a record that was corrupted
+//     or edited by hand, not one the product wrote.
+//   - pidAlive reports alive, the record carries no positive
+//     creation time — absent, zero, or negative: alive — the number
+//     alone decides, so a record written before the field existed
+//     behaves exactly as it always did, and a negative number,
+//     never a real creation time, is treated exactly like an absent
+//     one.
+//   - pidAlive reports alive, the record carries a positive
+//     creation time, and the creation-time lookup errors: alive.
+//   - pidAlive reports alive, the record carries a positive
+//     creation time, and the lookup reports a non-positive
+//     creation time: alive — a lookup that succeeded but reports a
+//     value no real process can have proves nothing, so it resolves
+//     toward alive rather than toward a mismatch.
+//   - pidAlive reports alive, the record carries a positive
+//     creation time, and the lookup reports a different one: dead —
+//     the number was reused by an unrelated process.
+//   - pidAlive reports alive, the record carries a positive
+//     creation time, and the lookup reports the same one: alive.
 func recordProcessAlive(pid int, createTime int64) bool {
+	if pid <= 0 || pid > math.MaxInt32 {
+		// A pid outside the range the liveness lookup takes — or not
+		// positive at all — is not a pid this reader can answer for:
+		// truncating it into int32 would name a different process.
+		// The fail-safe answer is alive, exactly like an errored
+		// lookup. The writer only ever records its own pid, which
+		// always fits this range, so this guard is for a record that
+		// was corrupted or edited by hand, not one the product
+		// wrote.
+		return true
+	}
 	alive, err := pidAlive(int32(pid))
 	if err != nil {
 		return true
@@ -307,11 +391,15 @@ func recordProcessAlive(pid int, createTime int64) bool {
 	if !alive {
 		return false
 	}
-	if createTime == 0 {
+	if createTime <= 0 {
+		// A non-positive creation time is no claim at all: absent,
+		// zero, or negative, no real process can have been created
+		// at it, so the pid alone decides — a live number reads as a
+		// live process.
 		return true
 	}
 	seen, err := pidCreateTime(pid)
-	if err != nil {
+	if err != nil || seen <= 0 {
 		return true
 	}
 	return seen == createTime
