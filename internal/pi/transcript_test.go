@@ -12,6 +12,73 @@ func messageUpdateRaw(raw string) Event {
 	return Event{Type: "message_update", Raw: json.RawMessage(raw)}
 }
 
+func TestTranscriptAccumulatorKeepsEarlierTextAcrossToolCallMessage(t *testing.T) {
+	// text, then a new message carrying a tool-call delta: the snapshot
+	// still returns the earlier text. This is the test that pins the
+	// whole fix: a real run interleaves output and tool calls, so the
+	// message in flight when a run ends early is usually the tool call,
+	// and the assistant text the model already wrote must survive that
+	// message's message_start.
+	a := &transcriptAccumulator{}
+	stream := []Event{
+		event("message_start"),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"first part"}}`),
+		event("message_start"),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"tool payload"}}`),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	if got := a.snapshot(); got != "first part" {
+		t.Fatalf("snapshot = %q, want %q: the earlier text must survive a tool-call message", got, "first part")
+	}
+}
+
+func TestTranscriptAccumulatorNewerTextWinsOverRememberedText(t *testing.T) {
+	// text, tool-call message, then new text: the newer text wins over
+	// the remembered earlier text, because the in-flight message's text
+	// is what the model is producing right now.
+	a := &transcriptAccumulator{}
+	stream := []Event{
+		event("message_start"),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"first part"}}`),
+		event("message_start"),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"tool payload"}}`),
+		event("message_start"),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"second part."}}`),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	if got := a.snapshot(); got != "second part." {
+		t.Fatalf("snapshot = %q, want %q: the in-flight text must win over the remembered text", got, "second part.")
+	}
+}
+
+func TestTranscriptAccumulatorEmptyInFlightFallsBackToRememberedText(t *testing.T) {
+	// An in-flight message that has produced no text yet after a message
+	// that had text: the earlier text is returned, not the empty buffer.
+	a := &transcriptAccumulator{}
+	stream := []Event{
+		event("message_start"),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"first part"}}`),
+		event("message_start"),
+		// The new message is in flight with no text_delta yet.
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	if got := a.snapshot(); got != "first part" {
+		t.Fatalf("snapshot = %q, want %q: an empty in-flight message must fall back to the remembered text", got, "first part")
+	}
+}
+
 func TestTranscriptAccumulatorDeltasConcatenateInOrder(t *testing.T) {
 	// text_delta frames arrive in stream order and each carries a slice
 	// of the message text: the snapshot is their concatenation, in the

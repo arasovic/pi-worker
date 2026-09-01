@@ -577,6 +577,14 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 			message = fmt.Sprintf("status %q", worker.Status)
 		}
 		fmt.Fprintf(stderr, "pi-worker: %s: %s\n", label, message)
+		// The salvaged text the run produced before ending early is the
+		// same material a completed run prints as its explanation, so it
+		// belongs on stdout in full; the (incomplete) marker is what
+		// keeps it from reading like a finished answer. Nothing is
+		// printed when the worker has no partial text to report.
+		if worker.PartialExplanation != "" {
+			fmt.Fprintf(stdout, "%s (incomplete): %s\n", label, worker.PartialExplanation)
+		}
 	}
 	if result.Verification != nil {
 		printVerification(result.Verification, stdout, stderr)
