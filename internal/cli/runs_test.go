@@ -1236,3 +1236,332 @@ func TestRunsPruneSwapDuringPromptCannotRedirectTheDelete(t *testing.T) {
 		t.Fatalf("record %s still exists in the listed directory after the prune", filepath.Join(aside, recordName))
 	}
 }
+
+// replaceRecordWithDirectoryOnFirstRead removes the record file and
+// puts an empty directory of the same name in its place on the first
+// stdin Read, then answers "y". The prompt's ReadString is the first
+// read of stdin, so the replacement lands exactly while the question
+// is on screen — deterministic, no sleeps — the same window
+// swapRecordsDirOnFirstRead uses. The replacement directory is left
+// empty, which is what a renamed-away record's name can be replaced
+// with.
+type replaceRecordWithDirectoryOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (r *replaceRecordWithDirectoryOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.Remove(r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	if err := os.Mkdir(r.recordPath, 0o700); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused asserts
+// the delete-time gate's regular-file check: the listed record's name
+// is replaced by an empty directory while the question is on screen,
+// the answer is y, and prune refuses — exit 9, the refusal on
+// stderr, the directory still there, and no deleted line for the run
+// id. A removal without the gate would rmdir the empty replacement
+// and print "deleted <run id>" for a record that was long gone.
+func TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	stdin := &replaceRecordWithDirectoryOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record replaced by a directory = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if info, err := os.Lstat(recordPath); err != nil {
+		t.Fatalf("the replacement directory %s vanished: %v", recordPath, err)
+	} else if !info.IsDir() {
+		t.Fatalf("%s is not a directory after the prune", recordPath)
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "refusing to delete") {
+		t.Fatalf("stderr = %q, want the refusal naming the replacement", stderr.String())
+	}
+}
+
+// replaceRecordWithSymlinkOnFirstRead removes the record file and
+// puts a symlink of the same name pointing at targetPath in its place
+// on the first stdin Read, then answers "y", exactly like
+// replaceRecordWithDirectoryOnFirstRead in the same window.
+type replaceRecordWithSymlinkOnFirstRead struct {
+	recordPath string
+	targetPath string
+	err        error
+}
+
+func (r *replaceRecordWithSymlinkOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.Remove(r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	if err := os.Symlink(r.targetPath, r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused asserts the
+// same gate for a symlink: the listed record's name is replaced by a
+// symlink pointing outside the records directory while the question
+// is on screen, the answer is y, and prune refuses — exit 9, the
+// refusal on stderr, and both the link and its target survive,
+// byte-identical. A removal without the gate would unlink the
+// replacement link and print "deleted <run id>"; the gate never
+// follows the link, so the target is out of reach either way.
+func TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "precious.jsonl")
+	if err := os.WriteFile(targetPath, []byte("not a record\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	stdin := &replaceRecordWithSymlinkOnFirstRead{recordPath: recordPath, targetPath: targetPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record replaced by a symlink = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if info, err := os.Lstat(recordPath); err != nil {
+		t.Fatalf("the replacement symlink %s is gone: %v", recordPath, err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink after the prune", recordPath)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("the symlink's target %s was touched: %v", targetPath, err)
+	}
+	if string(data) != "not a record\n" {
+		t.Fatalf("the target changed by the prune: %q", data)
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "refusing to delete") {
+		t.Fatalf("stderr = %q, want the refusal naming the replacement", stderr.String())
+	}
+}
+
+// removeRecordOnFirstRead deletes the record file on the first stdin
+// Read, then answers "y": the record is gone exactly while the
+// question is on screen, so the gate's lookup fails at the moment of
+// the delete.
+type removeRecordOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (r *removeRecordOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.Remove(r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordVanishedDuringPromptRefused asserts the gate's
+// failure arm: the listed record is gone when the delete is about to
+// happen, and prune says so — exit 9, the refusal on stderr, no
+// deleted line — instead of pretending the run was deleted. Without
+// the gate the remove itself would fail with a raw "no such file"
+// error; the gate turns the vanished name into the same refusal
+// family as the other gates.
+func TestRunsPruneRecordVanishedDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	stdin := &removeRecordOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("removal during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record vanished during the prompt = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(recordPath); !os.IsNotExist(err) {
+		t.Fatalf("%s exists after the prune: %v", recordPath, err)
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "refusing to delete") || !strings.Contains(stderr.String(), "cannot be examined") {
+		t.Fatalf("stderr = %q, want the refusal for the vanished record", stderr.String())
+	}
+}
+
+// touchRecordOnFirstRead refreshes the record file's modification
+// time on the first stdin Read, then answers "y": the one fact the
+// freshness check reads changes exactly while the question is on
+// screen, the way a writer appending to the record would move it.
+type touchRecordOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (r *touchRecordOnFirstRead) Read(p []byte) (int, error) {
+	now := time.Now()
+	if err := os.Chtimes(r.recordPath, now, now); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime asserts the
+// grace-window re-check at the moment of the delete: an unknown
+// record selected while stale is touched during the prompt — the
+// record is being written right now, after selection already looked —
+// and the answer is y. Prune spares it, reports it as kept — the
+// kept line, and the summary counts it — and exits 0: sparing is not
+// a failure. A record with a real outcome would go whatever its
+// modification time, but this record's outcome is unknown, so the
+// freshness question is the one that decides.
+func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260831T120000Z-1"
+	recordPath := filepath.Join(dir, runID+".jsonl")
+	if err := os.WriteFile(recordPath, []byte("not json at all\n"), 0o600); err != nil {
+		t.Fatalf("write unknown record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(recordPath, stale, stale); err != nil {
+		t.Fatalf("age the record: %v", err)
+	}
+
+	stdin := &touchRecordOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("touch during the prompt failed: %v", stdin.err)
+	}
+	want := "kept " + runID + "\nkept 0 newest, 1 still running\n"
+	if code != 0 || stdout.String() != want {
+		t.Fatalf("prune with the record touched during the prompt = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("the touched unknown record %s was deleted: %v", recordPath, err)
+	}
+}
+
+// TestRecordRecentlyModifiedUnstatablePathSpares asserts the
+// fail-safe direction of the freshness lookup: a path that cannot be
+// looked up — here, a name that does not exist — reports fresh, so
+// selection spares rather than deletes. Every doubtful case in this
+// reader resolves toward silence, never toward acting.
+func TestRecordRecentlyModifiedUnstatablePathSpares(t *testing.T) {
+	dir := t.TempDir()
+	if !recordRecentlyModified(filepath.Join(dir, "missing.jsonl")) {
+		t.Fatalf("recordRecentlyModified on an unstatable path = false, want true: a record that cannot be examined must be spared, not deleted")
+	}
+}
+
+// TestRunsPruneSymlinkFreshnessByLinkNotTarget pins the two facts a
+// symlink record exercises: freshness is decided by the link's own
+// timestamp, never by the target's, and a symlink that reaches the
+// delete is refused by the regular-file gate. The construction is the
+// mirror of the one in the finding — a freshly created link whose
+// target is two hours old: os.Stat would follow the link to the old
+// target and read stale, while the link's own timestamp, the one
+// that matters, is fresh.
+func TestRunsPruneSymlinkFreshnessByLinkNotTarget(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "old.jsonl")
+	if err := os.WriteFile(targetPath, []byte("not a record\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(targetPath, stale, stale); err != nil {
+		t.Fatalf("age the target: %v", err)
+	}
+	linkPath := filepath.Join(dir, "20260831T120000Z-1.jsonl")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// The freshness fact: the link is freshly created, so its own
+	// timestamp is fresh even though its target is old.
+	if !recordRecentlyModified(linkPath) {
+		t.Fatalf("recordRecentlyModified(%q) = false, want true: the target's age must not answer for the link", linkPath)
+	}
+
+	// End to end through the real listing, the same fresh link: the
+	// unknown record is spared whole — nothing to prune, exit 0 — and
+	// both the link and its target still exist.
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stdout != "nothing to prune\n" || stderr != "" {
+		t.Fatalf("prune with the fresh symlink record = (%d, %q, %q), want (0, \"nothing to prune\\n\", \"\")", code, stdout, stderr)
+	}
+	if info, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("the symlink %s is gone: %v", linkPath, err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink after the prune", linkPath)
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("the target %s is gone: %v", targetPath, err)
+	}
+
+	// The gate fact: a symlink record that is selected — injected
+	// through the list seam with the same real path, the way the
+	// delete-failure tests do — is refused by what it is: exit 9, the
+	// refusal on stderr, and the link and its target both survive.
+	original := runlogList
+	runlogList = func(string) ([]runlog.Run, error) {
+		return []runlog.Run{{RunID: "20260831T120000Z-1", Outcome: "completed", Path: linkPath}}, nil
+	}
+	t.Cleanup(func() { runlogList = original })
+	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 9 {
+		t.Fatalf("prune of the selected symlink record = (%d, %q, %q), want exit 9", code, stdout, stderr)
+	}
+	if want := "kept 0 newest\n"; stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if !strings.Contains(stderr, "refusing to delete") || !strings.Contains(stderr, "not a regular file") {
+		t.Fatalf("stderr = %q, want the regular-file refusal", stderr)
+	}
+	if info, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("the symlink %s was deleted: %v", linkPath, err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink after the prune", linkPath)
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("the target %s was touched: %v", targetPath, err)
+	}
+}

@@ -136,9 +136,10 @@ func renderRunTable(w io.Writer, runs []runlog.Run) {
 // can never disagree about what is a record, what its outcome is, or
 // which runs are still alive, and the records directory is never
 // walked a second time. This is the first code in pi-worker that
-// deletes a user's files; removeRunRecord re-validates every path
-// against the directory and the .jsonl rule immediately before the
-// removal.
+// deletes a user's files; removeRunRecord re-validates each path
+// against the directory and the .jsonl rule, re-checks what the name
+// refers to, and re-asks the grace-window question of unknown
+// records, immediately before the removal.
 func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader, stdout, stderr io.Writer) int {
 	dir, err := runlogDir()
 	if err != nil {
@@ -160,7 +161,11 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// still writing to its record must never have that record pulled out
 	// from under it. A candidate too unreadable to classify is spared
 	// the same way while its file is fresh: a record modified within the
-	// grace window may be in the middle of being written. Every other
+	// grace window may be in the middle of being written. The same
+	// freshness question is asked a second time, at the moment of each
+	// delete, because the prompt below can wait on a person: a record
+	// stale when listed may be being written now — see removeRunRecord.
+	// Every other
 	// candidate is deleted, stale unknown ones included: an unreadable
 	// record is exactly the junk this command exists to clear.
 	keptNewest := opts.keep
@@ -288,7 +293,10 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// failure never stops the others: every selected record is tried,
 	// each failure is reported on stderr, and the exit code is 9 at the
 	// end. Records already deleted stay deleted, which the deleted lines
-	// below say.
+	// below say. What each name refers to is re-checked immediately
+	// before its removal — see removeRunRecord — so a candidate refused
+	// there is a failure like any other, and one spared there is
+	// reported as kept, not as deleted.
 	code := 0
 	deletedIDs := make([]string, 0, len(toDelete))
 	for i := len(toDelete) - 1; i >= 0; i-- {
@@ -299,9 +307,22 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 			return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptNewest)
 		}
 		run := toDelete[i]
-		if err := removeRunRecord(root, dir, run.Path); err != nil {
+		spared, err := removeRunRecord(root, dir, run)
+		if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: delete %s: %v\n", run.RunID, err)
 			code = 9
+			continue
+		}
+		if spared {
+			// A record spared at the moment of the delete joins the kept
+			// list the same way a record spared during selection did:
+			// its id lands in the same summary count and the same
+			// --json keptRunning array as the selection-time spares.
+			keptRunning = append(keptRunning, run)
+			keptRunningIDs = append(keptRunningIDs, run.RunID)
+			if !opts.json {
+				fmt.Fprintf(stdout, "kept %s\n", run.RunID)
+			}
 			continue
 		}
 		deletedIDs = append(deletedIDs, run.RunID)
@@ -378,21 +399,23 @@ func renderPruneDocument(stdout, stderr io.Writer, deleted, keptRunning []string
 	return 0
 }
 
-// recordRecentlyModified reports whether the record's file exists and
-// was modified within the grace window. Only an existing, fresh file
-// can be a record in the middle of being written; a file that cannot
-// be stated is treated as before — stale, and deleted by the caller,
-// which is exactly the fail-safe direction the junk-clearing behaviour
-// pins.
+// recordRecentlyModified reports whether the record's file was
+// modified within the grace window: only a fresh file can be a record
+// in the middle of being written. The file's own timestamp is the one
+// that matters — Lstat, never Stat, so a symlink's target never
+// answers for the link — and a file that cannot be looked up reports
+// fresh, not stale: a record this reader cannot even examine is
+// exactly the one not to delete. Doubt resolves toward silence, never
+// toward acting, the same direction every other reader here takes.
 func recordRecentlyModified(path string) bool {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
-		return false
+		return true
 	}
 	return time.Since(info.ModTime()) <= pruneGraceWindow
 }
 
-// removeRunRecord deletes one record after re-validating the two facts
+// removeRunRecord deletes one record after re-validating the facts
 // the delete is allowed to rely on, against the exact path being
 // removed even though runlogList already produced it: the path is
 // inside the records directory — compared lexically, so a symlink is
@@ -400,21 +423,70 @@ func recordRecentlyModified(path string) bool {
 // target — and its name ends in .jsonl. The reader's filter is the
 // primary guard; this is cheap defence in depth for the product's
 // first delete, and it means reported.json, a .reported.json.tmp-*
-// stage, a directory, or any other file can never be reached here.
-// The removal goes through the caller's single opened root, by bare
-// name: os.Remove would resolve every parent component of the full
-// path, so a records directory swapped after selection could redirect
-// it at a file prune never listed, while a remove relative to the
-// handle is pinned to the directory resolved before the first delete.
-func removeRunRecord(root *os.Root, dir, path string) error {
+// stage, or any other file can never be reached here. The removal
+// goes through the caller's single opened root, by bare name:
+// os.Remove would resolve every parent component of the full path, so
+// a records directory swapped after selection could redirect it at a
+// file prune never listed, while a remove relative to the handle is
+// pinned to the directory resolved before the first delete.
+//
+// What the name refers to now is then checked through that same
+// handle, and only after the checks pass is the name removed:
+//
+//   - a name that cannot be looked up — the record vanished, or the
+//     directory stopped answering — is refused like any other delete
+//     failure, and the caller's exit 9 says the run was not deleted;
+//   - a name that is not a regular file — a replacement directory, a
+//     replacement symlink, or a planted symlink — is refused by what
+//     it is. Removing a link removes the link, never its target, and
+//     an empty directory under a record's name is still a directory;
+//     neither is a record, whatever the name says;
+//   - a record classified unknown at selection whose file was
+//     modified within the grace window is spared, exactly as
+//     selection would have spared it: the freshness check during
+//     selection ran before the question, and a record stale then may
+//     be in the middle of being written now. The caller reports it
+//     as kept, and sparing never counts as a failure. A record with
+//     any other outcome is deleted whatever its modification time.
+//
+// Two ceilings are accepted by design, and each names its own
+// failure direction:
+//
+//   - The name can still be replaced between the Lstat and the
+//     Remove: the window is now the few instructions between two
+//     syscalls instead of the whole time a person spends reading a
+//     prompt, and nothing in it waits on anybody, but POSIX offers no
+//     way to unlink a specific inode. A delete that lands in that
+//     window removes whatever holds the name then.
+//   - A modification time can be forged, and a wall-clock jump or a
+//     coarse filesystem timestamp can make a record that was just
+//     written look older than the grace window. The grace window is
+//     a courtesy to a writer, not a security boundary.
+func removeRunRecord(root *os.Root, dir string, run runlog.Run) (spared bool, err error) {
+	path := run.Path
 	rel, err := filepath.Rel(dir, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("refusing to delete %q: outside the records directory", path)
+		return false, fmt.Errorf("refusing to delete %q: outside the records directory", path)
 	}
 	if !strings.HasSuffix(path, ".jsonl") {
-		return fmt.Errorf("refusing to delete %q: not a .jsonl record", path)
+		return false, fmt.Errorf("refusing to delete %q: not a .jsonl record", path)
 	}
-	return root.Remove(filepath.Base(path))
+	base := filepath.Base(path)
+
+	info, err := root.Lstat(base)
+	if err != nil {
+		return false, fmt.Errorf("refusing to delete %q: cannot be examined: %v", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("refusing to delete %q: not a regular file", path)
+	}
+	if run.Outcome == "unknown" && time.Since(info.ModTime()) <= pruneGraceWindow {
+		return true, nil
+	}
+	if err := root.Remove(base); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func parseRunsArgs(args []string) (runsOptions, error) {
