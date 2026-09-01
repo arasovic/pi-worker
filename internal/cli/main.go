@@ -329,7 +329,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
 	fmt.Fprintln(w, "       pi-worker runs list [--json]")
 	fmt.Fprintln(w, "       pi-worker runs prune --keep <n> [--yes] [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--json] [--debug]")
 }
 
 type versionOutput struct {
@@ -387,6 +387,7 @@ type runOptions struct {
 	taskFiles []string
 	timeout   time.Duration
 	verify    []string
+	worktree  string
 	json      bool
 	debug     bool
 	// writes is the per-task declared write set in task order: nil when
@@ -437,6 +438,30 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 
 	ctx, cancel := context.WithTimeout(parent, opts.timeout)
 	defer cancel()
+
+	// With --worktree the run works in a checkout of its own instead of
+	// the caller's current directory: a fresh clone of HEAD on branch
+	// run/<name> under <root>/.pi-worker/worktrees/<name>. The checkout
+	// is created before anything else happens — before the version probe,
+	// before the run record exists, before any worker starts — and the
+	// one stderr line naming it is printed at creation time, so a run
+	// that is killed later still leaves the caller knowing where its
+	// checkout is. A taken name or branch refuses the run here; nothing
+	// is ever removed on any path.
+	var runWorktree *run.Worktree
+	if opts.worktree != "" {
+		path, branch, err := prepareWorktree(ctx, workspace, opts.worktree)
+		if err != nil {
+			fmt.Fprintf(stderr, "pi-worker: %v\n", err)
+			if worktreeRefused(err) {
+				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorUsage, Message: err.Error()})
+			}
+			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+		}
+		workspace = path
+		runWorktree = &run.Worktree{Path: path, Branch: branch}
+		fmt.Fprintf(stderr, "pi-worker: worktree %s on branch %s\n", path, branch)
+	}
 
 	var debug *pi.DebugSink
 	if opts.debug {
@@ -535,6 +560,10 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 
 	outcome, code := runOutcome(result)
 	result.Outcome = outcome
+	// The worktree object rides the result document like the outcome:
+	// it is filled here, after the controller returns and before the
+	// finish line, so the record and the document carry the same value.
+	result.Worktree = runWorktree
 	// The finish line rides the normal path after the outcome is
 	// assigned, so the record carries exactly what the run reports.
 	if recordErr := recorder.Finish(finishedAt, &result, nil); recordErr != nil {
@@ -935,7 +964,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 		arg := args[i]
 		name, value, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--timeout", "--verify":
+		case "--timeout", "--verify", "--worktree":
 			if !hasValue {
 				if i+1 >= len(args) {
 					return opts, fmt.Errorf("flag %s requires a value", name)
@@ -953,6 +982,11 @@ func parseRunArgs(args []string) (runOptions, error) {
 					return opts, err
 				}
 				opts.verify = argv
+			} else if name == "--worktree" {
+				if !validWorktreeName(value) {
+					return opts, fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", value)
+				}
+				opts.worktree = value
 			} else {
 				duration, err := time.ParseDuration(value)
 				if err != nil {

@@ -90,6 +90,15 @@ type Request struct {
 	OnProcessStart pi.ProcessObserver
 }
 
+// Worktree names the private checkout one run was given through the
+// CLI's --worktree flag: the checkout path and the branch created for
+// it. It is filled by the CLI after the controller returns, never by
+// the controller itself.
+type Worktree struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+}
+
 // Result is the aggregate outcome of one run. Workers preserve input
 // order regardless of completion order. Verification, when present, is
 // the outcome of the run-level check command executed in the workspace
@@ -127,6 +136,11 @@ type Result struct {
 	// the usual omitempty reading — a declared run that answered with
 	// silence would look checked when it was not.
 	Writes *WriteCheck `json:"writes,omitempty"`
+	// Worktree is the private checkout the CLI gave this run through
+	// --worktree; nil when the run worked in the caller's current
+	// directory. The CLI fills it after Run returns, so the controller
+	// never sets it.
+	Worktree *Worktree `json:"worktree,omitempty"`
 }
 
 // Controller runs accepted tasks concurrently through one Worker and,
