@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
@@ -350,7 +354,9 @@ func TestRunsPruneSparesRunningCandidateOlderThanCutoff(t *testing.T) {
 // means "keep none by age", not "empty the directory": completed,
 // interrupted, and unknown records all go — an unreadable record is
 // exactly the junk the command exists to clear — while the running
-// record is still spared.
+// record is still spared. The unknown record's file is deliberately
+// aged past the grace window, because a fresh one is spared and has
+// its own test.
 func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -360,6 +366,10 @@ func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 	unknownPath := filepath.Join(dir, "20260830T101000Z-4.jsonl")
 	if err := os.WriteFile(unknownPath, []byte("not json at all\n"), 0o600); err != nil {
 		t.Fatalf("write unknown record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(unknownPath, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
 	}
 
 	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
@@ -377,6 +387,89 @@ func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 	}
 	if _, err := os.Stat(runningPath); err != nil {
 		t.Fatalf("running record %s was deleted: %v", runningPath, err)
+	}
+}
+
+// TestRunsPruneSparesFreshUnknownCandidate asserts the live-window
+// rule for records that cannot be classified: an unknown candidate
+// whose file was modified within the grace window may be a run that
+// just created its record and has not yet written its start line, so
+// it is kept — not deleted. With nothing selected the human summary
+// says nothing to prune; the spared record is visible to a caller in
+// the --json document, whose keptUnreadable array carries its id —
+// never the keptRunning array, which carries only the still-running
+// runs' ids: the one thing known about this record is that it could
+// not be read, and no report may call it running.
+func TestRunsPruneSparesFreshUnknownCandidate(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	unknownPath := filepath.Join(dir, "20260831T120000Z-1.jsonl")
+	if err := os.WriteFile(unknownPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write empty record: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	if stdout != "nothing to prune\n" {
+		t.Fatalf("stdout = %q, want \"nothing to prune\\n\"", stdout)
+	}
+	if _, err := os.Stat(unknownPath); err != nil {
+		t.Fatalf("fresh unknown record %s was deleted: %v", unknownPath, err)
+	}
+
+	// The second call runs prune --json: the spared record is visible
+	// to a caller only in the document, and the document is decoded,
+	// never compared as a raw string.
+	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune --json = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	var document struct {
+		SchemaVersion  int      `json:"schemaVersion"`
+		Deleted        []string `json:"deleted"`
+		KeptNewest     int      `json:"keptNewest"`
+		KeptRunning    []string `json:"keptRunning"`
+		KeptUnreadable []string `json:"keptUnreadable"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode document %q: %v", stdout, err)
+	}
+	if document.SchemaVersion != 1 || len(document.Deleted) != 0 || document.KeptNewest != 0 || len(document.KeptRunning) != 0 || len(document.KeptUnreadable) != 1 || document.KeptUnreadable[0] != "20260831T120000Z-1" {
+		t.Fatalf("document = %#v, want the spared record in keptUnreadable and an empty keptRunning", document)
+	}
+	if _, err := os.Stat(unknownPath); err != nil {
+		t.Fatalf("fresh unknown record %s was deleted by the --json prune: %v", unknownPath, err)
+	}
+}
+
+// TestRunsPruneDeletesStaleUnknownCandidate asserts the live-window
+// rule's far side: the same empty record, its modification time pushed
+// two hours into the past, is unreadable junk and is deleted — the
+// junk-clearing behaviour survives the grace window.
+func TestRunsPruneDeletesStaleUnknownCandidate(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	unknownPath := filepath.Join(dir, "20260831T120000Z-1.jsonl")
+	if err := os.WriteFile(unknownPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write empty record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(unknownPath, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	const want = "deleted 20260831T120000Z-1\nkept 0 newest\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if _, err := os.Stat(unknownPath); !os.IsNotExist(err) {
+		t.Fatalf("stale unknown record %s still exists: %v", unknownPath, err)
 	}
 }
 
@@ -570,6 +663,67 @@ func TestRunsPruneJSONWithoutYesRefusesEvenOnTerminal(t *testing.T) {
 	}
 }
 
+// TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected asserts the
+// --json refusal does not depend on what is on disk: with --json and
+// no --yes in an empty records directory, prune still exits 2 with the
+// verbatim refusal on stderr and no JSON document on stdout — a script
+// must be able to tell "refused" from "succeeded, nothing to do".
+func TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("runs prune --json = (%d, %q), want exit 2 with nothing on stdout", code, stdout)
+	}
+	if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+}
+
+// TestRunsPruneJSONWithoutYesRefusesBeforeDirectoryResolved asserts
+// the --json refusal does not depend on the records directory at all:
+// with --json and no --yes, prune refuses with exit 2 before the
+// directory is even resolved, so a resolver failure or an unreadable
+// directory cannot turn the refusal into an exit 9. The refusal
+// depends on nothing but the flags.
+func TestRunsPruneJSONWithoutYesRefusesBeforeDirectoryResolved(t *testing.T) {
+	t.Run("resolver failure", func(t *testing.T) {
+		original := runlogDir
+		runlogDir = func() (string, error) { return "", fmt.Errorf("config unavailable") }
+		t.Cleanup(func() { runlogDir = original })
+
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+		if code != 2 || stdout != "" {
+			t.Fatalf("resolver failure with --json and no --yes = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+
+	t.Run("unreadable records directory", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("permission bits are not enforced on Windows")
+		}
+		dir := t.TempDir()
+		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+		if err := os.Chmod(dir, 0o000); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		withRunlogDir(t, dir)
+
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+		if code != 2 || stdout != "" {
+			t.Fatalf("unreadable dir with --json and no --yes = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+}
+
 // TestRunsPruneKeepZeroYesSparesMarkerAndTempStages asserts the marker
 // file and a left-behind .reported.json.tmp-* stage survive a --keep 0
 // --yes prune unchanged: neither is a record, and the prune must not
@@ -641,10 +795,11 @@ func TestRunsPruneKeepZeroYesLeavesNonJsonlFilesUntouched(t *testing.T) {
 }
 
 // TestRunsPruneJSONDocumentExact pins the prune --json document: the
-// exact field names and shape, deleted and keptRunning as arrays of
-// run ids — empty arrays, never null, whether nothing was deleted or
-// no running run was spared — and keptNewest as how many the --keep
-// rule kept, capped by the records that exist.
+// exact field names and shape, deleted, keptRunning, and
+// keptUnreadable as arrays of run ids — empty arrays, never null,
+// whether nothing was deleted, no running run was spared, or nothing
+// unreadable was spared — and keptNewest as how many the --keep rule
+// kept, capped by the records that exist.
 func TestRunsPruneJSONDocumentExact(t *testing.T) {
 	// One fresh records directory per subtest: a prune that deleted
 	// something in an earlier subtest must not change what a later
@@ -665,7 +820,7 @@ func TestRunsPruneJSONDocumentExact(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
 		}
-		want := "{\"schemaVersion\":1,\"deleted\":[\"20260830T101500Z-1\"],\"keptNewest\":1,\"keptRunning\":[\"20260830T102000Z-2\"]}\n"
+		want := "{\"schemaVersion\":1,\"deleted\":[\"20260830T101500Z-1\"],\"keptNewest\":1,\"keptRunning\":[\"20260830T102000Z-2\"],\"keptUnreadable\":[]}\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -685,7 +840,7 @@ func TestRunsPruneJSONDocumentExact(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
 		}
-		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":3,\"keptRunning\":[]}\n"
+		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":3,\"keptRunning\":[],\"keptUnreadable\":[]}\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -702,9 +857,71 @@ func TestRunsPruneJSONDocumentExact(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
 		}
-		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[]}\n"
+		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[],\"keptUnreadable\":[]}\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+	})
+}
+
+// TestRunsPruneKeptRunningAndKeptUnreadableApart asserts the two
+// spared classes report apart in one prune: a candidate whose run is
+// still running and a candidate too unreadable to classify whose file
+// changed within the grace window are both spared, and each id lands
+// in its own bucket — the running one in keptRunning, the unreadable
+// one in keptUnreadable, never mixed — in the --json document, and
+// the human summary carries one clause per class. A third, deletable
+// record makes the prune delete something, so the summary line is
+// rendered at all.
+func TestRunsPruneKeptRunningAndKeptUnreadableApart(t *testing.T) {
+	// One fresh records directory per subtest: a prune that deleted
+	// something in an earlier subtest must not change what a later
+	// subtest counts.
+	withRecords := func(t *testing.T) (dir string) {
+		t.Helper()
+		dir = t.TempDir()
+		withRunlogDir(t, dir)
+		writeListRecord(t, dir, "20260830T103000Z-3", os.Getpid(), "2026-08-30T10:30:00Z", "/ws-c", 1, false, "", "")
+		unknownPath := filepath.Join(dir, "20260830T102000Z-2.jsonl")
+		if err := os.WriteFile(unknownPath, []byte("not json at all\n"), 0o600); err != nil {
+			t.Fatalf("write unknown record: %v", err)
+		}
+		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+		return dir
+	}
+
+	t.Run("--json document", func(t *testing.T) {
+		dir := withRecords(t)
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
+		}
+		want := "{\"schemaVersion\":1,\"deleted\":[\"20260830T101500Z-1\"],\"keptNewest\":0,\"keptRunning\":[\"20260830T103000Z-3\"],\"keptUnreadable\":[\"20260830T102000Z-2\"]}\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "20260830T101500Z-1.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("deleted record still exists after the prune: %v", err)
+		}
+		for _, kept := range []string{"20260830T103000Z-3.jsonl", "20260830T102000Z-2.jsonl"} {
+			if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+				t.Fatalf("kept record %s vanished: %v", kept, err)
+			}
+		}
+	})
+
+	t.Run("human summary", func(t *testing.T) {
+		dir := withRecords(t)
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+		}
+		const want = "deleted 20260830T101500Z-1\nkept 0 newest, 1 still running, 1 unreadable\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "20260830T101500Z-1.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("deleted record still exists after the prune: %v", err)
 		}
 	})
 }
@@ -932,6 +1149,300 @@ func TestRunsPruneWiredIntoMainWithContext(t *testing.T) {
 	}
 }
 
+// TestRunsPruneCancelledBeforeStartDeletesNothingAndExits9 asserts a
+// prune whose context is already done deletes nothing: the context is
+// read immediately after the prompt returns and again before every
+// individual delete, so a cancellation that arrived before the command
+// started means no record is removed, the verbatim message goes to
+// stderr, and the exit is 9. Three paths are pinned: --yes (the check
+// sitting in front of the first delete), the y answer to the prompt
+// (the check on the way out of it), and --json (the document still
+// reports what was deleted — an empty deleted array — on the way to
+// exit 9).
+func TestRunsPruneCancelledBeforeStartDeletesNothingAndExits9(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("--yes", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 9 || stdout != "" {
+			t.Fatalf("cancelled prune --yes = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+		}
+	})
+
+	t.Run("prompt answered y", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+		withStdinIsTerminal(t, true)
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0"}, "y\n")
+		if code != 9 || stdout != "" {
+			t.Fatalf("cancelled prune after y = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; !strings.HasSuffix(stderr, want) {
+			t.Fatalf("stderr = %q, want it to end with %q", stderr, want)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+		}
+	})
+
+	t.Run("--json", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 9 {
+			t.Fatalf("cancelled prune --json = (%d, %q, %q), want exit 9", code, stdout, stderr)
+		}
+		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[],\"keptUnreadable\":[]}\n"; stdout != want {
+			t.Fatalf("stdout = %q, want the empty document %q", stdout, want)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+		}
+	})
+}
+
+// promptRecorder records stderr writes and closes a channel the
+// moment the question line has been written in full, so a test can
+// cancel a blocked prompt exactly when it is on screen — never after
+// a sleep. The recorded bytes are read back only after the command
+// has returned, when the channel the command's exit travels on has
+// already ordered the writes.
+type promptRecorder struct {
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	question string
+	seen     chan struct{}
+	reported bool
+}
+
+func (p *promptRecorder) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.buf.Write(b)
+	if !p.reported && strings.Contains(p.buf.String(), p.question) {
+		p.reported = true
+		close(p.seen)
+	}
+	return len(b), nil
+}
+
+func (p *promptRecorder) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buf.String()
+}
+
+// TestRunsPruneCancelledWhilePromptBlockedExits9AndDeletesNothing
+// pins the prompt's interruptibility: stdin is a pipe whose write end
+// never receives a byte, the command blocks on the question, and the
+// test cancels the context the moment the question has been written.
+// The cancelled context wins over the never-arriving answer: exit 9,
+// the verbatim cancelled message on stderr, nothing on stdout, and
+// the record still on disk. The reader goroutine stays parked on the
+// pipe for the rest of the test process's life — the accepted ceiling
+// — and the pipe's write end is closed in cleanup so the goroutine
+// can leave once the test is done with it.
+func TestRunsPruneCancelledWhilePromptBlockedExits9AndDeletesNothing(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	withStdinIsTerminal(t, true)
+
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { pw.Close() })
+	recorder := &promptRecorder{question: "delete 1 run records? [y/N] ", seen: make(chan struct{})}
+	var stdout bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		done <- mainWithContext(ctx, []string{"runs", "prune", "--keep", "0"}, pr, &stdout, recorder)
+	}()
+
+	select {
+	case <-recorder.seen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the deletion question never appeared on stderr")
+	}
+	cancel()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("prune did not stop after the cancellation while the prompt was blocked")
+	}
+	if code != 9 {
+		t.Fatalf("exit = %d, want 9; stdout = %q; stderr = %q", code, stdout.String(), recorder.String())
+	}
+	if stdout.String() != "" {
+		t.Fatalf("stdout = %q, want nothing", stdout.String())
+	}
+	const wantStderr = "RUN ID                STARTED                 OUTCOME      TASKS    WORKSPACE\n" +
+		"20260830T101500Z-1    2026-08-30T10:15:00Z    completed    1        /ws-a\n" +
+		"delete 1 run records? [y/N] " +
+		"pi-worker: runs prune cancelled\n"
+	if recorder.String() != wantStderr {
+		t.Fatalf("stderr = %q, want %q", recorder.String(), wantStderr)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("record %s vanished after a cancelled prune: %v", path, err)
+	}
+}
+
+// TestRunsPruneCancelledWithEmptySelectionExits9 asserts a prune
+// whose context is cancelled and whose selection is empty exits 9,
+// never 0: the listing may take a while, the person cancels during
+// it, and the empty selection must not turn the cancelled command
+// into a finished one. Both report arms are pinned — the human
+// "nothing to prune" line must not appear, and the --json arm still
+// renders the empty document, the way the cancelled path always
+// reports what was deleted.
+func TestRunsPruneCancelledWithEmptySelectionExits9(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	t.Run("human", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 9 || stdout != "" {
+			t.Fatalf("cancelled prune with empty selection = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+
+	t.Run("--json", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+
+		code, stdout, stderr := runCLIWithContext(t, ctx, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 9 {
+			t.Fatalf("cancelled prune --json with empty selection = (%d, %q, %q), want exit 9", code, stdout, stderr)
+		}
+		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[],\"keptUnreadable\":[]}\n"; stdout != want {
+			t.Fatalf("stdout = %q, want the empty document %q", stdout, want)
+		}
+		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
+			t.Fatalf("stderr = %q, want %q", stderr, want)
+		}
+	})
+}
+
+// cancelAfterDeletedLine cancels the context the moment the deleted
+// line for targetID has been written in full, so a test can land a
+// cancellation exactly after the final delete — deterministic, no
+// sleeps. The buffer is written only by the goroutine running the
+// command, which is the same goroutine calling cancel, so no locking
+// is needed.
+type cancelAfterDeletedLine struct {
+	buf      bytes.Buffer
+	targetID string
+	cancel   context.CancelFunc
+}
+
+func (c *cancelAfterDeletedLine) Write(b []byte) (int, error) {
+	c.buf.Write(b)
+	if c.targetID != "" && strings.Contains(c.buf.String(), "deleted "+c.targetID+"\n") {
+		c.targetID = ""
+		c.cancel()
+	}
+	return len(b), nil
+}
+
+// TestRunsPruneCancelledAfterFinalDeleteExits9AndReportsDeleted
+// asserts a cancellation that lands after the last delete still exits
+// 9 and never claims the prune finished: the loop's context check
+// sits before each delete, so the command needs one more check after
+// the loop. The deleted lines are already on stdout — each record
+// reported as it went — and cancelledPrune adds the verbatim message
+// on stderr; the summary line must not appear.
+func TestRunsPruneCancelledAfterFinalDeleteExits9AndReportsDeleted(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	oldPath := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	newestPath := writeListRecord(t, dir, "20260830T103000Z-3", deadPID, "2026-08-30T10:30:00Z", "/ws-c", 1, true, "completed", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stderr bytes.Buffer
+	// --keep 0 selects both records; deleting oldest first, the newest
+	// record's deleted line is the last one written, so the cancel
+	// lands after the final delete.
+	stdout := &cancelAfterDeletedLine{targetID: "20260830T103000Z-3", cancel: cancel}
+	code := mainWithContext(ctx, []string{"runs", "prune", "--keep", "0", "--yes"}, strings.NewReader(""), stdout, &stderr)
+	if code != 9 {
+		t.Fatalf("prune cancelled after the final delete = (%d, %q, %q), want exit 9", code, stdout.buf.String(), stderr.String())
+	}
+	if want := "deleted 20260830T101500Z-1\ndeleted 20260830T103000Z-3\n"; stdout.buf.String() != want {
+		t.Fatalf("stdout = %q, want the deleted lines %q and no summary", stdout.buf.String(), want)
+	}
+	if want := "pi-worker: runs prune cancelled\n"; stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
+	}
+	for _, gone := range []string{oldPath, newestPath} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("record %s still exists: %v", gone, err)
+		}
+	}
+}
+
+// cancelledButDoneSilentContext is the one context combination that
+// reaches the prompt's answer path with a cancelled context: Err
+// reports the cancellation while Done never closes, so the select
+// cannot see the cancellation and the answer is taken. The check
+// after the answer reads Err, which is the only thing that can catch
+// a cancellation this context reports — pinning that check
+// deterministically, where a real cancelled context would leave the
+// select to flip a coin between two ready cases.
+type cancelledButDoneSilentContext struct{}
+
+func (cancelledButDoneSilentContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (cancelledButDoneSilentContext) Done() <-chan struct{}       { return nil }
+func (cancelledButDoneSilentContext) Err() error                  { return context.Canceled }
+func (cancelledButDoneSilentContext) Value(any) any               { return nil }
+
+// TestRunsPruneDecliningAnswerAfterCancellationExits9 asserts the
+// prompt's answer path re-reads the context before reporting success:
+// a declining answer taken while the context reports cancelled must
+// end in the cancelled path — nothing deleted, the verbatim message
+// on stderr, exit 9 — never in a finished "nothing deleted".
+func TestRunsPruneDecliningAnswerAfterCancellationExits9(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	withStdinIsTerminal(t, true)
+
+	code, stdout, stderr := runCLIWithContext(t, cancelledButDoneSilentContext{}, []string{"runs", "prune", "--keep", "0"}, "n\n")
+	if code != 9 || stdout != "" {
+		t.Fatalf("declining answer with a cancelled context = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+	}
+	if want := "pi-worker: runs prune cancelled\n"; !strings.HasSuffix(stderr, want) {
+		t.Fatalf("stderr = %q, want it to end with %q", stderr, want)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("record %s vanished: %v", path, err)
+	}
+}
+
 // TestRunsPruneResolverAndReadFailuresExit9 asserts both failure
 // classes exit 9 before anything is deleted: a records directory that
 // cannot be resolved and one that exists but cannot be read.
@@ -964,4 +1475,665 @@ func TestRunsPruneResolverAndReadFailuresExit9(t *testing.T) {
 			t.Fatalf("unreadable dir = (%d, %q, %q), want exit 9", code, stdout, stderr)
 		}
 	})
+}
+
+// swapRecordsDirOnFirstRead swaps the records directory out from under
+// the command on the first stdin Read: dir is renamed to aside and a
+// symlink to other is put in its place, then the answer "y" is
+// returned. The prompt's ReadString is the first read of stdin, so the
+// swap lands exactly while the question is on screen — deterministic,
+// no sleeps, no timing. The one Read that matters carries the answer
+// and the newline, so bufio never reads again; a failed rename or
+// symlink is returned as the Read error and checked by the test after
+// the command returns.
+//
+// Because the first Read happens inside the prompt, the swap also
+// proves the order the fix pins: a records directory resolved before
+// the question cannot be redirected afterwards, and a delete that
+// resolved the directory again after the swap would land in other.
+// All three paths are t.TempDir-managed, and cleanup removes the
+// symlink as a link, never through it.
+//
+// The records directory here is the one runlogDir reports; the swap
+// renames it to aside and symlinks other into its place.
+type swapRecordsDirOnFirstRead struct {
+	dir, aside, other string
+	swapped           bool
+	err               error
+}
+
+func (s *swapRecordsDirOnFirstRead) Read(p []byte) (int, error) {
+	if !s.swapped {
+		s.swapped = true
+		if err := os.Rename(s.dir, s.aside); err != nil {
+			s.err = err
+			return 0, err
+		}
+		if err := os.Symlink(s.other, s.dir); err != nil {
+			s.err = err
+			return 0, err
+		}
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneSwapDuringPromptCannotRedirectTheDelete swaps the
+// records directory out from under the prune while the deletion
+// question is on screen — the directory is renamed aside, a symlink
+// to an unrelated directory is put in its place, and then "y" is
+// answered — and pins that the delete still lands only inside the
+// directory the listing named: the unrelated directory's file with
+// the same base name survives, the record the command named is gone
+// from the renamed-aside directory, and the exit is 0. A prune that
+// resolved the directory again after the prompt would delete the
+// unrelated directory's file instead.
+func TestRunsPruneSwapDuringPromptCannotRedirectTheDelete(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	recordName := "20260830T101500Z-1.jsonl"
+	writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	// The unrelated directory holds a file with the same base name as
+	// the record being deleted; a delete redirected by the swap would
+	// land on exactly this file.
+	other := t.TempDir()
+	otherPath := filepath.Join(other, recordName)
+	if err := os.WriteFile(otherPath, []byte("not a record"), 0o600); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+
+	// aside receives the records directory when the swap renames it
+	// away from dir; the empty placeholder is removed so the rename
+	// replaces it, and the whole swap stays inside t.TempDir-managed
+	// paths — cleanup removes the symlink as a link and the renamed
+	// directory with its contents.
+	aside := t.TempDir()
+	if err := os.Remove(aside); err != nil {
+		t.Fatalf("vacate aside: %v", err)
+	}
+
+	stdin := &swapRecordsDirOnFirstRead{dir: dir, aside: aside, other: other}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("swap during the prompt failed: %v", stdin.err)
+	}
+	if code != 0 {
+		t.Fatalf("prune with the swap during the prompt = (%d, %q, %q), want exit 0", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(otherPath); err != nil {
+		t.Fatalf("%s was deleted although prune never listed %s: %v", otherPath, dir, err)
+	}
+	if _, err := os.Stat(filepath.Join(aside, recordName)); err == nil {
+		t.Fatalf("record %s still exists in the listed directory after the prune", filepath.Join(aside, recordName))
+	}
+}
+
+// replaceRecordWithDirectoryOnFirstRead removes the record file and
+// puts an empty directory of the same name in its place on the first
+// stdin Read, then answers "y". The prompt's ReadString is the first
+// read of stdin, so the replacement lands exactly while the question
+// is on screen — deterministic, no sleeps — the same window
+// swapRecordsDirOnFirstRead uses. The replacement directory is left
+// empty, which is what a renamed-away record's name can be replaced
+// with.
+type replaceRecordWithDirectoryOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (r *replaceRecordWithDirectoryOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.Remove(r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	if err := os.Mkdir(r.recordPath, 0o700); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused is a
+// scenario test: while the confirmation question is on screen,
+// something else appears under the listed record's name — an empty
+// directory in the record file's place, the way a renamed-away
+// record's name can be left — the answer is y, and prune refuses:
+// exit 9, the directory still there, and the record's own id never
+// on a deleted line. It deliberately does not say which guard
+// refuses: the identity guard speaks first today, and both the
+// identity and the type guards would refuse this name — the only
+// difference a user could see between the two refusals is the
+// wording, so the test pins the refusal itself, never the wording.
+// The identity guard is pinned specifically by
+// TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused and
+// TestRunsPruneRecordAppearsDuringPromptRefused, both of which turn
+// red when the identity check is removed; the type guard is pinned
+// by TestRunsPruneSelectedDirectoryRefusedByType.
+func TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	stdin := &replaceRecordWithDirectoryOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record replaced by a directory = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if info, err := os.Lstat(recordPath); err != nil {
+		t.Fatalf("the replacement directory %s vanished: %v", recordPath, err)
+	} else if !info.IsDir() {
+		t.Fatalf("%s is not a directory after the prune", recordPath)
+	}
+	if strings.Contains(stdout.String(), "deleted "+runID) {
+		t.Fatalf("stdout = %q: the record's own id must never be on a deleted line", stdout.String())
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q: no id may be reported as deleted", stdout.String(), want)
+	}
+}
+
+// replaceRecordWithSymlinkOnFirstRead removes the record file and
+// puts a symlink of the same name pointing at targetPath in its place
+// on the first stdin Read, then answers "y", exactly like
+// replaceRecordWithDirectoryOnFirstRead in the same window.
+type replaceRecordWithSymlinkOnFirstRead struct {
+	recordPath string
+	targetPath string
+	err        error
+}
+
+func (r *replaceRecordWithSymlinkOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.Remove(r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	if err := os.Symlink(r.targetPath, r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused asserts
+// the identity gate for a symlink replacement: the listed record's
+// name is replaced by a symlink pointing outside the records
+// directory while the question is on screen, the answer is y, and
+// prune refuses — exit 9, the refusal naming that the name no longer
+// holds the file that was listed, and both the link and its target
+// survive, byte-identical. The refusal is identity, not type: a
+// symlink that was what the listing showed is deleted, and one that
+// merely appears under the listed name is not.
+func TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "precious.jsonl")
+	if err := os.WriteFile(targetPath, []byte("not a record\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	stdin := &replaceRecordWithSymlinkOnFirstRead{recordPath: recordPath, targetPath: targetPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record replaced by a symlink = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if info, err := os.Lstat(recordPath); err != nil {
+		t.Fatalf("the replacement symlink %s is gone: %v", recordPath, err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink after the prune", recordPath)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("the symlink's target %s was touched: %v", targetPath, err)
+	}
+	if string(data) != "not a record\n" {
+		t.Fatalf("the target changed by the prune: %q", data)
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "no longer the record that was listed") {
+		t.Fatalf("stderr = %q, want the identity refusal naming the replacement", stderr.String())
+	}
+}
+
+// removeRecordOnFirstRead deletes the record file on the first stdin
+// Read, then answers "y": the record is gone exactly while the
+// question is on screen, so the gate's lookup fails at the moment of
+// the delete.
+type removeRecordOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (r *removeRecordOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.Remove(r.recordPath); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordVanishedDuringPromptRefused asserts the gate's
+// failure arm: the listed record is gone when the delete is about to
+// happen, and prune says so — exit 9, the refusal on stderr, no
+// deleted line — instead of pretending the run was deleted. Without
+// the gate the remove itself would fail with a raw "no such file"
+// error; the gate turns the vanished name into the same refusal
+// family as the other gates.
+func TestRunsPruneRecordVanishedDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+
+	stdin := &removeRecordOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("removal during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record vanished during the prompt = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Lstat(recordPath); !os.IsNotExist(err) {
+		t.Fatalf("%s exists after the prune: %v", recordPath, err)
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "refusing to delete") || !strings.Contains(stderr.String(), "cannot be examined") {
+		t.Fatalf("stderr = %q, want the refusal for the vanished record", stderr.String())
+	}
+}
+
+// createRecordOnFirstRead writes a record file on the first stdin
+// Read, then answers "y": the name is empty when the candidate is
+// chosen and holds a freshly written file exactly while the question
+// is on screen — the mirror of removeRecordOnFirstRead in the same
+// window.
+type createRecordOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (c *createRecordOnFirstRead) Read(p []byte) (int, error) {
+	if err := os.WriteFile(c.recordPath, []byte("{\"schemaVersion\":1}\n"), 0o600); err != nil {
+		c.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneRecordAppearsDuringPromptRefused asserts the gate's
+// no-identity arm: a candidate whose file could not be looked up when
+// it was chosen — here a path that does not exist, injected through
+// the list seam — keeps nothing, so the delete cannot anchor on
+// anything, and a file that appears under the name while the question
+// is on screen is refused even though it is a regular file: nothing
+// about that file was ever shown, the delete says so with the
+// identity refusal, exit 9, and the file stays. The selection-time
+// lookup failure invents no new arm — the not-listed file gets the
+// same refusal every not-listed file gets.
+func TestRunsPruneRecordAppearsDuringPromptRefused(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260830T101500Z-1"
+	recordPath := filepath.Join(dir, runID+".jsonl")
+	original := runlogList
+	runlogList = func(string) ([]runlog.Run, error) {
+		return []runlog.Run{{RunID: runID, Outcome: "completed", Path: recordPath}}, nil
+	}
+	t.Cleanup(func() { runlogList = original })
+
+	stdin := &createRecordOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("creation during the prompt failed: %v", stdin.err)
+	}
+	if code != 9 {
+		t.Fatalf("prune with the record appearing during the prompt = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	}
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "no longer the record that was listed") {
+		t.Fatalf("stderr = %q, want the identity refusal naming the never-listed file", stderr.String())
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("the file that appeared during the prompt was deleted: %v", err)
+	}
+}
+
+// touchRecordOnFirstRead refreshes the record file's modification
+// time on the first stdin Read, then answers "y": the one fact the
+// freshness check reads changes exactly while the question is on
+// screen, the way a writer appending to the record would move it.
+type touchRecordOnFirstRead struct {
+	recordPath string
+	err        error
+}
+
+func (r *touchRecordOnFirstRead) Read(p []byte) (int, error) {
+	now := time.Now()
+	if err := os.Chtimes(r.recordPath, now, now); err != nil {
+		r.err = err
+		return 0, err
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+// TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime asserts the
+// grace-window re-check at the moment of the delete: an unknown
+// record selected while stale is touched during the prompt — the
+// record is being written right now, after selection already looked —
+// and the answer is y. Prune spares it and reports it as kept — the
+// kept line, and the summary counts it in the unreadable clause, the
+// same reporting a selection-time spare gets, never the still-running
+// clause — and exits 0: sparing is not a failure. A record with a
+// real outcome would go whatever its modification time, but this
+// record's outcome is unknown, so the freshness question is the one
+// that decides.
+func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260831T120000Z-1"
+	recordPath := filepath.Join(dir, runID+".jsonl")
+	if err := os.WriteFile(recordPath, []byte("not json at all\n"), 0o600); err != nil {
+		t.Fatalf("write unknown record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(recordPath, stale, stale); err != nil {
+		t.Fatalf("age the record: %v", err)
+	}
+
+	stdin := &touchRecordOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("touch during the prompt failed: %v", stdin.err)
+	}
+	want := "kept " + runID + "\nkept 0 newest, 1 unreadable\n"
+	if code != 0 || stdout.String() != want {
+		t.Fatalf("prune with the record touched during the prompt = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
+	}
+	if _, err := os.Stat(recordPath); err != nil {
+		t.Fatalf("the touched unknown record %s was deleted: %v", recordPath, err)
+	}
+}
+
+// TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime
+// asserts the delete-time freshness check's sparing arm: a stale
+// malformed record selected as unknown is replaced during the prompt
+// by a different fresh thing under the same name — an empty
+// directory, the starkest replacement — and the answer is y. Prune
+// spares it before the identity and type questions are even asked:
+// exit 0, `kept <id>` on stdout, the summary counting the record
+// unreadable, and the directory still there afterwards. The identity
+// check would refuse this very name — that is why it is asked after
+// freshness — and sparing destroys nothing, so the record is
+// reported as kept even though the name no longer holds what was
+// listed. Without the freshness check, identity would refuse the
+// directory and the prune would exit 9.
+func TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260831T130000Z-1"
+	recordPath := filepath.Join(dir, runID+".jsonl")
+	if err := os.WriteFile(recordPath, []byte("not json at all\n"), 0o600); err != nil {
+		t.Fatalf("write unknown record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(recordPath, stale, stale); err != nil {
+		t.Fatalf("age the record: %v", err)
+	}
+
+	stdin := &replaceRecordWithDirectoryOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
+	}
+	want := "kept " + runID + "\nkept 0 newest, 1 unreadable\n"
+	if code != 0 || stdout.String() != want {
+		t.Fatalf("prune with the unknown record replaced by a directory = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
+	}
+	if info, err := os.Lstat(recordPath); err != nil {
+		t.Fatalf("the replacement directory %s vanished: %v", recordPath, err)
+	} else if !info.IsDir() {
+		t.Fatalf("%s is not a directory after the prune", recordPath)
+	}
+}
+
+// TestRecordRecentlyModifiedUnstatablePathSpares asserts the
+// fail-safe direction of the freshness lookup: a path that cannot be
+// looked up — here, a name that does not exist — reports fresh, so
+// selection spares rather than deletes. Every doubtful case in this
+// reader resolves toward silence, never toward acting.
+func TestRecordRecentlyModifiedUnstatablePathSpares(t *testing.T) {
+	dir := t.TempDir()
+	if !recordRecentlyModified(filepath.Join(dir, "missing.jsonl")) {
+		t.Fatalf("recordRecentlyModified on an unstatable path = false, want true: a record that cannot be examined must be spared, not deleted")
+	}
+}
+
+// TestRunsPruneUnstatableUnknownRecordReportedUnreadable asserts the
+// reporting side of TestRecordRecentlyModifiedUnstatablePathSpares
+// end to end: an unknown record whose timestamp cannot be read —
+// here a path that does not exist, injected through the list seam
+// exactly as the delete-failure tests inject theirs — is kept at
+// selection, its id reaches keptUnreadable in the --json document,
+// and the human clause says only `unreadable`. Nobody measured when
+// that record changed — its timestamp was never read at all — so
+// neither report may claim it changed recently.
+func TestRunsPruneUnstatableUnknownRecordReportedUnreadable(t *testing.T) {
+	// One fresh records directory per subtest: a prune that deleted
+	// the completed record in one arm must not change what the other
+	// arm lists.
+	withRecords := func(t *testing.T) (missingPath, realPath string) {
+		t.Helper()
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		// The unknown record's path cannot be looked up: it does not
+		// exist. recordRecentlyModified treats a failed lookup as
+		// fresh, so selection keeps the record; the report may not
+		// claim to know when it changed. A second, deletable record
+		// makes the summary line render at all.
+		missingPath = filepath.Join(dir, "20260830T101500Z-0.jsonl")
+		realPath = writeListRecord(t, dir, "20260830T103000Z-1", deadPID, "2026-08-30T10:30:00Z", "/ws-a", 1, true, "completed", "")
+		original := runlogList
+		runlogList = func(string) ([]runlog.Run, error) {
+			return []runlog.Run{
+				{RunID: "20260830T101500Z-0", Outcome: "unknown", Path: missingPath},
+				{RunID: "20260830T103000Z-1", Outcome: "completed", Path: realPath},
+			}, nil
+		}
+		t.Cleanup(func() { runlogList = original })
+		return missingPath, realPath
+	}
+
+	t.Run("human clause", func(t *testing.T) {
+		_, realPath := withRecords(t)
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+		}
+		const want = "deleted 20260830T103000Z-1\nkept 0 newest, 1 unreadable\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if _, err := os.Stat(realPath); !os.IsNotExist(err) {
+			t.Fatalf("record %s still exists after the prune: %v", realPath, err)
+		}
+	})
+
+	t.Run("--json document", func(t *testing.T) {
+		_, realPath := withRecords(t)
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune --json = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+		}
+		var document struct {
+			SchemaVersion  int      `json:"schemaVersion"`
+			Deleted        []string `json:"deleted"`
+			KeptNewest     int      `json:"keptNewest"`
+			KeptRunning    []string `json:"keptRunning"`
+			KeptUnreadable []string `json:"keptUnreadable"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+			t.Fatalf("decode document %q: %v", stdout, err)
+		}
+		if document.SchemaVersion != 1 || len(document.Deleted) != 1 || document.Deleted[0] != "20260830T103000Z-1" || document.KeptNewest != 0 || len(document.KeptRunning) != 0 || len(document.KeptUnreadable) != 1 || document.KeptUnreadable[0] != "20260830T101500Z-0" {
+			t.Fatalf("document = %#v, want the unstatable unknown record in keptUnreadable and the completed one in deleted", document)
+		}
+		if _, err := os.Stat(realPath); !os.IsNotExist(err) {
+			t.Fatalf("record %s still exists after the prune: %v", realPath, err)
+		}
+	})
+}
+
+// TestRunsPruneSymlinkFreshnessByLinkNotTarget pins the two facts a
+// symlink record exercises: freshness is decided by the link's own
+// timestamp, never by the target's, and a stale symlink that reaches
+// the delete is removed — the link itself, never whatever it points
+// at. The construction is the mirror of the one in the finding — a
+// freshly created link whose target is two hours old: os.Stat would
+// follow the link to the old target and read stale, while the link's
+// own timestamp, the one that matters, is fresh.
+func TestRunsPruneSymlinkFreshnessByLinkNotTarget(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "old.jsonl")
+	if err := os.WriteFile(targetPath, []byte("not a record\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(targetPath, stale, stale); err != nil {
+		t.Fatalf("age the target: %v", err)
+	}
+	linkPath := filepath.Join(dir, "20260831T120000Z-1.jsonl")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// The freshness fact: the link is freshly created, so its own
+	// timestamp is fresh even though its target is old.
+	if !recordRecentlyModified(linkPath) {
+		t.Fatalf("recordRecentlyModified(%q) = false, want true: the target's age must not answer for the link", linkPath)
+	}
+
+	// End to end through the real listing, the same fresh link: the
+	// unknown record is spared whole — nothing to prune, exit 0 — and
+	// both the link and its target still exist.
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stdout != "nothing to prune\n" || stderr != "" {
+		t.Fatalf("prune with the fresh symlink record = (%d, %q, %q), want (0, \"nothing to prune\\n\", \"\")", code, stdout, stderr)
+	}
+	if info, err := os.Lstat(linkPath); err != nil {
+		t.Fatalf("the symlink %s is gone: %v", linkPath, err)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is not a symlink after the prune", linkPath)
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("the target %s is gone: %v", targetPath, err)
+	}
+
+	// The deletion fact: a symlink record that is selected — injected
+	// through the list seam with the same real path, the way the
+	// delete-failure tests do — is deleted like any other unreadable
+	// record: the link is removed, exit 0, and the target is never
+	// touched. A gate that refused the link by its type would leave
+	// this junk in place forever, and a removal that followed the
+	// link would destroy the target.
+	original := runlogList
+	runlogList = func(string) ([]runlog.Run, error) {
+		return []runlog.Run{{RunID: "20260831T120000Z-1", Outcome: "completed", Path: linkPath}}, nil
+	}
+	t.Cleanup(func() { runlogList = original })
+	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("prune of the selected symlink record = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	if want := "deleted 20260831T120000Z-1\nkept 0 newest\n"; stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+		t.Fatalf("the symlink %s was not deleted: %v", linkPath, err)
+	}
+	if _, err := os.Stat(targetPath); err != nil {
+		t.Fatalf("the target %s was touched: %v", targetPath, err)
+	}
+}
+
+// TestRunsPruneSelectedDirectoryRefusedByType asserts the type
+// gate's refusal side: a candidate whose file is a directory — a
+// name that was a directory when the candidate was chosen and is the
+// same directory at the delete, so the identity check passes — is
+// refused by what it is: exit 9, the refusal on stderr, the
+// directory still there, and no deleted line for its id. The
+// candidate is injected through the list seam with a real directory
+// inside the records directory, the only way a directory can reach
+// the delete list at all: the reader never lists one.
+func TestRunsPruneSelectedDirectoryRefusedByType(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	realPath := writeListRecord(t, dir, "20260830T103000Z-1", deadPID, "2026-08-30T10:30:00Z", "/ws-a", 1, true, "completed", "")
+	dirPath := filepath.Join(dir, "20260830T101500Z-0.jsonl")
+	if err := os.Mkdir(dirPath, 0o700); err != nil {
+		t.Fatalf("mkdir the directory record: %v", err)
+	}
+	original := runlogList
+	runlogList = func(string) ([]runlog.Run, error) {
+		return []runlog.Run{
+			{RunID: "20260830T101500Z-0", Outcome: "completed", Path: dirPath},
+			{RunID: "20260830T103000Z-1", Outcome: "completed", Path: realPath},
+		}, nil
+	}
+	t.Cleanup(func() { runlogList = original })
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+	if code != 9 {
+		t.Fatalf("prune of the selected directory record = (%d, %q, %q), want exit 9", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "deleted 20260830T103000Z-1\n") {
+		t.Fatalf("stdout = %q, want the deleted line for the record that went", stdout)
+	}
+	if !strings.Contains(stdout, "kept 0 newest\n") {
+		t.Fatalf("stdout = %q, want the summary line", stdout)
+	}
+	if !strings.Contains(stderr, "not a regular file or symlink") {
+		t.Fatalf("stderr = %q, want the type refusal", stderr)
+	}
+	if info, err := os.Lstat(dirPath); err != nil {
+		t.Fatalf("the directory %s was removed: %v", dirPath, err)
+	} else if !info.IsDir() {
+		t.Fatalf("%s is not a directory after the prune", dirPath)
+	}
+	if _, err := os.Stat(realPath); !os.IsNotExist(err) {
+		t.Fatalf("in-directory record %s still exists: %v", realPath, err)
+	}
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // schemaVersion is the run-record document version. It is the record's
@@ -46,6 +47,30 @@ const schemaVersion = 1
 // in the record; the run itself is unaffected — the worker always
 // receives the full prompt. The cap bounds the record, not the run.
 const promptCap = 4096
+
+// pidCreateTime is the private dependency-injection seam behind the
+// start line's and worker line's createTime fields: the creation
+// time of the process that wrote the record — the pi-worker itself
+// for the start line, the process a worker started for a worker line
+// — in milliseconds since the Unix epoch exactly as gopsutil reports
+// it. Tests replace it with a scripted answer so the records they
+// write stay hermetic; production never does. The value
+// is an exact-equality identity check, never a formatted time: a
+// string round-trip would lose sub-second precision and the equality
+// against process.CreateTime would silently stop matching.
+var pidCreateTime = defaultPidCreateTime
+
+// defaultPidCreateTime returns the creation time of the process with
+// the given pid, in milliseconds since the Unix epoch. A process that
+// cannot be looked up returns an error; the caller leaves the field
+// off the record instead of inventing a value.
+func defaultPidCreateTime(pid int) (int64, error) {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return 0, err
+	}
+	return p.CreateTime()
+}
 
 // Dir returns the directory run records live in. Records are never put
 // inside a workspace: a workspace is caller-owned and may be ephemeral
@@ -95,13 +120,19 @@ type Recorder struct {
 // missing, the record file is opened for append, and the complete line
 // including its newline reaches the file in one Write call before Start
 // returns, so a run killed at any later instant still leaves its start
-// line on disk.
+// line on disk. The creation-time lookup and the marshalling run
+// before the file is opened: everything that can fail or block is done
+// first, so the only moment the file exists without its start line is
+// the single Write that follows the open.
 //
 // The record carries the identity of the process each worker starts:
 // one worker line per started worker, appended by WorkerProcess while
 // the run is in flight — the only moment that identity exists and can
-// be recorded. Records are never deleted, not on success and not on
-// failure.
+// be recorded. The start line carries the writer's own process
+// identity, the same pid paired with its creation time, so a later
+// reader can still tell the run from a number that was reused by an
+// unrelated process. Records are never deleted, not on success and
+// not on failure.
 func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -110,9 +141,22 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	// second cannot collide: the timestamp's finest unit is the second,
 	// and the process id separates the runs that share it.
 	runID := startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
-	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// The creation-time lookup and the marshalling of the start line
+	// happen before the record file exists: everything that can fail
+	// or block — the process-table read, the JSON encoding — completes
+	// before the open, so a marshal failure leaves no file behind, and
+	// the file exists without its start line only for the length of
+	// the single Write that follows the open. A concurrent scan that
+	// catches it in that window sees a zero-length record, which the
+	// interrupted-run reader treats as a record not yet written —
+	// never as a corrupt one — and examines again on its next scan. A
+	// lookup failure leaves the createTime key off the start line,
+	// exactly as it leaves it off a worker line — the identity is
+	// weaker then, never an error. The process is this worker itself,
+	// the same process whose pid the line records.
+	createTime, err := pidCreateTime(os.Getpid())
 	if err != nil {
-		return nil, err
+		createTime = 0
 	}
 	line, err := json.Marshal(startLine{
 		SchemaVersion: schemaVersion,
@@ -122,9 +166,13 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 		Workspace:     workspace,
 		PID:           os.Getpid(),
 		Tasks:         projectTasks(tasks),
+		CreateTime:    createTime,
 	})
 	if err != nil {
-		file.Close()
+		return nil, err
+	}
+	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := file.Write(append(line, '\n')); err != nil {
@@ -145,6 +193,26 @@ func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
 	if r == nil {
 		return
 	}
+	// The creation-time lookup happens before the lock: reading the
+	// process table takes real time, and the lock only guards the
+	// shared write-error slot and the ordering between a worker line
+	// and the final write-and-close. A lookup failure leaves the
+	// createTime key off the line — the identity is weaker then, never
+	// an error.
+	//
+	// One limit is accepted by design: the creation time is sampled
+	// here, after the child has started, so a child that exits before
+	// this lookup runs can be reaped and its pid number reused by an
+	// unrelated process, and the line would then record that process's
+	// creation time as the worker's identity. The window is the time
+	// from the child's start to this lookup — milliseconds, against
+	// the minutes a pid number takes to cycle, and within it the child
+	// must exit, be reaped, and have its number taken — and the
+	// failure costs a wrong group in one warning line, never a signal.
+	createTime, err := pidCreateTime(pid)
+	if err != nil {
+		createTime = 0
+	}
 	line := workerLine{
 		SchemaVersion: schemaVersion,
 		Event:         "worker",
@@ -152,6 +220,7 @@ func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
 		At:            at.UTC().Format(time.RFC3339),
 		WorkerID:      workerID,
 		PID:           pid,
+		CreateTime:    createTime,
 	}
 	data, err := json.Marshal(line)
 	if err != nil {
@@ -270,6 +339,13 @@ type startLine struct {
 	Workspace     string      `json:"workspace"`
 	PID           int         `json:"pid"`
 	Tasks         []startTask `json:"tasks"`
+	// CreateTime is the process creation time of the process that
+	// wrote the start line — the pi-worker itself — in milliseconds
+	// since the Unix epoch, exactly as gopsutil reports it, for exact
+	// equality against a later Process.CreateTime. Absent when the
+	// lookup failed at write time, which is also the shape of every
+	// record written before this field existed.
+	CreateTime int64 `json:"createTime,omitempty"`
 }
 
 // startTask is one task's projection in the start line. WritesDeclared
@@ -288,7 +364,9 @@ type startTask struct {
 
 // workerLine is the line of a run record written while the run is in
 // flight, one per started worker, carrying the identity of the process
-// that worker launched.
+// that worker launched: the pid paired with the process's creation
+// time, the pair being the identity — a pid alone is reused, so it
+// cannot name a process on its own.
 type workerLine struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Event         string `json:"event"`
@@ -296,6 +374,12 @@ type workerLine struct {
 	At            string `json:"at"`
 	WorkerID      int    `json:"workerId"`
 	PID           int    `json:"pid"`
+	// CreateTime is the process creation time in milliseconds since
+	// the Unix epoch, exactly as gopsutil reports it, for exact
+	// equality against a later Process.CreateTime. Absent when the
+	// lookup failed at write time, which is also the shape of every
+	// record written before this field existed.
+	CreateTime int64 `json:"createTime,omitempty"`
 }
 
 // finishLine is the final line of a run record. Result and Error are

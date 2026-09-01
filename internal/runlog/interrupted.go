@@ -49,7 +49,7 @@ type marker struct {
 // be a false alarm — so they are measured, not assumed: the finish
 // line is the last non-empty line of the record carrying event
 // "finish", and the process is the pid of the first line, the start
-// line.
+// line, paired with that line's creation time when it carries one.
 //
 // The reader remembers how far it has already looked in the marker
 // file reported.json inside dir, written atomically with the same
@@ -57,22 +57,41 @@ type marker struct {
 // are never opened again; a record after it is settled when it carries
 // its finish line, still running while its process is alive, and
 // interrupted when neither — and is then reported once, because the
-// marker is updated before Interrupted returns. Interrupted always
+// marker is updated before Interrupted returns. A record that exists
+// but is still empty is not settled: the writer creates the file and
+// writes the start line in the next instant, so the empty state is a
+// record not yet written, and the scan skips it without moving the
+// watermark — the next scan looks at it again. Interrupted always
 // writes the marker after the walk; a marker that cannot be written is
 // returned as an error alongside the interrupted records, and only a
 // records directory that cannot be read returns an error with no
 // records.
 //
-// Two ceilings are accepted by design, and both resolve toward
-// silence, never toward a wrong accusation:
+// Four limits are accepted by design, and each names its own
+// failure direction:
 //
-//   - If a dead run's pid is reused by a long-lived process, that
-//     record looks alive forever and holds the watermark back. The
-//     result is silence, and the planned runs prune dissolves it.
+//   - A record whose start line carries the writer's creation time is
+//     not fooled by a reused pid: the pair is the identity, and an
+//     unrelated process holding the number reads as dead. A record
+//     written before the field existed carries the number alone, and
+//     for those a reused pid still looks alive forever and holds the
+//     watermark back — the original ceiling, unchanged for those
+//     records.
+//   - A process that has exited but has not been reaped still reports
+//     as alive, with its original creation time, so its record reads
+//     as a run still in flight even when it carries the pair. This
+//     reader cannot tell it from a live run.
 //   - Two runs scanning at the same moment both write the marker; the
 //     last write wins and one watermark advance can be lost. The worst
 //     outcome is one duplicate warning — the atomic rename means the
 //     file is never half-written, so there is no lock and no retry.
+//   - A record is parsed and then its process is probed: the two are
+//     not one snapshot, and a run that finishes between them is
+//     reported as interrupted although its record is now complete.
+//     Nothing here locks or re-reads to close the gap — that is the
+//     accepted ceiling of reading a file another process is still
+//     appending to. The cost is one warning line about a run that had
+//     just finished, never an action.
 func Interrupted(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -106,7 +125,17 @@ func Interrupted(dir string) ([]string, error) {
 		if runID <= watermark {
 			continue
 		}
-		pid, finished, err := inspectRecord(filepath.Join(dir, name))
+		// A zero-length record is a record not yet written: the
+		// writer creates the file and writes the start line in the
+		// next instant, so the file exists empty for the length of
+		// one write. It is not corrupt — it simply has nothing in it
+		// yet — so it is skipped without settling: neither the
+		// watermark nor the reported list moves, and the next scan
+		// looks at it again.
+		if info, err := entry.Info(); err == nil && info.Size() == 0 {
+			continue
+		}
+		pid, createTime, finished, err := inspectRecord(filepath.Join(dir, name))
 		if err != nil {
 			// A record that cannot be read or parsed counts as settled:
 			// the watermark passes it, so one corrupt file can never
@@ -122,13 +151,13 @@ func Interrupted(dir string) ([]string, error) {
 			}
 			continue
 		}
-		alive, err := pidAlive(int32(pid))
-		if err != nil || alive {
-			// A liveness error counts as alive: doubtful cases resolve
-			// toward silence. A still-running record stops the
-			// watermark — it may still finish — but the scan continues
-			// past it, so an interrupted run that started later is
-			// still found and reported.
+		if recordProcessAlive(pid, createTime) {
+			// A doubtful case counts as alive — a liveness error, a
+			// record without a creation time, a creation-time lookup
+			// error — and a still-running record stops the watermark:
+			// it may still finish. The scan continues past it, so an
+			// interrupted run that started later is still found and
+			// reported.
 			advancing = false
 			continue
 		}
@@ -169,21 +198,22 @@ func Interrupted(dir string) ([]string, error) {
 	return interrupted, nil
 }
 
-// inspectRecord reads one record and answers the two questions the
-// scan asks of it: which process the record belongs to — the pid of
-// the start line, the first non-empty line — and whether the record
-// carries its finish line — its last non-empty line decodes with event
-// "finish". A record that cannot be read or parsed returns an error,
-// so the caller treats it as settled; that includes a start line that
-// is not a start line or carries no usable pid. It answers through
-// parseRecord, the shared parse the list reader uses too: the two
-// readers must classify the same record the same way.
-func inspectRecord(path string) (pid int, finished bool, err error) {
+// inspectRecord reads one record and answers the questions the scan
+// asks of it: which process the record belongs to — the pid of the
+// start line, the first non-empty line, paired with that line's
+// creation time — and whether the record carries its finish line —
+// its last non-empty line decodes with event "finish". A record that
+// cannot be read or parsed returns an error, so the caller treats it
+// as settled; that includes a start line that is not a start line or
+// carries no usable pid. It answers through parseRecord, the shared
+// parse the list reader uses too: the two readers must classify the
+// same record the same way.
+func inspectRecord(path string) (pid int, createTime int64, finished bool, err error) {
 	rec, err := parseRecord(path)
 	if err != nil {
-		return 0, false, err
+		return 0, 0, false, err
 	}
-	return rec.pid, rec.finished, nil
+	return rec.pid, rec.createTime, rec.finished, nil
 }
 
 // loadMarker reads the marker document. A missing file, an unreadable

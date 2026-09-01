@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,46 @@ func decodeLine(t *testing.T, line string) map[string]any {
 		t.Fatalf("line is not one JSON object: %v: %q", err, line)
 	}
 	return object
+}
+
+// TestStartDoesNotCreateRecordFileBeforeCreateTimeLookup pins the
+// ordering inside Start that narrows the empty-file window: the
+// record file must not exist while the creation-time lookup runs.
+// The window between "the file exists" and "the start line is in
+// it" is nothing but the single write that follows the open — a
+// file that exists and is empty reads to the interrupted-run scan as
+// a record not yet written, never as a corrupt one, and the
+// watermark does not pass it. The seam checks the exact record path
+// from inside the lookup and records what it saw.
+func TestStartDoesNotCreateRecordFileBeforeCreateTimeLookup(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	recordPath := filepath.Join(dir, startedAt.UTC().Format("20060102T150405Z")+"-"+strconv.Itoa(os.Getpid())+".jsonl")
+	var sawFileDuringLookup bool
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) {
+		_, err := os.Stat(recordPath)
+		switch {
+		case err == nil:
+			sawFileDuringLookup = true
+		case !os.IsNotExist(err):
+			t.Fatalf("stat record path from inside the lookup: %v", err)
+		}
+		return 1724998530123, nil
+	}
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	recorder, err := Start(dir, startedAt, "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer recorder.file.Close()
+	if sawFileDuringLookup {
+		t.Fatalf("record file already existed while the creation-time lookup ran")
+	}
+	// The other half of the pin: once the lookup has returned, the
+	// record file exists and carries the start line.
+	recordLines(t, readRecord(t, dir))
 }
 
 // TestStartWritesOneLine asserts Start writes exactly one line, parsing
@@ -280,6 +321,166 @@ func TestWorkerProcessAppendsThirdLine(t *testing.T) {
 	finish := decodeLine(t, lines[2])
 	if finish["event"] != "finish" {
 		t.Fatalf("finish line event = %v, want finish", finish["event"])
+	}
+}
+
+// TestStartLineOmitsNonZeroCreateTimeOnLookupError asserts a
+// pidCreateTime call that returns a non-zero value together with an
+// error still leaves the createTime key off the start line: the value
+// is used only when the lookup succeeded. A failing call that also
+// returns a value must not write that value as the writer's identity —
+// the field's comment promises absence on a failed lookup, and the
+// promise holds whatever the seam returns alongside the error.
+func TestStartLineOmitsNonZeroCreateTimeOnLookupError(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 1724998530123, errors.New("no process table entry") }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	dir := t.TempDir()
+	if _, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	lines := recordLines(t, readRecord(t, dir))
+	if bytes.Contains([]byte(lines[0]), []byte("createTime")) {
+		t.Fatalf("start line carries createTime after a failed lookup: %s", lines[0])
+	}
+}
+
+// TestWorkerLineOmitsNonZeroCreateTimeOnLookupError asserts a
+// pidCreateTime call that returns a non-zero value together with an
+// error still leaves the createTime key off the worker line: the value
+// is used only when the lookup succeeded. The existing
+// TestWorkerLineOmitsCreateTimeOnLookupError scripts the failure as a
+// zero value with an error, which a sloppy implementation could pass
+// by accident; this one scripts the value and the error together, the
+// exact shape Finding B describes, so the absent key is forced by the
+// error check and not by the zero.
+func TestWorkerLineOmitsNonZeroCreateTimeOnLookupError(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 1724998530123, errors.New("no process table entry") }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC), 2, 4832)
+
+	lines := recordLines(t, readRecord(t, dir))
+	if bytes.Contains([]byte(lines[1]), []byte("createTime")) {
+		t.Fatalf("worker line carries createTime after a failed lookup: %s", lines[1])
+	}
+}
+
+// TestWorkerLineCarriesCreateTime asserts the worker line carries the
+// process creation time the pidCreateTime seam returned, as the raw
+// millisecond number — the exact-equality identity, never a formatted
+// time. The expected value is a literal written here, never read back
+// from the code under test, and its sub-second digits prove no
+// precision was lost on the way to the line.
+func TestWorkerLineCarriesCreateTime(t *testing.T) {
+	const wantCreateTime = int64(1724998530123)
+	oldPidCreateTime := pidCreateTime
+	var sawPID int
+	pidCreateTime = func(pid int) (int64, error) {
+		sawPID = pid
+		return wantCreateTime, nil
+	}
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC), 2, 4832)
+
+	lines := recordLines(t, readRecord(t, dir))
+	worker := decodeLine(t, lines[1])
+	if worker["event"] != "worker" {
+		t.Fatalf("line event = %v, want worker", worker["event"])
+	}
+	if worker["createTime"] != float64(wantCreateTime) {
+		t.Fatalf("createTime = %v, want %d", worker["createTime"], wantCreateTime)
+	}
+	if sawPID != 4832 {
+		t.Fatalf("pidCreateTime called with %d, want 4832", sawPID)
+	}
+}
+
+// TestWorkerLineOmitsCreateTimeOnLookupError asserts a failed
+// pidCreateTime lookup leaves the createTime key off the worker line
+// entirely, never as a zero: the raw bytes of the line do not contain
+// it, Finish reports no error about it, and the rest of the line is
+// written unchanged. The absent field is the real, permanent shape of
+// every record written before this field existed, so a later reader
+// must be able to see "no field".
+func TestWorkerLineOmitsCreateTimeOnLookupError(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 0, errors.New("no process table entry") }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC), 2, 4832)
+	result := run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}
+	if err := recorder.Finish(time.Date(2026, 8, 30, 4, 15, 40, 0, time.UTC), &result, nil); err != nil {
+		t.Fatalf("Finish surfaced the failed lookup as an error: %v", err)
+	}
+
+	lines := recordLines(t, readRecord(t, dir))
+	if len(lines) != 3 {
+		t.Fatalf("record lines = %d, want 3", len(lines))
+	}
+	if bytes.Contains([]byte(lines[1]), []byte("createTime")) {
+		t.Fatalf("worker line carries createTime after a failed lookup: %s", lines[1])
+	}
+	worker := decodeLine(t, lines[1])
+	if worker["event"] != "worker" {
+		t.Fatalf("line event = %v, want worker", worker["event"])
+	}
+	if worker["runId"] != decodeLine(t, lines[0])["runId"] {
+		t.Fatalf("worker runId = %v, want the start line's %v", worker["runId"], decodeLine(t, lines[0])["runId"])
+	}
+	if worker["at"] != "2026-08-30T04:15:35Z" {
+		t.Fatalf("at = %v, want 2026-08-30T04:15:35Z", worker["at"])
+	}
+	if worker["workerId"] != float64(2) {
+		t.Fatalf("workerId = %v, want 2", worker["workerId"])
+	}
+	if worker["pid"] != float64(4832) {
+		t.Fatalf("pid = %v, want 4832", worker["pid"])
+	}
+}
+
+// TestWorkerLineSchemaVersionIsOne asserts the worker line still
+// carries schemaVersion 1 after the createTime addition. Adding a
+// field is additive — an old reader ignores the new key, a new reader
+// tolerates its absence — so the record's own document version does
+// not change.
+func TestWorkerLineSchemaVersionIsOne(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 1724998530123, nil }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Now(), 1, 4832)
+
+	lines := recordLines(t, readRecord(t, dir))
+	worker := decodeLine(t, lines[1])
+	if worker["event"] != "worker" {
+		t.Fatalf("line event = %v, want worker", worker["event"])
+	}
+	if worker["schemaVersion"] != float64(1) {
+		t.Fatalf("schemaVersion = %v, want 1", worker["schemaVersion"])
 	}
 }
 

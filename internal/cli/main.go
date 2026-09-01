@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -48,12 +49,15 @@ var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
 // runlogDir, runlogStart, and runlogInterrupted are the private
 // dependency-injection seams for the run record written while a run is
 // in flight and for the reader that scans earlier records for
-// interrupted runs before a run starts. Tests replace them with a
+// interrupted runs before a run starts. runlogLeftovers is the seam
+// for the reader that finds the live processes an earlier settled run
+// left behind, on the same pre-run scan. Tests replace them with a
 // temporary directory and with scripted failures; the production
 // values write and read records in the user's config directory.
 var runlogDir = runlog.Dir
 var runlogStart = runlog.Start
 var runlogInterrupted = runlog.Interrupted
+var runlogLeftovers = runlog.Leftovers
 
 // runlogList is the private dependency-injection seam for the read-only
 // runs list command. Tests replace it with a scripted failure; the
@@ -458,18 +462,23 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	var recorder *runlog.Recorder
 	dir, err := runlogDir()
 	if err == nil {
-		// Earlier runs are scanned for interruptions before this run's
-		// own record exists, so the current run cannot block its own
-		// watermark. A scan failure — an unreadable records directory
-		// or an unwritable marker — is one warning in the existing
-		// style, the interrupted runs the scan did find are still
-		// printed, and the run continues: a record problem never fails
-		// a run.
+		// Earlier runs are scanned for interruptions — and for the
+		// live processes a settled run left behind — before this
+		// run's own record exists, so the current run cannot block
+		// its own watermark. A scan failure — an unreadable records
+		// directory or an unwritable marker — is one warning in the
+		// existing style, what the scans did find is still printed,
+		// and the run continues: a record problem never fails a run.
 		paths, scanErr := runlogInterrupted(dir)
 		if scanErr != nil {
 			fmt.Fprintf(stderr, "pi-worker: warning: interrupted-run check unavailable: %v\n", scanErr)
 		}
 		warnInterruptedRuns(paths, dir, stderr)
+		leftovers, leftoversErr := runlogLeftovers(dir)
+		if leftoversErr != nil {
+			fmt.Fprintf(stderr, "pi-worker: warning: leftover-process check unavailable: %v\n", leftoversErr)
+		}
+		warnLeftoverProcesses(leftovers, dir, stderr)
 		recorder, err = runlogStart(dir, startedAt, workspace, tasks)
 	}
 	if err != nil {
@@ -607,6 +616,59 @@ func warnInterruptedRuns(paths []string, dir string, stderr io.Writer) {
 	if len(paths) > shown {
 		fmt.Fprintf(stderr, "pi-worker: warning: %d more interrupted runs in %s\n", len(paths)-shown, dir)
 	}
+}
+
+// warnLeftoverProcesses prints one stderr warning line per settled run
+// the leftover-process scan found, capped at five, and one summary
+// line for the remainder, in the shape of warnInterruptedRuns: the
+// full record path is the point of each line — the reader's model is
+// "there are records, I will open one if I care", and a warning
+// without a path is not a signal — and the cap keeps a long leftover
+// history from flooding the terminal, with the summary naming the
+// records directory so the caller knows where to look. Each run's
+// line carries its pids, capped at ten, because the pids are the
+// actionable part: the product reports the condition — it never kills
+// the processes. It is reported on every run for as long as a
+// leftover process is running, and never once: a leftover is a
+// condition that is still true, not an event that happened.
+func warnLeftoverProcesses(leftovers []runlog.Leftover, dir string, stderr io.Writer) {
+	total, shown := 0, 0
+	for _, leftover := range leftovers {
+		// The reader never returns a run with no pids — it omits
+		// those entirely — so a scripted fake that does is skipped
+		// silently rather than printed with an empty list.
+		if len(leftover.PIDs) == 0 {
+			continue
+		}
+		total++
+		if shown == 5 {
+			continue
+		}
+		shown++
+		fmt.Fprintf(stderr, "pi-worker: warning: an earlier run left processes running: %s (pids %s)\n", leftover.Path, leftoverPidList(leftover.PIDs))
+	}
+	if total > shown {
+		fmt.Fprintf(stderr, "pi-worker: warning: %d more runs left processes running in %s\n", total-shown, dir)
+	}
+}
+
+// leftoverPidList renders one leftover run's pids for its warning
+// line: up to ten, separated by ", " exactly, with the remainder
+// summarized inside the same parentheses. The summary is not a pid and
+// gets no separator — a capped list ends ", 10 and 4 more", never
+// ", 10, and 4 more". The pids are the actionable part of the line,
+// and a long list must not push the record path out of view.
+func leftoverPidList(pids []int) string {
+	limit := min(len(pids), 10)
+	parts := make([]string, 0, limit)
+	for _, pid := range pids[:limit] {
+		parts = append(parts, strconv.Itoa(pid))
+	}
+	line := strings.Join(parts, ", ")
+	if len(pids) > limit {
+		line += fmt.Sprintf(" and %d more", len(pids)-limit)
+	}
+	return line
 }
 
 // printVerification prints the run-level verification outcome after the
