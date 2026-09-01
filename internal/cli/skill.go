@@ -211,6 +211,12 @@ func skillContextExit(ctx context.Context, stderr io.Writer) (int, bool) {
 
 func writeSkillStatusHuman(inspection skillinstall.Inspection, stdout io.Writer) {
 	fmt.Fprintf(stdout, "status: %s\n", humanSkillValue(string(inspection.Status)))
+	if inspection.Status == skillinstall.StatusStale {
+		fmt.Fprintf(stdout, "stale: installed by %s, running %s; recovery: %s\n",
+			humanSkillValue(inspection.InstallerVersion),
+			humanSkillValue(inspection.ProgramVersion),
+			humanSkillValue(skillinstall.SafeRecoveryCommand))
+	}
 	fmt.Fprintf(stdout, "receipt-path: %s\n", humanSkillValue(inspection.ReceiptPath))
 	if len(inspection.VerifiedTargets) > 0 {
 		fmt.Fprintln(stdout, "verified-targets:")
