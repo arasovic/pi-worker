@@ -120,7 +120,10 @@ type Recorder struct {
 // missing, the record file is opened for append, and the complete line
 // including its newline reaches the file in one Write call before Start
 // returns, so a run killed at any later instant still leaves its start
-// line on disk.
+// line on disk. The creation-time lookup and the marshalling run
+// before the file is opened: everything that can fail or block is done
+// first, so the only moment the file exists without its start line is
+// the single Write that follows the open.
 //
 // The record carries the identity of the process each worker starts:
 // one worker line per started worker, appended by WorkerProcess while
@@ -138,16 +141,19 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	// second cannot collide: the timestamp's finest unit is the second,
 	// and the process id separates the runs that share it.
 	runID := startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
-	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// The creation-time lookup and the marshalling of the start line
+	// happen before the record file exists: everything that can fail
+	// or block — the process-table read, the JSON encoding — completes
+	// before the open, so a concurrent scan can only ever see the file
+	// once the start line is in it, and a marshal failure leaves no
+	// file behind. A lookup failure leaves the createTime key off the
+	// start line, exactly as it leaves it off a worker line — the
+	// identity is weaker then, never an error. The process is this
+	// worker itself, the same process whose pid the line records.
+	createTime, err := pidCreateTime(os.Getpid())
 	if err != nil {
-		return nil, err
+		createTime = 0
 	}
-	// The creation-time lookup happens before the line is built: a
-	// failure leaves the createTime key off the start line, exactly as
-	// it leaves it off a worker line — the identity is weaker then,
-	// never an error. The process is this worker itself, the same
-	// process whose pid the line records.
-	createTime, _ := pidCreateTime(os.Getpid())
 	line, err := json.Marshal(startLine{
 		SchemaVersion: schemaVersion,
 		Event:         "start",
@@ -159,7 +165,10 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 		CreateTime:    createTime,
 	})
 	if err != nil {
-		file.Close()
+		return nil, err
+	}
+	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := file.Write(append(line, '\n')); err != nil {
@@ -185,9 +194,21 @@ func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
 	// shared write-error slot and the ordering between a worker line
 	// and the final write-and-close. A lookup failure leaves the
 	// createTime key off the line — the identity is weaker then, never
-	// an error — because the caller has just started the child, so
-	// this pid cannot yet have been reused by an unrelated process.
-	createTime, _ := pidCreateTime(pid)
+	// an error.
+	//
+	// One limit is accepted by design: the creation time is sampled
+	// here, after the child has started, so a child that exits before
+	// this lookup runs can be reaped and its pid number reused by an
+	// unrelated process, and the line would then record that process's
+	// creation time as the worker's identity. The window is the time
+	// from the child's start to this lookup — milliseconds, against
+	// the minutes a pid number takes to cycle, and within it the child
+	// must exit, be reaped, and have its number taken — and the
+	// failure costs a wrong group in one warning line, never a signal.
+	createTime, err := pidCreateTime(pid)
+	if err != nil {
+		createTime = 0
+	}
 	line := workerLine{
 		SchemaVersion: schemaVersion,
 		Event:         "worker",
