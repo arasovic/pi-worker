@@ -214,30 +214,60 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   that process is gone; `unknown` when the record has no usable start
   line at all.
 - `runs prune --keep <n>` keeps the newest `n` records and deletes the
-  rest — `unknown` ones included — one file at a time, and never
-  deletes a record whose run is still running, whatever its age.
-  `--keep 0` keeps none by age; running runs are still spared. Pruned
-  ids are never removed from the interrupted-run marker, and the
-  marker itself is never a deletion target.
+  rest — one file at a time, stale `unknown` records included — and
+  never deletes a record whose run is still running, whatever its age.
+  `--keep 0` keeps none by age; running runs are still spared. An
+  `unknown` record is deleted like any other, except while its file
+  has changed within the last hour: prune cannot tell an unreadable
+  record apart from one being written, so a record that changed
+  recently is kept and reported — a later prune deletes it once it
+  stops changing. That freshness question is asked twice, when the
+  records are chosen and again at the moment each one is deleted,
+  because the confirmation question in between waits on a person for
+  as long as they take. Pruned ids are never removed from the
+  interrupted-run marker, and the marker itself is never a deletion
+  target.
 - Without `--yes`, prune lists on stderr the records it is about to
   delete and asks `delete <n> run records? [y/N]`; only `y` or `yes`
   (case-insensitive, after trimming spaces) proceeds, and anything
   else — `n`, an empty line, an EOF — deletes nothing, prints
   `nothing deleted`, and exits `0`. With neither `--yes` nor a
   terminal on stdin, and always with `--json` without `--yes`, prune
-  refuses, deletes nothing, and exits `2`.
+  refuses, deletes nothing, and exits `2` — the refusal comes before
+  everything, the records directory not even resolved first, so it
+  exits `2` even when the directory cannot be resolved or read. A
+  Ctrl-C stops the prune, including while the confirmation question
+  is on screen: what was already deleted stays deleted and is still
+  reported, nothing further is removed, and the exit is `9`.
+- The human output prints one line per record as it goes — `deleted
+  <id>` for a record it removed, `kept <id>` for one it spared at the
+  last moment — and then a summary line, `kept <n> newest`, plus one
+  clause per spared kind — `, <m> still running` and `, <m>
+  unreadable and recently changed` — each clause appearing only when
+  at least one record of that kind was spared.
+- At the moment of each delete the name is re-checked: a record whose
+  name no longer refers to a regular file is refused, reported on
+  stderr, and not counted as deleted, and the same for a record that
+  cannot be examined at all.
 - Both commands emit one `schemaVersion: 1` document with `--json`.
   `runs list --json` carries a `runs` array — empty, never null, when
   there are no records. `runs prune --json` (which requires `--yes`)
-  carries `deleted`, the run ids actually deleted, and `keptRunning`,
-  the still-running runs spared — both arrays, empty, never null —
-  and `keptNewest`, how many records the `--keep` rule kept (capped
-  by the records that exist).
+  carries `deleted`, the run ids actually deleted, and the two kept
+  arrays, `keptRunning` and `keptUnreadable`: a run still running
+  lands in the first, a record that could not be read and whose file
+  changed within the last hour in the second — the split is by what
+  is known about the record, each id in its own array, and an
+  unreadable record is never reported as running. It also carries
+  `keptNewest`, how many records the `--keep` rule kept (capped by
+  the records that exist). The three arrays are empty, never null,
+  whether nothing was deleted, no running run was spared, or nothing
+  unreadable was spared.
 - Exit codes: `0` on success — for prune, that includes nothing to
   prune and the user declining; `2` for a usage error or the prune
   refusal; `9` when the records directory cannot be resolved or read,
-  or when a prune delete fails (a failure is reported on stderr, does
-  not stop the other deletions, and the exit is `9`).
+  when a prune delete fails (a failure is reported on stderr, does
+  not stop the other deletions, and the exit is `9`), or when the
+  prune is cancelled.
 - At the start of every run, pi-worker also checks whether an earlier
   settled run left processes running, and warns on stderr when it
   finds any: one line per run naming the record's full path and the

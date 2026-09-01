@@ -396,8 +396,11 @@ func TestRunsPruneKeepZeroDeletesEverythingExceptRunning(t *testing.T) {
 // just created its record and has not yet written its start line, so
 // it is kept — not deleted. With nothing selected the human summary
 // says nothing to prune; the spared record is visible to a caller in
-// the --json document, whose keptRunning array carries its id the way
-// it carries a still-running run's.
+// the --json document, whose keptUnreadable array carries its id —
+// never the keptRunning array, which carries only the still-running
+// runs' ids: the one thing known about this record is that it could
+// not be read and changed recently, and no report may call it
+// running.
 func TestRunsPruneSparesFreshUnknownCandidate(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -425,16 +428,17 @@ func TestRunsPruneSparesFreshUnknownCandidate(t *testing.T) {
 		t.Fatalf("runs prune --json = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
 	}
 	var document struct {
-		SchemaVersion int      `json:"schemaVersion"`
-		Deleted       []string `json:"deleted"`
-		KeptNewest    int      `json:"keptNewest"`
-		KeptRunning   []string `json:"keptRunning"`
+		SchemaVersion  int      `json:"schemaVersion"`
+		Deleted        []string `json:"deleted"`
+		KeptNewest     int      `json:"keptNewest"`
+		KeptRunning    []string `json:"keptRunning"`
+		KeptUnreadable []string `json:"keptUnreadable"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatalf("decode document %q: %v", stdout, err)
 	}
-	if document.SchemaVersion != 1 || len(document.Deleted) != 0 || document.KeptNewest != 0 || len(document.KeptRunning) != 1 || document.KeptRunning[0] != "20260831T120000Z-1" {
-		t.Fatalf("document = %#v, want the spared record in keptRunning", document)
+	if document.SchemaVersion != 1 || len(document.Deleted) != 0 || document.KeptNewest != 0 || len(document.KeptRunning) != 0 || len(document.KeptUnreadable) != 1 || document.KeptUnreadable[0] != "20260831T120000Z-1" {
+		t.Fatalf("document = %#v, want the spared record in keptUnreadable and an empty keptRunning", document)
 	}
 	if _, err := os.Stat(unknownPath); err != nil {
 		t.Fatalf("fresh unknown record %s was deleted by the --json prune: %v", unknownPath, err)
@@ -792,10 +796,11 @@ func TestRunsPruneKeepZeroYesLeavesNonJsonlFilesUntouched(t *testing.T) {
 }
 
 // TestRunsPruneJSONDocumentExact pins the prune --json document: the
-// exact field names and shape, deleted and keptRunning as arrays of
-// run ids — empty arrays, never null, whether nothing was deleted or
-// no running run was spared — and keptNewest as how many the --keep
-// rule kept, capped by the records that exist.
+// exact field names and shape, deleted, keptRunning, and
+// keptUnreadable as arrays of run ids — empty arrays, never null,
+// whether nothing was deleted, no running run was spared, or nothing
+// unreadable was spared — and keptNewest as how many the --keep rule
+// kept, capped by the records that exist.
 func TestRunsPruneJSONDocumentExact(t *testing.T) {
 	// One fresh records directory per subtest: a prune that deleted
 	// something in an earlier subtest must not change what a later
@@ -816,7 +821,7 @@ func TestRunsPruneJSONDocumentExact(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
 		}
-		want := "{\"schemaVersion\":1,\"deleted\":[\"20260830T101500Z-1\"],\"keptNewest\":1,\"keptRunning\":[\"20260830T102000Z-2\"]}\n"
+		want := "{\"schemaVersion\":1,\"deleted\":[\"20260830T101500Z-1\"],\"keptNewest\":1,\"keptRunning\":[\"20260830T102000Z-2\"],\"keptUnreadable\":[]}\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -836,7 +841,7 @@ func TestRunsPruneJSONDocumentExact(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
 		}
-		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":3,\"keptRunning\":[]}\n"
+		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":3,\"keptRunning\":[],\"keptUnreadable\":[]}\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -853,9 +858,71 @@ func TestRunsPruneJSONDocumentExact(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
 		}
-		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[]}\n"
+		want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[],\"keptUnreadable\":[]}\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+	})
+}
+
+// TestRunsPruneKeptRunningAndKeptUnreadableApart asserts the two
+// spared classes report apart in one prune: a candidate whose run is
+// still running and a candidate too unreadable to classify whose file
+// changed within the grace window are both spared, and each id lands
+// in its own bucket — the running one in keptRunning, the unreadable
+// one in keptUnreadable, never mixed — in the --json document, and
+// the human summary carries one clause per class. A third, deletable
+// record makes the prune delete something, so the summary line is
+// rendered at all.
+func TestRunsPruneKeptRunningAndKeptUnreadableApart(t *testing.T) {
+	// One fresh records directory per subtest: a prune that deleted
+	// something in an earlier subtest must not change what a later
+	// subtest counts.
+	withRecords := func(t *testing.T) (dir string) {
+		t.Helper()
+		dir = t.TempDir()
+		withRunlogDir(t, dir)
+		writeListRecord(t, dir, "20260830T103000Z-3", os.Getpid(), "2026-08-30T10:30:00Z", "/ws-c", 1, false, "", "")
+		unknownPath := filepath.Join(dir, "20260830T102000Z-2.jsonl")
+		if err := os.WriteFile(unknownPath, []byte("not json at all\n"), 0o600); err != nil {
+			t.Fatalf("write unknown record: %v", err)
+		}
+		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+		return dir
+	}
+
+	t.Run("--json document", func(t *testing.T) {
+		dir := withRecords(t)
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune --json = (%d, %q, %q)", code, stdout, stderr)
+		}
+		want := "{\"schemaVersion\":1,\"deleted\":[\"20260830T101500Z-1\"],\"keptNewest\":0,\"keptRunning\":[\"20260830T103000Z-3\"],\"keptUnreadable\":[\"20260830T102000Z-2\"]}\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "20260830T101500Z-1.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("deleted record still exists after the prune: %v", err)
+		}
+		for _, kept := range []string{"20260830T103000Z-3.jsonl", "20260830T102000Z-2.jsonl"} {
+			if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+				t.Fatalf("kept record %s vanished: %v", kept, err)
+			}
+		}
+	})
+
+	t.Run("human summary", func(t *testing.T) {
+		dir := withRecords(t)
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+		}
+		const want = "deleted 20260830T101500Z-1\nkept 0 newest, 1 still running, 1 unreadable and recently changed\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "20260830T101500Z-1.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("deleted record still exists after the prune: %v", err)
 		}
 	})
 }
@@ -1141,7 +1208,7 @@ func TestRunsPruneCancelledBeforeStartDeletesNothingAndExits9(t *testing.T) {
 		if code != 9 {
 			t.Fatalf("cancelled prune --json = (%d, %q, %q), want exit 9", code, stdout, stderr)
 		}
-		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[]}\n"; stdout != want {
+		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[],\"keptUnreadable\":[]}\n"; stdout != want {
 			t.Fatalf("stdout = %q, want the empty document %q", stdout, want)
 		}
 		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
@@ -1273,7 +1340,7 @@ func TestRunsPruneCancelledWithEmptySelectionExits9(t *testing.T) {
 		if code != 9 {
 			t.Fatalf("cancelled prune --json with empty selection = (%d, %q, %q), want exit 9", code, stdout, stderr)
 		}
-		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[]}\n"; stdout != want {
+		if want := "{\"schemaVersion\":1,\"deleted\":[],\"keptNewest\":0,\"keptRunning\":[],\"keptUnreadable\":[]}\n"; stdout != want {
 			t.Fatalf("stdout = %q, want the empty document %q", stdout, want)
 		}
 		if want := "pi-worker: runs prune cancelled\n"; stderr != want {
@@ -1711,11 +1778,13 @@ func (r *touchRecordOnFirstRead) Read(p []byte) (int, error) {
 // grace-window re-check at the moment of the delete: an unknown
 // record selected while stale is touched during the prompt — the
 // record is being written right now, after selection already looked —
-// and the answer is y. Prune spares it, reports it as kept — the
-// kept line, and the summary counts it — and exits 0: sparing is not
-// a failure. A record with a real outcome would go whatever its
-// modification time, but this record's outcome is unknown, so the
-// freshness question is the one that decides.
+// and the answer is y. Prune spares it and reports it as kept — the
+// kept line, and the summary counts it in the unreadable clause, the
+// same reporting a selection-time spare gets, never the still-running
+// clause — and exits 0: sparing is not a failure. A record with a
+// real outcome would go whatever its modification time, but this
+// record's outcome is unknown, so the freshness question is the one
+// that decides.
 func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1736,7 +1805,7 @@ func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
 	if stdin.err != nil {
 		t.Fatalf("touch during the prompt failed: %v", stdin.err)
 	}
-	want := "kept " + runID + "\nkept 0 newest, 1 still running\n"
+	want := "kept " + runID + "\nkept 0 newest, 1 unreadable and recently changed\n"
 	if code != 0 || stdout.String() != want {
 		t.Fatalf("prune with the record touched during the prompt = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
 	}

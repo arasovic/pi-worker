@@ -172,24 +172,30 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	}
 
 	// The first --keep entries are kept whatever their outcome and
-	// are never candidates. Every later entry is a candidate; a
-	// candidate whose run is still running is kept and reported
-	// separately — a run still writing to its record must never have
+	// are never candidates. Every later entry is a candidate. Two
+	// kinds of candidate are kept, and they are reported apart. A
+	// candidate whose run is still running is kept and reported as
+	// running — a run still writing to its record must never have
 	// that record pulled out from under it. A candidate too
-	// unreadable to classify is spared the same way while its file is
-	// fresh: a record modified within the grace window may be in the
-	// middle of being written. The same freshness question is asked a
-	// second time, at the moment of each delete, because the prompt
-	// below can wait on a person: a record stale when listed may be
-	// being written now — see removeRunRecord. Every other candidate
-	// is deleted, stale unknown ones included: an unreadable record
-	// is exactly the junk this command exists to clear.
+	// unreadable to classify is kept and reported separately while
+	// its file changed within the grace window: nothing about it says
+	// a run is alive — all prune knows is that the record could not
+	// be read and changed recently — and an unreadable record cannot
+	// be told apart from one a writer is still appending to, so it
+	// gets the same courtesy a running run gets. The same freshness
+	// question is asked a second time, at the moment of each delete,
+	// because the prompt below can wait on a person: a record stale
+	// when listed may be freshly changed by the time the delete
+	// happens — see removeRunRecord. Every other candidate is
+	// deleted, stale unknown ones included: an unreadable record is
+	// exactly the junk this command exists to clear.
 	keptNewest := opts.keep
 	if keptNewest > len(runs) {
 		keptNewest = len(runs)
 	}
 	var toDelete []runlog.Run
 	var keptRunning []runlog.Run
+	var keptUnreadable []runlog.Run
 	for i, run := range runs {
 		if i < opts.keep {
 			continue
@@ -199,7 +205,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 			continue
 		}
 		if run.Outcome == "unknown" && recordRecentlyModified(run.Path) {
-			keptRunning = append(keptRunning, run)
+			keptUnreadable = append(keptUnreadable, run)
 			continue
 		}
 		toDelete = append(toDelete, run)
@@ -207,6 +213,10 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	keptRunningIDs := make([]string, 0, len(keptRunning))
 	for _, run := range keptRunning {
 		keptRunningIDs = append(keptRunningIDs, run.RunID)
+	}
+	keptUnreadableIDs := make([]string, 0, len(keptUnreadable))
+	for _, run := range keptUnreadable {
+		keptUnreadableIDs = append(keptUnreadableIDs, run.RunID)
 	}
 
 	// Nothing selected is not an error: a missing or empty records
@@ -220,10 +230,10 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// cancelled path always reports what was deleted.
 	if len(toDelete) == 0 {
 		if parent.Err() != nil {
-			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
 		}
 		if opts.json {
-			return renderPruneDocument(stdout, stderr, nil, keptRunningIDs, keptNewest)
+			return renderPruneDocument(stdout, stderr, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
 		}
 		fmt.Fprintln(stdout, "nothing to prune")
 		return 0
@@ -301,7 +311,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		}()
 		select {
 		case <-parent.Done():
-			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
 		case answer := <-answerCh:
 			if answer != "y" && answer != "yes" {
 				// Any other answer — n, an empty line, an EOF —
@@ -311,7 +321,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 				// a command that was told to stop never reports a
 				// finished prune.
 				if parent.Err() != nil {
-					return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+					return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
 				}
 				fmt.Fprintln(stdout, "nothing deleted")
 				return 0
@@ -327,7 +337,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// is covered by the select above, which takes a cancelled context
 	// while the question is on screen.
 	if parent.Err() != nil {
-		return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptNewest)
+		return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
 	}
 
 	// Each candidate is deleted one at a time, oldest first, and a
@@ -345,7 +355,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		// was already deleted stays deleted and is reported, nothing
 		// further is removed, and the exit is 9.
 		if parent.Err() != nil {
-			return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptNewest)
+			return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptUnreadableIDs, keptNewest)
 		}
 		run := toDelete[i]
 		spared, err := removeRunRecord(root, dir, run)
@@ -355,12 +365,14 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 			continue
 		}
 		if spared {
-			// A record spared at the moment of the delete joins the kept
-			// list the same way a record spared during selection did:
-			// its id lands in the same summary count and the same
-			// --json keptRunning array as the selection-time spares.
-			keptRunning = append(keptRunning, run)
-			keptRunningIDs = append(keptRunningIDs, run.RunID)
+			// A record spared at the moment of the delete joins the
+			// unreadable list the same way a selection-time spare did:
+			// removeRunRecord only spares a record it could not
+			// classify whose file changed within the grace window,
+			// never one it knows is running, so its id lands in the
+			// keptUnreadable summary count and --json array.
+			keptUnreadable = append(keptUnreadable, run)
+			keptUnreadableIDs = append(keptUnreadableIDs, run.RunID)
 			if !opts.json {
 				fmt.Fprintf(stdout, "kept %s\n", run.RunID)
 			}
@@ -379,21 +391,26 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// carries the ids — and the cancelled path adds the verbatim
 	// message on stderr and exit 9.
 	if parent.Err() != nil {
-		return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptNewest)
+		return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptUnreadableIDs, keptNewest)
 	}
 
 	if opts.json {
-		if docCode := renderPruneDocument(stdout, stderr, deletedIDs, keptRunningIDs, keptNewest); docCode != 0 {
+		if docCode := renderPruneDocument(stdout, stderr, deletedIDs, keptRunningIDs, keptUnreadableIDs, keptNewest); docCode != 0 {
 			return docCode
 		}
 		return code
 	}
-	// The summary is one line; the still-running clause appears only
-	// when at least one running run was spared, and neither noun is
-	// pluralised.
+	// The summary is one line; each clause appears only when at least
+	// one record of that kind was spared, and no noun is pluralised.
+	// The unreadable clause claims only what is known — the record
+	// could not be read and changed recently — and never calls an
+	// unreadable record running.
 	fmt.Fprintf(stdout, "kept %d newest", keptNewest)
 	if len(keptRunning) > 0 {
 		fmt.Fprintf(stdout, ", %d still running", len(keptRunning))
+	}
+	if len(keptUnreadable) > 0 {
+		fmt.Fprintf(stdout, ", %d unreadable and recently changed", len(keptUnreadable))
 	}
 	fmt.Fprintln(stdout)
 	return code
@@ -401,12 +418,16 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 
 // pruneDocument is the runs prune JSON document's shape. It is this
 // command family's own document and versions itself with
-// runsSchemaVersion, like runs list's.
+// runsSchemaVersion, like runs list's. The two kept arrays hold
+// different classes of spared record: keptRunning the runs still
+// running, keptUnreadable the records that could not be read and
+// changed recently.
 type pruneDocument struct {
-	SchemaVersion int      `json:"schemaVersion"`
-	Deleted       []string `json:"deleted"`
-	KeptNewest    int      `json:"keptNewest"`
-	KeptRunning   []string `json:"keptRunning"`
+	SchemaVersion  int      `json:"schemaVersion"`
+	Deleted        []string `json:"deleted"`
+	KeptNewest     int      `json:"keptNewest"`
+	KeptRunning    []string `json:"keptRunning"`
+	KeptUnreadable []string `json:"keptUnreadable"`
 }
 
 // cancelledPrune reports a prune stopped by a finished context:
@@ -415,9 +436,9 @@ type pruneDocument struct {
 // as it went, and the --json document carries the deleted ids — and
 // the exit is 9 with the verbatim message on stderr, the same exit
 // code a delete failure uses.
-func cancelledPrune(stdout, stderr io.Writer, opts runsOptions, deleted, keptRunning []string, keptNewest int) int {
+func cancelledPrune(stdout, stderr io.Writer, opts runsOptions, deleted, keptRunning, keptUnreadable []string, keptNewest int) int {
 	if opts.json {
-		if docCode := renderPruneDocument(stdout, stderr, deleted, keptRunning, keptNewest); docCode != 0 {
+		if docCode := renderPruneDocument(stdout, stderr, deleted, keptRunning, keptUnreadable, keptNewest); docCode != 0 {
 			return docCode
 		}
 	}
@@ -426,20 +447,25 @@ func cancelledPrune(stdout, stderr io.Writer, opts runsOptions, deleted, keptRun
 }
 
 // renderPruneDocument writes the prune document: one line on stdout,
-// and the two arrays always arrays — empty, never null, whether
-// nothing was deleted or no running run was spared.
-func renderPruneDocument(stdout, stderr io.Writer, deleted, keptRunning []string, keptNewest int) int {
+// and the three arrays always arrays — empty, never null, whether
+// nothing was deleted, no running run was spared, or nothing unreadable
+// was spared.
+func renderPruneDocument(stdout, stderr io.Writer, deleted, keptRunning, keptUnreadable []string, keptNewest int) int {
 	if deleted == nil {
 		deleted = []string{}
 	}
 	if keptRunning == nil {
 		keptRunning = []string{}
 	}
+	if keptUnreadable == nil {
+		keptUnreadable = []string{}
+	}
 	output := pruneDocument{
-		SchemaVersion: runsSchemaVersion,
-		Deleted:       deleted,
-		KeptNewest:    keptNewest,
-		KeptRunning:   keptRunning,
+		SchemaVersion:  runsSchemaVersion,
+		Deleted:        deleted,
+		KeptNewest:     keptNewest,
+		KeptRunning:    keptRunning,
+		KeptUnreadable: keptUnreadable,
 	}
 	data, err := json.Marshal(output)
 	if err != nil {
