@@ -852,7 +852,7 @@ cat prompt.txt | pi-worker run --model provider/model-id
 
 - trust store and content provenance
 - Docker/OpenShell
-- worktree/patch application
+- patch application and merge-back (checkout is in v0)
 - durable registry / background / status / wait / steer / cancel / resume
 
 ## Compatibility note
