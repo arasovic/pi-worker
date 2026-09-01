@@ -1596,14 +1596,22 @@ func (r *replaceRecordWithDirectoryOnFirstRead) Read(p []byte) (int, error) {
 	return copy(p, "y\n"), io.EOF
 }
 
-// TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused asserts
-// the delete-time gate's identity check: the listed record's name is
-// replaced by an empty directory while the question is on screen,
-// the answer is y, and prune refuses — exit 9, the refusal naming
-// that the name no longer holds the file that was listed, the
-// directory still there, and no deleted line for the run id. A
-// removal without the gate would rmdir the empty replacement and
-// print "deleted <run id>" for a record that was long gone.
+// TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused is a
+// scenario test: while the confirmation question is on screen,
+// something else appears under the listed record's name — an empty
+// directory in the record file's place, the way a renamed-away
+// record's name can be left — the answer is y, and prune refuses:
+// exit 9, the directory still there, and the record's own id never
+// on a deleted line. It deliberately does not say which guard
+// refuses: the identity guard speaks first today, and both the
+// identity and the type guards would refuse this name — the only
+// difference a user could see between the two refusals is the
+// wording, so the test pins the refusal itself, never the wording.
+// The identity guard is pinned specifically by
+// TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused and
+// TestRunsPruneRecordAppearsDuringPromptRefused, both of which turn
+// red when the identity check is removed; the type guard is pinned
+// by TestRunsPruneSelectedDirectoryRefusedByType.
 func TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1625,11 +1633,11 @@ func TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused(t *testing.T) {
 	} else if !info.IsDir() {
 		t.Fatalf("%s is not a directory after the prune", recordPath)
 	}
-	if want := "kept 0 newest\n"; stdout.String() != want {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	if strings.Contains(stdout.String(), "deleted "+runID) {
+		t.Fatalf("stdout = %q: the record's own id must never be on a deleted line", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "no longer the record that was listed") {
-		t.Fatalf("stderr = %q, want the identity refusal naming the replacement", stderr.String())
+	if want := "kept 0 newest\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q: no id may be reported as deleted", stdout.String(), want)
 	}
 }
 
@@ -1872,6 +1880,50 @@ func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
 	}
 	if _, err := os.Stat(recordPath); err != nil {
 		t.Fatalf("the touched unknown record %s was deleted: %v", recordPath, err)
+	}
+}
+
+// TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime
+// asserts the delete-time freshness check's sparing arm: a stale
+// malformed record selected as unknown is replaced during the prompt
+// by a different fresh thing under the same name — an empty
+// directory, the starkest replacement — and the answer is y. Prune
+// spares it before the identity and type questions are even asked:
+// exit 0, `kept <id>` on stdout, the summary counting the record
+// unreadable, and the directory still there afterwards. The identity
+// check would refuse this very name — that is why it is asked after
+// freshness — and sparing destroys nothing, so the record is
+// reported as kept even though the name no longer holds what was
+// listed. Without the freshness check, identity would refuse the
+// directory and the prune would exit 9.
+func TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	const runID = "20260831T130000Z-1"
+	recordPath := filepath.Join(dir, runID+".jsonl")
+	if err := os.WriteFile(recordPath, []byte("not json at all\n"), 0o600); err != nil {
+		t.Fatalf("write unknown record: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(recordPath, stale, stale); err != nil {
+		t.Fatalf("age the record: %v", err)
+	}
+
+	stdin := &replaceRecordWithDirectoryOnFirstRead{recordPath: recordPath}
+	var stdout, stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
+	}
+	want := "kept " + runID + "\nkept 0 newest, 1 unreadable\n"
+	if code != 0 || stdout.String() != want {
+		t.Fatalf("prune with the unknown record replaced by a directory = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
+	}
+	if info, err := os.Lstat(recordPath); err != nil {
+		t.Fatalf("the replacement directory %s vanished: %v", recordPath, err)
+	} else if !info.IsDir() {
+		t.Fatalf("%s is not a directory after the prune", recordPath)
 	}
 }
 

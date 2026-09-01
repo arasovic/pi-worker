@@ -253,7 +253,10 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   was listed: a record whose name no longer holds the file that was
   listed — a replacement, a freshly written file under the same name,
   or nothing the selection ever captured — is refused, reported on
-  stderr, and not counted as deleted, and the same for a record that
+  stderr, and not counted as deleted, except an `unknown` record
+  whose file has changed within the last hour, which is spared before
+  the identity check ever runs and is reported as kept even when the
+  name now holds a different file; and the same for a record that
   cannot be examined at all. When the name still holds the listed
   file, a regular file or a symlink is removed — the symlink removal
   takes the link, never its target — and anything else under a

@@ -548,9 +548,14 @@ func recordRecentlyModified(path string) bool {
 //     A record touched during the prompt has by definition changed
 //     since it was listed, so identity is asked after freshness —
 //     asked first, it would turn today's kept into a refusal. The
-//     caller reports it as kept, and sparing never counts as a
-//     failure. A record with any other outcome is deleted whatever
-//     its modification time;
+//     consequence is accepted: a name that now holds a different
+//     file — even a directory — is not refused, because neither the
+//     identity nor the type question is asked of a spared record;
+//     the record is still reported as kept, with exit 0. Sparing
+//     destroys nothing, so nothing is risked by asking no more
+//     questions. The caller reports it as kept, and sparing never
+//     counts as a failure. A record with any other outcome is
+//     deleted whatever its modification time;
 //   - the file must be the one that was listed when the candidate was
 //     chosen — os.SameFile against the info the caller captured at
 //     selection, plus an unchanged size and modification time.
@@ -563,7 +568,7 @@ func recordRecentlyModified(path string) bool {
 //     what it is. Removing a symlink removes the link, never its
 //     target.
 //
-// Two ceilings are accepted by design, and each names its own
+// Three ceilings are accepted by design, and each names its own
 // failure direction:
 //
 //   - The name can still be replaced between the Lstat and the
@@ -576,6 +581,19 @@ func recordRecentlyModified(path string) bool {
 //     coarse filesystem timestamp can make a record that was just
 //     written look older than the grace window. The grace window is
 //     a courtesy to a writer, not a security boundary.
+//   - The identity comparisons — the same file, the same size, the
+//     same modification time — compare the name against what a
+//     lookup can see, never against content. A record rewritten in
+//     place during the prompt with different bytes of the same
+//     length, whose modification time is then set back, or one
+//     written twice within a single tick of a filesystem whose
+//     timestamps are coarse, passes all three and is deleted. Closing
+//     the ceiling would mean reading and comparing every record's
+//     content at the delete. This gate is a courtesy to a writer and
+//     a guard against accident, not a defence against someone
+//     deliberately hiding a swap. The failure direction: the delete
+//     removes a file whose content is no longer what was listed, and
+//     the summary reports it under the listed run's id.
 func removeRunRecord(root *os.Root, dir string, run runlog.Run, listed os.FileInfo) (spared bool, err error) {
 	path := run.Path
 	rel, err := filepath.Rel(dir, path)
