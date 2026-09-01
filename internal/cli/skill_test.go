@@ -637,7 +637,7 @@ func TestSkillStatusCancellationAfterInspectionDoesNotRenderResult(t *testing.T)
 }
 
 func TestSkillStatusStaleReportsVersionsAndRecovery(t *testing.T) {
-	installBuildVersion(t, "0.6.0")
+	installBuildVersion(t, "v0.6.0")
 	root := t.TempDir()
 	target := filepath.Join(root, "canonical")
 	writeFileForSkillTest(t, filepath.Join(target, "one.txt"), "one")
