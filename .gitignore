@@ -9,4 +9,5 @@
 /.idea/
 /.vscode/
 /.worktrees/
+/.pi-worker/
 .DS_Store

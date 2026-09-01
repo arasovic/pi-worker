@@ -318,7 +318,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--json] [--debug]
+pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--json] [--debug]
 ```
 
 ## Personal default model
@@ -531,8 +531,42 @@ Replace the provider/model placeholder with one exact selector printed by
 pi-worker: warning: N workers share the writable current workspace; tasks must use disjoint files
 ```
 
-- Assign disjoint files, or use only one worker. v0 makes no worktree/isolation claim.
+- Assign disjoint files, or use only one worker; `--worktree` (below) is the way to give one run a workspace of its own.
 - Every v0 worker always enables `read,grep,find,ls,edit,write,bash` with `--no-approve`; `bash` can execute arbitrary shell commands with the current user's host permissions, and this is not a sandbox.
+
+### Isolated run workspace
+
+- `--worktree <name>` optionally gives one run a private git checkout
+  instead of the current working directory. The name is validated at
+  argv-parse time: 1 to 64 characters of lowercase letters, digits and
+  hyphens, starting and ending with a letter or digit; anything else is
+  a usage error (exit `2`), like every other argv mistake.
+- The checkout is created at `<repo-root>/.pi-worker/worktrees/<name>`
+  on branch `run/<name>`, from `HEAD` — the current `HEAD` of the
+  caller's tree. Uncommitted work in the caller's tree is not carried
+  into it.
+- The checkout is a separate working directory, not containment: `bash`
+  still runs with the user's host permissions and a worker can reach
+  outside the checkout. `--worktree` bounds where the run works by
+  default, not what it can reach.
+- A name whose checkout directory already exists, or whose branch
+  `run/<name>` already exists, refuses the run before it starts —
+  before the run record is written and before any worker launches —
+  exiting `2` and naming the leftover. A checkout git itself refuses
+  to create is refused the same way, with git's own words in the
+  message. Outside a git work tree the flag is refused the same way.
+- Nothing is ever removed: a leftover checkout or branch is reported by
+  the next run that collides with its name, never cleaned up by the
+  product.
+- The checkout path and branch are printed to stderr at creation time
+  (the only trace a killed run leaves) and ride the `--json` result as
+  `worktree.path` and `worktree.branch`.
+- A repository that uses this should ignore `/.pi-worker/`: the
+  checkouts live under the repository root, and an unignored one lands
+  in every other run's change manifest.
+- The one-run-at-a-time rule under `### Declared writes` is a rule per
+  *workspace*: two runs given different `--worktree` names work in
+  different checkouts and no longer share one workspace.
 
 ### Declared writes
 
@@ -819,7 +853,7 @@ cat prompt.txt | pi-worker run --model provider/model-id
 
 - trust store and content provenance
 - Docker/OpenShell
-- worktree/patch application
+- patch application and merge-back (checkout is in v0)
 - durable registry / background / status / wait / steer / cancel / resume
 
 ## Compatibility note
