@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Leftover is the report of one settled run whose recorded worker
@@ -34,11 +35,13 @@ type workerFacts struct {
 // a settled candidate exists — the sweep is lazy.
 var liveProcesses = defaultLiveProcesses
 
-// liveProcess is one row of the process-table snapshot.
+// liveProcess is one entry in the process-table snapshot. An unreadable
+// entry carries only its pid; its other fields are not evidence.
 type liveProcess struct {
 	pid        int
 	pgid       int
 	createTime int64
+	unreadable bool
 }
 
 // Leftovers returns one entry per settled run whose recorded worker
@@ -142,6 +145,7 @@ func Leftovers(dir string) ([]Leftover, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
+	now := time.Now().UnixMilli()
 	rows, err := liveProcesses()
 	if err != nil {
 		// A process table that cannot be read yields no leftovers:
@@ -153,12 +157,32 @@ func Leftovers(dir string) ([]Leftover, error) {
 	// pure map lookups: group number to member pids, pid to row.
 	byGroup := make(map[int][]int, len(rows))
 	byPID := make(map[int]liveProcess, len(rows))
+	unreadablePIDs := make(map[int]bool)
 	for _, row := range rows {
+		if row.unreadable {
+			unreadablePIDs[row.pid] = true
+			continue
+		}
+		if !usableCreateTime(row.createTime, now) {
+			continue
+		}
 		byGroup[row.pgid] = append(byGroup[row.pgid], row.pid)
 		byPID[row.pid] = row
 	}
 	var leftovers []Leftover
 	for _, candidate := range candidates {
+		// An unreadable row for a recorded worker leaves its identity
+		// unconfirmed, so this whole record is skipped.
+		unreadableWorker := false
+		for _, w := range candidate.workers {
+			if unreadablePIDs[w.pid] {
+				unreadableWorker = true
+				break
+			}
+		}
+		if unreadableWorker {
+			continue
+		}
 		seen := make(map[int]bool)
 		var pids []int
 		for _, w := range candidate.workers {
@@ -168,6 +192,9 @@ func Leftovers(dir string) ([]Leftover, error) {
 			// reused by an unrelated process, whose group is not this
 			// worker's to claim.
 			if row, ok := byPID[w.pid]; ok && row.createTime != w.createTime {
+				continue
+			}
+			if !usableCreateTime(w.createTime, now) {
 				continue
 			}
 			for _, pid := range byGroup[w.pid] {
@@ -205,4 +232,14 @@ func isSettled(rec recordFacts) bool {
 		return true
 	}
 	return !recordProcessAlive(rec.pid, rec.createTime)
+}
+
+// usableCreateTime accepts only creation times whose Unix-second
+// component is positive and that are no later than the instant the sweep
+// started. The same rule is applied to recorded workers and
+// process-table rows; either side being unusable leaves that comparison
+// unreported. The whole-second check rejects sub-second epoch values
+// such as 1 without estimating machine uptime.
+func usableCreateTime(createTime, now int64) bool {
+	return time.UnixMilli(createTime).Unix() > 0 && createTime <= now
 }

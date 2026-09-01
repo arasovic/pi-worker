@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // workerSpec is one worker line of a test record: the pid the worker
@@ -175,13 +176,44 @@ func TestLeftoversReportsTheLiveWorkerItself(t *testing.T) {
 	}
 }
 
-// TestLeftoversSkipsGroupWhosePidWasReused asserts the identity check:
-// when the recorded pid is itself still alive, it must still be the
-// same process — a different creation time means the number was reused
-// by an unrelated process, and nothing in that group is attributable
-// to the run, not even members whose group number still matches. This
-// is the guard the creation-time equality protects: were the check
-// dropped, the survivor below would be reported and this test fails.
+// TestLeftoversSkipsWorkerWhoseRowCannotBeRead asserts an unreadable
+// process-table row does not establish the recorded worker's identity.
+// Another row in that group must not be reported while that identity is
+// unconfirmed.
+func TestLeftoversSkipsWorkerWhoseRowCannotBeRead(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5001, pgid: 5001, createTime: 1000, unreadable: true},
+		{pid: 5010, pgid: 5001, createTime: 1100},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
+func TestLeftoversSweepsWhenWorkerIsAbsent(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: 1100},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
 func TestLeftoversSkipsGroupWhosePidWasReused(t *testing.T) {
 	withLiveProcesses(t, []liveProcess{
 		// The recorded pid 5001 now belongs to an unrelated process in
@@ -288,6 +320,43 @@ func TestLeftoversFindsOnlyTheSecondWorkersGroup(t *testing.T) {
 	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5020, 5021}}}
 	if !reflect.DeepEqual(leftovers, want) {
 		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversSkipsWorkerWithUnusableCreateTime asserts a positive
+// value from the Unix epoch's sub-second interval is not used as worker
+// identity evidence, even when the group contains a current row.
+func TestLeftoversSkipsWorkerWithUnusableCreateTime(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: time.Now().UnixMilli()},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
+// TestLeftoversSkipsFutureGroupMember asserts a process-table row
+// whose creation time is in the future is not reported.
+func TestLeftoversSkipsFutureGroupMember(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: time.Now().Add(time.Hour).UnixMilli()},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
 	}
 }
 
