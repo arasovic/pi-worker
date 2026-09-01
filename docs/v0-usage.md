@@ -545,6 +545,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   on branch `run/<name>`, from `HEAD` — the current `HEAD` of the
   caller's tree. Uncommitted work in the caller's tree is not carried
   into it.
+- The checkout is a separate working directory, not containment: `bash`
+  still runs with the user's host permissions and a worker can reach
+  outside the checkout. `--worktree` bounds where the run works by
+  default, not what it can reach.
 - A name whose checkout directory already exists, or whose branch
   `run/<name>` already exists, refuses the run before it starts —
   before the run record is written and before any worker launches —

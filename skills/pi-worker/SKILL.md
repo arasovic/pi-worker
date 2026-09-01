@@ -71,7 +71,7 @@ it with its object when one exists (`writes`, `verification`, or the worker's
 
 ## Boundaries
 
-- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a private checkout of its own; without it, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed.
+- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a checkout of its own: a separate working directory, not containment — a worker can still reach outside it. Without the flag, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed.
 - When a run moves HEAD, the branch, or the stash list, the result carries a `git` object with the before and after state. Its presence means something moved that a bounded edit does not normally move: read it as a notification, not a prohibition — a caller may legitimately want a worker to commit.
 - Use trusted workspaces. Parallel writes must be disjoint, and whenever `--writes` is used, one run at a time per workspace: if one run writes a stray path, a concurrent run that declared it writes nothing is the one reported as undeclared — a run that wrote nothing gets accused.
 - Each run's Pi process and its descendants are terminated when the run ends, times out, or is cancelled.

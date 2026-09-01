@@ -173,7 +173,8 @@ test("README is the concise public entry point with the approved contract", () =
   for (const safetyPhrase of [
     "modify the current writable workspace",
     "execute `bash` with the current user's host permissions",
-    "not a sandbox or worktree layer",
+    "not a sandbox",
+    "separate working directory, not containment",
     "use a trusted workspace",
     "parallel tasks must be disjoint",
   ]) {
@@ -189,7 +190,8 @@ test("installed skill states the worker authority boundary before delegation", (
   const normalizedSkill = skill.replace(/\s+/g, " ");
   assert.match(normalizedSkill, /current writable workspace/i);
   assert.match(normalizedSkill, /bash.*current user's host permissions/i);
-  assert.match(normalizedSkill, /not a sandbox or worktree/i);
+  assert.match(normalizedSkill, /not a sandbox/i);
+  assert.match(normalizedSkill, /separate working directory, not containment/i);
   assert.match(normalizedSkill, /Luna Max.*--thinking max/i);
   assert.doesNotMatch(normalizedSkill, /Spark Max/i);
 });
