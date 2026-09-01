@@ -197,6 +197,32 @@ func TestLeftoversSkipsWorkerWhoseRowCannotBeRead(t *testing.T) {
 	}
 }
 
+// TestLeftoversSkipsWorkerWhoseRowCreateTimeIsUnusable asserts an
+// entry whose creation time was read but is unusable — here a
+// sub-second epoch value — does not establish the recorded worker's
+// identity, exactly like an entry that could not be read at all:
+// another row in that group must not be reported while the identity
+// is unconfirmed. Were the row merely dropped from the indexes, the
+// worker would look absent, the identity comparison would pass
+// vacuously, and 5010 would be reported on the strength of a row
+// that proved nothing about who 5001 is.
+func TestLeftoversSkipsWorkerWhoseRowCreateTimeIsUnusable(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5001, pgid: 5001, createTime: 0},
+		{pid: 5010, pgid: 5001, createTime: 1100},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
 func TestLeftoversSweepsWhenWorkerIsAbsent(t *testing.T) {
 	withLiveProcesses(t, []liveProcess{
 		{pid: 5010, pgid: 5001, createTime: 1100},

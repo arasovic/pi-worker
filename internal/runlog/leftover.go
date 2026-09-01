@@ -159,11 +159,14 @@ func Leftovers(dir string) ([]Leftover, error) {
 	byPID := make(map[int]liveProcess, len(rows))
 	unreadablePIDs := make(map[int]bool)
 	for _, row := range rows {
-		if row.unreadable {
+		// An entry that is not evidence — one that could not be read
+		// at all, or one whose creation time was read but is unusable
+		// — leaves the pid's identity unconfirmed, so it is recorded
+		// as unreadable and kept out of both indexes: a recorded
+		// worker holding such an entry is skipped whole, never looked
+		// absent.
+		if row.unreadable || !usableCreateTime(row.createTime, now) {
 			unreadablePIDs[row.pid] = true
-			continue
-		}
-		if !usableCreateTime(row.createTime, now) {
 			continue
 		}
 		byGroup[row.pgid] = append(byGroup[row.pgid], row.pid)
