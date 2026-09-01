@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestParseRecordRefusesSymlinkToRecord asserts a *.jsonl symlink
@@ -148,6 +150,108 @@ func TestParseRecordRefusesSwappedRecord(t *testing.T) {
 	case <-refused:
 	default:
 		t.Fatalf("parseRecord never refused the swapped record in %d swaps", swaps)
+	}
+}
+
+// TestParseRecordRefusesNamedPipeInsteadOfBlocking pins the
+// non-blocking open: a record name replaced by a named pipe with no
+// writer between the check and the open must be refused, and the
+// read must return instead of blocking forever. There is no seam
+// between the check and the open to drive the replacement through,
+// so the test races the two on purpose: two goroutines parse the
+// record path in a loop while the main goroutine plants a pipe with
+// no writer over the record name and puts the record back, again
+// and again. Opening a writerless pipe read-only blocks until a
+// writer appears — which never happens here — unless the open is
+// non-blocking, so the re-check's refusal is the proof that the
+// open returned: the pipe was refused for what it is. A refusal can
+// come from no other landing place — the restored record is the
+// very file the checks described, so a landing that hands the open
+// the regular file reads it fine, and a pipe already in place
+// before the check is refused by the pre-open check. The timeout
+// guard turns a regression — a blocked open, which cannot be
+// interrupted — into a failed test rather than a hung suite.
+func TestParseRecordRefusesNamedPipeInsteadOfBlocking(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("planting the pipe under the reader needs a second thread")
+	}
+	dir := t.TempDir()
+	path := writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 1, false, "", "")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	// The planted name: a named pipe with no writer.
+	pipe := filepath.Join(dir, "pipe")
+	if err := mkfifo(pipe); err != nil {
+		t.Skipf("cannot create a named pipe on %s: %v", runtime.GOOS, err)
+	}
+	// The storage slot the record is moved into while the pipe holds
+	// the record name: the same file shuttles between the two names,
+	// so nothing is ever created or unlinked inside the loop — only
+	// renamed.
+	decoy := filepath.Join(dir, "decoy")
+	if err := os.WriteFile(decoy, content, 0o600); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+
+	refused := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := parseRecord(path); err != nil && err.Error() == "record changed before reading" {
+					select {
+					case refused <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		readers.Wait()
+		close(done)
+	}()
+
+	// One swap cycle: move the record into the storage slot, plant
+	// the pipe over the record name, retract it, and put the record
+	// back. Only a planting that lands between the reader's check
+	// and its open hands the open the pipe.
+	const swaps = 20000
+	for i := 0; i < swaps; i++ {
+		if err := os.Rename(path, decoy); err != nil {
+			t.Fatalf("move the record aside: %v", err)
+		}
+		if err := os.Rename(pipe, path); err != nil {
+			t.Fatalf("plant the pipe: %v", err)
+		}
+		if err := os.Rename(path, pipe); err != nil {
+			t.Fatalf("retract the pipe: %v", err)
+		}
+		if err := os.Rename(decoy, path); err != nil {
+			t.Fatalf("restore the record: %v", err)
+		}
+	}
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("parseRecord blocked in the open of a planted named pipe")
+	}
+	select {
+	case <-refused:
+	default:
+		t.Fatalf("parseRecord never refused the planted named pipe in %d swaps", swaps)
 	}
 }
 

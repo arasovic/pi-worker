@@ -294,6 +294,95 @@ func TestOutOfRangePidNeverReachesTheLookup(t *testing.T) {
 	}
 }
 
+// TestEpochFirstSecondCreateTimeClassifiesLivePidAsRunning asserts
+// a recorded creation time inside the first second of the epoch — 1
+// millisecond, an instant no real process was created at — is no
+// claim about the writer: the value must not be compared against the
+// live pid's real creation time, where it would always differ and a
+// live run would be declared interrupted. The run reads as running.
+func TestEpochFirstSecondCreateTimeClassifiesLivePidAsRunning(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	withPidCreateTime(t, func(pid int) (int64, error) { return 1724998530123, nil })
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4242, 1, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
+// TestFutureCreateTimeClassifiesLivePidAsRunning asserts a recorded
+// creation time later than now is no claim about the writer: no real
+// process was created in the future, so the value must not be
+// compared against the live pid's real creation time, where it would
+// always differ and a live run would be declared interrupted. The
+// run reads as running.
+func TestFutureCreateTimeClassifiesLivePidAsRunning(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	withPidCreateTime(t, func(pid int) (int64, error) { return 1724998530123, nil })
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4242, time.Now().Add(time.Hour).UnixMilli(), false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
+// TestEpochFirstSecondLookupResultMeansAlive asserts the
+// creation-time lookup's answer is screened by the same rule as the
+// recorded value: a lookup that reports an instant inside the first
+// second of the epoch proves nothing, so it resolves toward alive —
+// never toward a mismatch against a usable recorded value, which
+// would declare a live run dead.
+func TestEpochFirstSecondLookupResultMeansAlive(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	withPidCreateTime(t, func(pid int) (int64, error) { return 1, nil })
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4242, 1000, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
+// TestFutureLookupResultMeansAlive asserts a lookup that reports a
+// creation time later than now proves nothing and resolves toward
+// alive, never toward a mismatch against a usable recorded value.
+func TestFutureLookupResultMeansAlive(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	withPidCreateTime(t, func(pid int) (int64, error) { return time.Now().Add(time.Hour).UnixMilli(), nil })
+
+	dir := t.TempDir()
+	path := writeStartRecord(t, dir, "20260830T101500Z-1", 4242, 1000, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
+	if !slices.Equal(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
 // TestLeftoversReportsRunWhoseStartPidWasReused asserts the leftover
 // reader now reports the processes of a run it previously hid forever:
 // the writer's pid was given to an unrelated long-lived process, so

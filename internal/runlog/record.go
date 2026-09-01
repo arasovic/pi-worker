@@ -144,12 +144,16 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	// The creation-time lookup and the marshalling of the start line
 	// happen before the record file exists: everything that can fail
 	// or block — the process-table read, the JSON encoding — completes
-	// before the open, so a concurrent scan can only ever see the file
-	// once the start line is in it, and a marshal failure leaves no
-	// file behind. A lookup failure leaves the createTime key off the
-	// start line, exactly as it leaves it off a worker line — the
-	// identity is weaker then, never an error. The process is this
-	// worker itself, the same process whose pid the line records.
+	// before the open, so a marshal failure leaves no file behind, and
+	// the file exists without its start line only for the length of
+	// the single Write that follows the open. A concurrent scan that
+	// catches it in that window sees a zero-length record, which the
+	// interrupted-run reader treats as a record not yet written —
+	// never as a corrupt one — and examines again on its next scan. A
+	// lookup failure leaves the createTime key off the start line,
+	// exactly as it leaves it off a worker line — the identity is
+	// weaker then, never an error. The process is this worker itself,
+	// the same process whose pid the line records.
 	createTime, err := pidCreateTime(os.Getpid())
 	if err != nil {
 		createTime = 0

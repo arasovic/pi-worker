@@ -238,6 +238,47 @@ func TestInterruptedIgnoresMissingOrInvalidMarker(t *testing.T) {
 	}
 }
 
+// TestInterruptedEmptyRecordIsExaminedAgain asserts a zero-length
+// record is a record not yet written, never a settled one: the
+// writer creates the file and writes the start line in the next
+// instant, and a scan that catches the file in between must not let
+// the watermark pass it. The first scan skips the empty record and
+// the watermark does not move; the run then ends interrupted — the
+// record now carries only the start line — and the second scan,
+// which would have skipped the record forever had the first one
+// settled it, reports it.
+func TestInterruptedEmptyRecordIsExaminedAgain(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return false, nil })
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20260830T101500Z-1.jsonl")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write empty record: %v", err)
+	}
+
+	paths, err := Interrupted(dir)
+	if err != nil {
+		t.Fatalf("Interrupted: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("interrupted = %v, want none while the record is still empty", paths)
+	}
+	m := readMarker(t, dir)
+	if m.Watermark != "" {
+		t.Fatalf("watermark = %q, want it not to have moved past the empty record", m.Watermark)
+	}
+
+	// The run ends interrupted: the record holds only the start
+	// line, the writer gone.
+	writeRecord(t, dir, "20260830T101500Z-1", 4242, false)
+	paths, err = Interrupted(dir)
+	if err != nil {
+		t.Fatalf("Interrupted: %v", err)
+	}
+	if want := []string{path}; !slices.Equal(paths, want) {
+		t.Fatalf("interrupted = %v, want %v", paths, want)
+	}
+}
+
 // TestInterruptedCorruptRecordIsSettled asserts a record that cannot
 // be read or parsed counts as settled: the watermark passes it, so one
 // corrupt file can never freeze the scan, and nothing about it is ever
@@ -247,7 +288,6 @@ func TestInterruptedCorruptRecordIsSettled(t *testing.T) {
 	dir := t.TempDir()
 	corrupt := map[string]string{
 		"20260830T100000Z-0.jsonl":  "not json at all\n",
-		"20260830T101000Z-1.jsonl":  "",
 		"20260830T100500Z-0a.jsonl": "{\"schemaVersion\":1,\"event\":\"worker\",\"pid\":4242}\n",
 		"20260830T101500Z-0b.jsonl": "{\"schemaVersion\":1,\"event\":\"start\"}\n",
 	}

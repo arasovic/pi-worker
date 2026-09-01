@@ -56,14 +56,14 @@ func decodeLine(t *testing.T, line string) map[string]any {
 }
 
 // TestStartDoesNotCreateRecordFileBeforeCreateTimeLookup pins the
-// ordering inside Start that closes the empty-file window: the record
-// file must not exist while the creation-time lookup runs. The window
-// between "the file exists" and "the start line is in it" must be
-// nothing but the single write that follows the open — a file that
-// exists and is empty would read to a concurrent scan as
-// corrupt-and-settled, advancing the interrupted-run watermark past a
-// run that is only just starting. The seam checks the exact record
-// path from inside the lookup and records what it saw.
+// ordering inside Start that narrows the empty-file window: the
+// record file must not exist while the creation-time lookup runs.
+// The window between "the file exists" and "the start line is in
+// it" is nothing but the single write that follows the open — a
+// file that exists and is empty reads to the interrupted-run scan as
+// a record not yet written, never as a corrupt one, and the
+// watermark does not pass it. The seam checks the exact record path
+// from inside the lookup and records what it saw.
 func TestStartDoesNotCreateRecordFileBeforeCreateTimeLookup(t *testing.T) {
 	dir := t.TempDir()
 	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)

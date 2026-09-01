@@ -57,7 +57,11 @@ type marker struct {
 // are never opened again; a record after it is settled when it carries
 // its finish line, still running while its process is alive, and
 // interrupted when neither — and is then reported once, because the
-// marker is updated before Interrupted returns. Interrupted always
+// marker is updated before Interrupted returns. A record that exists
+// but is still empty is not settled: the writer creates the file and
+// writes the start line in the next instant, so the empty state is a
+// record not yet written, and the scan skips it without moving the
+// watermark — the next scan looks at it again. Interrupted always
 // writes the marker after the walk; a marker that cannot be written is
 // returned as an error alongside the interrupted records, and only a
 // records directory that cannot be read returns an error with no
@@ -119,6 +123,16 @@ func Interrupted(dir string) ([]string, error) {
 		runID := strings.TrimSuffix(name, ".jsonl")
 		// Records at or before the watermark were already looked at.
 		if runID <= watermark {
+			continue
+		}
+		// A zero-length record is a record not yet written: the
+		// writer creates the file and writes the start line in the
+		// next instant, so the file exists empty for the length of
+		// one write. It is not corrupt — it simply has nothing in it
+		// yet — so it is skipped without settling: neither the
+		// watermark nor the reported list moves, and the next scan
+		// looks at it again.
+		if info, err := entry.Info(); err == nil && info.Size() == 0 {
 			continue
 		}
 		pid, createTime, finished, err := inspectRecord(filepath.Join(dir, name))

@@ -81,10 +81,24 @@ type liveProcess struct {
 // and its members are younger than the recorded creation time, a clean
 // run reads as having left processes behind. The cost is one wrong
 // line of text and never a signal — leftover pids are reported, never
-// killed or otherwise acted on. A leftover is a condition that is
-// still true, not an event that happened once, so the report is
-// answered fresh on every call: no watermark is read or written, and
-// this reader never touches reported.json.
+// killed or otherwise acted on.
+//
+// A second limit is accepted by design, in the same shape: when a
+// recorded worker pid is absent from the process table, the worker is
+// treated as exited and the other members of its group are reported.
+// The sweep cannot tell that case apart from one where the worker's
+// number was reused by an unrelated process that led its own group
+// and has since died, leaving its own children carrying the same
+// group number — the identity pair cannot help, because a dead leader
+// leaves no creation time to compare against, and the orphans carry
+// the same group number either way. The cost is one warning line
+// naming someone else's processes, never an action: this reader only
+// ever reports.
+//
+// A leftover is a condition that is still true, not an event that
+// happened once, so the report is answered fresh on every call: no
+// watermark is read or written, and this reader never touches
+// reported.json.
 func Leftovers(dir string) ([]Leftover, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -145,7 +159,6 @@ func Leftovers(dir string) ([]Leftover, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	now := time.Now().UnixMilli()
 	rows, err := liveProcesses()
 	if err != nil {
 		// A process table that cannot be read yields no leftovers:
@@ -153,6 +166,14 @@ func Leftovers(dir string) ([]Leftover, error) {
 		// worth returning.
 		return nil, nil
 	}
+	// The "not in the future" instant is taken after the process
+	// table has been read, never before it: the read takes real
+	// time, and every entry in the snapshot was created before this
+	// instant, so a process that started during the read has a
+	// legitimate creation time earlier than the line. Taken first,
+	// the line would fall before such an entry and throw it out as
+	// impossible.
+	now := time.Now().UnixMilli()
 	// One snapshot, indexed both ways, so the per-record loop below is
 	// pure map lookups: group number to member pids, pid to row.
 	byGroup := make(map[int][]int, len(rows))
@@ -237,12 +258,15 @@ func isSettled(rec recordFacts) bool {
 	return !recordProcessAlive(rec.pid, rec.createTime)
 }
 
-// usableCreateTime accepts only creation times whose Unix-second
-// component is positive and that are no later than the instant the sweep
-// started. The same rule is applied to recorded workers and
-// process-table rows; either side being unusable leaves that comparison
-// unreported. The whole-second check rejects sub-second epoch values
-// such as 1 without estimating machine uptime.
+// usableCreateTime is the one rule that decides whether a creation
+// time is evidence at all, applied to recorded workers, process-table
+// rows, and both sides of recordProcessAlive's comparison: the
+// Unix-second component must be positive — no real process was
+// created inside the first second of the epoch, and a sub-second
+// value such as 1 must not be estimated into a machine uptime — and
+// the value must be no later than the instant the caller measured.
+// Either side failing it leaves that comparison unreported,
+// resolving toward alive.
 func usableCreateTime(createTime, now int64) bool {
 	return time.UnixMilli(createTime).Unix() > 0 && createTime <= now
 }

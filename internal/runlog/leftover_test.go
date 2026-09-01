@@ -223,6 +223,38 @@ func TestLeftoversSkipsWorkerWhoseRowCreateTimeIsUnusable(t *testing.T) {
 	}
 }
 
+// TestLeftoversIndexesProcessCreatedDuringTheTableRead asserts the
+// "not in the future" instant is taken after the process table has
+// been read, never before it: the scripted read takes measurable
+// time and returns a row whose creation time is sampled inside the
+// read — later than the instant the sweep used to capture first,
+// earlier than the one it captures now. Such a process started
+// during the read and is legitimate, so it must be indexed and
+// reported, never thrown out as impossible — and never allowed to
+// mark the pid unconfirmed, which would skip the whole record.
+func TestLeftoversIndexesProcessCreatedDuringTheTableRead(t *testing.T) {
+	original := liveProcesses
+	liveProcesses = func() ([]liveProcess, error) {
+		// The process-table read takes real time; the row's creation
+		// time is sampled at the end of it.
+		time.Sleep(100 * time.Millisecond)
+		return []liveProcess{{pid: 5010, pgid: 5001, createTime: time.Now().UnixMilli()}}, nil
+	}
+	t.Cleanup(func() { liveProcesses = original })
+
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
 func TestLeftoversSweepsWhenWorkerIsAbsent(t *testing.T) {
 	withLiveProcesses(t, []liveProcess{
 		{pid: 5010, pgid: 5001, createTime: 1100},
