@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build darwin || linux || freebsd || openbsd || netbsd
 
 package runlog
 
@@ -9,6 +9,10 @@ import "syscall"
 // name that became a named pipe with no writer between the check
 // and the open, because a blocked open cannot be interrupted. On a
 // regular file the flag does nothing.
+//
+// The build tag above selects this file on the platforms whose
+// syscall package carries both the flag and the named-pipe call;
+// the other file is the zero fallback for the rest.
 const openNonBlock = syscall.O_NONBLOCK
 
 // mkfifo creates a named pipe at path, the one non-portable piece
