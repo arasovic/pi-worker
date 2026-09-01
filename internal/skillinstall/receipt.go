@@ -178,12 +178,18 @@ func Inspect(path string) (Inspection, error) {
 		}
 	}
 	current := buildinfo.Current()
+	installerVersion := versionWithoutReleasePrefix(receipt.InstallerVersion)
+	programVersion := versionWithoutReleasePrefix(current.Version)
 	// An intact tree is stale when the receipt names an installer version
 	// different from the running program's: the files match the older
-	// receipt, not necessarily the skill this program ships. A source build
-	// names itself "dev", which is not a release identity, so it cannot
-	// claim the skill is older than the program and the check does not run.
-	if status == StatusVerified && current.Version != "dev" && receipt.InstallerVersion != current.Version {
+	// receipt, not necessarily the skill this program ships. A released
+	// binary carries its version as a tag with a leading "v", while the
+	// receipt records the bare version, so the comparison drops one leading
+	// "v" from either side and the document reports both fields in that same
+	// form. A source build names itself "dev", which is not a release
+	// identity, so it cannot claim the skill is older than the program and
+	// the check does not run.
+	if status == StatusVerified && current.Version != "dev" && installerVersion != programVersion {
 		status = StatusStale
 	}
 
@@ -191,8 +197,8 @@ func Inspect(path string) (Inspection, error) {
 		SchemaVersion:    SchemaVersion,
 		ReceiptPath:      path,
 		Status:           status,
-		InstallerVersion: receipt.InstallerVersion,
-		ProgramVersion:   current.Version,
+		InstallerVersion: installerVersion,
+		ProgramVersion:   programVersion,
 		VerifiedTargets:  append([]string{}, verifiedTargets...),
 		TrackedTargets:   trackedTargetPaths(receipt.Targets),
 		AffectedTargets:  cloneAffectedTargets(receipt.AffectedTargets),
@@ -215,6 +221,16 @@ func Inspect(path string) (Inspection, error) {
 		insp.Recovery = append([]string{}, receipt.Recovery...)
 	}
 	return insp, nil
+}
+
+// versionWithoutReleasePrefix drops a single leading "v" so a release tag
+// ("v0.7.0") and the bare version a receipt records ("0.7.0") are the same
+// string.
+func versionWithoutReleasePrefix(version string) string {
+	if strings.HasPrefix(version, "v") && len(version) > 1 {
+		return version[1:]
+	}
+	return version
 }
 
 func trackedTargetPaths(targets []Target) []string {

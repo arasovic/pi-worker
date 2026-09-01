@@ -175,12 +175,16 @@ pi-worker skill status [--json]
   `receiptPath`, `installerVersion` (the version recorded when the install
   ran), `programVersion` (the version of the binary producing the document),
   verified and receipt-tracked targets, affected targets, recovery
-  instructions, and `externalInspection`.
+  instructions, and `externalInspection`. Both version fields are reported
+  without a leading `v`, so a release tag and the version it records look
+  alike.
 - `status` is `stale` when every managed file still matches the receipt but
   the receipt's `installerVersion` differs from the running program's
-  `programVersion`: the skill on disk is the one the older installer shipped,
-  while the program running now ships a newer skill. The document carries
-  both versions, and `recovery` names the safe reinstall command. A source
+  `programVersion`, with a single leading `v` ignored on either side so a
+  release tag (`v0.7.0`) and the version it records (`0.7.0`) compare as the
+  same: the skill on disk is the one the older installer shipped, while the
+  program running now ships a newer skill. The document carries both
+  versions, and `recovery` names the safe reinstall command. A source
   build reports `programVersion` `dev` and never reports `stale`, because a
   dev build does not name a release it could compare against.
 - `externalInspection.state` is always `performed` or `unavailable`, and

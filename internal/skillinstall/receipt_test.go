@@ -1146,7 +1146,7 @@ func TestInspectExposesRecoveryForValidUnmanagedAndDriftedTargets(t *testing.T) 
 }
 
 func TestInspectReportsStaleWhenInstallerVersionDiffers(t *testing.T) {
-	withBuildVersion(t, "0.6.0")
+	withBuildVersion(t, "v0.6.0")
 	root := t.TempDir()
 	target := filepath.Join(root, "canonical")
 	writeFile(t, filepath.Join(target, "a.txt"), "one")
@@ -1187,7 +1187,7 @@ func TestInspectReportsStaleWhenInstallerVersionDiffers(t *testing.T) {
 }
 
 func TestInspectStaysVerifiedWhenInstallerVersionMatches(t *testing.T) {
-	withBuildVersion(t, "0.5.0")
+	withBuildVersion(t, "v0.5.0")
 	root := t.TempDir()
 	target := filepath.Join(root, "canonical")
 	writeFile(t, filepath.Join(target, "a.txt"), "one")
@@ -1218,8 +1218,81 @@ func TestInspectStaysVerifiedWhenInstallerVersionMatches(t *testing.T) {
 	}
 }
 
+func TestInspectVerifiedWhenProgramVersionCarriesReleaseTagPrefix(t *testing.T) {
+	withBuildVersion(t, "v0.7.0")
+	root := t.TempDir()
+	target := filepath.Join(root, "canonical")
+	writeFile(t, filepath.Join(target, "a.txt"), "one")
+	writeFile(t, filepath.Join(target, IdentityFile), IdentityContent)
+	writeFile(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+
+	receipt := Receipt{
+		SchemaVersion:    SchemaVersion,
+		InstallerVersion: "0.7.0",
+		SkillsVersion:    PinnedSkillsVersion,
+		Outcome:          OutcomeInstalled,
+		Targets: []Target{{
+			Path: target,
+			Kind: targetKindCanonical,
+			Files: []FileHash{
+				{Path: "a.txt", SHA256: hashString("one")},
+				{Path: IdentityFile, SHA256: hashString(IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString("---\nname: pi-worker\n---\n")},
+			},
+		}},
+	}
+	inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	if err != nil {
+		t.Fatalf("Inspect() = %v, want nil", err)
+	}
+	if inspection.Status != StatusVerified {
+		t.Fatalf("status = %q, want %q", inspection.Status, StatusVerified)
+	}
+	if inspection.InstallerVersion != "0.7.0" || inspection.ProgramVersion != "0.7.0" {
+		t.Fatalf("versions = (%q, %q), want (0.7.0, 0.7.0)", inspection.InstallerVersion, inspection.ProgramVersion)
+	}
+}
+
+func TestInspectStaleWhenProgramVersionCarriesReleaseTagPrefix(t *testing.T) {
+	withBuildVersion(t, "v0.7.0")
+	root := t.TempDir()
+	target := filepath.Join(root, "canonical")
+	writeFile(t, filepath.Join(target, "a.txt"), "one")
+	writeFile(t, filepath.Join(target, IdentityFile), IdentityContent)
+	writeFile(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+
+	receipt := Receipt{
+		SchemaVersion:    SchemaVersion,
+		InstallerVersion: "0.6.0",
+		SkillsVersion:    PinnedSkillsVersion,
+		Outcome:          OutcomeInstalled,
+		Targets: []Target{{
+			Path: target,
+			Kind: targetKindCanonical,
+			Files: []FileHash{
+				{Path: "a.txt", SHA256: hashString("one")},
+				{Path: IdentityFile, SHA256: hashString(IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString("---\nname: pi-worker\n---\n")},
+			},
+		}},
+	}
+	inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	if err != nil {
+		t.Fatalf("Inspect() = %v, want nil", err)
+	}
+	if inspection.Status != StatusStale {
+		t.Fatalf("status = %q, want %q", inspection.Status, StatusStale)
+	}
+	if inspection.InstallerVersion != "0.6.0" || inspection.ProgramVersion != "0.7.0" {
+		t.Fatalf("versions = (%q, %q), want (0.6.0, 0.7.0)", inspection.InstallerVersion, inspection.ProgramVersion)
+	}
+	if !equalStringSlice(inspection.Recovery, []string{SafeRecoveryCommand}) {
+		t.Fatalf("recovery = %v, want safe recovery", inspection.Recovery)
+	}
+}
+
 func TestInspectKeepsExistingStatusWhenVersionsDiffer(t *testing.T) {
-	withBuildVersion(t, "0.6.0")
+	withBuildVersion(t, "v0.6.0")
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
 	writeFile(t, filepath.Join(target, "a.txt"), "one")
