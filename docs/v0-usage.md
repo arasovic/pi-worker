@@ -224,7 +224,9 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   stops changing. That freshness question is asked twice, when the
   records are chosen and again at the moment each one is deleted,
   because the confirmation question in between waits on a person for
-  as long as they take. Pruned ids are never removed from the
+  as long as they take. A stale symlink named like a record is
+  deleted like any other unreadable record — the link is removed,
+  never whatever it points at. Pruned ids are never removed from the
   interrupted-run marker, and the marker itself is never a deletion
   target.
 - Without `--yes`, prune lists on stderr the records it is about to
@@ -243,19 +245,29 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   <id>` for a record it removed, `kept <id>` for one it spared at the
   last moment — and then a summary line, `kept <n> newest`, plus one
   clause per spared kind — `, <m> still running` and `, <m>
-  unreadable and recently changed` — each clause appearing only when
-  at least one record of that kind was spared.
-- At the moment of each delete the name is re-checked: a record whose
-  name no longer refers to a regular file is refused, reported on
+  unreadable` — each clause appearing only when at least one record
+  of that kind was spared. The unreadable clause says only that the
+  record could not be read; the two ways a record ends up in
+  `keptUnreadable` are listed below.
+- At the moment of each delete the name is re-checked against what
+  was listed: a record whose name no longer holds the file that was
+  listed — a replacement, a freshly written file under the same name,
+  or nothing the selection ever captured — is refused, reported on
   stderr, and not counted as deleted, and the same for a record that
-  cannot be examined at all.
+  cannot be examined at all. When the name still holds the listed
+  file, a regular file or a symlink is removed — the symlink removal
+  takes the link, never its target — and anything else under a
+  record's name is refused. An `unknown` record whose file has
+  changed within the last hour is spared before the identity check,
+  as above.
 - Both commands emit one `schemaVersion: 1` document with `--json`.
   `runs list --json` carries a `runs` array — empty, never null, when
   there are no records. `runs prune --json` (which requires `--yes`)
   carries `deleted`, the run ids actually deleted, and the two kept
   arrays, `keptRunning` and `keptUnreadable`: a run still running
-  lands in the first, a record that could not be read and whose file
-  changed within the last hour in the second — the split is by what
+  lands in the first, a record that could not be read in the second —
+  a record ends up there when its file changed within the last hour
+  or its timestamp could not be read at all — the split is by what
   is known about the record, each id in its own array, and an
   unreadable record is never reported as running. It also carries
   `keptNewest`, how many records the `--keep` rule kept (capped by
