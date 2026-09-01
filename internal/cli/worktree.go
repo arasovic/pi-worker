@@ -12,10 +12,13 @@ import (
 
 // worktreeError is the refusal shape prepareWorktree returns. usage
 // marks the refusals that are the caller's to fix — the current
-// directory is not inside a git work tree, or the name or branch is
-// already taken — and runCommand exits 2 for them. A failure to
-// actually create the checkout is not the caller's fault and is
-// reported as an internal error, exit 9.
+// directory is not inside a git work tree, a name or branch that is
+// already taken, or a checkout git itself refuses to create — and
+// runCommand exits 2 for them. The one failure that is not a refusal
+// is a run context that expired or was cancelled while a git command
+// ran; prepareWorktree returns that as an error wrapping the
+// context's own error, so the caller reports the timeout or
+// cancellation it is.
 type worktreeError struct {
 	msg   string
 	usage bool
@@ -49,13 +52,20 @@ func validWorktreeName(name string) bool {
 // root, never under the current subdirectory — refuses a name or
 // branch that a leftover checkout already took, and creates the
 // checkout at <root>/.pi-worker/worktrees/<name> on branch run/<name>
-// from HEAD. The checkout is made from HEAD: uncommitted work in the
-// caller's tree is not carried into it. Nothing is ever removed on any
-// path: a leftover checkout or branch is reported by the next run that
+// from HEAD. A checkout git itself refuses to create is refused the
+// same way, with git's own words in the message; only a run context
+// that expired or was cancelled while a git command ran is something
+// else — an error wrapping the context's own error, never a refusal.
+// The checkout is made from HEAD: uncommitted work in the caller's
+// tree is not carried into it. Nothing is ever removed on any path: a
+// leftover checkout or branch is reported by the next run that
 // collides with its name, never cleaned up.
 func prepareWorktree(ctx context.Context, cwd, name string) (path, branch string, err error) {
 	root, err := runGit(ctx, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", "", fmt.Errorf("resolve repository root: %w", ctxErr)
+		}
 		return "", "", &worktreeError{msg: "--worktree requires the current directory to be inside a git work tree", usage: true}
 	}
 	path = filepath.Join(root, ".pi-worker", "worktrees", name)
@@ -72,12 +82,25 @@ func prepareWorktree(ctx context.Context, cwd, name string) (path, branch string
 		return "", "", fmt.Errorf("create worktree %s: %v", path, err)
 	}
 	// A leftover branch with no directory refuses too: git would catch
-	// the branch itself, but the refusal must name the leftover.
+	// the branch itself, but the refusal must name the leftover. A git
+	// failure here is the normal "no such ref" answer, with one
+	// exception: a run context that expired or was cancelled is the
+	// run's own end, never a green light to keep going.
 	if _, err := runGit(ctx, root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		return "", "", &worktreeError{msg: fmt.Sprintf("branch %s already exists; collect it or choose another name", branch), usage: true}
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", "", fmt.Errorf("create worktree %s: %w", path, ctxErr)
 	}
+	// git is the final authority: a worktree add it refuses — a ref
+	// collision no pre-check names, a path problem, anything — is a
+	// refusal too, carrying git's own words so the caller can see why.
+	// The one exception is the expired or cancelled run context, which
+	// is returned as the context's own error, never a refusal.
 	if _, err := runGit(ctx, root, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
-		return "", "", fmt.Errorf("create worktree %s: %v", path, err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", "", fmt.Errorf("create worktree %s: %w", path, ctxErr)
+		}
+		return "", "", &worktreeError{msg: fmt.Sprintf("create worktree %s: %v", path, err), usage: true}
 	}
 	return path, branch, nil
 }
@@ -99,7 +122,8 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 // worktreeRefused reports whether err is a prepareWorktree refusal the
-// caller must fix (exit 2) rather than an internal creation failure.
+// caller must fix (exit 2) rather than an expired or cancelled run
+// context or an internal creation failure.
 func worktreeRefused(err error) bool {
 	var refusal *worktreeError
 	return errors.As(err, &refusal) && refusal.usage

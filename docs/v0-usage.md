@@ -552,8 +552,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 - A name whose checkout directory already exists, or whose branch
   `run/<name>` already exists, refuses the run before it starts —
   before the run record is written and before any worker launches —
-  exiting `2` and naming the leftover. Outside a git work tree the flag
-  is refused the same way.
+  exiting `2` and naming the leftover. A checkout git itself refuses
+  to create is refused the same way, with git's own words in the
+  message. Outside a git work tree the flag is refused the same way.
 - Nothing is ever removed: a leftover checkout or branch is reported by
   the next run that collides with its name, never cleaned up by the
   product.

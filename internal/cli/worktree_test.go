@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/pi"
 )
@@ -196,7 +199,8 @@ func TestRunJSONWorktreeObject(t *testing.T) {
 // a second run with the same name exits 2, prints the refusal alone —
 // no usage block, no JSON document — and never calls the worker. The
 // refusal happens before the run record is written and before any
-// worker starts.
+// worker starts, and it removes nothing: the checkout that took the
+// name is still there afterwards.
 func TestRunWorktreeRefusesTakenName(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
 	installFakeWorker(t, completedResult())
@@ -224,12 +228,17 @@ func TestRunWorktreeRefusesTakenName(t *testing.T) {
 	if refused.callCount() != 0 {
 		t.Fatalf("worker calls = %d, want 0 for the refused run", refused.callCount())
 	}
+	// The refusal must not remove what it found.
+	if _, err := os.Stat(checkout); err != nil {
+		t.Fatalf("checkout %s removed by the refusal: %v", checkout, err)
+	}
 }
 
 // TestRunWorktreeRefusesLeftoverBranch pins the second leftover shape:
 // the checkout directory removed but the branch kept, the run is still
 // refused, naming the branch — written as the literal run/probe, never
-// built from the product's own prefix.
+// built from the product's own prefix — and the refusal removes
+// nothing: the branch that took the name is still there afterwards.
 func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
 	fake := installFakeWorker(t, completedResult())
@@ -257,6 +266,106 @@ func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 	if fake.callCount() != 1 {
 		t.Fatalf("worker calls = %d, want 1 (the first run only)", fake.callCount())
 	}
+	// The refusal must not remove what it found.
+	if !gitRefExists(t, repo, "refs/heads/run/probe") {
+		t.Fatalf("branch run/probe removed by the refusal")
+	}
+}
+
+// TestRunWorktreeRefusesGitCollision pins the refusal for the states
+// only git can see: a branch literally named "run" makes git refuse to
+// create refs/heads/run/probe, neither pre-check names it, and the
+// failed git worktree add must refuse the run exactly like the
+// pre-checks do — exit 2, the message carrying git's own refusal text
+// and no usage block, nothing on stdout, no worker, and no run record.
+// The record-directory assertion is what pins that the refusal happens
+// before the run record is written: nothing may claim the run started.
+func TestRunWorktreeRefusesGitCollision(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	gitRun(t, repo, "branch", "run")
+	fake := installFakeWorker(t, completedResult())
+	logDir := t.TempDir()
+	originalDir := runlogDir
+	runlogDir = func() (string, error) { return logDir, nil }
+	t.Cleanup(func() { runlogDir = originalDir })
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %q)", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no JSON document", stdout)
+	}
+	// The message names the checkout and carries git's own words, so
+	// the caller can see why the checkout could not be created.
+	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
+	if !strings.Contains(stderr, "create worktree "+checkout) {
+		t.Fatalf("stderr = %q, want it to name the checkout", stderr)
+	}
+	if !strings.Contains(stderr, "cannot lock ref 'refs/heads/run/probe'") {
+		t.Fatalf("stderr = %q, want git's own refusal text", stderr)
+	}
+	if strings.Contains(stderr, "usage:") {
+		t.Fatalf("stderr = %q, want no usage block", stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker calls = %d, want 0 for the refused run", fake.callCount())
+	}
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read record dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("record dir = %v, want empty: the refusal happens before any run record is written", entries)
+	}
+}
+
+// TestPrepareWorktreeExpiredContextIsNotARefusal pins the one
+// exception to prepareWorktree's refusals: a context already past its
+// deadline or already cancelled makes the first git command fail, and
+// that failure must come back carrying the context's own error — never
+// as the "inside a git work tree" refusal, which would be untrue: the
+// caller may well be inside a git work tree, the run just ended.
+func TestPrepareWorktreeExpiredContextIsNotARefusal(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	tests := []struct {
+		name  string
+		ready func() context.Context
+		want  error
+	}{
+		{
+			name: "deadline already passed",
+			ready: func() context.Context {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Minute))
+				defer cancel()
+				return ctx
+			},
+			want: context.DeadlineExceeded,
+		},
+		{
+			name: "already cancelled",
+			ready: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			want: context.Canceled,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := prepareWorktree(test.ready(), repo, "probe")
+			if err == nil {
+				t.Fatalf("prepareWorktree returned nil error, want one carrying %v", test.want)
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("err = %v, want errors.Is(err, %v) to hold", err, test.want)
+			}
+			if worktreeRefused(err) {
+				t.Fatalf("err = %v, want no refusal: the run context ended, the caller cannot fix anything", err)
+			}
+		})
+	}
 }
 
 // TestRunWorktreeLeftBehind pins that nothing is ever removed: the
@@ -273,6 +382,27 @@ func TestRunWorktreeLeftBehind(t *testing.T) {
 	}
 	if !gitRefExists(t, repo, "refs/heads/run/probe") {
 		t.Fatalf("branch run/probe missing after the run")
+	}
+}
+
+// TestRunWorktreeFailedRunKeepsCheckout pins that a failed run leaves
+// its checkout behind exactly like a successful one: a worker that
+// fails must not take the checkout or its branch with it, or the next
+// run with the same name would silently get a fresh start instead of
+// the refusal a leftover earns.
+func TestRunWorktreeFailedRunKeepsCheckout(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	installFakeWorker(t, pi.WorkerResult{Model: "acme/model", Status: pi.StatusFailed, Error: "agent failed"})
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	if code != 5 {
+		t.Fatalf("exit = %d, want 5 (stderr %q)", code, stderr)
+	}
+	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
+	if _, err := os.Stat(checkout); err != nil {
+		t.Fatalf("checkout %s gone after the failed run: %v", checkout, err)
+	}
+	if !gitRefExists(t, repo, "refs/heads/run/probe") {
+		t.Fatalf("branch run/probe missing after the failed run")
 	}
 }
 

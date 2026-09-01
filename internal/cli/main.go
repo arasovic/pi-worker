@@ -440,23 +440,39 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	defer cancel()
 
 	// With --worktree the run works in a checkout of its own instead of
-	// the caller's current directory: a fresh clone of HEAD on branch
-	// run/<name> under <root>/.pi-worker/worktrees/<name>. The checkout
-	// is created before anything else happens — before the version probe,
-	// before the run record exists, before any worker starts — and the
-	// one stderr line naming it is printed at creation time, so a run
-	// that is killed later still leaves the caller knowing where its
-	// checkout is. A taken name or branch refuses the run here; nothing
-	// is ever removed on any path.
+	// the caller's current directory: a linked working directory of
+	// HEAD on branch run/<name> under <root>/.pi-worker/worktrees/<name>
+	// — not a clone, the linked worktree shares the repository's object
+	// store with the caller's tree. The checkout is created before
+	// anything else happens — before the version probe, before the run
+	// record exists, before any worker starts — and the one stderr line
+	// naming it is printed at creation time, so a run that is killed
+	// later still leaves the caller knowing where its checkout is. A
+	// refusal here — a taken name or branch, or a checkout git itself
+	// refuses to create — exits 2; nothing is ever removed on any path.
 	var runWorktree *run.Worktree
 	if opts.worktree != "" {
 		path, branch, err := prepareWorktree(ctx, workspace, opts.worktree)
 		if err != nil {
+			// A refusal the caller must fix — a taken name or branch,
+			// or a checkout git itself refused to create — exits 2
+			// with the message alone. An expired or cancelled run
+			// context is not a checkout refusal: the run itself ended,
+			// and it exits like any other timed-out or cancelled run,
+			// deadline first and cancellation second, exactly like the
+			// controller branch below. Only the remainder is an
+			// internal failure.
 			fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-			if worktreeRefused(err) {
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
+			case errors.Is(err, context.Canceled):
+				return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
+			case worktreeRefused(err):
 				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorUsage, Message: err.Error()})
+			default:
+				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 			}
-			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 		}
 		workspace = path
 		runWorktree = &run.Worktree{Path: path, Branch: branch}
