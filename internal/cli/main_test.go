@@ -567,7 +567,7 @@ func TestRunUsageErrors(t *testing.T) {
 		{name: "model without value", args: []string{"run", "--model"}, stdin: ""},
 		{name: "model without provider", args: []string{"run", "--model", "/m-1"}, stdin: ""},
 		{name: "model without id", args: []string{"run", "--model", "acme/"}, stdin: ""},
-		{name: "model with thinking suffix", args: []string{"run", "--model", "acme/m-1:thinking"}, stdin: ""},
+		{name: "model without slash", args: []string{"run", "--model", "acme"}, stdin: ""},
 		{name: "model pattern", args: []string{"run", "--model", "acme*"}, stdin: ""},
 		{name: "empty task", args: []string{"run", "--model", "acme/m-1", "--task", ""}, stdin: ""},
 		{name: "task and task file", args: []string{"run", "--model", "acme/m-1", "--task", "a", "--task-file", "b.txt"}, stdin: ""},
@@ -1216,7 +1216,7 @@ func TestRunInvalidPerTaskModelUsesRunLevelErrorText(t *testing.T) {
 	}{
 		{name: "no provider", value: "/m-1"},
 		{name: "no id", value: "acme/"},
-		{name: "thinking suffix", value: "acme/m-1:thinking"},
+		{name: "no slash", value: "acme"},
 		{name: "pattern", value: "acme*"},
 	}
 	errorLine := func(stderr string) string {
@@ -1246,6 +1246,95 @@ func TestRunInvalidPerTaskModelUsesRunLevelErrorText(t *testing.T) {
 				t.Fatalf("per-task error line = %q, want the run-level line %q", got, want)
 			}
 		})
+	}
+}
+
+func TestRunNameRuleAcceptsColonAndSpaceInId(t *testing.T) {
+	// The name rule is structural only: it accepts a name whose id carries
+	// a colon or a space, because those are id contents. Whether the name
+	// is usable is the catalog's answer, which the worker gives at run
+	// time — this test pins only that the shape rule no longer refuses the
+	// name before any worker starts.
+	for _, value := range []string{"acme/m-1:free", "acme/mo del"} {
+		t.Run(value, func(t *testing.T) {
+			fake := installFakeWorker(t, pi.WorkerResult{Model: value, Status: pi.StatusCompleted, Explanation: "done"})
+			code, stdout, stderr := runCLI(t, []string{"run", "--model", value, "--task", "go", "--json"}, "")
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+			}
+			if req := mustWorkerRequest(t, fake, 1); req.Model != value {
+				t.Fatalf("worker model = %q, want %q", req.Model, value)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			if output := decodeRunOutput(t, stdout); len(output.Workers) != 1 || output.Workers[0].Model != value {
+				t.Fatalf("output workers = %#v, want model %q", output.Workers, value)
+			}
+		})
+	}
+}
+
+func TestRunNameRuleRejectsEmptyHalves(t *testing.T) {
+	// A name with no slash, an empty provider, or an empty id is still
+	// refused by the name rule before any worker starts.
+	for _, test := range []struct {
+		name  string
+		value string
+	}{
+		{name: "no slash", value: "acme"},
+		{name: "empty provider", value: "/m-1"},
+		{name: "empty id", value: "acme/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+			code, stdout, stderr := runCLI(t, []string{"run", "--model", test.value, "--task", "go"}, "")
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "invalid model") {
+				t.Fatalf("stderr = %q, want the invalid-model error", stderr)
+			}
+			if fake.callCount() != 0 {
+				t.Fatalf("worker invoked %d times, want 0", fake.callCount())
+			}
+		})
+	}
+}
+
+func TestRunInventedColonNameRefusedByCatalogNotByFormat(t *testing.T) {
+	// An invented name carrying a colon passes the name rule — a colon in
+	// an id is not a format error — so `run` must refuse it with the
+	// catalog-membership answer, not a name-format answer. The real worker
+	// drives the whole path: the catalog offers only the plain entry, the
+	// requested colon name is not in it, and the run exits 3 with "not in
+	// the available catalog" on stderr.
+	installRealFakePiWorker(t)
+	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+	}})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1:free", "--task", "go", "--json"}, "")
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "not in the available catalog") {
+		t.Fatalf("stderr = %q, want the catalog-membership answer", stderr)
+	}
+	if strings.Contains(stderr, "invalid model selector") || strings.Contains(stderr, "invalid model") {
+		t.Fatalf("stderr = %q, want no name-format answer", stderr)
+	}
+	output := decodeRunOutput(t, stdout)
+	if output.Outcome != contracts.OutcomeWorkersUnavailable || len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusUnavailable {
+		t.Fatalf("output = %#v, want one unavailable worker", output)
+	}
+	if !strings.Contains(output.Workers[0].Error, "not in the available catalog") || strings.Contains(output.Workers[0].Error, "invalid model selector") {
+		t.Fatalf("worker error = %q, want the catalog-membership answer", output.Workers[0].Error)
 	}
 }
 

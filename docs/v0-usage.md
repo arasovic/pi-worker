@@ -359,7 +359,11 @@ Replace the provider/model placeholder with one exact selector printed by
   stdout or creates a new exit path; the RPC lifecycle still validates the
   effective model and thinking state fail-closed.
 
-- `--model` must be an exact `provider/model` string.
+- `--model` must be an exact `provider/model` string from the catalog. A
+  name the catalog offers is accepted whatever the id contains — an id may
+  carry its own upstream slash, a colon, or anything else a routing provider
+  reports — and a name the catalog does not offer is refused by the
+  catalog-membership check.
 - A task's own `--model` wins over the run-level one, and an explicit
   `--model` at either level always wins over the configured default.
   `--model` never rewrites the configuration document, and the configured
@@ -378,7 +382,9 @@ Replace the provider/model placeholder with one exact selector printed by
   `xhigh`, or `max`, binding per task like `--model`: one that follows a
   `--task` or `--task-file` is that task's level, at most once per task,
   and one that precedes every task is the run-level value.
-- Model and effort are separate: `provider/model:max` remains invalid.
+- Model and effort are separate. Effort is a separate flag (`--thinking`);
+  a name is accepted when the catalog offers it, whatever the id contains,
+  so a name is never a way to smuggle effort into `--model`.
 - After exact model activation, every worker calls `get_state` to confirm the
   active model and capture Pi's default `thinkingLevel`.
 - With explicit `--thinking`, the worker queries

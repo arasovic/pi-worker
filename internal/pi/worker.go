@@ -147,7 +147,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	}
 	provider, id, ok := splitModelSelector(req.Model)
 	if !ok {
-		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: fmt.Sprintf("invalid model selector %q: expected exact provider/model", req.Model)})
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: fmt.Sprintf("invalid model selector %q: expected provider/model", req.Model)})
 	}
 	if err := ctx.Err(); err != nil {
 		// An already-expired deadline must surface as timed-out (exit 7
@@ -300,11 +300,17 @@ func workerID(id int) int {
 	return id
 }
 
-// splitModelSelector parses an exact provider/model selector.
+// splitModelSelector parses an exact provider/model selector: the part
+// before the first slash is the provider and the remainder is the id. It
+// asks the one selector rule whether the halves name something — that rule
+// and this parser must never disagree. The catalog-membership check that
+// follows is what decides whether the name is usable.
 func splitModelSelector(selector string) (provider, id string, ok bool) {
 	provider, id, found := strings.Cut(selector, "/")
-	canonical, componentsOK := ExactModelSelector(provider, id)
-	if !found || !componentsOK || canonical != selector {
+	if !found {
+		return "", "", false
+	}
+	if _, ruleOK := ExactModelSelector(provider, id); !ruleOK {
 		return "", "", false
 	}
 	return provider, id, true

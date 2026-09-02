@@ -2,12 +2,17 @@ package pi
 
 import "testing"
 
-// A routing provider reports ids that carry their own upstream provider, so an
-// id may contain a slash while a provider may not. That asymmetry is what
-// keeps a selector unambiguous: the first slash is always the separator, so
-// "a/b/c" can only ever mean provider "a" and id "b/c". Allowing a slash on
-// both sides would make the same string mean two different models.
-func TestExactModelSelectorSlashRules(t *testing.T) {
+// The selector rule is structural only: one string that splits at its first
+// slash into a non-empty provider and a non-empty id. The id's contents are
+// never inspected, so a catalog entry whose id carries a slash, a colon, or
+// whitespace is nameable — the catalog is the authority on whether a name is
+// usable, and 26 of 130 entries in a live routing-provider catalog were
+// unreachable purely because their id carried a colon. The one asymmetry is
+// deliberate and kept: the provider is whatever precedes the first slash, so
+// a catalog entry whose provider itself contains a slash can never be named,
+// because the first slash always separates — which is exactly what keeps
+// every selector unambiguous.
+func TestExactModelSelectorShapeRules(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider string
@@ -17,10 +22,10 @@ func TestExactModelSelectorSlashRules(t *testing.T) {
 		{name: "plain", provider: "acme", id: "model", want: "acme/model"},
 		{name: "routing prefix in id", provider: "acme", id: "upstream/model", want: "acme/upstream/model"},
 		{name: "two prefixes in id", provider: "acme", id: "a/b/model", want: "acme/a/b/model"},
+		{name: "colon in id", provider: "acme", id: "model:thinking", want: "acme/model:thinking"},
+		{name: "space in id", provider: "acme", id: "up/mo del", want: "acme/up/mo del"},
 		{name: "slash in provider", provider: "ac/me", id: "model", want: ""},
 		{name: "slash in both", provider: "ac/me", id: "up/model", want: ""},
-		{name: "colon in id", provider: "acme", id: "model:thinking", want: ""},
-		{name: "space in id", provider: "acme", id: "up/mo del", want: ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

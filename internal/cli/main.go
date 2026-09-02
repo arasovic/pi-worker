@@ -1280,12 +1280,14 @@ func parseVerifyCommand(value string) ([]string, error) {
 }
 
 func validateModel(model string) error {
-	provider, id, ok := strings.Cut(model, "/")
-	if !ok || provider == "" || id == "" {
-		return fmt.Errorf("invalid model %q: expected exact provider/model", model)
-	}
-	if strings.ContainsAny(model, ": \t\r\n") {
-		return fmt.Errorf("invalid model %q: exact provider/model required, no pattern or thinking suffix", model)
+	// The one selector rule decides a name's shape: split at the first
+	// slash and ask the rule whether the halves name something. Whether
+	// the catalog offers the name is the catalog-membership check every
+	// entry point performs later — inventing a name still fails there,
+	// never here.
+	provider, id, _ := strings.Cut(model, "/")
+	if _, ok := pi.ExactModelSelector(provider, id); !ok {
+		return fmt.Errorf("invalid model %q: expected provider/model", model)
 	}
 	return nil
 }

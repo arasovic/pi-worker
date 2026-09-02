@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 )
 
 // schemaVersion is the only supported document version.
@@ -46,9 +45,14 @@ func UserPath() (string, error) {
 
 // Validate reports whether cfg is a well-formed configuration document.
 // The schema version must be 1. DefaultModel may be empty; a non-empty
-// value must be an exact provider/model selector: a single slash with
-// non-empty provider and id parts and no additional slash, colon, or
-// whitespace.
+// value must be an exact provider/model selector: it must split at its
+// first slash into a non-empty provider and a non-empty id. Nothing about
+// the id's contents is inspected: the catalog a default is chosen from is
+// the authority on whether a name is usable, and this rule only decides
+// whether a name has a shape a name can have. The one asymmetry is the
+// provider half: a selector names the provider as everything before the
+// first slash, so a catalog entry whose provider itself contains a slash
+// can never be named by any selector.
 func Validate(cfg Config) error {
 	if cfg.SchemaVersion != schemaVersion {
 		return fmt.Errorf("unsupported schemaVersion %d: want %d", cfg.SchemaVersion, schemaVersion)
@@ -57,9 +61,6 @@ func Validate(cfg Config) error {
 		return nil
 	}
 	model := cfg.DefaultModel
-	if strings.ContainsAny(model, ":") || strings.IndexFunc(model, unicode.IsSpace) >= 0 {
-		return fmt.Errorf("invalid defaultModel %q: must be provider/id", model)
-	}
 	provider, id, found := strings.Cut(model, "/")
 	if !found {
 		return fmt.Errorf("invalid defaultModel %q: must be provider/id", model)

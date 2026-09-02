@@ -161,10 +161,14 @@ func TestModelsProtocolErrorExits9(t *testing.T) {
 	}
 }
 
-func TestModelsLeavesOutUnnameableEntriesAndSaysHowMany(t *testing.T) {
-	// This catches two opposite regressions: publishing a selector that cannot
-	// be passed back to run, and letting one unnameable entry hide every entry
-	// that does work.
+func TestModelsLeavesOutOnlySlashInProviderEntriesAndSaysHowMany(t *testing.T) {
+	// This catches two opposite regressions: publishing a selector that
+	// cannot be passed back to run, and letting one unnameable entry hide
+	// every entry that does work. Only a provider that itself contains a
+	// slash is unnameable — the provider is whatever precedes the first
+	// slash, so the first slash always separates — while an id that
+	// carries a colon or whitespace is nameable, because the catalog is
+	// the authority on a name, not this character rule.
 	installFakeCatalog(t, &fakeCatalog{models: []pi.ModelProjection{
 		{Provider: "ac/me", ID: "model"},
 		{Provider: "acme", ID: "upstream/model"},
@@ -177,12 +181,15 @@ func TestModelsLeavesOutUnnameableEntriesAndSaysHowMany(t *testing.T) {
 			t.Fatalf("%v: exit = %d, stderr = %q", args, code, stderr)
 		}
 		if !strings.Contains(stdout, "acme/upstream/model") {
-			t.Fatalf("%v: stdout = %q, want the nameable entry", args, stdout)
+			t.Fatalf("%v: stdout = %q, want the routing entry", args, stdout)
 		}
-		if strings.Contains(stdout, "ac/me") || strings.Contains(stdout, "model:thinking") {
+		if !strings.Contains(stdout, "acme/model:thinking") {
+			t.Fatalf("%v: stdout = %q, want the colon-id entry the catalog offers", args, stdout)
+		}
+		if strings.Contains(stdout, "ac/me") {
 			t.Fatalf("%v: stdout = %q, published an entry run cannot accept", args, stdout)
 		}
-		if !strings.Contains(stderr, "2 catalog entries") {
+		if !strings.Contains(stderr, "1 catalog entry") {
 			t.Fatalf("%v: stderr = %q, want the count that was left out", args, stderr)
 		}
 		if strings.Contains(stderr, "ac/me") || strings.Contains(stderr, "model:thinking") {

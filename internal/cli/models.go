@@ -62,9 +62,12 @@ func modelsCommand(parent context.Context, args []string, stdout, stderr io.Writ
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
-	// A catalog may offer models this build cannot name exactly, such as an id
-	// carrying a thinking suffix. Those are counted and left out rather than
-	// failing the whole listing, which would hide every model that does work.
+	// A catalog entry whose provider itself contains a slash can never be
+	// named: the provider is whatever precedes the first slash of a
+	// selector, so the first slash always separates. Those entries are
+	// counted and left out rather than failing the whole listing, which
+	// would hide every model that does work. Everything else the catalog
+	// offers is nameable, whatever the id contains.
 	unnamed := 0
 	if opts.json {
 		output := modelsOutput{SchemaVersion: 1, Models: make([]modelOutput, 0, len(models))}
@@ -103,7 +106,11 @@ func reportUnnamedModels(stderr io.Writer, unnamed int) {
 	if unnamed == 0 {
 		return
 	}
-	fmt.Fprintf(stderr, "pi-worker: %d catalog entries cannot be named exactly and were left out\n", unnamed)
+	if unnamed == 1 {
+		fmt.Fprintf(stderr, "pi-worker: 1 catalog entry cannot be named and was left out\n")
+		return
+	}
+	fmt.Fprintf(stderr, "pi-worker: %d catalog entries cannot be named and were left out\n", unnamed)
 }
 
 func parseModelsArgs(args []string) (modelsOptions, error) {

@@ -496,6 +496,77 @@ func TestWorkerModelUnavailableNeverFallsBack(t *testing.T) {
 	}
 }
 
+func TestWorkerModelUnavailableIsCatalogAnswerNotNameFormatAnswer(t *testing.T) {
+	// An invented name is refused by the catalog-membership check, not by
+	// a name-format rule: a colon in the id is not a format error, so a
+	// colon-carrying name that the catalog does not offer must fail with
+	// the not-in-the-available-catalog answer (exit 3 path), never an
+	// invalid-model-selector format error (exit 5 path). The name-format
+	// rule accepts the shape, and the catalog is the authority.
+	script := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+	}}
+	logPath := setupFakePiEnv(t, script)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1:free",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusUnavailable {
+		t.Fatalf("status = %q, want unavailable; error = %q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "not in the available catalog") {
+		t.Fatalf("error = %q, want the catalog-membership answer", result.Error)
+	}
+	if strings.Contains(result.Error, "invalid model selector") {
+		t.Fatalf("error = %q, want no name-format answer", result.Error)
+	}
+	types := waitRequestLog(t, logPath, 1)
+	if !slices.Equal(types, []string{"get_available_models"}) {
+		t.Fatalf("request log = %v; worker must stop before set_model/prompt", types)
+	}
+}
+
+func TestWorkerRunsCatalogColonIdEntry(t *testing.T) {
+	// A routing-provider catalog offers "acme/m-1:free" next to
+	// "acme/m-1". The name is in the catalog, so the worker must split it
+	// at the first slash and request exactly the pair the catalog reports:
+	// the id is opaque content, not a thinking suffix to strip or refuse.
+	scriptConfig := happyPathScript("colon id answer")
+	scriptConfig.Triggers["get_available_models"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"},{"provider":"acme","id":"m-1:free"}]}`)}},
+	}
+	scriptConfig.Triggers["set_model"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1:free"}`)}},
+	}
+	scriptConfig.Triggers["get_state"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1:free"},"thinkingLevel":"medium"}`)}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1:free",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if result.Explanation != "colon id answer" {
+		t.Fatalf("explanation = %q", result.Explanation)
+	}
+	if result.Model != "acme/m-1:free" {
+		t.Fatalf("model = %q", result.Model)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "prompt", "get_last_assistant_text"}
+	if got := waitRequestLog(t, logPath, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+}
+
 func TestWorkerInvalidCatalogContainerIsProtocolError(t *testing.T) {
 	// A success response with a missing data container is a protocol
 	// violation (exit 9 path), not a model-unavailable/readiness failure
@@ -856,7 +927,8 @@ func TestWorkerRejectsInvalidInputWithoutLaunchingPi(t *testing.T) {
 		{"empty model", WorkerRequest{Prompt: "go", Workspace: workspace}},
 		{"empty workspace", WorkerRequest{Model: "acme/m-1", Prompt: "go"}},
 		{"malformed model", WorkerRequest{Model: "acme", Prompt: "go", Workspace: workspace}},
-		{"model with thinking suffix", WorkerRequest{Model: "acme/m-1:thinking", Prompt: "go", Workspace: workspace}},
+		{"model without id", WorkerRequest{Model: "acme/", Prompt: "go", Workspace: workspace}},
+		{"model without provider", WorkerRequest{Model: "/m-1", Prompt: "go", Workspace: workspace}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
