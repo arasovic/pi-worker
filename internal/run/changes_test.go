@@ -1128,3 +1128,122 @@ func TestControllerChangesMeasuredOnExpiredContext(t *testing.T) {
 		t.Fatalf("file = %#v, want new.txt added", changes.Files[0])
 	}
 }
+
+func TestControllerChangesFromSubdirectoryRootRelative(t *testing.T) {
+	// The manifest must answer the same way no matter which directory
+	// inside the repository the run was started from. The run here
+	// starts inside sub while it modifies a tracked file outside sub,
+	// a tracked file inside sub, and creates an untracked file outside
+	// sub; the manifest must name all three root-relative with the
+	// statuses a root-started run would report. Before the fix the
+	// tracked diff named the files root-relative while the tree
+	// listing and the untracked listing named them from the starting
+	// directory, so every tracked path failed the existence lookup and
+	// was reported added, and the untracked file outside sub was never
+	// listed at all.
+	repo := newGitRepo(t)
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "inside.txt"), []byte("inside one\n"), 0o644); err != nil {
+		t.Fatalf("write inside: %v", err)
+	}
+	gitCommit(t, repo)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		// dir is the starting subdirectory; the outside paths are
+		// reached from the repository root, the way a worker that
+		// changes the whole repository would.
+		if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(sub, "inside.txt"), []byte("inside one\ninside two\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(repo, "outside_new.txt"), []byte("new"), 0o644)
+	}}, sub)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 3 || len(changes.Files) != 3 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the three changed paths measured", changes)
+	}
+	byPath := map[string]FileChange{}
+	for _, file := range changes.Files {
+		if file.DirtyBefore {
+			t.Fatalf("file = %#v, want no dirtyBefore on a clean before-state", file)
+		}
+		byPath[file.Path] = file
+	}
+	if file, ok := byPath["file.txt"]; !ok || file.Status != "modified" || file.Added != 1 || file.Deleted != 0 {
+		t.Fatalf("file.txt = %#v, want the outside tracked file modified +1/-0 root-relative", byPath["file.txt"])
+	}
+	if file, ok := byPath["sub/inside.txt"]; !ok || file.Status != "modified" || file.Added != 1 || file.Deleted != 0 {
+		t.Fatalf("sub/inside.txt = %#v, want the inside tracked file modified +1/-0 root-relative", byPath["sub/inside.txt"])
+	}
+	if file, ok := byPath["outside_new.txt"]; !ok || file.Status != "added" || file.Added != 1 || file.Deleted != 0 || file.Binary || !file.NoFinalNewline {
+		t.Fatalf("outside_new.txt = %#v, want added +1/-0 with NoFinalNewline measured at the root", byPath["outside_new.txt"])
+	}
+}
+
+func TestControllerChangesDirtyBeforeFromSubdirectoryOutsideModifiedFurtherReported(t *testing.T) {
+	// A tracked file outside the starting subdirectory that was dirty
+	// before the run and that the run then modified further must be
+	// reported: its counts run against the before-state HEAD and it is
+	// marked dirtyBefore, with the root-relative path. Before the fix
+	// the snapshot stamped the file under a root-relative key but
+	// recorded it absent because it looked it up inside the starting
+	// subdirectory, the after pass's lookup inside the subdirectory
+	// matched that absence no matter what happened to the real file,
+	// and a path the run actually changed dropped out of the report
+	// entirely.
+	repo := newGitRepo(t)
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(repo, "file.txt"), []byte("one\ntwo\n"), 0o644)
+	}}, sub)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the modified dirty file reported", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 1 || file.Deleted != 0 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +1/-0 with dirtyBefore, root-relative", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeFromSubdirectoryUntrackedUntouchedAbsent(t *testing.T) {
+	// The dirty snapshot is anchored at the repository root: an
+	// untracked file inside the starting subdirectory that was dirty
+	// before the run and that the run never touched must drop out of
+	// the manifest. If the snapshot keyed the file without its
+	// subdirectory prefix while the after pass measures every path
+	// root-relative, the stamp could never match and the file would be
+	// reported as the run's change.
+	repo := newGitRepo(t)
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "stray.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+	result := runWithChanges(t, newScriptedWorker(), sub)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the untouched dirty untracked path absent", changes)
+	}
+}
