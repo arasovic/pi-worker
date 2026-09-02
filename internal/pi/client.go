@@ -127,11 +127,9 @@ func (c *Client) GetAvailableModels(ctx context.Context) ([]ModelProjection, err
 	if data.Models == nil {
 		return nil, newProtocolError("get_available_models data missing models array")
 	}
-	for i, model := range data.Models {
-		if _, ok := ExactModelSelector(model.Provider, model.ID); !ok {
-			return nil, newProtocolError("catalog entry %d has invalid provider or id", i)
-		}
-	}
+	// An entry this build cannot name is reported and left out by the caller,
+	// never grounds for discarding the catalog: one unusable entry among many
+	// would otherwise hide every usable one.
 	return data.Models, nil
 }
 

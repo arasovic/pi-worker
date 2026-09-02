@@ -1281,7 +1281,7 @@ func parseVerifyCommand(value string) ([]string, error) {
 
 func validateModel(model string) error {
 	provider, id, ok := strings.Cut(model, "/")
-	if !ok || provider == "" || id == "" || strings.Contains(id, "/") {
+	if !ok || provider == "" || id == "" {
 		return fmt.Errorf("invalid model %q: expected exact provider/model", model)
 	}
 	if strings.ContainsAny(model, ": \t\r\n") {

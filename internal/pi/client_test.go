@@ -432,14 +432,17 @@ func TestClientGetAvailableModelsExplicitEmptyArrayIsValidCatalog(t *testing.T) 
 	}
 }
 
-func TestClientGetAvailableModelsRejectsMalformedSelectors(t *testing.T) {
+// The catalog read is a faithful transport: an entry this build cannot name
+// exactly is carried through, not grounds for discarding the whole catalog.
+// Deciding what to publish belongs to the command that lists models, which is
+// the only place that can also say how many were left out.
+func TestClientGetAvailableModelsPassesUnnameableEntriesThrough(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider string
 		id       string
 	}{
 		{name: "slash in provider", provider: "ac/me", id: "model"},
-		{name: "slash in id", provider: "acme", id: "mo/del"},
 		{name: "colon", provider: "acme", id: "model:thinking"},
 		{name: "ASCII whitespace", provider: "acme", id: "mo del"},
 		{name: "Unicode whitespace", provider: "acme", id: "mo\u00a0del"},
@@ -454,13 +457,12 @@ func TestClientGetAvailableModelsRejectsMalformedSelectors(t *testing.T) {
 				"get_available_models": {{Response: &script.Response{Success: true, Data: data}}},
 			}}
 			proc := startScriptedPi(t, script)
-			_, err = NewClient(proc.Stdin(), proc.Stdout(), nil, nil).GetAvailableModels(context.Background())
-			var protocolErr *ProtocolError
-			if !errors.As(err, &protocolErr) {
-				t.Fatalf("error = %v, want *ProtocolError", err)
+			models, err := NewClient(proc.Stdin(), proc.Stdout(), nil, nil).GetAvailableModels(context.Background())
+			if err != nil {
+				t.Fatalf("GetAvailableModels = %v, want the entry carried through", err)
 			}
-			if strings.Contains(err.Error(), test.provider) || strings.Contains(err.Error(), test.id) {
-				t.Fatalf("error leaked malformed selector: %q", err)
+			if len(models) != 1 || models[0].Provider != test.provider || models[0].ID != test.id {
+				t.Fatalf("models = %v, want the entry unchanged", models)
 			}
 		})
 	}

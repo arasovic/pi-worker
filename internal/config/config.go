@@ -60,10 +60,10 @@ func Validate(cfg Config) error {
 	if strings.ContainsAny(model, ":") || strings.IndexFunc(model, unicode.IsSpace) >= 0 {
 		return fmt.Errorf("invalid defaultModel %q: must be provider/id", model)
 	}
-	if strings.Count(model, "/") != 1 {
-		return fmt.Errorf("invalid defaultModel %q: must be provider/id with exactly one slash", model)
+	provider, id, found := strings.Cut(model, "/")
+	if !found {
+		return fmt.Errorf("invalid defaultModel %q: must be provider/id", model)
 	}
-	provider, id, _ := strings.Cut(model, "/")
 	if provider == "" || id == "" {
 		return fmt.Errorf("invalid defaultModel %q: provider and id must both be non-empty", model)
 	}

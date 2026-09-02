@@ -161,13 +161,33 @@ func TestModelsProtocolErrorExits9(t *testing.T) {
 	}
 }
 
-func TestModelsMalformedCatalogSelectorExits9WithoutJSON(t *testing.T) {
-	// This catches publishing a selector that cannot be passed back to run.
-	installFakeCatalog(t, &fakeCatalog{models: []pi.ModelProjection{{Provider: "ac/me", ID: "model"}}})
+func TestModelsLeavesOutUnnameableEntriesAndSaysHowMany(t *testing.T) {
+	// This catches two opposite regressions: publishing a selector that cannot
+	// be passed back to run, and letting one unnameable entry hide every entry
+	// that does work.
+	installFakeCatalog(t, &fakeCatalog{models: []pi.ModelProjection{
+		{Provider: "ac/me", ID: "model"},
+		{Provider: "acme", ID: "upstream/model"},
+		{Provider: "acme", ID: "model:thinking"},
+	}})
 
-	code, stdout, stderr := runCLI(t, []string{"models", "--json"}, "")
-	if code != 9 || stdout != "" || !strings.Contains(stderr, "protocol error") {
-		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	for _, args := range [][]string{{"models"}, {"models", "--json"}} {
+		code, stdout, stderr := runCLI(t, args, "")
+		if code != 0 {
+			t.Fatalf("%v: exit = %d, stderr = %q", args, code, stderr)
+		}
+		if !strings.Contains(stdout, "acme/upstream/model") {
+			t.Fatalf("%v: stdout = %q, want the nameable entry", args, stdout)
+		}
+		if strings.Contains(stdout, "ac/me") || strings.Contains(stdout, "model:thinking") {
+			t.Fatalf("%v: stdout = %q, published an entry run cannot accept", args, stdout)
+		}
+		if !strings.Contains(stderr, "2 catalog entries") {
+			t.Fatalf("%v: stderr = %q, want the count that was left out", args, stderr)
+		}
+		if strings.Contains(stderr, "ac/me") || strings.Contains(stderr, "model:thinking") {
+			t.Fatalf("%v: stderr = %q, leaked a catalog entry", args, stderr)
+		}
 	}
 }
 

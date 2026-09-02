@@ -53,7 +53,7 @@ func TestValidate(t *testing.T) {
 		{name: "no slash", cfg: Config{SchemaVersion: 1, DefaultModel: "model"}, wantErr: true},
 		{name: "empty provider", cfg: Config{SchemaVersion: 1, DefaultModel: "/model"}, wantErr: true},
 		{name: "empty id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/"}, wantErr: true},
-		{name: "extra slash", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/model/extra"}, wantErr: true},
+		{name: "routing prefix in id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/upstream/model"}, wantErr: false},
 		{name: "colon", cfg: Config{SchemaVersion: 1, DefaultModel: "provider:model"}, wantErr: true},
 		{name: "space", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/mo del"}, wantErr: true},
 		{name: "leading space", cfg: Config{SchemaVersion: 1, DefaultModel: " provider/model"}, wantErr: true},
