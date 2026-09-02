@@ -111,21 +111,49 @@ const changesTimeout = 30 * time.Second
 // leaving the field nil on a failure is the bug this feature exists to
 // prevent. The caller has already confirmed the workspace is inside a
 // git work tree before this function is reached, so it never states the
-// work-tree-unconfirmed reason itself.
+// work-tree-unconfirmed reason itself. The measurement is anchored at
+// the repository root, resolved once from dir, so every measured path
+// is root-relative and the answer is the same whichever directory
+// inside the repository the run was started from; the worker's own
+// working directory is untouched.
 func measureChanges(ctx context.Context, dir string, before *GitState, dirtyStamps map[string]fileStamp) *Changes {
 	if before.Head == "" {
 		return &Changes{Omitted: reasonUnbornHead}
 	}
-	changes, err := measureChangeFiles(ctx, dir, before.Head, dirtyStamps)
+	root, err := repoRoot(ctx, dir)
+	if err != nil {
+		return &Changes{Omitted: reasonMeasurementFail}
+	}
+	changes, err := measureChangeFiles(ctx, root, before.Head, dirtyStamps)
 	if err != nil {
 		return &Changes{Omitted: reasonMeasurementFail}
 	}
 	return changes
 }
 
+// repoRoot resolves the repository root from dir with git rev-parse
+// --show-toplevel, the same command the CLI worktree uses, so the two
+// agree on where the repository is. The worker keeps working in the
+// directory it was given; only the measurement moves to the root. A
+// failure is a git command failure: it fails the measurement like any
+// other, never a silent fallback to the caller's directory, because a
+// measurement against the wrong base would quietly report the wrong
+// paths.
+func repoRoot(ctx context.Context, dir string) (string, error) {
+	out, err := gitOutput(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // measureChangeFiles measures the tracked and untracked workspace
 // changes against head, minus the before-dirty paths whose stamps did
-// not move. The tracked pass is one diff command that
+// not move. root is the repository root resolved once by the caller:
+// every command runs with root as its working directory and every
+// filesystem read joins against it, so every measured path is
+// root-relative, the base every consumer of the manifest already uses.
+// The tracked pass is one diff command that
 // covers every tracked change including work the run committed, because
 // the base is the before-state HEAD rather than the current one, and
 // ignores submodules: a submodule's contents are another repository's
@@ -137,8 +165,8 @@ func measureChanges(ctx context.Context, dir string, before *GitState, dirtyStam
 // branch, tag, or worktree operation. Any parse failure or command
 // failure fails the whole measurement: an approximate manifest
 // presented as truth is worse than none.
-func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[string]fileStamp) (*Changes, error) {
-	trackedOut, err := gitOutput(ctx, dir, "diff", "--numstat", "--no-renames", "--ignore-submodules=all", "-z", head, "--")
+func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[string]fileStamp) (*Changes, error) {
+	trackedOut, err := gitOutput(ctx, root, "diff", "--numstat", "--no-renames", "--ignore-submodules=all", "-z", head, "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
 	}
@@ -151,7 +179,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 	// a new file both print "+N/-0", and a removed file and a fully
 	// emptied file both print "+0/-N", so existence at the base is read
 	// from the tree and current presence from the workspace itself.
-	beforeTree, err := gitOutput(ctx, dir, "ls-tree", "-r", "--name-only", "-z", head)
+	beforeTree, err := gitOutput(ctx, root, "ls-tree", "-r", "--name-only", "-z", head)
 	if err != nil {
 		return nil, fmt.Errorf("git ls-tree: %w", err)
 	}
@@ -159,7 +187,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 	for _, path := range nulSplit(beforeTree) {
 		existed[path] = true
 	}
-	untrackedOut, err := gitOutput(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+	untrackedOut, err := gitOutput(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
@@ -178,7 +206,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 	// caller's uncommitted work was destroyed.
 	unchanged := make(map[string]bool, len(dirtyStamps))
 	for path, stamp := range dirtyStamps {
-		matches, err := stampMatches(dir, path, stamp)
+		matches, err := stampMatches(root, path, stamp)
 		if err != nil {
 			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
@@ -216,7 +244,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 		case !existed[f.Path]:
 			f.Status = statusAdded
 		default:
-			present, err := filePresent(dir, f.Path)
+			present, err := filePresent(root, f.Path)
 			if err != nil {
 				return nil, fmt.Errorf("stat %s: %w", f.Path, err)
 			}
@@ -247,7 +275,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 		keptUntracked = append(keptUntracked, path)
 	}
 	for _, path := range keptUntracked {
-		added, deleted, binary, err := measureUntrackedFile(ctx, dir, path)
+		added, deleted, binary, err := measureUntrackedFile(ctx, root, path)
 		if err != nil {
 			return nil, err
 		}
@@ -282,7 +310,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 			continue
 		}
 		f := FileChange{Path: path, DirtyBefore: true}
-		present, err := filePresent(dir, path)
+		present, err := filePresent(root, path)
 		if err != nil {
 			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
@@ -353,7 +381,7 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 	// executable bit only, and one byte per listed file is a
 	// deliberate, bounded exception.
 	for i := range changes.Files {
-		measureNoFinalNewline(dir, &changes.Files[i])
+		measureNoFinalNewline(root, &changes.Files[i])
 	}
 	return changes, nil
 }
@@ -370,19 +398,22 @@ func measureChangeFiles(ctx context.Context, dir, head string, dirtyStamps map[s
 // already reported binary, and an open, seek, or read failure all
 // simply leave the
 // field unset: none produces an error, none adds an omission reason,
-// and none may fail the measurement.
-func measureNoFinalNewline(dir string, f *FileChange) {
+// and none may fail the measurement. root is the repository root, so
+// the file is read through filepath.Join(root, f.Path): the field is
+// measured where the root-relative path lives, no matter where the run
+// started.
+func measureNoFinalNewline(root string, f *FileChange) {
 	if f.Binary {
 		return
 	}
-	info, err := os.Lstat(filepath.Join(dir, f.Path))
+	info, err := os.Lstat(filepath.Join(root, f.Path))
 	if err != nil {
 		return
 	}
 	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return
 	}
-	file, err := os.Open(filepath.Join(dir, f.Path))
+	file, err := os.Open(filepath.Join(root, f.Path))
 	if err != nil {
 		return
 	}
@@ -426,20 +457,29 @@ type fileStamp struct {
 // ls-files --others --exclude-standard -z — keeps both passes over the
 // same universe; the diff ignores submodules so a dirty submodule is
 // never stamped and never becomes a changed path, matching the
-// measurement pass. Every command here is read-only with respect to
+// measurement pass. The snapshot is anchored at the repository root,
+// resolved once from dir, so every stamp key is root-relative and the
+// after pass's keys agree with them whichever directory inside the
+// repository the run was started from: stamp keys and measurement
+// paths must name files the same way or the subtraction silently keys
+// against nothing. Every command here is read-only with respect to
 // the repository.
 func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp, error) {
-	trackedOut, err := gitOutput(ctx, dir, "diff", "--name-only", "--ignore-submodules=all", "-z", "HEAD", "--")
+	root, err := repoRoot(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	trackedOut, err := gitOutput(ctx, root, "diff", "--name-only", "--ignore-submodules=all", "-z", "HEAD", "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only: %w", err)
 	}
-	untrackedOut, err := gitOutput(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
+	untrackedOut, err := gitOutput(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
 	stamps := make(map[string]fileStamp)
 	for _, path := range append(nulSplit(trackedOut), nulSplit(untrackedOut)...) {
-		info, err := os.Lstat(filepath.Join(dir, path))
+		info, err := os.Lstat(filepath.Join(root, path))
 		if err != nil {
 			if os.IsNotExist(err) {
 				stamps[path] = fileStamp{absent: true}
@@ -457,9 +497,11 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 // modification time, and the same executable bit, or absent then and
 // absent now. A path that was not absent before but is a directory now
 // has changed — a file replaced by a directory is not the same path it
-// was.
-func stampMatches(dir, path string, stamp fileStamp) (bool, error) {
-	info, err := os.Lstat(filepath.Join(dir, path))
+// was. root is the repository root and path is root-relative, so a
+// stamp taken in a run started inside a subdirectory still matches the
+// file it names.
+func stampMatches(root, path string, stamp fileStamp) (bool, error) {
+	info, err := os.Lstat(filepath.Join(root, path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return stamp.absent, nil
@@ -472,11 +514,13 @@ func stampMatches(dir, path string, stamp fileStamp) (bool, error) {
 	return info.Size() == stamp.size && info.ModTime().Equal(stamp.modTime) && (info.Mode()&0o111 != 0) == stamp.exec, nil
 }
 
-// filePresent reports whether the workspace-relative path is currently a
-// non-directory entry in the workspace, the ground truth for whether a
-// file that existed at the base was deleted or merely emptied.
-func filePresent(dir, path string) (bool, error) {
-	info, err := os.Lstat(filepath.Join(dir, path))
+// filePresent reports whether the root-relative path is currently a
+// non-directory entry in the repository workspace, the ground truth for
+// whether a file that existed at the base was deleted or merely
+// emptied. root is the repository root, the same base every manifest
+// path uses.
+func filePresent(root, path string) (bool, error) {
+	info, err := os.Lstat(filepath.Join(root, path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -492,9 +536,10 @@ func filePresent(dir, path string) (bool, error) {
 // files differ — the normal case here, including an empty new file,
 // which still prints a record with zero counts — so a non-zero exit is
 // not a failure for this command specifically; an unparseable or
-// missing record is.
-func measureUntrackedFile(ctx context.Context, dir, path string) (added, deleted int, binary bool, err error) {
-	out, err := gitOutputAnyExit(ctx, dir, "diff", "--numstat", "--no-index", "-z", "--", "/dev/null", path)
+// missing record is. root is the repository root and path is
+// root-relative, so the command resolves the file it compares.
+func measureUntrackedFile(ctx context.Context, root, path string) (added, deleted int, binary bool, err error) {
+	out, err := gitOutputAnyExit(ctx, root, "diff", "--numstat", "--no-index", "-z", "--", "/dev/null", path)
 	if err != nil {
 		return 0, 0, false, fmt.Errorf("git diff --no-index %s: %w", path, err)
 	}
