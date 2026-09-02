@@ -156,7 +156,10 @@ func parseConfigArgs(args []string) (configOptions, error) {
 }
 
 func catalogContains(models []pi.ModelProjection, selector string) bool {
-	provider, id, _ := strings.Cut(selector, "/")
+	provider, id, ok := strings.Cut(selector, "/")
+	if !ok || provider == "" || id == "" {
+		return false
+	}
 	for _, model := range models {
 		if model.Provider == provider && model.ID == id {
 			return true

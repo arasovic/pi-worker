@@ -138,7 +138,7 @@ func TestConfigSetRejectsInvalidSyntaxBeforeCatalog(t *testing.T) {
 	catalog := &countingCatalog{}
 	installFakeCatalog(t, catalog)
 
-	code, _, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/model:thinking"}, "")
+	code, _, stderr := runCLI(t, []string{"config", "set", "default-model", "acme"}, "")
 	if code != 2 || stderr == "" || catalog.calls != 0 {
 		t.Fatalf("config set invalid = (%d, %q), calls=%d", code, stderr, catalog.calls)
 	}
@@ -160,6 +160,48 @@ func TestConfigSetUnavailableDoesNotChangeConfig(t *testing.T) {
 	got, err := config.Load(path)
 	if err != nil || got != before {
 		t.Fatalf("config after unavailable set = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetCatalogOfferedColonIdIsSaved(t *testing.T) {
+	// A routing-provider catalog offers "acme/model:free". The name rule
+	// accepts its shape, the catalog contains the name, so the default is
+	// written exactly as named.
+	path := filepath.Join(t.TempDir(), "config.json")
+	installConfigPath(t, path)
+	catalog := &countingCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model:free"}}}
+	installFakeCatalog(t, catalog)
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/model:free"}, "")
+	if code != 0 || stdout != "default-model: acme/model:free\n" || stderr != "" {
+		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got.DefaultModel != "acme/model:free" {
+		t.Fatalf("saved config = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetInventedColonNameFailsCatalogMembership(t *testing.T) {
+	// An invented name carrying a colon passes the shape rule but is not
+	// in the catalog: the catalog-membership check refuses it with the
+	// not-in-the-available-catalog answer (exit 3), never a name-format
+	// answer (exit 2).
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	if err := config.Save(path, before); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	installFakeCatalog(t, &countingCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}})
+
+	code, _, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/model:free"}, "")
+	if code != 3 || !strings.Contains(stderr, "not in the available catalog") {
+		t.Fatalf("config set = (%d, %q), want the catalog-membership answer", code, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != before {
+		t.Fatalf("config after refused set = %#v, %v", got, err)
 	}
 }
 

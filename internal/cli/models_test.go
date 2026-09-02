@@ -161,13 +161,40 @@ func TestModelsProtocolErrorExits9(t *testing.T) {
 	}
 }
 
-func TestModelsMalformedCatalogSelectorExits9WithoutJSON(t *testing.T) {
-	// This catches publishing a selector that cannot be passed back to run.
-	installFakeCatalog(t, &fakeCatalog{models: []pi.ModelProjection{{Provider: "ac/me", ID: "model"}}})
+func TestModelsLeavesOutOnlySlashInProviderEntriesAndSaysHowMany(t *testing.T) {
+	// This catches two opposite regressions: publishing a selector that
+	// cannot be passed back to run, and letting one unnameable entry hide
+	// every entry that does work. Only a provider that itself contains a
+	// slash is unnameable — the provider is whatever precedes the first
+	// slash, so the first slash always separates — while an id that
+	// carries a colon or whitespace is nameable, because the catalog is
+	// the authority on a name, not this character rule.
+	installFakeCatalog(t, &fakeCatalog{models: []pi.ModelProjection{
+		{Provider: "ac/me", ID: "model"},
+		{Provider: "acme", ID: "upstream/model"},
+		{Provider: "acme", ID: "model:thinking"},
+	}})
 
-	code, stdout, stderr := runCLI(t, []string{"models", "--json"}, "")
-	if code != 9 || stdout != "" || !strings.Contains(stderr, "protocol error") {
-		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	for _, args := range [][]string{{"models"}, {"models", "--json"}} {
+		code, stdout, stderr := runCLI(t, args, "")
+		if code != 0 {
+			t.Fatalf("%v: exit = %d, stderr = %q", args, code, stderr)
+		}
+		if !strings.Contains(stdout, "acme/upstream/model") {
+			t.Fatalf("%v: stdout = %q, want the routing entry", args, stdout)
+		}
+		if !strings.Contains(stdout, "acme/model:thinking") {
+			t.Fatalf("%v: stdout = %q, want the colon-id entry the catalog offers", args, stdout)
+		}
+		if strings.Contains(stdout, "ac/me") {
+			t.Fatalf("%v: stdout = %q, published an entry run cannot accept", args, stdout)
+		}
+		if !strings.Contains(stderr, "1 catalog entry") {
+			t.Fatalf("%v: stderr = %q, want the count that was left out", args, stderr)
+		}
+		if strings.Contains(stderr, "ac/me") || strings.Contains(stderr, "model:thinking") {
+			t.Fatalf("%v: stderr = %q, leaked a catalog entry", args, stderr)
+		}
 	}
 }
 

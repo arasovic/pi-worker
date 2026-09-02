@@ -62,14 +62,22 @@ func modelsCommand(parent context.Context, args []string, stdout, stderr io.Writ
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+	// A catalog entry whose provider itself contains a slash can never be
+	// named: the provider is whatever precedes the first slash of a
+	// selector, so the first slash always separates. Those entries are
+	// counted and left out rather than failing the whole listing, which
+	// would hide every model that does work. Everything else the catalog
+	// offers is nameable, whatever the id contains.
+	unnamed := 0
 	if opts.json {
-		output := modelsOutput{SchemaVersion: 1, Models: make([]modelOutput, len(models))}
-		for i, model := range models {
+		output := modelsOutput{SchemaVersion: 1, Models: make([]modelOutput, 0, len(models))}
+		for _, model := range models {
 			selector, ok := pi.ExactModelSelector(model.Provider, model.ID)
 			if !ok {
-				return modelsErrorCode(ctx, &pi.ProtocolError{Message: "catalog entry has invalid provider or id"}, stderr)
+				unnamed++
+				continue
 			}
-			output.Models[i] = modelOutput{Provider: model.Provider, ID: model.ID, Selector: selector}
+			output.Models = append(output.Models, modelOutput{Provider: model.Provider, ID: model.ID, Selector: selector})
 		}
 		data, err := json.Marshal(output)
 		if err != nil {
@@ -77,16 +85,32 @@ func modelsCommand(parent context.Context, args []string, stdout, stderr io.Writ
 			return 9
 		}
 		fmt.Fprintln(stdout, string(data))
+		reportUnnamedModels(stderr, unnamed)
 		return 0
 	}
 	for _, model := range models {
 		selector, ok := pi.ExactModelSelector(model.Provider, model.ID)
 		if !ok {
-			return modelsErrorCode(ctx, &pi.ProtocolError{Message: "catalog entry has invalid provider or id"}, stderr)
+			unnamed++
+			continue
 		}
 		fmt.Fprintln(stdout, selector)
 	}
+	reportUnnamedModels(stderr, unnamed)
 	return 0
+}
+
+// reportUnnamedModels states how many catalog entries were left out, so a
+// missing model is never silent.
+func reportUnnamedModels(stderr io.Writer, unnamed int) {
+	if unnamed == 0 {
+		return
+	}
+	if unnamed == 1 {
+		fmt.Fprintf(stderr, "pi-worker: 1 catalog entry cannot be named and was left out\n")
+		return
+	}
+	fmt.Fprintf(stderr, "pi-worker: %d catalog entries cannot be named and were left out\n", unnamed)
 }
 
 func parseModelsArgs(args []string) (modelsOptions, error) {
