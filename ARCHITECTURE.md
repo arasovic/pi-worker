@@ -46,9 +46,12 @@ each worker it:
 7. collects the final explanation;
 8. reaps the managed process and session resources.
 
-Parallel tasks share the caller's writable workspace and must have disjoint
-file ownership. Pi Worker provides lifecycle management, not a sandbox or
-worktree isolation layer.
+Without `--worktree`, parallel tasks share the caller's writable workspace and
+must have disjoint file ownership. With `--worktree`, they instead share the
+run's private checkout and must likewise have disjoint file ownership. That
+checkout is a working-directory boundary, not containment: workers retain the
+user's host permissions and can reach outside it. Pi Worker provides lifecycle
+management, not a sandbox.
 
 ## Validation Boundary
 
