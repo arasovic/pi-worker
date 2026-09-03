@@ -217,8 +217,9 @@ Worker fields are conditionally present:
 - `warning`: present with a fallback or other worker warning
 - `explanation`: present when final assistant text exists
 - `partialExplanation`: present when the run ended without a final
-  assistant text but assistant text was already observed; carries the
-  text as it streamed, and never appears together with `explanation`
+  assistant text but retained assistant text exists; carries the most
+  recent retained assistant text, which may precede the message in flight,
+  and never appears together with `explanation`
 - `error`: present when the worker reports an error
 - `data`: present only when the task carried `--data` files; one entry
   per carried file, each with `path`, `byteCount`, and `sha256`
@@ -229,12 +230,13 @@ Worker fields are conditionally present:
 Partial text reporting is additive and optional, so `schemaVersion`
 stays `1`. Worker `partialExplanation` appears only when a run ended
 without a final text — timed out, cancelled, or failed before
-settlement — and the last assistant message had already streamed text;
-it carries exactly the `text_delta` content observed, in stream order,
-and nothing more. It is never present together with `explanation`: a
-consumer reading `explanation` can always assume the model finished, so
-truncated text under that name can never turn an interrupted run into a
-complete-looking answer.
+settlement — and retained assistant text exists. It carries the most
+recent retained assistant text, which may come from the message preceding
+the one in flight when that message has no assistant text. Text from at
+most two messages is retained; older text is discarded. It is never
+present together with `explanation`: a consumer reading `explanation`
+can always assume the model finished, so truncated text under that name
+can never turn an interrupted run into a complete-looking answer.
 
 Carried material is additive and optional, so `schemaVersion` stays `1`.
 Per worker, `data` appears only when the task carried `--data` files, in
