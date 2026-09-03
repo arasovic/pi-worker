@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,8 +81,10 @@ func TestVerifyHelperProcess(t *testing.T) {
 	if os.Getenv("PI_WORKER_VERIFY_HELPER") != "1" {
 		return
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		fmt.Fprintf(os.Stderr, "cwd=%s\n", cwd)
+	if os.Getenv("PI_WORKER_VERIFY_NO_CWD") != "1" {
+		if cwd, err := os.Getwd(); err == nil {
+			fmt.Fprintf(os.Stderr, "cwd=%s\n", cwd)
+		}
 	}
 	if raw := os.Getenv("PI_WORKER_VERIFY_SLEEP_MS"); raw != "" {
 		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
@@ -93,6 +97,17 @@ func TestVerifyHelperProcess(t *testing.T) {
 	}
 	for i := 1; i <= lines; i++ {
 		fmt.Fprintf(os.Stdout, "line-%04d\n", i)
+	}
+	if raw := os.Getenv("PI_WORKER_VERIFY_BYTES"); raw != "" {
+		count, _ := strconv.Atoi(raw)
+		chunk := strings.Repeat("x", 32*1024)
+		for count >= len(chunk) {
+			_, _ = os.Stdout.WriteString(chunk)
+			count -= len(chunk)
+		}
+		if count > 0 {
+			_, _ = os.Stdout.WriteString(chunk[:count])
+		}
 	}
 	exit := 3
 	if raw := os.Getenv("PI_WORKER_VERIFY_EXIT"); raw != "" {
@@ -192,6 +207,67 @@ func TestDefaultVerifierTruncatesLongCaptureToHeadAndTail(t *testing.T) {
 	}
 	if string(logged) != capture {
 		t.Fatalf("log file does not contain the full capture")
+	}
+}
+
+func TestDefaultVerifierBoundsLargeFailureCapture(t *testing.T) {
+	const outputBytes = 2 * 1024 * 1024
+	workspace := t.TempDir()
+	t.Setenv("PI_WORKER_VERIFY_NO_CWD", "1")
+	t.Setenv("PI_WORKER_VERIFY_BYTES", strconv.Itoa(outputBytes))
+	args := verifyHelperArgs(t, "3", "0")
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	verification, err := NewDefaultVerifier().Verify(context.Background(), workspace, args)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > outputBytes/2 {
+		t.Fatalf("verification allocated %d bytes for %d bytes of output", allocated, outputBytes)
+	}
+	want := strings.Repeat("x", verifyHeadBytes) +
+		fmt.Sprintf("\n[... %d bytes elided ...]\n", outputBytes-verifyHeadBytes-verifyTailBytes) +
+		strings.Repeat("x", verifyTailBytes)
+	if verification.ExitCode != 3 || !verification.Truncated || verification.Output != want {
+		t.Fatalf("verification did not preserve the bounded excerpt: %#v", verification)
+	}
+	if verification.LogFile == "" {
+		t.Fatalf("truncated capture wrote no log file")
+	}
+	info, err := os.Stat(verification.LogFile)
+	if err != nil {
+		t.Fatalf("stat log: %v", err)
+	}
+	if info.Size() != outputBytes {
+		t.Fatalf("log size = %d, want %d", info.Size(), outputBytes)
+	}
+	log, err := os.Open(verification.LogFile)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	defer log.Close()
+	buf := make([]byte, 32*1024)
+	readBytes := 0
+	for {
+		n, readErr := log.Read(buf)
+		for _, b := range buf[:n] {
+			if b != 'x' {
+				t.Fatalf("log contains non-output byte %q at offset %d", b, readBytes)
+			}
+			readBytes++
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			t.Fatalf("read log: %v", readErr)
+		}
+	}
+	if readBytes != outputBytes {
+		t.Fatalf("read %d log bytes, want %d", readBytes, outputBytes)
 	}
 }
 

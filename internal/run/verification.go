@@ -64,35 +64,162 @@ func (v *DefaultVerifier) Verify(ctx context.Context, dir string, argv []string)
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	var capture bytes.Buffer
-	cmd.Stdout = &capture
-	cmd.Stderr = &capture
+	capture := newVerifyCapture()
+	cmd.Stdout = capture
+	cmd.Stderr = capture
 	err := cmd.Run()
 	verification := Verification{Argv: argv}
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		capture.discardLog()
 		return verification, fmt.Errorf("verification context: %w", ctxErr)
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
+			capture.discardLog()
 			return verification, err
 		}
 		verification.ExitCode = exitErr.ExitCode()
 	}
 	if verification.ExitCode == 0 {
+		capture.discardLog()
 		return verification, nil
 	}
-	output := capture.String()
-	if len(output) <= verifyHeadBytes+verifyTailBytes {
-		verification.Output = output
+	if !capture.truncated {
+		verification.Output = capture.short.String()
 		return verification, nil
 	}
-	verification.Output = verifyExcerpt(output)
+	verification.Output = capture.excerpt()
 	verification.Truncated = true
-	if logFile, err := writeVerifyLog(output); err == nil {
+	if logFile := capture.finishLog(); logFile != "" {
 		verification.LogFile = logFile
 	}
 	return verification, nil
+}
+
+// verifyCapture streams output to a temporary log after it exceeds the
+// short-result budget while retaining only the bytes needed for the long
+// result. The short buffer is bounded because it is discarded when the
+// capture becomes long.
+type verifyCapture struct {
+	short     bytes.Buffer
+	head      []byte
+	tail      []byte
+	total     int64
+	truncated bool
+	log       *os.File
+	logPath   string
+}
+
+func newVerifyCapture() *verifyCapture {
+	return &verifyCapture{}
+}
+
+func (c *verifyCapture) Write(p []byte) (int, error) {
+	if !c.truncated && c.short.Len()+len(p) <= verifyHeadBytes+verifyTailBytes {
+		c.total += int64(len(p))
+		return c.short.Write(p)
+	}
+	if !c.truncated {
+		c.truncated = true
+		old := c.short.Bytes()
+		headBytes := len(old)
+		if headBytes > verifyHeadBytes+1 {
+			headBytes = verifyHeadBytes + 1
+		}
+		c.head = append(c.head, old[:headBytes]...)
+		if len(c.head) < verifyHeadBytes+1 {
+			need := verifyHeadBytes + 1 - len(c.head)
+			if need > len(p) {
+				need = len(p)
+			}
+			c.head = append(c.head, p[:need]...)
+		}
+		c.appendTail(old)
+		c.appendTail(p)
+		c.total += int64(len(p))
+		if err := c.startLog(); err == nil {
+			c.writeLog(old)
+			c.writeLog(p)
+		}
+		c.short = bytes.Buffer{}
+		return len(p), nil
+	}
+	c.appendTail(p)
+	c.total += int64(len(p))
+	c.writeLog(p)
+	return len(p), nil
+}
+
+func (c *verifyCapture) appendTail(p []byte) {
+	if len(p) >= verifyTailBytes {
+		c.tail = append(c.tail[:0], p[len(p)-verifyTailBytes:]...)
+		return
+	}
+	if overflow := len(c.tail) + len(p) - verifyTailBytes; overflow > 0 {
+		copy(c.tail, c.tail[overflow:])
+		c.tail = c.tail[:len(c.tail)-overflow]
+	}
+	c.tail = append(c.tail, p...)
+}
+
+func (c *verifyCapture) startLog() error {
+	file, err := os.CreateTemp("", "pi-worker-verify-*.log")
+	if err != nil {
+		return err
+	}
+	c.log = file
+	c.logPath = file.Name()
+	return nil
+}
+
+func (c *verifyCapture) writeLog(p []byte) {
+	if c.log == nil {
+		return
+	}
+	if _, err := c.log.Write(p); err != nil {
+		_ = c.log.Close()
+		c.log = nil
+	}
+}
+
+func (c *verifyCapture) finishLog() string {
+	if c.log == nil {
+		c.removeLog()
+		return ""
+	}
+	_ = c.log.Close()
+	c.log = nil
+	return c.logPath
+}
+
+func (c *verifyCapture) discardLog() {
+	if c.log != nil {
+		_ = c.log.Close()
+		c.log = nil
+	}
+	c.removeLog()
+}
+
+func (c *verifyCapture) removeLog() {
+	if c.logPath != "" {
+		_ = os.Remove(c.logPath)
+		c.logPath = ""
+	}
+}
+
+func (c *verifyCapture) excerpt() string {
+	headEnd := verifyHeadBytes
+	for headEnd > 0 && !utf8.RuneStart(c.head[headEnd]) {
+		headEnd--
+	}
+	tailStart := 0
+	for tailStart < len(c.tail) && !utf8.RuneStart(c.tail[tailStart]) {
+		tailStart++
+	}
+	return string(c.head[:headEnd]) +
+		fmt.Sprintf("\n[... %d bytes elided ...]\n", c.total-int64(verifyTailBytes)+int64(tailStart)-int64(headEnd)) +
+		string(c.tail[tailStart:])
 }
 
 // verifyExcerpt keeps the first 2 KiB and the last 6 KiB of a long
@@ -112,18 +239,4 @@ func verifyExcerpt(output string) string {
 	head := output[:headEnd]
 	tail := output[tailStart:]
 	return head + fmt.Sprintf("\n[... %d bytes elided ...]\n", tailStart-headEnd) + tail
-}
-
-// writeVerifyLog writes the full capture to a new pi-worker-verify-*.log
-// file in the system temp directory and returns its path.
-func writeVerifyLog(output string) (string, error) {
-	file, err := os.CreateTemp("", "pi-worker-verify-*.log")
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	if _, err := file.WriteString(output); err != nil {
-		return "", err
-	}
-	return file.Name(), nil
 }
