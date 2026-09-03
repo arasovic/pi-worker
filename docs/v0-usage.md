@@ -510,6 +510,27 @@ Replace the provider/model placeholder with one exact selector printed by
   dirty submodule is never a changed path and can never be reported as an
   undeclared write — the manifest measures this workspace's files, and a
   submodule's contents are another repository's business.
+- A collapsed untracked nested repository is neither of those cases: the
+  shape a worker's `git init` or `git clone` leaves inside the workspace
+  is not a gitlink, git reports the whole untracked directory as one
+  entry without entering it, and the manifest reports it the same way —
+  as one `directory`-marked entry (the JSON contract in
+  `docs/json-contracts.md` describes the marker) that counts toward
+  `totalFiles` and participates in the write check. A repository the run
+  creates is one added directory entry; one that was already there when
+  the run started and was left alone is subtracted like any other
+  pre-run dirtiness, never reported as the run's addition and never
+  accused as an undeclared write; one the run removed is one deleted
+  directory entry carrying `dirtyBefore`. One unmeasurable directory
+  never disables the manifest or skips the write check. Directory paths
+  are canonical — the trailing slash git's listing prints is dropped —
+  so one path is never reported twice under two spellings and a write
+  declaration covers the directory with either spelling. Because the
+  collapsed directory is never entered, a write into the contents of a
+  pre-existing nested repository is invisible to the manifest and the
+  write check, exactly like a write into a submodule's working tree:
+  the contents belong to the nested repository, and the caller answers
+  for them there.
 - Human mode prints one `changes: <n> files, +<a>/-<d>` line (singular
   `file` at one) on stdout after the worker summaries, followed by up to
   five paths most churn first. When at least one listed entry was already

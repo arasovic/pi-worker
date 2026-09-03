@@ -504,6 +504,47 @@ func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
 	}
 }
 
+func TestWriteCheckCollapsedDirectoryEntryCoveredLikeItsPath(t *testing.T) {
+	// A collapsed nested repository participates in the write check as
+	// one path — the directory itself. A declaration of the directory
+	// covers the entry in either spelling (the check cleans its own
+	// declared inputs), a declaration of something inside the
+	// repository does not cover the directory entry, and an uncovered
+	// entry is undeclared exactly once. The check compares canonical
+	// paths, so a changed directory is never reported under two
+	// spellings of one path.
+	tests := []struct {
+		name     string
+		changed  string
+		declared []string
+		count    int
+	}{
+		{name: "declared plain directory", changed: "nested", declared: []string{"nested"}, count: 0},
+		{name: "declared with trailing slash", changed: "nested", declared: []string{"nested/"}, count: 0},
+		{name: "declared parent segment", changed: "src/nested", declared: []string{"src"}, count: 0},
+		{name: "declared inside the repository does not cover", changed: "nested", declared: []string{"nested/a.go"}, count: 1},
+		{name: "nothing declared", changed: "nested", declared: nil, count: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			check := checkWrites(&Changes{allPaths: []string{test.changed}}, []Task{{Writes: declaredPaths(test.declared...)}}, "")
+			if check.Skipped != "" {
+				t.Fatalf("writes = %#v, want a verdict", check)
+			}
+			if check.UndeclaredCount != test.count {
+				t.Fatalf("undeclaredCount = %d, want %d for declaration %v", check.UndeclaredCount, test.count, test.declared)
+			}
+			if test.count == 0 {
+				if len(check.Undeclared) != 0 || check.Truncated {
+					t.Fatalf("writes = %#v, want checked-clean", check)
+				}
+			} else if len(check.Undeclared) != 1 || check.Undeclared[0] != test.changed {
+				t.Fatalf("undeclared = %#v, want the directory entry once", check.Undeclared)
+			}
+		})
+	}
+}
+
 func TestWriteCheckUndeclaredListFullAtCapNotTruncated(t *testing.T) {
 	// Exactly maxChangeFiles undeclared paths: the list is full, the
 	// cap dropped nothing, and Truncated must not be set. This is the

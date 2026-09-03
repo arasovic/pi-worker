@@ -59,7 +59,23 @@ type FileChange struct {
 	Status  string `json:"status"`
 	Added   int    `json:"added"`
 	Deleted int    `json:"deleted"`
-	Binary  bool   `json:"binary,omitempty"`
+	// Directory is true only when the changed path is itself a
+	// directory: an untracked nested repository — a directory carrying
+	// its own .git that git reports as one collapsed entry in the
+	// untracked listing — that the run created or removed. Such a path
+	// is measured as one structural entry without entering the
+	// repository or listing anything inside it, because its contents
+	// belong to another repository. The line counts are always zero,
+	// since a directory has no lines to count, and noFinalNewline is
+	// never present; status is added for a repository the run created
+	// and deleted for one it removed. The path is the canonical
+	// root-relative form without the trailing slash git prints, so a
+	// directory and a file that replace each other at one path merge
+	// into a single entry and are never counted twice under two
+	// spellings. The field is additive and optional, so schemaVersion
+	// stays 1.
+	Directory bool `json:"directory,omitempty"`
+	Binary    bool `json:"binary,omitempty"`
 	// DirtyBefore is true when the path was already dirty before the
 	// run started: the line counts are measured against the last commit
 	// rather than against the pre-run content, so they include work
@@ -187,7 +203,12 @@ func repoRoot(ctx context.Context, dir string) (string, error) {
 // business, so a dirty submodule must not become a changed path. The
 // untracked pass lists untracked files with one command and takes each
 // one's counts with git's own semantics via git diff --no-index, one
-// command per file up to the cap. Every command is read-only: no add
+// command per file up to the cap; a collapsed untracked nested
+// repository — a directory with its own .git, reported by git as one
+// directory entry without entering it — is kept as one directory entry
+// and never diffed, because no-index cannot compare a directory against
+// /dev/null and a single unmeasurable directory must not sink the whole
+// manifest. Every command is read-only: no add
 // (including intent-to-add), stash, commit, checkout, reset, clean, or
 // branch, tag, or worktree operation. Any parse failure or command
 // failure fails the whole measurement: an approximate manifest
@@ -218,7 +239,27 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
-	untracked := nulSplit(untrackedOut)
+	// Git collapses an untracked nested repository — a directory with
+	// its own .git, never a gitlink submodule — to one directory entry
+	// with a trailing slash, without entering it. Those entries are the
+	// only directories the listing carries; an ordinary untracked
+	// directory is listed by its files, and a symlink is listed as the
+	// link itself. Every path is canonicalised by dropping that single
+	// trailing slash, because the same root-relative path is the same
+	// path whether it names a directory or a file: a path that was a
+	// file when the dirty snapshot ran and a nested repository when the
+	// measurement runs must merge into one entry, never two spellings
+	// of one path counted twice.
+	untrackedRaw := nulSplit(untrackedOut)
+	untracked := make([]string, 0, len(untrackedRaw))
+	untrackedDirs := make(map[string]bool, len(untrackedRaw))
+	for _, path := range untrackedRaw {
+		if strings.HasSuffix(path, "/") {
+			path = strings.TrimSuffix(path, "/")
+			untrackedDirs[path] = true
+		}
+		untracked = append(untracked, path)
+	}
 
 	// The candidate set is the union of three sets: the tracked diff
 	// against the before-state HEAD, the untracked listing, and the
@@ -238,6 +279,19 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// though the caller's uncommitted work was destroyed.
 	unchanged := make(map[string]bool, len(dirtyStamps))
 	for path, stamp := range dirtyStamps {
+		if stamp.dir {
+			// A collapsed nested repository that was already there when
+			// the run started is unchanged when the run left it a
+			// collapsed entry: directory presence in the listing is the
+			// only identity the workspace level can measure for it, and
+			// the contents inside are the embedded repository's own
+			// business, never inspected and never allowed to move the
+			// directory in or out of the manifest.
+			if untrackedDirs[path] {
+				unchanged[path] = true
+			}
+			continue
+		}
 		matches, err := stampMatches(root, path, stamp)
 		if err != nil {
 			return nil, fmt.Errorf("stat %s: %w", path, err)
@@ -307,6 +361,22 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 		keptUntracked = append(keptUntracked, path)
 	}
 	for _, path := range keptUntracked {
+		// A collapsed nested repository is a real, stable workspace
+		// change at the directory's own path, but it is not a file that
+		// --no-index can compare against /dev/null: Git tries to open a
+		// path beneath /dev/null and fails, and failing the whole
+		// measurement over one unmeasurable directory is exactly the
+		// bug being prevented. Report the directory as one added entry
+		// marked directory, with zero line counts, without entering its
+		// repository or claiming ownership of any file inside it.
+		info, err := os.Lstat(filepath.Join(root, path))
+		if err != nil {
+			return nil, fmt.Errorf("stat untracked path %s: %w", path, err)
+		}
+		if info.IsDir() {
+			appendFile(FileChange{Path: path, Status: statusAdded, Directory: true})
+			continue
+		}
 		added, deleted, binary, err := measureUntrackedFile(ctx, root, path)
 		if err != nil {
 			return nil, err
@@ -318,7 +388,10 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// the tracked diff nor the untracked listing now matches HEAD, or is
 	// gone: the run reverted it to its committed content — the case the
 	// dirty union exists for — or removed it. Give it an entry with zero
-	// counts and dirtyBefore true. Current presence decides first: a
+	// counts and dirtyBefore true; a directory stamp keeps its directory
+	// marker, so removing a pre-existing nested repository is reported
+	// as a deleted directory entry, not as a deleted file. Current
+	// presence decides first: a
 	// path that no longer exists cannot be an addition, so a gone path
 	// is deleted even when it was never in the base tree — an untracked
 	// file the run deleted was never in the base tree, and calling it
@@ -334,14 +407,14 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	for _, path := range untracked {
 		inUntracked[path] = true
 	}
-	for path := range dirtyStamps {
+	for path, stamp := range dirtyStamps {
 		if unchanged[path] || inTracked[path] || inUntracked[path] {
 			continue
 		}
 		if _, seen := byPath[path]; seen {
 			continue
 		}
-		f := FileChange{Path: path, DirtyBefore: true}
+		f := FileChange{Path: path, DirtyBefore: true, Directory: stamp.dir}
 		present, err := filePresent(root, path)
 		if err != nil {
 			return nil, fmt.Errorf("stat %s: %w", path, err)
@@ -469,7 +542,13 @@ func measureNoFinalNewline(root string, f *FileChange) {
 // executable bit of the mode from Lstat, and the SHA-256 of the path's
 // content — for tracked paths, regular-file untracked paths, and
 // symlinks — or an explicit absence for a staged or unstaged deletion,
-// which is a legitimate dirty state. Size plus
+// which is a legitimate dirty state. A path that was a directory when
+// the snapshot ran — a collapsed untracked nested repository, the only
+// directory the dirty listing can carry — gets a directory stamp
+// instead: size, modification time and the executable bit describe a
+// file's contents, and a directory's contents are the embedded
+// repository's business. For a directory, presence in the untracked
+// listing is the only identity the workspace level can measure. Size plus
 // modification time is exact where modification time has sub-second
 // resolution (APFS, ext4, NTFS, the normal case), and it can miss a
 // same-size rewrite inside one tick on a coarse-granularity filesystem
@@ -493,6 +572,8 @@ type fileStamp struct {
 	modTime time.Time
 	exec    bool
 	absent  bool
+	// dir is true when the stamped path is a directory, not a file.
+	dir bool
 	// contentHash is the identity of the path's content at snapshot
 	// time, captured for tracked paths, regular-file untracked paths,
 	// and symlinks; hashed reports whether it was captured. An absent
@@ -1014,18 +1095,32 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 	// content identity, by the same reasoning and at the same price: a
 	// worker can rewrite it in place with identical size and a restored
 	// modification time, and only the bytes — or the link's target
-	// string, which is its content — can say it moved. Untracked
-	// directory trees cannot rewrite in place, and git never lists an
-	// empty one anyway, so a stat-only stamp for an untracked directory
-	// loses nothing the subtraction could need.
-	for _, path := range nulSplit(trackedOut) {
-		stamp, err := snapshotStamp(root, path, true)
+	// string, which is its content — can say it moved. A collapsed
+	// untracked nested repository is the one shape that cannot carry
+	// this identity: git reports the whole directory as one listing
+	// entry without entering it, its contents are the embedded
+	// repository's business, and presence in the listing is the only
+	// identity the workspace level can measure, so its stamp is a bare
+	// directory marker.
+	for _, raw := range append(nulSplit(trackedOut), nulSplit(untrackedOut)...) {
+		// Stamp keys are canonicalised exactly like the measurement
+		// pass canonicalises its listing: drop the trailing slash git
+		// appends to a collapsed nested-repository entry, so a key and
+		// a measurement path agree byte for byte and the subtraction
+		// never silently keys against nothing.
+		path := strings.TrimSuffix(raw, "/")
+		info, err := os.Lstat(filepath.Join(root, path))
 		if err != nil {
-			return nil, err
+			if os.IsNotExist(err) {
+				stamps[path] = fileStamp{absent: true}
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
-		stamps[path] = stamp
-	}
-	for _, path := range nulSplit(untrackedOut) {
+		if info.IsDir() {
+			stamps[path] = fileStamp{dir: true}
+			continue
+		}
 		stamp, err := snapshotStamp(root, path, true)
 		if err != nil {
 			return nil, err

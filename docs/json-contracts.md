@@ -373,6 +373,24 @@ Each entry in `files` carries:
 - `added` and `deleted`: always present; the line counts, both `0` for a
   binary file
 - `binary`: present and `true` only when git reported the file as binary
+- `directory`: present and `true` only when the changed path is itself a
+  directory: an untracked nested repository — a directory carrying its
+  own `.git` that git reports as one collapsed entry, the shape a
+  worker's `git init` or `git clone` leaves inside the workspace — that
+  the run created or removed. The directory is never entered, so no
+  entry names a path inside it: its contents are another repository's
+  business, and no command inspects them, exactly as a submodule's
+  working tree is never inspected. `added` and `deleted` are both `0`,
+  because a directory has no lines to count, and `noFinalNewline` never
+  accompanies the entry. `path` is the canonical workspace-relative
+  path without the trailing slash git's listing prints, so the same
+  path can never appear twice under two spellings and a write
+  declaration covers the directory like any other path. A nested
+  repository already dirty before the run that the run left alone is
+  subtracted like any other pre-run dirtiness and never appears; one
+  the run removed is a `deleted` directory entry carrying
+  `dirtyBefore`. The field is additive and optional, so `schemaVersion`
+  stays 1
 - `dirtyBefore`: present and `true` only when the path was already dirty
   before the run started; the line counts are measured against the last
   commit rather than against the pre-run content, so they include work
@@ -437,7 +455,14 @@ the files whose content it names. On a
 coarse-granularity filesystem — FAT, exFAT, some NFS mounts, older
 ext3 — a same-tick restore of any path is invisible too,
 which is equally defensible because net change is zero; a hash still
-protects the paths whose content the stamp carries.
+protects the paths whose content the stamp carries. A collapsed
+nested-repository directory — an untracked directory carrying its own
+`.git` that git reports as one entry without entering it — is the
+second deliberately unhashed shape, stamped by presence alone: its size
+and modification time describe contents that belong to another
+repository, and presence in the listing is the only identity the
+workspace level can measure, so it is subtracted when the run leaves it
+a collapsed entry.
 
 The measurement trusts the path queries git itself runs, so a
 repository whose trust state could make those queries hide a write is
@@ -500,10 +525,23 @@ and the write check when it is untracked — it cannot appear in `files`, it
 does not count toward `totalFiles` or `undeclaredCount`, and a run that
 wrote only ignored untracked paths reports a clean write verdict. A tracked
 path is measured, and therefore checked, whether or not a rule matches it.
-Submodules are the other exclusion: every path-computing diff ignores them,
-so a dirty submodule is never a changed path and can never be reported as
-an undeclared write — the manifest measures this workspace's files, and a
-submodule's contents are another repository's business.
+Submodules are one exclusion: every path-computing diff ignores them,
+so a dirty submodule is never a changed path and can never be reported
+as an undeclared write — the manifest measures this workspace's files,
+and a submodule's contents are another repository's business. An
+untracked nested repository is the opposite case, deliberately: it is
+not a gitlink, git reports the whole untracked directory as one entry
+without entering it, and the manifest reports that one entry with the
+`directory` marker above — it counts toward `totalFiles`, appears in
+`files`, and participates in the write check, and a directory the
+measurement cannot recurse into never disables the manifest. A nested
+repository already dirty before the run is measured by subtraction like
+any other pre-run dirtiness: untouched, it is absent; removed, it is
+one deleted directory entry. Because the collapsed directory is never
+entered, a write into the contents of a pre-existing nested repository
+is invisible to both the manifest and the write check, exactly as a
+write into a submodule's working tree is: the contents belong to the
+nested repository, and the caller answers for them there.
 
 The write check is additive and optional, so `schemaVersion` stays `1`.
 Root `writes` is present exactly when the request carried a write
