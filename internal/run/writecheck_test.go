@@ -102,6 +102,31 @@ func TestControllerWritesInsideDeclarationClean(t *testing.T) {
 	}
 }
 
+func TestControllerWritesFromSubdirectoryReanchorDeclarations(t *testing.T) {
+	// --writes paths are relative to the run workspace, while the change
+	// manifest is relative to the repository root. Both directions matter:
+	// the workspace file must be accepted, and the root-level sibling with
+	// the same relative spelling must remain undeclared.
+	repo := newGitRepo(t)
+	workspace := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("workspace\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(repo, "file.txt"), []byte("root\n"), 0o644)
+	}}, workspace, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "file.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want only root-level file.txt undeclared", writes)
+	}
+}
+
 func TestControllerWritesUndeclaredPathReported(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
@@ -470,7 +495,7 @@ func TestWriteCheckCleanVerdictForEveryAcceptedDeclaredForm(t *testing.T) {
 	}
 	for _, declared := range tests {
 		t.Run(declared, func(t *testing.T) {
-			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, []Task{{Writes: declaredPaths(declared)}})
+			check := checkWrites(&Changes{allPaths: []string{"internal/run/x.go"}}, []Task{{Writes: declaredPaths(declared)}}, "")
 			if check.Skipped != "" || check.UndeclaredCount != 0 || len(check.Undeclared) != 0 || check.Truncated {
 				t.Fatalf("writes = %#v, want checked-clean for declared %q", check, declared)
 			}
@@ -489,7 +514,7 @@ func TestWriteCheckUndeclaredListFullAtCapNotTruncated(t *testing.T) {
 	for i := range paths {
 		paths[i] = fmt.Sprintf("f%03d.txt", i)
 	}
-	check := checkWrites(&Changes{allPaths: paths}, []Task{{Writes: declaredPaths("declared.txt")}})
+	check := checkWrites(&Changes{allPaths: paths}, []Task{{Writes: declaredPaths("declared.txt")}}, "")
 	if check.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", check)
 	}
@@ -509,7 +534,7 @@ func TestWriteCheckUndeclaredListCappedOnePastCap(t *testing.T) {
 	for i := range paths {
 		paths[i] = fmt.Sprintf("f%03d.txt", i)
 	}
-	check := checkWrites(&Changes{allPaths: paths}, []Task{{Writes: declaredPaths("declared.txt")}})
+	check := checkWrites(&Changes{allPaths: paths}, []Task{{Writes: declaredPaths("declared.txt")}}, "")
 	if check.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", check)
 	}
@@ -534,7 +559,7 @@ func TestWriteCheckNilManifestSkips(t *testing.T) {
 	// work-tree-unconfirmed omission, now that the controller states it
 	// rather than leaving the field absent. The skip reason must be the
 	// same either way.
-	check := checkWrites(nil, []Task{{Writes: declaredPaths("file.txt")}})
+	check := checkWrites(nil, []Task{{Writes: declaredPaths("file.txt")}}, "")
 	if check.Skipped != reasonManifestUnavailable {
 		t.Fatalf("skipped = %q, want %q", check.Skipped, reasonManifestUnavailable)
 	}
