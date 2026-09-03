@@ -733,6 +733,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `git`, when the run moved HEAD, the branch, or the stash list:
     `before` and `after` states, each with `head`, `branch`, `dirty`,
     and `stashes`
+  - `worktree`, only for a run started with `--worktree`: an object with
+    exactly two string fields, `path` (the checkout path assigned to the
+    run) and `branch` (the branch created for the checkout); absent
+    otherwise
   A run whose first worker starts emits a document on every terminal
   status, timed-out and cancelled included. An ending before the first worker
   starts emits no document. A timeout or cancellation landing while the
