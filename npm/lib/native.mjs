@@ -16,6 +16,10 @@ export class NativeProcessError extends Error {
   }
 }
 
+function nativeProcessError(error, spawned) {
+  return spawned ? error : new NativeProcessError();
+}
+
 export function nativeTarget(platform = process.platform, arch = process.arch) {
   const combos = {
     darwin: {
@@ -60,7 +64,12 @@ export function runNative(binary, args, options = {}) {
       return;
     }
 
+    let spawned = false;
     let signal = null;
+
+    child.once("spawn", () => {
+      spawned = true;
+    });
 
     const handleSignal = (signalName) => {
       if (signal) {
@@ -79,9 +88,9 @@ export function runNative(binary, args, options = {}) {
       process.off("SIGTERM", handleSignal);
     };
 
-    child.once("error", () => {
+    child.once("error", (error) => {
       cleanup();
-      reject(new NativeProcessError());
+      reject(nativeProcessError(error, spawned));
     });
 
     child.once("close", (code, childSignal) => {
@@ -119,6 +128,7 @@ export function runNativeCaptured(binary, args, options = {}) {
     }
     const stdout = [];
     const stderr = [];
+    let spawned = false;
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let signal = null;
@@ -137,6 +147,11 @@ export function runNativeCaptured(binary, args, options = {}) {
       process.off("SIGINT", handleSignal);
       process.off("SIGTERM", handleSignal);
     };
+
+    child.once("spawn", () => {
+      spawned = true;
+    });
+
     const capture = (chunks, chunk, streamName) => {
       if (captureError) return;
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -153,11 +168,11 @@ export function runNativeCaptured(binary, args, options = {}) {
 
     child.stdout.on("data", (chunk) => capture(stdout, chunk, "stdout"));
     child.stderr.on("data", (chunk) => capture(stderr, chunk, "stderr"));
-    child.once("error", () => {
+    child.once("error", (error) => {
       if (settled) return;
       settled = true;
       cleanup();
-      reject(new NativeProcessError());
+      reject(nativeProcessError(error, spawned));
     });
     child.once("close", (code, childSignal) => {
       if (settled) return;

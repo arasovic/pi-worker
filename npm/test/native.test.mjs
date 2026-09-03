@@ -10,11 +10,17 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import process from "node:process";
 import { describe, test } from "node:test";
 
-import { nativePath, nativeTarget, runNative, runNativeCaptured } from "../lib/native.mjs";
+import {
+  NativeProcessError,
+  nativePath,
+  nativeTarget,
+  runNative,
+  runNativeCaptured,
+} from "../lib/native.mjs";
 
 const fixturesDir = mkdtempSync(join(tmpdir(), "pi-worker-native-test-"));
 const bin = process.execPath;
@@ -219,6 +225,37 @@ describe("launcher process behavior", () => {
 			/capture limit/,
 		);
 	});
+
+  for (const [name, run] of [
+    ["uncaptured", (binary) => runNative(binary, [])],
+    ["captured", (binary) => runNativeCaptured(binary, [], { maxOutputBytes: 1024 })],
+  ]) {
+    test(`${name} helper sanitizes an asynchronous pre-spawn error`, async () => {
+      await assert.rejects(
+        run(fixture(`missing-${name}-binary`)),
+        (error) => error instanceof NativeProcessError,
+      );
+    });
+
+    test(`${name} helper preserves an error after spawn`, async () => {
+      const failure = new Error(`${name} post-spawn failure`);
+      const originalEmit = ChildProcess.prototype.emit;
+      ChildProcess.prototype.emit = function (event, ...args) {
+        const result = originalEmit.call(this, event, ...args);
+        if (event === "spawn") originalEmit.call(this, "error", failure);
+        return result;
+      };
+
+      try {
+        await assert.rejects(
+          run(exitFixture),
+          (error) => error === failure,
+        );
+      } finally {
+        ChildProcess.prototype.emit = originalEmit;
+      }
+    });
+  }
 
   test("entrypoint preserves the native child exit code", () => {
     const packageRoot = join(fixturesDir, "package-exit-code");
