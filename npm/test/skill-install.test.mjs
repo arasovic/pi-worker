@@ -725,6 +725,53 @@ test("persists failed when package-local CLI resolution fails after the guard", 
   assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "failed");
 });
 
+test("preserves verified prior ownership across pre-child package failures", async (t) => {
+  for (const [name, fault] of [
+    ["bundled-tree inspection", { hashSkillTree: async () => { throw new Error("injected bundle failure"); } }],
+    ["package-local CLI resolution", { resolveCLI: () => { throw new Error("injected CLI failure"); } }],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = fixture(t);
+      const canonical = join(f.home, ".agents", "skills", "pi-worker");
+      const copy = join(f.home, ".test", "skills", "pi-worker");
+      const firstChild = childFor(() => {
+        mkdirSync(join(canonical, ".."), { recursive: true });
+        cpSync(f.skill, canonical, { recursive: true });
+        mkdirSync(join(copy, ".."), { recursive: true });
+        cpSync(f.skill, copy, { recursive: true });
+      });
+      assert.equal((await installSkill(options(f, firstChild))).outcome, "installed");
+      const installedReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+      const before = [canonical, copy].map((target) => ({
+        identity: readFileSync(join(target, "PI_WORKER_IDENTITY")),
+        skill: readFileSync(join(target, "SKILL.md")),
+      }));
+
+      const failedChild = childFor();
+      const failed = await installSkill(options(f, failedChild, fault));
+      assert.equal(failed.outcome, "failed");
+      assert.equal(failedChild.calls.length, 0);
+      for (const [index, target] of [canonical, copy].entries()) {
+        assert.deepEqual(readFileSync(join(target, "PI_WORKER_IDENTITY")), before[index].identity);
+        assert.deepEqual(readFileSync(join(target, "SKILL.md")), before[index].skill);
+      }
+      const afterFailureReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+      assert.deepEqual(afterFailureReceipt, installedReceipt);
+      assert.doesNotMatch(JSON.stringify(afterFailureReceipt), /injected|failure|missing/);
+
+      const retryChild = childFor();
+      const retry = await installSkill(options(f, retryChild, { cli: "/package-local/skills-cli" }));
+      assert.equal(retry.outcome, "installed", JSON.stringify(retry));
+      assert.equal(retryChild.calls.length, 1);
+      assert.doesNotMatch(JSON.stringify(retry), /remove pi-worker|remove Pi Worker/i);
+      const retryReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+      assert.deepEqual(retryReceipt.targets, installedReceipt.targets);
+      assert.deepEqual(retryReceipt.affectedTargets, []);
+      assert.deepEqual(retryReceipt.recovery, []);
+    });
+  }
+});
+
 test("retries a one-shot blocked receipt failure as a failed receipt", async (t) => {
   const f = fixture(t);
   const conflict = join(f.home, ".agents", "skills", "pi-worker");
