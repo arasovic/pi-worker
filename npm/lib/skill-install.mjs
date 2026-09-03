@@ -250,6 +250,7 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
     const stdout = [];
     const stderr = [];
     const listeners = [];
+    const processSignalListeners = [];
     const streamCleanups = [];
 
     const cleanup = () => {
@@ -258,6 +259,7 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
       if (fallbackTimer !== null) clearTimeout(fallbackTimer);
       timer = graceTimer = fallbackTimer = null;
       for (const { event, listener } of listeners) child?.removeListener?.(event, listener);
+      for (const { signal, listener } of processSignalListeners) process.off(signal, listener);
       for (const cleanupStream of streamCleanups) cleanupStream();
     };
     const finish = (value) => {
@@ -284,11 +286,11 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
         // Continue to the bounded escalation/fallback path.
       }
     };
-    const beginStop = (reason) => {
+    const beginStop = (reason, signal = "SIGTERM") => {
       if (stopping || settled) return;
       stopping = true;
       stopReason = reason;
-      signalChild("SIGTERM");
+      signalChild(signal);
       graceTimer = setTimeout(() => {
         signalChild("SIGKILL");
         fallbackTimer = setTimeout(() => {
@@ -334,6 +336,12 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
     if (!child || typeof child.on !== "function") {
       finish({ ok: false, reason: "process did not provide a child process" });
       return;
+    }
+
+    const onProcessSignal = (signal) => beginStop(`process interrupted by ${signal}`, signal);
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      process.on(signal, onProcessSignal);
+      processSignalListeners.push({ signal, listener: onProcessSignal });
     }
 
     const onError = () => finish({ ok: false, reason: "process could not be started" });
