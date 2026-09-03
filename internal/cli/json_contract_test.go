@@ -150,6 +150,35 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 		assertExactJSONKeys(t, versioned, "schemaVersion", "receiptPath", "status", "installerVersion", "programVersion", "verifiedTargets", "trackedTargets", "affectedTargets", "recovery", "externalInspection")
 	})
 
+	t.Run("runs list", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws", 1, true, "completed", "")
+		code, stdout, stderr := runCLI(t, []string{"runs", "list", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs list = (%d, %q, %q)", code, stdout, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		assertExactJSONKeys(t, document, "schemaVersion", "runs")
+		runs := requireJSONArray(t, document["runs"], "runs")
+		assertExactJSONKeys(t, runs[0].(map[string]any), "runId", "startedAt", "workspace", "tasks", "outcome", "path")
+	})
+
+	t.Run("runs prune", func(t *testing.T) {
+		dir := t.TempDir()
+		withRunlogDir(t, dir)
+		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws", 1, true, "completed", "")
+		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("runs prune = (%d, %q, %q)", code, stdout, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		assertExactJSONKeys(t, document, "schemaVersion", "deleted", "keptNewest", "keptRunning", "keptUnreadable")
+		requireJSONArray(t, document["deleted"], "deleted")
+		requireJSONArray(t, document["keptRunning"], "keptRunning")
+		requireJSONArray(t, document["keptUnreadable"], "keptUnreadable")
+	})
+
 	t.Run("run", func(t *testing.T) {
 		installFakeWorker(t, pi.WorkerResult{
 			Model:                  "acme/model",
