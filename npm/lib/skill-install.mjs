@@ -671,13 +671,27 @@ export async function installSkill(options = {}) {
     return persistBlocked(states);
   }
   if (states.some(({ state }) => state.startsWith("external-"))) {
+    let verifiedTargets = [];
+    if (priorReceipt?.outcome === "installed") {
+      try {
+        verifiedTargets = await verifyReceiptTargets(
+          { document: priorReceipt, __bundledTree: bundledTree },
+          priorReceipt.targets,
+          classify,
+        );
+      } catch {
+        // A receipt that cannot be re-verified must not be preserved as
+        // installed ownership while an external skill is being skipped.
+      }
+    }
+    const hasVerifiedCanonical = verifiedTargets.some((target) => target.kind === "canonical");
+    const document = hasVerifiedCanonical
+      ? { ...priorReceipt, targets: verifiedTargets }
+      : priorReceipt?.outcome === "installed"
+        ? temporaryReceipt(version)
+        : priorReceipt ?? temporaryReceipt(version);
     try {
-      await persist(
-        writer,
-        receiptPath,
-        priorReceipt ?? temporaryReceipt(version),
-        options.receiptWriteOptions,
-      );
+      await persist(writer, receiptPath, document, options.receiptWriteOptions);
     } catch {
       return failAfterGuard("Unable to preserve external skill ownership.");
     }
