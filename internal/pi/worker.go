@@ -285,6 +285,15 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	if err != nil {
 		return withThinking(w.classify(req.Model, ctx, err))
 	}
+	if transcript.assistantError() {
+		// stopReason is Pi's stable classification of the assistant
+		// message. Do not surface its accompanying errorMessage: that
+		// field is provider-controlled prose and may carry secrets,
+		// credentials, URLs, or unstable response bodies. An error stop
+		// is not a completed answer even if a provider emitted some text;
+		// withThinking preserves any such streamed text as partialExplanation.
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "upstream provider returned an error before producing final text"})
+	}
 	if strings.TrimSpace(text) == "" {
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "agent settled without producing final text"})
 	}

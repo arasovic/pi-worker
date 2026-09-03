@@ -773,6 +773,124 @@ func TestWorkerOmittedTextFieldIsTaskFailure(t *testing.T) {
 	}
 }
 
+// TestWorkerProviderErrorIsNotReportedAsAnEmptySettledAnswer drives a
+// provider failure transcript through the real fake-Pi process. The frames
+// that reach pi-worker are message_start, message_end.message.stopReason:error,
+// agent_end, and agent_settled; get_last_assistant_text still returns data:{}.
+// Only stopReason is projected, so the scripted upstream error prose cannot
+// leak into the result.
+func TestWorkerProviderErrorIsNotReportedAsAnEmptySettledAnswer(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-7a2f"
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}`)},
+			{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":""}],"stopReason":"error","errorMessage":"` + upstreamSecret + `"}}`)},
+			{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}},
+		},
+	}}
+	setupFakePiEnv(t, scriptConfig)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed; error = %q", result.Status, result.Error)
+	}
+	if result.Error != "upstream provider returned an error before producing final text" {
+		t.Fatalf("error = %q, want the stable provider-error projection", result.Error)
+	}
+	if strings.Contains(result.Error, upstreamSecret) || result.Explanation != "" || result.PartialExplanation != "" {
+		t.Fatalf("result leaked provider prose or final/partial text: %#v", result)
+	}
+}
+
+// TestWorkerGenuinelyEmptySettledAnswerKeepsTheEmptyAnswerPath drives the
+// matching settled assistant turn. It has the same data:{} final-text response
+// as the provider-error transcript, but message_end.message.stopReason:stop;
+// that stable field keeps it on the existing generic empty-answer failure.
+func TestWorkerGenuinelyEmptySettledAnswerKeepsTheEmptyAnswerPath(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}`)},
+			{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":""}],"stopReason":"stop"}}`)},
+			{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}},
+		},
+	}}
+	setupFakePiEnv(t, scriptConfig)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed || result.Error != "agent settled without producing final text" {
+		t.Fatalf("result = %#v, want the generic empty-answer failure", result)
+	}
+	if result.PartialExplanation != "" {
+		t.Fatalf("partialExplanation = %q, want absent", result.PartialExplanation)
+	}
+}
+
+// TestWorkerInterruptedStreamRetainsPartialText drives a stream that emits
+// message_start and text_delta frames, then is cut off before message_end or
+// agent_settled. The timeout kills fake-Pi while WaitSettled is reading; the
+// text_delta fields survive through the transcript accumulator as
+// partialExplanation, while explanation remains absent.
+func TestWorkerInterruptedStreamRetainsPartialText(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}`)},
+			{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"partial"}}`)},
+			{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" answer"}}`)},
+			// No message_end or agent_settled: the context cuts the stream.
+			{SleepMS: 10000},
+		},
+	}}
+	setupFakePiEnv(t, scriptConfig)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; error = %q", result.Status, result.Error)
+	}
+	if result.Explanation != "" || result.PartialExplanation != "partial answer" {
+		t.Fatalf("result = %#v, want timed-out partial text only", result)
+	}
+}
+
 func TestWorkerTimeoutCleansUpProcessAndSession(t *testing.T) {
 	script := &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {

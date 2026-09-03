@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 )
 
-// transcriptAccumulator is the worker's salvage record of the assistant
-// text as it streams. It implements EventHandler, appending the delta of
-// every text_delta message_update frame, so a run that ends without a
-// final text — timed out, cancelled, or failed before settlement — still
-// reports the text the model had already produced. The client calls
-// OnEvent from its single driving goroutine, matching the client's
-// single-flight contract, so the accumulator needs no locking.
+// transcriptAccumulator is the worker's salvage record of assistant text and
+// the stable terminal classification as they stream. It implements
+// EventHandler, appending the delta of every text_delta message_update frame,
+// and retaining an assistant message's stopReason at message_end. A run that
+// ends without a final text — timed out, cancelled, or failed before settlement
+// — can therefore report text already produced or a stable assistant error.
+// The client calls OnEvent from its single driving goroutine, matching the
+// client's single-flight contract, so the accumulator needs no locking.
 //
 // Unlike usageAccumulator it must name a subtype: usage is reported on
 // whichever end frame carries numbers, so that accumulator deliberately
@@ -47,21 +48,29 @@ type transcriptAccumulator struct {
 	// mostRecent is the text of the most recent message that carried
 	// text before the in-flight one, remembered at message_start.
 	mostRecent string
+	// hasAssistantError records only whether the latest assistant message
+	// ended with the stable error stopReason. Neither stopReason text nor the
+	// errorMessage beside it is retained: both are upstream-controlled input.
+	hasAssistantError bool
 }
 
-// OnEvent tracks one message boundary or text-delivery frame. It never
-// returns an error: per the EventHandler contract an error is a protocol
-// violation that fails the whole client, and a salvage feature must never
-// fail a run that otherwise worked. message_start promotes the ending
-// message's text into mostRecent when it carried any, then starts the
-// new message's buffer empty; a message_update appends its delta only
-// when the assistantMessageEvent type is exactly "text_delta", so
-// thinking and tool-call deltas contribute nothing. A malformed,
-// missing, null, or unparseable frame contributes nothing and returns
-// nil.
+// OnEvent tracks one message boundary, text-delivery frame, or assistant
+// stopReason. It never returns an error: per the EventHandler contract an
+// error is a protocol violation that fails the whole client, and a salvage
+// feature must never fail a run that otherwise worked. message_start clears
+// the prior terminal classification, promotes the ending message's text
+// into mostRecent when it carried any, then starts the new message's buffer
+// empty; a message_update appends its delta only when the
+// assistantMessageEvent type is exactly "text_delta", so thinking and
+// tool-call deltas contribute nothing. A malformed, missing, null, or
+// unparseable frame contributes nothing and returns nil.
 func (a *transcriptAccumulator) OnEvent(event Event) error {
 	switch event.Type {
 	case "message_start":
+		// A new message supersedes the previous terminal classification.
+		// Resetting at the boundary prevents an earlier failed retry from
+		// being attributed to a later stream cut.
+		a.hasAssistantError = false
 		if a.text != "" {
 			a.mostRecent = a.text
 		}
@@ -84,8 +93,32 @@ func (a *transcriptAccumulator) OnEvent(event Event) error {
 			return nil
 		}
 		a.text += delta
+	case "message_end":
+		// message_end.message is Pi's authoritative complete assistant
+		// message. Keep only its stable stopReason classification; the
+		// adjacent errorMessage is provider-controlled prose and is not
+		// safe to project into the worker result.
+		var frame struct {
+			Message *struct {
+				Role       string `json:"role"`
+				StopReason string `json:"stopReason"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(event.Raw, &frame); err != nil {
+			return nil
+		}
+		if frame.Message != nil && frame.Message.Role == "assistant" {
+			a.hasAssistantError = frame.Message.StopReason == "error"
+		}
 	}
 	return nil
+}
+
+// assistantError reports the stable assistant stopReason that Pi uses when
+// the model/provider turn fails. It intentionally does not expose or retain
+// the accompanying errorMessage, which is raw upstream prose.
+func (a *transcriptAccumulator) assistantError() bool {
+	return a.hasAssistantError
 }
 
 // snapshot returns the in-flight message's text when it carries any,

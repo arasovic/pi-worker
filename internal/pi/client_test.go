@@ -883,3 +883,114 @@ func TestClientLastAssistantTextMissingTextFieldIsEmpty(t *testing.T) {
 		t.Fatalf("text = %q, want empty", text)
 	}
 }
+
+// TestClientAssistantErrorClassificationSurvivesSettlement is a deterministic
+// fake-Pi transcript for a provider failure after prompt acceptance. Pi's
+// provider stream failure is represented by message_end.message.stopReason,
+// while get_last_assistant_text remains empty. The full raw message_end frame
+// reaches the event handler; no separate error event is required.
+func TestClientAssistantErrorClassificationSurvivesSettlement(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-7a2f"
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}`)},
+			{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":""}],"stopReason":"error","errorMessage":"` + upstreamSecret + `"}}`)},
+			{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}},
+		},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	handler := &recordingHandler{}
+	client := NewClient(proc.Stdin(), proc.Stdout(), handler, nil)
+
+	if err := client.Prompt(context.Background(), "hello"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if err := client.WaitSettled(context.Background()); err != nil {
+		t.Fatalf("wait settled: %v", err)
+	}
+	text, err := client.GetLastAssistantText(context.Background())
+	if err != nil {
+		t.Fatalf("get last assistant text: %v", err)
+	}
+	if text != "" {
+		t.Fatalf("text = %q, want empty after provider failure", text)
+	}
+	wantTypes := []string{"message_start", "message_end", "agent_end", "agent_settled"}
+	if !slices.Equal(handler.types(), wantTypes) {
+		t.Fatalf("events = %v, want %v", handler.types(), wantTypes)
+	}
+	var messageEnd Event
+	for _, event := range handler.events {
+		if event.Type == "message_end" {
+			messageEnd = event
+		}
+	}
+	var frame struct {
+		Message struct {
+			StopReason string `json:"stopReason"`
+			Error      string `json:"errorMessage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(messageEnd.Raw, &frame); err != nil {
+		t.Fatalf("decode message_end: %v", err)
+	}
+	if frame.Message.StopReason != "error" {
+		t.Fatalf("message_end stopReason = %q, want error", frame.Message.StopReason)
+	}
+	if frame.Message.Error != upstreamSecret {
+		t.Fatalf("message_end errorMessage = %q, want the scripted upstream field", frame.Message.Error)
+	}
+}
+
+// TestClientEmptySettledTranscriptHasNoErrorClassification is the matching
+// genuinely-empty assistant turn. It settles with stopReason:stop and an
+// empty text block, so the stable terminal classification differs from the
+// provider failure even though get_last_assistant_text is data:{} in both.
+func TestClientEmptySettledTranscriptHasNoErrorClassification(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[],"stopReason":"pending"}}`)},
+			{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":""}],"stopReason":"stop"}}`)},
+			{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+			{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		},
+		"get_last_assistant_text": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}},
+		},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	handler := &recordingHandler{}
+	client := NewClient(proc.Stdin(), proc.Stdout(), handler, nil)
+	if err := client.Prompt(context.Background(), "hello"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if err := client.WaitSettled(context.Background()); err != nil {
+		t.Fatalf("wait settled: %v", err)
+	}
+	if _, err := client.GetLastAssistantText(context.Background()); err != nil {
+		t.Fatalf("get last assistant text: %v", err)
+	}
+	var messageEnd Event
+	for _, event := range handler.events {
+		if event.Type == "message_end" {
+			messageEnd = event
+		}
+	}
+	var frame struct {
+		Message struct {
+			StopReason string `json:"stopReason"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(messageEnd.Raw, &frame); err != nil {
+		t.Fatalf("decode empty message_end: %v", err)
+	}
+	if frame.Message.StopReason != "stop" {
+		t.Fatalf("empty message stopReason = %q, want stop", frame.Message.StopReason)
+	}
+}

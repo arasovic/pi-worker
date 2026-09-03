@@ -172,7 +172,10 @@ signature suggests. Empty or missing text means no usable answer, never a
 protocol failure. A successful `prompt` response only means preflight
 accepted, queued, or handled the prompt; later failures are emitted in the
 event/message stream, including assistant messages with `stopReason:
-"error"` and empty content.
+"error"` and empty content. Pi-worker projects that stable `stopReason` into
+its task failure wording without copying the message's `errorMessage`; a
+settled assistant message with another stop reason and empty text retains the
+generic empty-answer wording.
 
 ### V0 consumer projection
 
@@ -310,7 +313,9 @@ never a delta. No `message_update` frame type terminates the
 measurement; pi-worker reads the latest usage a message reported, bounded
 by `message_start` and `message_end`. Assistant `stopReason` can be
 `stop`, `length`, `toolUse`, `error`, or `aborted`; it is not the session
-terminal condition.
+terminal condition. For an assistant message with no final text, only the
+stable `error` value is used to distinguish an upstream/model turn failure;
+its `errorMessage` is not a pi-worker result projection.
 
 ## Tool semantics
 
