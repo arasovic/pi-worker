@@ -1,6 +1,6 @@
 # JSON contracts
 
-Pi Worker publishes eight versioned JSON documents. This page is the v1
+Pi Worker publishes ten versioned JSON documents. This page is the v1
 contract for agents and other machine consumers.
 
 ## Shared rules
@@ -125,6 +125,45 @@ npm launcher reports performed only after every resolved global target was
 inspected; any resolver or target-read failure discards partial findings and
 reports unavailable. External findings are informational and never change the
 native status exit code.
+
+## `runs list --json`
+
+The root object has exactly `schemaVersion` and `runs`. `runs` is always an
+array, ordered newest first. Each entry has exactly these fields:
+
+- `runId`: the record filename without `.jsonl`
+- `startedAt`: the start timestamp, or `""` when the start fields are unreadable
+- `workspace`: the recorded workspace, or `""` when unreadable
+- `tasks`: the number of recorded tasks, or `0` when unreadable
+- `outcome`: the recorded outcome, `error`, `running`, `interrupted`, or
+  `unknown`
+- `path`: the record path
+
+No root or entry field is omitted. Missing or unreadable display fields use
+their zero values. A record with no usable start line remains an entry with
+`outcome: "unknown"` and its filename-derived `runId` and `path`; its other
+entry fields carry their zero values. A successful command exits `0`, including
+when `runs` is empty. Usage errors exit `2`; a records-directory resolution or
+read failure exits `9`. Those failure paths emit no JSON document.
+
+## `runs prune --json`
+
+The root object has exactly `schemaVersion`, `deleted`, `keptNewest`,
+`keptRunning`, and `keptUnreadable`:
+
+- `deleted`: the run IDs actually deleted, as a string array
+- `keptNewest`: the number of records retained by `--keep`, capped at the
+  number of records found
+- `keptRunning`: run IDs spared because their runs are still running
+- `keptUnreadable`: run IDs spared because their records could not be safely
+  classified
+
+All three ID arrays are always present and non-null, including when empty; no
+root field is omitted. `--json` requires `--yes`: without it, prune emits no
+document and exits `2` before resolving the records directory. A successful prune exits `0`, including when nothing is deleted. A
+records-directory resolution, read, or open failure exits `9` and emits no
+document. A delete failure or cancellation exits `9` after selection and emits
+the document, reporting the IDs known to have been deleted or kept.
 
 ## `run --json`
 
