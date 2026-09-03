@@ -774,6 +774,31 @@ test("deduplicates conservative targets before preflight and receipt constructio
   assert.equal(targets.filter(({ path }) => path === canonical).length, 1);
 });
 
+test("does not add process signal listeners for a non-detached Windows-mode installer", async (t) => {
+  const f = fixture(t);
+  const before = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, process.listenerCount(signal)]));
+  let releaseSpawn;
+  const spawned = new Promise((resolve) => { releaseSpawn = resolve; });
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    releaseSpawn(child);
+    return child;
+  };
+
+  const installation = installSkill(options(f, { spawn }, { platform: "win32" }));
+  const child = await spawned;
+  assert.equal(process.listenerCount("SIGINT"), before.get("SIGINT"));
+  assert.equal(process.listenerCount("SIGTERM"), before.get("SIGTERM"));
+  child.emit("close", 0, null);
+
+  const result = await installation;
+  assert.equal(result.outcome, "failed");
+  assert.equal(process.listenerCount("SIGINT"), before.get("SIGINT"));
+  assert.equal(process.listenerCount("SIGTERM"), before.get("SIGTERM"));
+});
+
 for (const signal of ["SIGINT", "SIGTERM"]) {
   test(`forwards ${signal} to the detached installer and keeps partial ownership recoverable`, { timeout: 10_000 }, async (t) => {
     if (process.platform === "win32") t.skip("process-group signals are not portable on windows");
