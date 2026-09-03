@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn as childProcessSpawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -468,6 +469,42 @@ test("fails softly after a nonzero child exit and never persists child prose", a
   assert.doesNotMatch(JSON.stringify(receipt), /Failed|credential|secret/);
 });
 
+test("records an incomplete canonical tree as affected and blocks its recovery", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const missing = join(f.skill, "references", "guide.md");
+  mkdirSync(join(missing, ".."), { recursive: true });
+  writeFileSync(missing, "guide\n");
+  const child = childFor(() => {
+    mkdirSync(canonical, { recursive: true });
+    for (const name of ["SKILL.md", "PI_WORKER_IDENTITY"]) {
+      cpSync(join(f.skill, name), join(canonical, name));
+    }
+  }, { code: null, signal: "SIGTERM" });
+
+  const result = await installSkill(options(f, child));
+
+  assert.equal(result.outcome, "failed");
+  const failed = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.deepEqual(failed.targets, []);
+  assert.deepEqual(failed.affectedTargets.map(({ path, state }) => ({ path, state })), [
+    { path: canonical, state: "conflicting" },
+  ]);
+  assert.deepEqual(failed.recovery, [SAFE_RETRY]);
+  assert.equal(readFileSync(join(canonical, "SKILL.md"), "utf8"), readFileSync(join(f.skill, "SKILL.md"), "utf8"));
+
+  const nextChild = childFor();
+  const next = await installSkill(options(f, nextChild));
+  assert.equal(next.outcome, "blocked", JSON.stringify(next));
+  assert.equal(nextChild.calls.length, 0);
+  assert.equal(next.affectedTargets.find(({ path }) => path === canonical)?.state, "unmanaged");
+  assert.deepEqual(JSON.parse(readFileSync(f.receipt, "utf8")).recovery, [
+    `npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`,
+    SAFE_RETRY,
+  ]);
+  assert.throws(() => readFileSync(join(canonical, "references", "guide.md")), /ENOENT/);
+});
+
 test("does not spawn when the durable receipt guard fails", async (t) => {
   const f = fixture(t);
   const child = childFor();
@@ -736,6 +773,179 @@ test("deduplicates conservative targets before preflight and receipt constructio
   assert.equal(targets.filter(({ path }) => path === copy).length, 1);
   assert.equal(targets.filter(({ path }) => path === canonical).length, 1);
 });
+
+test("does not add process signal listeners for a non-detached Windows-mode installer", async (t) => {
+  const f = fixture(t);
+  const before = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, process.listenerCount(signal)]));
+  let releaseSpawn;
+  const spawned = new Promise((resolve) => { releaseSpawn = resolve; });
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    releaseSpawn(child);
+    return child;
+  };
+
+  const installation = installSkill(options(f, { spawn }, { platform: "win32" }));
+  const child = await spawned;
+  assert.equal(process.listenerCount("SIGINT"), before.get("SIGINT"));
+  assert.equal(process.listenerCount("SIGTERM"), before.get("SIGTERM"));
+  child.emit("close", 0, null);
+
+  const result = await installation;
+  assert.equal(result.outcome, "failed");
+  assert.equal(process.listenerCount("SIGINT"), before.get("SIGINT"));
+  assert.equal(process.listenerCount("SIGTERM"), before.get("SIGTERM"));
+});
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  test(`forwards ${signal} to the detached installer and keeps partial ownership recoverable`, { timeout: 10_000 }, async (t) => {
+    if (process.platform === "win32") t.skip("process-group signals are not portable on windows");
+
+    const f = fixture(t);
+    const canonical = join(f.home, ".agents", "skills", "pi-worker");
+    const stopped = join(f.root, `${signal.toLowerCase()}-stopped`);
+    const childPidFile = join(f.root, `${signal.toLowerCase()}-child.pid`);
+    const resultFile = join(f.root, `${signal.toLowerCase()}-result`);
+    const cli = join(f.root, `${signal.toLowerCase()}-installer.mjs`);
+    const harness = join(f.root, `${signal.toLowerCase()}-harness.mjs`);
+    const installModule = fileURLToPath(new URL("../lib/skill-install.mjs", import.meta.url));
+    writeFileSync(cli, `
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import process from "node:process";
+
+process.on("SIGINT", () => {
+  writeFileSync(${JSON.stringify(stopped)}, "SIGINT\\n");
+  process.exit(130);
+});
+process.on("SIGTERM", () => {
+  writeFileSync(${JSON.stringify(stopped)}, "SIGTERM\\n");
+  process.exit(143);
+});
+mkdirSync(${JSON.stringify(join(canonical, ".."))}, { recursive: true });
+cpSync(${JSON.stringify(f.skill)}, ${JSON.stringify(canonical)}, { recursive: true });
+process.stdout.write("READY\\n");
+setInterval(() => {}, 1_000_000);
+`);
+    writeFileSync(harness, `
+import { writeFileSync } from "node:fs";
+import { spawn as realSpawn } from "node:child_process";
+import process from "node:process";
+import { installSkill } from ${JSON.stringify(installModule)};
+
+// Keep the harness alive so this test isolates the installer's signal forwarding.
+process.on("SIGINT", () => {});
+process.on("SIGTERM", () => {});
+
+const childSpawn = (...args) => {
+  const child = realSpawn(...args);
+  writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+  child.stdout?.on("data", (chunk) => process.stdout.write(chunk));
+  child.stderr?.on("data", (chunk) => process.stderr.write(chunk));
+  return child;
+};
+const home = ${JSON.stringify(f.home)};
+const result = await installSkill({
+  packageRoot: ${JSON.stringify(f.root)},
+  bundledSkill: ${JSON.stringify(f.skill)},
+  binary: "/native/pi-worker",
+  home,
+  env: { HOME: home },
+  receiptPathFromNative: async () => ${JSON.stringify(f.receipt)},
+  loadRules: () => (${JSON.stringify(rules)}),
+  resolveAllTargets: () => [${JSON.stringify(join(f.home, ".test", "skills"))}],
+  spawn: childSpawn,
+  cli: ${JSON.stringify(cli)},
+  timeoutMs: 10_000,
+});
+writeFileSync(${JSON.stringify(resultFile)}, result.outcome);
+process.stdout.write("RESULT:" + result.outcome + "\\n");
+`);
+
+    const runner = childProcessSpawn(process.execPath, [harness], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    const waitForRunnerExit = () => {
+      if (runner.exitCode !== null || runner.signalCode !== null) return Promise.resolve();
+      return new Promise((resolve) => runner.once("close", resolve));
+    };
+    const waitForChildExit = async (pid) => {
+      const deadline = Date.now() + 2_000;
+      while (true) {
+        try {
+          process.kill(pid, 0);
+        } catch (error) {
+          if (error?.code === "ESRCH") return;
+          throw error;
+        }
+        if (Date.now() >= deadline) throw new Error(`child ${pid} did not terminate`);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    runner.stdout.setEncoding("utf8");
+    runner.stderr.setEncoding("utf8");
+    runner.stdout.on("data", (chunk) => { output += chunk; });
+    runner.stderr.on("data", (chunk) => { output += chunk; });
+    t.after(async () => {
+      let childPid;
+      try {
+        childPid = Number(readFileSync(childPidFile, "utf8"));
+      } catch {
+        childPid = undefined;
+      }
+      if (Number.isInteger(childPid) && childPid > 0 && childPid !== process.pid) {
+        try { process.kill(-childPid, "SIGKILL"); } catch { /* already stopped */ }
+      }
+      if (runner.exitCode === null && runner.signalCode === null) runner.kill("SIGKILL");
+      await waitForRunnerExit();
+      if (Number.isInteger(childPid) && childPid > 0 && childPid !== process.pid) {
+        await waitForChildExit(childPid);
+      }
+    });
+
+    await new Promise((resolve, reject) => {
+      const onData = () => {
+        if (output.includes("READY\n")) {
+          runner.stdout.off("data", onData);
+          resolve();
+        }
+      };
+      runner.stdout.on("data", onData);
+      runner.once("error", reject);
+      runner.once("close", (closedCode, closedSignal) => reject(new Error(`installer exited before READY: ${closedCode}/${closedSignal}; ${output}`)));
+      if (output.includes("READY\n")) onData();
+    });
+    const childPid = Number(readFileSync(childPidFile, "utf8"));
+    assert.ok(Number.isInteger(childPid) && childPid > 0);
+    runner.kill(signal);
+    const [code, exitSignal] = await new Promise((resolve, reject) => {
+      runner.once("error", reject);
+      runner.once("exit", (closedCode, closedSignal) => resolve([closedCode, closedSignal]));
+    });
+
+    assert.equal(exitSignal, null, `installer harness was not allowed to finish: ${output}`);
+    assert.equal(code, 0, output);
+    assert.equal(readFileSync(stopped, "utf8"), `${signal}\n`);
+    assert.equal(readFileSync(resultFile, "utf8"), "failed");
+    assert.throws(() => process.kill(childPid, 0), /ESRCH/);
+    const interruptedReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+    assert.equal(interruptedReceipt.outcome, "failed");
+    assert.ok(interruptedReceipt.targets.some(({ path }) => path === canonical));
+    assert.deepEqual(interruptedReceipt.recovery, [SAFE_RETRY]);
+
+    const nextChild = childFor();
+    const next = await installSkill(options(f, nextChild));
+    assert.equal(next.outcome, "blocked", JSON.stringify(next));
+    assert.equal(next.affectedTargets.find(({ path }) => path === canonical)?.state, "unmanaged");
+    assert.deepEqual(JSON.parse(readFileSync(f.receipt, "utf8")).recovery, [
+      `npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`,
+      SAFE_RETRY,
+    ]);
+    assert.equal(nextChild.calls.length, 0);
+  });
+}
 
 for (const streamName of ["stdout", "stderr"]) {
   test(`bounds ${streamName}, escalates once, and waits for child close`, async (t) => {
