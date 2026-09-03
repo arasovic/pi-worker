@@ -117,6 +117,24 @@ func TestClientAcceptsLargeLegitimateEventAndFinalTextFrames(t *testing.T) {
 	}
 }
 
+func TestClientWaitSettledRejectsUnsolicitedResponse(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{Response: &script.Response{Success: true}},
+		},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	if err := client.Prompt(context.Background(), "hello"); err != nil {
+		t.Fatalf("prompt: %v", err)
+	}
+	if err := client.WaitSettled(context.Background()); err == nil || err.Error() != "protocol error: unexpected response while waiting for agent_settled" {
+		t.Fatalf("WaitSettled = %v, want exact unsolicited-response protocol error", err)
+	}
+}
+
 func TestClientAgentEndIsNotTerminal(t *testing.T) {
 	// WaitSettled must consume every frame through agent_settled. If
 	// agent_end were treated as terminal, the event snapshot taken right
@@ -270,6 +288,19 @@ func TestClientResponseCommandMismatchFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestClientMatchingResponseWithoutSuccessFailsExactProtocolError(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {{Raw: `{"type":"response","id":"r1","command":"get_available_models"}`}},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	_, err := client.GetAvailableModels(context.Background())
+	if err == nil || err.Error() != "protocol error: response missing success field" {
+		t.Fatalf("GetAvailableModels = %v, want exact missing-success protocol error", err)
 	}
 }
 
