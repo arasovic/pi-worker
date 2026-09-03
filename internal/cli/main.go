@@ -126,9 +126,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "run":
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
-			fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-			printUsage(stderr)
-			return 2
+			return reportRunInputError(err, stderr)
 		}
 		ctx, stop := interruptContext()
 		defer stop()
@@ -167,9 +165,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "run":
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
-			fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-			printUsage(stderr)
-			return 2
+			return reportRunInputError(err, stderr)
 		}
 		return runCommand(ctx, opts, tasks, stdout, stderr)
 	case "skill":
@@ -317,6 +313,16 @@ func runNeedsModel(opts runOptions) bool {
 		}
 	}
 	return false
+}
+
+func reportRunInputError(err error, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "pi-worker: %v\n", err)
+	var configErr *configuredModelError
+	if errors.As(err, &configErr) {
+		return 9
+	}
+	printUsage(stderr)
+	return 2
 }
 
 func printUsage(w io.Writer) {

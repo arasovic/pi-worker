@@ -242,6 +242,76 @@ func TestConfigSetDebugStaysOnStderrAndCallsCatalogOnce(t *testing.T) {
 	}
 }
 
+func TestMalformedConfigKeepsRunInputErrorsDistinctAndExplicitModelsDoNotReadIt(t *testing.T) {
+	// A malformed durable document is an internal failure, not an argv
+	// mistake. The explicit-model cases also pin the precedence rule: the
+	// config path is not even resolved when every task already has a model.
+	malformed := []byte(`{"schemaVersion":1,"unknown":true}`)
+	empty := []byte(`{"schemaVersion":1}`)
+	for _, test := range []struct {
+		name       string
+		args       []string
+		configData []byte
+		wantCode   int
+		wantUsage  bool
+		wantJSON   bool
+		wantConfig int
+	}{
+		{name: "config show", args: []string{"config", "show"}, configData: malformed, wantCode: 9, wantConfig: 1},
+		{name: "config show json", args: []string{"config", "show", "--json"}, configData: malformed, wantCode: 9, wantConfig: 1},
+		{name: "run malformed default", args: []string{"run", "--task", "work"}, configData: malformed, wantCode: 9, wantConfig: 1},
+		{name: "run malformed default json", args: []string{"run", "--task", "work", "--json"}, configData: malformed, wantCode: 9, wantConfig: 1},
+		{name: "run missing default", args: []string{"run", "--task", "work"}, configData: empty, wantCode: 2, wantUsage: true, wantConfig: 1},
+		{name: "run explicit", args: []string{"run", "--model", "acme/explicit", "--task", "work"}, configData: malformed, wantCode: 0, wantConfig: 0},
+		{name: "run explicit json", args: []string{"run", "--model", "acme/explicit", "--task", "work", "--json"}, configData: malformed, wantCode: 0, wantJSON: true, wantConfig: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if test.configData != nil {
+				if err := os.WriteFile(path, test.configData, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			configCalls := 0
+			original := userConfigPath
+			userConfigPath = func() (string, error) {
+				configCalls++
+				return path, nil
+			}
+			t.Cleanup(func() { userConfigPath = original })
+			fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/explicit", Status: pi.StatusCompleted, Explanation: "done"})
+
+			code, stdout, stderr := runCLI(t, test.args, "")
+			if code != test.wantCode {
+				t.Fatalf("exit = %d, want %d; stdout=%q stderr=%q", code, test.wantCode, stdout, stderr)
+			}
+			if configCalls != test.wantConfig {
+				t.Fatalf("config path resolved %d times, want %d", configCalls, test.wantConfig)
+			}
+			if test.wantCode == 9 {
+				if stdout != "" || strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "unknown field") {
+					t.Fatalf("malformed config = (%q, %q), want no stdout, no usage, and the config error", stdout, stderr)
+				}
+				return
+			}
+			if test.wantUsage {
+				if stdout != "" || !strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "missing required flag --model") {
+					t.Fatalf("missing default = (%q, %q), want usage and missing-model error", stdout, stderr)
+				}
+				return
+			}
+			if stderr != "" || fake.callCount() != 1 {
+				t.Fatalf("explicit model = (%d, %q, %q), worker calls=%d", code, stdout, stderr, fake.callCount())
+			}
+			if test.wantJSON {
+				_ = decodeJSONObject(t, stdout)
+			} else if !strings.Contains(stdout, "worker 1: done") {
+				t.Fatalf("explicit human stdout = %q", stdout)
+			}
+		})
+	}
+}
+
 func TestRunModelExplicitNeverReadsMalformedConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	before := []byte(`{"schemaVersion":1,"unknown":true}`)

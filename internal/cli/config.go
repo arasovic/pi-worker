@@ -19,6 +19,18 @@ const defaultConfigTimeout = 30 * time.Second
 
 var userConfigPath = configpkg.UserPath
 
+// configuredModelError marks a failure while resolving the configured
+// default model. It is distinct from the ordinary input-resolution errors:
+// a missing or empty default is a usage error, but an invalid on-disk config
+// is an internal failure, just like config show reports it.
+type configuredModelError struct {
+	err error
+}
+
+func (e *configuredModelError) Error() string { return e.err.Error() }
+
+func (e *configuredModelError) Unwrap() error { return e.err }
+
 type configOptions struct {
 	command string
 	json    bool
@@ -171,14 +183,14 @@ func catalogContains(models []pi.ModelProjection, selector string) bool {
 func configuredRunModel() (string, error) {
 	path, err := userConfigPath()
 	if err != nil {
-		return "", fmt.Errorf("determine config path: %w", err)
+		return "", &configuredModelError{err: fmt.Errorf("determine config path: %w", err)}
 	}
 	cfg, err := configpkg.Load(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", errors.New("missing required flag --model and no configured default model")
 	}
 	if err != nil {
-		return "", fmt.Errorf("load configured default: %w", err)
+		return "", &configuredModelError{err: fmt.Errorf("load configured default: %w", err)}
 	}
 	if cfg.DefaultModel == "" {
 		return "", errors.New("missing required flag --model and no configured default model")
