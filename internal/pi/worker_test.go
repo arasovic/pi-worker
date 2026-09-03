@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
@@ -804,6 +805,71 @@ func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
 	}
 	if strings.Contains(result.Error, upstreamSecret) {
 		t.Fatalf("error leaked errorMessage: %q", result.Error)
+	}
+}
+
+func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
+	// These are many individually legal deltas, not one oversized frame. The
+	// first assistant message and the newer in-flight message together exceed
+	// MaxFrameBytes, so the result seam must still return bounded valid UTF-8.
+	chunk := strings.Repeat("界", 4096) // exactly 12 KiB of UTF-8
+	firstDeltas := MaxFrameBytes / (2 * len(chunk))
+	currentDeltas := MaxFrameBytes/len(chunk) + 1
+	want := strings.Repeat("界", (MaxFrameBytes-2)/utf8.RuneLen('界'))
+	promptSteps := []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+	}
+	for i := 0; i < firstDeltas; i++ {
+		data, err := json.Marshal(map[string]any{
+			"type":                  "message_update",
+			"assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": chunk},
+		})
+		if err != nil {
+			t.Fatalf("marshal first delta %d: %v", i, err)
+		}
+		promptSteps = append(promptSteps, script.Step{Event: data})
+	}
+	promptSteps = append(promptSteps, script.Step{Event: json.RawMessage(`{"type":"message_start","message":{"role":"toolResult"}}`)})
+	for i := 0; i < currentDeltas; i++ {
+		data, err := json.Marshal(map[string]any{
+			"type":                  "message_update",
+			"assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": chunk},
+		})
+		if err != nil {
+			t.Fatalf("marshal current delta %d: %v", i, err)
+		}
+		promptSteps = append(promptSteps, script.Step{Event: data})
+	}
+	// Do not emit agent_settled: EOF returns through withThinking, making
+	// this exercise the worker/result seam rather than final text. Exit only
+	// after all deltas have flushed so the result is deterministic and quick.
+	promptSteps = append(promptSteps, script.Step{Exit: true})
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.Triggers["prompt"] = promptSteps
+	setupFakePiEnv(t, scriptConfig)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusError {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if result.Explanation != "" {
+		t.Fatalf("explanation = %q, want absent on interrupted run", result.Explanation)
+	}
+	if len(result.PartialExplanation) != len(want) {
+		t.Fatalf("partialExplanation = %d bytes, want exact bounded size %d", len(result.PartialExplanation), len(want))
+	}
+	if result.PartialExplanation != want {
+		t.Fatal("partialExplanation did not preserve the most recent UTF-8 suffix")
+	}
+	if len(result.PartialExplanation) > MaxFrameBytes || !utf8.ValidString(result.PartialExplanation) {
+		t.Fatalf("partialExplanation violates the %d-byte UTF-8 bound", MaxFrameBytes)
 	}
 }
 

@@ -319,6 +319,9 @@ terminal condition. A latest assistant `message_end` with
 with an error`; this wording does not claim that no text existed and does not
 attribute the error to a particular provider mechanism. Text emitted by that
 failed turn is exposed only as `partialExplanation`, never as `explanation`.
+Partial assistant text retained for this field is capped at `MaxFrameBytes`
+(8 MiB) UTF-8 bytes across the in-flight and most-recent message buffers;
+when the cap is reached, older text is evicted without splitting a UTF-8 rune.
 A newer valid assistant message supersedes the prior classification; user and
 tool-result messages do not. A missing or malformed stopReason on the latest
 assistant message does not inherit an earlier error. The assistant's

@@ -727,6 +727,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     read, lowercase hex, matching what a checksum of the file on disk
     produces); content itself is never reported
   - fallback workers include `thinkingFallback: true` and a fixed `warning`
+  - a worker's `partialExplanation`, when present, is capped at `MaxFrameBytes`
+    (8 MiB) UTF-8 bytes across the in-flight and most-recent message buffers;
+    older text is evicted without splitting a UTF-8 rune
   - `verification`, when `--verify` ran on a completed run: `argv` and
     `exitCode` always; `output` (the captured excerpt), `truncated`, and
     `logFile` only for a failing check

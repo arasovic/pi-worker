@@ -2,7 +2,9 @@ package pi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // messageUpdateRaw builds one message_update event frame carrying the
@@ -10,6 +12,153 @@ import (
 // literals and never read them back out of this helper.
 func messageUpdateRaw(raw string) Event {
 	return Event{Type: "message_update", Raw: json.RawMessage(raw)}
+}
+
+func textDeltaEvent(delta string) Event {
+	frame := struct {
+		Type                  string `json:"type"`
+		AssistantMessageEvent struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		} `json:"assistantMessageEvent"`
+	}{
+		Type: "message_update",
+		AssistantMessageEvent: struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}{Type: "text_delta", Delta: delta},
+	}
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		panic(err)
+	}
+	return messageUpdateRaw(string(raw))
+}
+
+func TestTranscriptAccumulatorGrowsSmallDeltasLazily(t *testing.T) {
+	a := &transcriptAccumulator{}
+	if err := a.OnEvent(event("message_start")); err != nil {
+		t.Fatalf("message_start = %v", err)
+	}
+	if err := a.OnEvent(textDeltaEvent("x")); err != nil {
+		t.Fatalf("text delta = %v", err)
+	}
+	if len(a.storage) > MaxFrameBytes || cap(a.storage) > MaxFrameBytes {
+		t.Fatalf("storage len/cap = %d/%d, exceeds %d-byte ceiling", len(a.storage), cap(a.storage), MaxFrameBytes)
+	}
+	if cap(a.storage) >= MaxFrameBytes/1024 {
+		t.Fatalf("initial storage capacity = %d, want far below %d", cap(a.storage), MaxFrameBytes)
+	}
+}
+
+func TestTranscriptAccumulatorPreservesViewsAcrossGrowth(t *testing.T) {
+	a := &transcriptAccumulator{}
+	for _, ev := range []Event{
+		event("message_start"),
+		textDeltaEvent("old"),
+	} {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(%s) = %v", ev.Type, err)
+		}
+	}
+	initialCap := cap(a.storage)
+	for _, ev := range []Event{
+		event("message_start"),
+		textDeltaEvent("new"),
+		textDeltaEvent("!"),
+	} {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(%s) = %v", ev.Type, err)
+		}
+	}
+	if got := string(a.mostRecent); got != "old" {
+		t.Fatalf("mostRecent = %q, want %q after growth", got, "old")
+	}
+	if got := string(a.text); got != "new!" {
+		t.Fatalf("text = %q, want %q after growth", got, "new!")
+	}
+	if len(a.storage) > MaxFrameBytes || cap(a.storage) > MaxFrameBytes {
+		t.Fatalf("storage len/cap = %d/%d, exceeds %d-byte ceiling", len(a.storage), cap(a.storage), MaxFrameBytes)
+	}
+	if cap(a.storage) <= initialCap {
+		t.Fatalf("storage capacity = %d, want growth beyond initial capacity %d", cap(a.storage), initialCap)
+	}
+	if got := a.snapshot(); got != "new!" {
+		t.Fatalf("snapshot = %q, want current text after growth", got)
+	}
+}
+
+func TestTranscriptAccumulatorMaintainsUTF8Budget(t *testing.T) {
+	// Every delta is a legal, much-smaller-than-MaxFrameBytes frame. The
+	// first message fills half the aggregate budget, then a newer message
+	// exceeds the remaining half. The newer message is the useful salvage,
+	// so its bytes evict the older message's prefix rather than stopping.
+	chunk := "x" + strings.Repeat("é", 8191) + "y" // exactly 16 KiB
+	if len(chunk) != 16<<10 || !utf8.ValidString(chunk) {
+		t.Fatalf("test chunk = %d bytes, valid UTF-8 = %v", len(chunk), utf8.ValidString(chunk))
+	}
+	a := &transcriptAccumulator{}
+	if err := a.OnEvent(event("message_start")); err != nil {
+		t.Fatalf("first message_start = %v", err)
+	}
+	for i := 0; i < MaxFrameBytes/(2*len(chunk)); i++ {
+		if err := a.OnEvent(textDeltaEvent(chunk)); err != nil {
+			t.Fatalf("first delta %d = %v", i, err)
+		}
+	}
+	if err := a.OnEvent(event("message_start")); err != nil {
+		t.Fatalf("second message_start = %v", err)
+	}
+	for i := 0; i < MaxFrameBytes/len(chunk)/2+1; i++ {
+		if err := a.OnEvent(textDeltaEvent(chunk)); err != nil {
+			t.Fatalf("second delta %d = %v", i, err)
+		}
+	}
+
+	if len(a.storage) > MaxFrameBytes {
+		t.Fatalf("storage length = %d, exceeds shared ceiling %d", len(a.storage), MaxFrameBytes)
+	}
+	if cap(a.storage) > MaxFrameBytes {
+		t.Fatalf("storage capacity = %d, exceeds shared ceiling %d", cap(a.storage), MaxFrameBytes)
+	}
+	if len(a.text) == 0 || len(a.mostRecent) == 0 {
+		t.Fatalf("retained buffers = text %d, mostRecent %d; want both populated", len(a.text), len(a.mostRecent))
+	}
+	if !utf8.Valid(a.text) || !utf8.Valid(a.mostRecent) || !utf8.ValidString(a.snapshot()) {
+		t.Fatal("retained transcript is not valid UTF-8")
+	}
+	wantSecond := strings.Repeat(chunk, MaxFrameBytes/len(chunk)/2+1)
+	if got := a.snapshot(); got != wantSecond {
+		t.Fatalf("snapshot retained %d bytes, want the complete newer message of %d bytes", len(got), len(wantSecond))
+	}
+}
+
+func TestTranscriptAccumulatorEvictsOldestTextWhenCurrentExceedsBudget(t *testing.T) {
+	// Once the current message itself is larger than the budget, the oldest
+	// prefix of that current message is evicted too. This pins a recent-tail
+	// policy instead of silently returning an unbounded transcript.
+	chunk := strings.Repeat("界", 4096) // 12 KiB and valid UTF-8
+	a := &transcriptAccumulator{}
+	if err := a.OnEvent(event("message_start")); err != nil {
+		t.Fatalf("message_start = %v", err)
+	}
+	for i := 0; i < MaxFrameBytes/len(chunk)+1; i++ {
+		if err := a.OnEvent(textDeltaEvent(chunk)); err != nil {
+			t.Fatalf("delta %d = %v", i, err)
+		}
+	}
+	if len(a.storage) > MaxFrameBytes {
+		t.Fatalf("storage length = %d, exceeds shared ceiling %d", len(a.storage), MaxFrameBytes)
+	}
+	if cap(a.storage) > MaxFrameBytes {
+		t.Fatalf("storage capacity = %d, exceeds shared ceiling %d", cap(a.storage), MaxFrameBytes)
+	}
+	if got := len(a.snapshot()); got != MaxFrameBytes-2 {
+		t.Fatalf("snapshot = %d bytes, want the largest valid UTF-8 suffix %d", got, MaxFrameBytes-2)
+	}
+	if !utf8.ValidString(a.snapshot()) {
+		t.Fatal("evicted snapshot is not valid UTF-8")
+	}
 }
 
 func TestTranscriptAccumulatorKeepsEarlierTextAcrossToolCallMessage(t *testing.T) {
@@ -100,11 +249,11 @@ func TestTranscriptAccumulatorDeltasConcatenateInOrder(t *testing.T) {
 	}
 }
 
-func TestTranscriptAccumulatorMessageStartDiscardsPreviousMessage(t *testing.T) {
+func TestTranscriptAccumulatorMessageStartMakesNewerTextWin(t *testing.T) {
 	// The snapshot is the partial counterpart of explanation, which is the
-	// last assistant message's text: a message_start mid-stream must
-	// discard the earlier message's text so the two fields describe the
-	// same message and memory stays bounded to one message.
+	// current message's text when present: a newer in-flight message wins
+	// over remembered text. The shared aggregate still retains the older
+	// message for the recent-tail policy, subject to the byte budget.
 	a := &transcriptAccumulator{}
 	stream := []Event{
 		event("message_start"),
