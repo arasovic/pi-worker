@@ -313,6 +313,40 @@ func TestInspectVerifiesAndClassifiesTargets(t *testing.T) {
 	})
 }
 
+func TestInspectRejectsMismatchedSkillsVersion(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "canonical")
+	writeFile(t, filepath.Join(target, "a.txt"), "one")
+	writeFile(t, filepath.Join(target, IdentityFile), IdentityContent)
+	writeFile(t, filepath.Join(target, "SKILL.md"), "---\nname: pi-worker\n---\n")
+
+	receipt := Receipt{
+		SchemaVersion:    SchemaVersion,
+		InstallerVersion: "1",
+		SkillsVersion:    "1.5.22",
+		Outcome:          OutcomeInstalled,
+		Targets: []Target{{
+			Path: target,
+			Kind: targetKindCanonical,
+			Files: []FileHash{
+				{Path: "a.txt", SHA256: hashString("one")},
+				{Path: IdentityFile, SHA256: hashString(IdentityContent)},
+				{Path: "SKILL.md", SHA256: hashString("---\nname: pi-worker\n---\n")},
+			},
+		}},
+	}
+	inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	if err != nil {
+		t.Fatalf("Inspect() = %v, want nil", err)
+	}
+	if inspection.Status != StatusFailed {
+		t.Fatalf("status = %q, want %q", inspection.Status, StatusFailed)
+	}
+	if len(inspection.VerifiedTargets) != 0 {
+		t.Fatalf("verified targets = %v, want no verified ownership", inspection.VerifiedTargets)
+	}
+}
+
 func TestInspectRejectsHashMatchingForeignReceipt(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "foreign")
