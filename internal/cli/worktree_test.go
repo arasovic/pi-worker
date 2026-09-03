@@ -368,6 +368,75 @@ func TestPrepareWorktreeExpiredContextIsNotARefusal(t *testing.T) {
 	}
 }
 
+// TestRunWorktreePreparationExitPrecedence pins the three observable exits
+// from worktree preparation: a caller-fixable refusal is 2, an expired run
+// is 7, and a cancelled run is 8. The cases exercise distinct preparation
+// outcomes and confirm that each keeps its own exit classification.
+func TestRunWorktreePreparationExitPrecedence(t *testing.T) {
+	tests := []struct {
+		name       string
+		context    func() context.Context
+		wantCode   int
+		wantOutput string
+	}{
+		{
+			name: "refusal",
+			context: func() context.Context {
+				return context.Background()
+			},
+			wantCode:   2,
+			wantOutput: "already exists; collect it or choose another name",
+		},
+		{
+			name: "deadline",
+			context: func() context.Context {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Minute))
+				defer cancel()
+				return ctx
+			},
+			wantCode:   7,
+			wantOutput: "resolve repository root",
+		},
+		{
+			name: "cancellation",
+			context: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			wantCode:   8,
+			wantOutput: "resolve repository root",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := canonicalRepo(t, newGitWorkspace(t))
+			if test.name == "refusal" {
+				path := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatalf("make leftover worktree directory: %v", err)
+				}
+			}
+			fake := installFakeWorker(t, completedResult())
+			code, stdout, stderr := runCLIWithContext(t, test.context(), []string{
+				"run", "--model", "acme/model", "--task", "work", "--worktree", "probe",
+			}, "")
+			if code != test.wantCode {
+				t.Fatalf("exit = %d, want %d; stderr = %q", code, test.wantCode, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, test.wantOutput) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, test.wantOutput)
+			}
+			if fake.callCount() != 0 {
+				t.Fatalf("worker calls = %d, want 0 during preparation", fake.callCount())
+			}
+		})
+	}
+}
+
 // TestRunWorktreeLeftBehind pins that nothing is ever removed: the
 // checkout and its branch still exist after the run finished.
 func TestRunWorktreeLeftBehind(t *testing.T) {
