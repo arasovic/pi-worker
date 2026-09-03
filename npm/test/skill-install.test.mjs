@@ -364,19 +364,16 @@ test("preserves a recognized external skill without spawning or persisting owner
   assert.deepEqual(receipt.affectedTargets, []);
 });
 
-test("does not restore a missing prior target when skipping for another external skill", async (t) => {
+test("downgrades an installed receipt when its canonical target is deleted before another external target is skipped", async (t) => {
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
-  const copy = join(f.home, ".test", "skills", "pi-worker");
   const external = join(f.home, ".external", "skills", "pi-worker");
   const first = childFor(() => {
     mkdirSync(join(canonical, ".."), { recursive: true });
     cpSync(f.skill, canonical, { recursive: true });
-    mkdirSync(join(copy, ".."), { recursive: true });
-    cpSync(f.skill, copy, { recursive: true });
   });
   assert.equal((await installSkill(options(f, first))).outcome, "installed");
-  rmSync(copy, { recursive: true, force: true });
+  rmSync(canonical, { recursive: true, force: true });
 
   mkdirSync(external, { recursive: true });
   writeFileSync(join(external, "PI_WORKER_IDENTITY"), "pi-worker-skill/v1\n");
@@ -388,7 +385,7 @@ test("does not restore a missing prior target when skipping for another external
   const second = childFor();
 
   const result = await installSkill(options(f, second, {
-    resolveAllTargets: () => [join(f.home, ".test", "skills"), join(f.home, ".external", "skills")],
+    resolveAllTargets: () => [join(f.home, ".external", "skills")],
   }));
 
   assert.equal(result.outcome, "skipped");
@@ -396,9 +393,46 @@ test("does not restore a missing prior target when skipping for another external
   assert.deepEqual(readFileSync(join(external, "PI_WORKER_IDENTITY")), externalBefore.identity);
   assert.deepEqual(readFileSync(join(external, "SKILL.md")), externalBefore.skill);
   const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
-  assert.equal(receipt.outcome, "installed");
-  assert.ok(receipt.targets.some(({ path }) => path === canonical));
-  assert.ok(!receipt.targets.some(({ path }) => path === copy));
+  assert.equal(receipt.outcome, "skipped");
+  assert.deepEqual(receipt.targets, []);
+  assert.deepEqual(receipt.affectedTargets, []);
+});
+
+test("downgrades an installed receipt when receipt re-verification throws", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const external = join(f.home, ".external", "skills", "pi-worker");
+  const first = childFor(() => {
+    mkdirSync(join(canonical, ".."), { recursive: true });
+    cpSync(f.skill, canonical, { recursive: true });
+  });
+  assert.equal((await installSkill(options(f, first))).outcome, "installed");
+  rmSync(canonical, { recursive: true, force: true });
+
+  mkdirSync(external, { recursive: true });
+  writeFileSync(join(external, "PI_WORKER_IDENTITY"), "pi-worker-skill/v1\n");
+  writeFileSync(join(external, "SKILL.md"), "---\nname: pi-worker\n---\nexternal contract\n");
+  const before = readFileSync(join(external, "SKILL.md"));
+  let classifyCalls = 0;
+  const second = childFor();
+
+  const result = await installSkill(options(f, second, {
+    resolveAllTargets: () => [join(f.home, ".external", "skills")],
+    classifyTarget: async () => {
+      classifyCalls += 1;
+      if (classifyCalls === 1) return "absent";
+      if (classifyCalls === 2) return "conflicting";
+      throw new Error("injected classification failure");
+    },
+  }));
+
+  assert.equal(result.outcome, "skipped");
+  assert.equal(second.calls.length, 0);
+  assert.deepEqual(readFileSync(join(external, "SKILL.md")), before);
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.outcome, "skipped");
+  assert.deepEqual(receipt.targets, []);
+  assert.deepEqual(receipt.affectedTargets, []);
 });
 
 test("blocks an unknown identity marker as possibly newer content without overwriting it", async (t) => {

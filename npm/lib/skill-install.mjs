@@ -671,25 +671,22 @@ export async function installSkill(options = {}) {
     return persistBlocked(states);
   }
   if (states.some(({ state }) => state.startsWith("external-"))) {
-    let verifiedTargets = [];
+    let priorReceiptVerified = priorReceipt?.outcome !== "installed";
     if (priorReceipt?.outcome === "installed") {
       try {
-        verifiedTargets = await verifyReceiptTargets(
+        const verifiedTargets = await verifyReceiptTargets(
           { document: priorReceipt, __bundledTree: bundledTree },
           priorReceipt.targets,
           classify,
         );
+        priorReceiptVerified = verifiedTargets.length === priorReceipt.targets.length;
       } catch {
-        // A receipt that cannot be re-verified must not be preserved as
-        // installed ownership while an external skill is being skipped.
+        priorReceiptVerified = false;
       }
     }
-    const hasVerifiedCanonical = verifiedTargets.some((target) => target.kind === "canonical");
-    const document = hasVerifiedCanonical
-      ? { ...priorReceipt, targets: verifiedTargets }
-      : priorReceipt?.outcome === "installed"
-        ? temporaryReceipt(version)
-        : priorReceipt ?? temporaryReceipt(version);
+    const document = priorReceipt?.outcome === "installed"
+      ? priorReceiptVerified ? priorReceipt : temporaryReceipt(version)
+      : priorReceipt ?? temporaryReceipt(version);
     try {
       await persist(writer, receiptPath, document, options.receiptWriteOptions);
     } catch {
