@@ -122,6 +122,32 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 		external := document["externalInspection"].(map[string]any)
 		assertExactJSONKeys(t, external, "state", "targets")
 		requireJSONArray(t, external["targets"], "externalInspection.targets")
+
+		original := inspectSkillReceipt
+		inspectSkillReceipt = func(string) (skillinstall.Inspection, error) {
+			return skillinstall.Inspection{
+				SchemaVersion:    skillinstall.SchemaVersion,
+				ReceiptPath:      "/receipt.json",
+				Status:           skillinstall.StatusStale,
+				InstallerVersion: "0.5.0",
+				ProgramVersion:   "0.6.0",
+				VerifiedTargets:  []string{},
+				TrackedTargets:   []string{},
+				AffectedTargets:  []skillinstall.AffectedTarget{},
+				Recovery:         []string{skillinstall.SafeRecoveryCommand},
+				ExternalInspection: skillinstall.ExternalInspection{
+					State:   skillinstall.ExternalInspectionUnavailable,
+					Targets: []skillinstall.ExternalTarget{},
+				},
+			}, nil
+		}
+		t.Cleanup(func() { inspectSkillReceipt = original })
+		code, stdout, stderr = runCLI(t, []string{"skill", "status", "--json"}, "")
+		if code != 3 || stderr != "" {
+			t.Fatalf("skill status with versions = (%d, %q, %q)", code, stdout, stderr)
+		}
+		versioned := decodeJSONObject(t, stdout)
+		assertExactJSONKeys(t, versioned, "schemaVersion", "receiptPath", "status", "installerVersion", "programVersion", "verifiedTargets", "trackedTargets", "affectedTargets", "recovery", "externalInspection")
 	})
 
 	t.Run("run", func(t *testing.T) {

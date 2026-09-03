@@ -99,10 +99,21 @@ Required root fields:
 - `recovery`
 - `externalInspection`
 
-`status` is `verified`, `missing`, `blocked`, `drifted`, `skipped`, or
-`failed`. `verifiedTargets`, `trackedTargets`, and `recovery` are string
+`status` is `verified`, `missing`, `blocked`, `drifted`, `skipped`, `failed`, or
+`stale`. `verifiedTargets`, `trackedTargets`, and `recovery` are string
 arrays. Each affected target has exactly `path`, `state`, and `recovery`;
 `state` is `unmanaged`, `drifted`, or `conflicting`.
+
+The optional root fields `installerVersion` and `programVersion`, when present,
+are strings. `installerVersion` is the version recorded when the install ran;
+`programVersion` is the version of the binary producing the document. Both are
+reported without a leading `v` and are omitted when their value is empty, so a
+missing receipt omits both fields. A valid receipt reports `installerVersion`,
+and the running program reports `programVersion` (including `dev` for a source
+build); the fields are not limited to `status: "stale"`. `stale` means every
+managed file still matches the receipt but the two versions differ, ignoring a
+single leading `v` on either side; a source build with `programVersion: "dev"`
+never reports `stale`. Like the other non-verified statuses, `stale` exits `3`.
 
 `externalInspection` always has `state` and `targets`. Its state is
 `performed` or `unavailable`. `unavailable` always carries an empty target
