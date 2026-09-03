@@ -618,9 +618,16 @@ func TestRunsPruneUnreadableStdinAborts(t *testing.T) {
 // waiting on the reader is never read.
 func TestRunsPruneRefusesWhenStdinIsNotTerminal(t *testing.T) {
 	dir := t.TempDir()
-	withRunlogDir(t, dir)
 	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
 	withStdinIsTerminal(t, false)
+
+	calls := 0
+	original := runlogDir
+	runlogDir = func() (string, error) {
+		calls++
+		return "", errors.New("resolver must not be called")
+	}
+	t.Cleanup(func() { runlogDir = original })
 
 	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0"}, "y\n")
 	if code != 2 || stdout != "" {
@@ -628,6 +635,9 @@ func TestRunsPruneRefusesWhenStdinIsNotTerminal(t *testing.T) {
 	}
 	if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+	if calls != 0 {
+		t.Fatalf("runlogDir called %d times, want 0", calls)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("record %s vanished: %v", path, err)
@@ -639,89 +649,31 @@ func TestRunsPruneRefusesWhenStdinIsNotTerminal(t *testing.T) {
 // message and exit 2 whatever the terminal seam says — a caller
 // parsing JSON must never be handed a prompt.
 func TestRunsPruneJSONWithoutYesRefusesEvenOnTerminal(t *testing.T) {
-	for name, terminal := range map[string]bool{
-		"terminal":     true,
-		"not terminal": false,
-	} {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			withRunlogDir(t, dir)
-			path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
-			withStdinIsTerminal(t, terminal)
-
-			code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "y\n")
-			if code != 2 || stdout != "" {
-				t.Fatalf("runs prune --json = (%d, %q), want exit 2 with nothing on stdout", code, stdout)
-			}
-			if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
-				t.Fatalf("stderr = %q, want %q", stderr, want)
-			}
-			if _, err := os.Stat(path); err != nil {
-				t.Fatalf("record %s vanished: %v", path, err)
-			}
-		})
-	}
-}
-
-// TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected asserts the
-// --json refusal does not depend on what is on disk: with --json and
-// no --yes in an empty records directory, prune still exits 2 with the
-// verbatim refusal on stderr and no JSON document on stdout — a script
-// must be able to tell "refused" from "succeeded, nothing to do".
-func TestRunsPruneJSONWithoutYesRefusesWhenNothingSelected(t *testing.T) {
 	dir := t.TempDir()
-	withRunlogDir(t, dir)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	withStdinIsTerminal(t, true)
 
-	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
+	calls := 0
+	original := runlogDir
+	runlogDir = func() (string, error) {
+		calls++
+		return "", errors.New("resolver must not be called")
+	}
+	t.Cleanup(func() { runlogDir = original })
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "y\n")
 	if code != 2 || stdout != "" {
-		t.Fatalf("runs prune --json = (%d, %q), want exit 2 with nothing on stdout", code, stdout)
+		t.Fatalf("runs prune --json = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
 	}
 	if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
-}
-
-// TestRunsPruneJSONWithoutYesRefusesBeforeDirectoryResolved asserts
-// the --json refusal does not depend on the records directory at all:
-// with --json and no --yes, prune refuses with exit 2 before the
-// directory is even resolved, so a resolver failure or an unreadable
-// directory cannot turn the refusal into an exit 9. The refusal
-// depends on nothing but the flags.
-func TestRunsPruneJSONWithoutYesRefusesBeforeDirectoryResolved(t *testing.T) {
-	t.Run("resolver failure", func(t *testing.T) {
-		original := runlogDir
-		runlogDir = func() (string, error) { return "", fmt.Errorf("config unavailable") }
-		t.Cleanup(func() { runlogDir = original })
-
-		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
-		if code != 2 || stdout != "" {
-			t.Fatalf("resolver failure with --json and no --yes = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
-		}
-		if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
-			t.Fatalf("stderr = %q, want %q", stderr, want)
-		}
-	})
-
-	t.Run("unreadable records directory", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("permission bits are not enforced on Windows")
-		}
-		dir := t.TempDir()
-		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
-		if err := os.Chmod(dir, 0o000); err != nil {
-			t.Fatalf("chmod: %v", err)
-		}
-		t.Cleanup(func() { os.Chmod(dir, 0o700) })
-		withRunlogDir(t, dir)
-
-		code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--json"}, "")
-		if code != 2 || stdout != "" {
-			t.Fatalf("unreadable dir with --json and no --yes = (%d, %q, %q), want exit 2 with nothing on stdout", code, stdout, stderr)
-		}
-		if want := "pi-worker: runs prune needs --yes when it cannot ask\n"; stderr != want {
-			t.Fatalf("stderr = %q, want %q", stderr, want)
-		}
-	})
+	if calls != 0 {
+		t.Fatalf("runlogDir called %d times, want 0", calls)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("record %s vanished: %v", path, err)
+	}
 }
 
 // TestRunsPruneKeepZeroYesSparesMarkerAndTempStages asserts the marker
@@ -1023,14 +975,16 @@ func TestRunsPruneDeleteFailureNonJSONLContinuesAndExits9(t *testing.T) {
 }
 
 // TestRunsPruneNothingToPrune asserts the empty cases are successes,
-// not errors, and need neither --yes nor a terminal: nothing was
-// selected, so there is nothing to ask about. That includes a records
-// directory that does not exist and a directory whose only records
-// belong to still-running runs.
+// not errors, when --yes is supplied or stdin is a terminal: nothing
+// was selected, so there is nothing to ask about. A non-terminal stdin
+// without --yes is covered by the early-refusal regressions above.
+// That includes a records directory that does not exist and a directory
+// whose only records belong to still-running runs.
 func TestRunsPruneNothingToPrune(t *testing.T) {
 	t.Run("empty records directory", func(t *testing.T) {
 		dir := t.TempDir()
 		withRunlogDir(t, dir)
+		withStdinIsTerminal(t, true)
 		for _, args := range [][]string{
 			{"runs", "prune", "--keep", "0", "--yes"},
 			{"runs", "prune", "--keep", "0"},
@@ -1053,6 +1007,7 @@ func TestRunsPruneNothingToPrune(t *testing.T) {
 	t.Run("only running records", func(t *testing.T) {
 		dir := t.TempDir()
 		withRunlogDir(t, dir)
+		withStdinIsTerminal(t, true)
 		path := writeListRecord(t, dir, "20260830T103000Z-3", os.Getpid(), "2026-08-30T10:30:00Z", "/ws-a", 1, false, "", "")
 		for _, args := range [][]string{
 			{"runs", "prune", "--keep", "0", "--yes"},
