@@ -172,10 +172,11 @@ signature suggests. Empty or missing text means no usable answer, never a
 protocol failure. A successful `prompt` response only means preflight
 accepted, queued, or handled the prompt; later failures are emitted in the
 event/message stream, including assistant messages with `stopReason:
-"error"` and empty content. Pi-worker projects that stable `stopReason` into
-its task failure wording without copying the message's `errorMessage`; a
-settled assistant message with another stop reason and empty text retains the
-generic empty-answer wording.
+"error"`. Pi-worker reports the stable error as `upstream/model turn ended with
+an error`, without copying the message's `errorMessage`; any text emitted by
+that failed turn is partial evidence, not a final explanation. A settled
+assistant message with another stop reason and empty text retains the generic
+empty-answer wording.
 
 ### V0 consumer projection
 
@@ -313,9 +314,15 @@ never a delta. No `message_update` frame type terminates the
 measurement; pi-worker reads the latest usage a message reported, bounded
 by `message_start` and `message_end`. Assistant `stopReason` can be
 `stop`, `length`, `toolUse`, `error`, or `aborted`; it is not the session
-terminal condition. For an assistant message with no final text, only the
-stable `error` value is used to distinguish an upstream/model turn failure;
-its `errorMessage` is not a pi-worker result projection.
+terminal condition. A latest assistant `message_end` with
+`stopReason: "error"` makes the worker fail with `upstream/model turn ended
+with an error`; this wording does not claim that no text existed and does not
+attribute the error to a particular provider mechanism. Text emitted by that
+failed turn is exposed only as `partialExplanation`, never as `explanation`.
+A newer valid assistant message supersedes the prior classification; user and
+tool-result messages do not. A missing or malformed stopReason on the latest
+assistant message does not inherit an earlier error. The assistant's
+`errorMessage` is not a pi-worker result projection.
 
 ## Tool semantics
 

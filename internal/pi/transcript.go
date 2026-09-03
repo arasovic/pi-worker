@@ -57,20 +57,28 @@ type transcriptAccumulator struct {
 // OnEvent tracks one message boundary, text-delivery frame, or assistant
 // stopReason. It never returns an error: per the EventHandler contract an
 // error is a protocol violation that fails the whole client, and a salvage
-// feature must never fail a run that otherwise worked. message_start clears
-// the prior terminal classification, promotes the ending message's text
-// into mostRecent when it carried any, then starts the new message's buffer
-// empty; a message_update appends its delta only when the
-// assistantMessageEvent type is exactly "text_delta", so thinking and
+// feature must never fail a run that otherwise worked. message_start resets
+// the terminal classification only for a conservatively parsed assistant
+// message; user and tool-result boundaries do not change it. It promotes the
+// ending message's text into mostRecent when it carried any, then starts the
+// new message's buffer empty. A message_update appends its delta only when
+// the assistantMessageEvent type is exactly "text_delta", so thinking and
 // tool-call deltas contribute nothing. A malformed, missing, null, or
 // unparseable frame contributes nothing and returns nil.
 func (a *transcriptAccumulator) OnEvent(event Event) error {
 	switch event.Type {
 	case "message_start":
-		// A new message supersedes the previous terminal classification.
-		// Resetting at the boundary prevents an earlier failed retry from
-		// being attributed to a later stream cut.
-		a.hasAssistantError = false
+		// Only a valid assistant boundary starts a newer assistant message.
+		// Other message kinds must not erase an error classification that
+		// still belongs to the latest assistant turn.
+		var frame struct {
+			Message json.RawMessage `json:"message"`
+		}
+		if err := json.Unmarshal(event.Raw, &frame); err == nil {
+			if assistant, _, _ := parseAssistantMessage(frame.Message); assistant {
+				a.hasAssistantError = false
+			}
+		}
 		if a.text != "" {
 			a.mostRecent = a.text
 		}
@@ -97,21 +105,41 @@ func (a *transcriptAccumulator) OnEvent(event Event) error {
 		// message_end.message is Pi's authoritative complete assistant
 		// message. Keep only its stable stopReason classification; the
 		// adjacent errorMessage is provider-controlled prose and is not
-		// safe to project into the worker result.
+		// safe to project into the worker result. A known assistant message
+		// with a missing or malformed stopReason explicitly clears the old
+		// classification rather than inheriting it.
 		var frame struct {
-			Message *struct {
-				Role       string `json:"role"`
-				StopReason string `json:"stopReason"`
-			} `json:"message"`
+			Message json.RawMessage `json:"message"`
 		}
 		if err := json.Unmarshal(event.Raw, &frame); err != nil {
 			return nil
 		}
-		if frame.Message != nil && frame.Message.Role == "assistant" {
-			a.hasAssistantError = frame.Message.StopReason == "error"
+		if assistant, stopReason, validStopReason := parseAssistantMessage(frame.Message); assistant {
+			a.hasAssistantError = validStopReason && stopReason == "error"
 		}
 	}
 	return nil
+}
+
+// parseAssistantMessage accepts only an object whose role is the exact string
+// "assistant". It separately reports whether stopReason was a string, so a
+// missing or mistyped stopReason cannot preserve an older assistant error.
+func parseAssistantMessage(raw json.RawMessage) (assistant bool, stopReason string, validStopReason bool) {
+	var message struct {
+		Role       json.RawMessage `json:"role"`
+		StopReason json.RawMessage `json:"stopReason"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &message) != nil {
+		return false, "", false
+	}
+	var role string
+	if json.Unmarshal(message.Role, &role) != nil || role != "assistant" {
+		return false, "", false
+	}
+	if len(message.StopReason) == 0 || string(message.StopReason) == "null" || json.Unmarshal(message.StopReason, &stopReason) != nil {
+		return true, "", false
+	}
+	return true, stopReason, true
 }
 
 // assistantError reports the stable assistant stopReason that Pi uses when
