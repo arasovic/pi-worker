@@ -210,7 +210,8 @@ func catalog(ctx context.Context, deps Dependencies, executable, workspace strin
 
 func contains(models []pi.ModelProjection, selector string) bool {
 	for _, model := range models {
-		if model.Provider+"/"+model.ID == selector {
+		modelSelector, ok := pi.ExactModelSelector(model.Provider, model.ID)
+		if ok && modelSelector == selector {
 			return true
 		}
 	}
