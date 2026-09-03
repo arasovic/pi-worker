@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -30,6 +31,26 @@ const exitFixture = fixture("exit.mjs");
 const signalFixture = fixture("signal.mjs");
 const optionFixture = fixture("option fixture.mjs");
 const harnessFixture = fixture("harness.mjs");
+
+function launcherFixture(name, { status = false } = {}) {
+  const packageRoot = fixture(name);
+  const binDir = join(packageRoot, "npm", "bin");
+  const libDir = join(packageRoot, "npm", "lib");
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(libDir, { recursive: true });
+  copyFileSync(new URL("../bin/pi-worker.mjs", import.meta.url), join(binDir, "pi-worker.mjs"));
+  copyFileSync(new URL("../lib/native.mjs", import.meta.url), join(libDir, "native.mjs"));
+  if (status) {
+    for (const module of ["external-inspection.mjs", "skill-receipt.mjs", "skill-rules.mjs", "skill-status.mjs", "skill-tree.mjs"]) {
+      copyFileSync(new URL(`../lib/${module}`, import.meta.url), join(libDir, module));
+    }
+  }
+  return {
+    packageRoot,
+    launcher: join(binDir, "pi-worker.mjs"),
+    binary: join(packageRoot, nativeTarget().relativePath),
+  };
+}
 
 writeExecutable(
   argsFixture,
@@ -223,6 +244,38 @@ describe("launcher process behavior", () => {
     assert.equal(child.stderr, "");
   });
 
+  for (const [name, args] of [
+    ["ordinary command", ["version"]],
+    ["skill status human", ["skill", "status"]],
+    ["skill status JSON", ["skill", "status", "--json"]],
+  ]) {
+    test(`missing staged binary has the documented failure shape for ${name}`, (t) => {
+      if (!["darwin", "linux"].includes(process.platform) ||
+        !["arm64", "x64"].includes(process.arch)) {
+        t.skip("requires a supported npm platform and architecture");
+        return;
+      }
+      const fixture = launcherFixture(`missing-binary-${name.replaceAll(" ", "-")}`, {
+        status: args[0] === "skill",
+      });
+      assert.equal(existsSync(fixture.binary), false);
+
+      const child = spawnSync(bin, [fixture.launcher, ...args], {
+        encoding: "utf8",
+      });
+
+      assert.equal(child.status, 9);
+      assert.equal(child.signal, null);
+      assert.equal(child.stdout, "");
+      assert.equal(child.stderr, "pi-worker: native process could not be started\n");
+      assert.doesNotMatch(child.stderr, /stack|at /i);
+      for (const installPath of [fixture.packageRoot, realpathSync(fixture.packageRoot)]) {
+        assert.doesNotMatch(child.stderr, new RegExp(installPath.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")));
+      }
+      if (args[2] === "--json") assert.equal(child.stdout.trim(), "", "internal failure emits no JSON document");
+    });
+  }
+
   test("entrypoint renders one sanitized unsupported-platform diagnostic without spawning", () => {
     const packageRoot = join(fixturesDir, "package-unsupported-platform");
     const binDir = join(packageRoot, "npm", "bin");
@@ -240,6 +293,7 @@ describe("launcher process behavior", () => {
       "    this.name = \"UnsupportedPlatformError\";",
       "  }",
       "}",
+      "export class NativeProcessError extends Error {}",
       "export function nativeTarget() { throw new UnsupportedPlatformError(); }",
       `export function nativePath() { writeFileSync(${JSON.stringify(marker)}, \"spawned\"); }`,
       `export function runNative() { writeFileSync(${JSON.stringify(marker)}, \"spawned\"); }`,

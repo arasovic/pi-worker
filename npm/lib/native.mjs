@@ -9,6 +9,13 @@ export class UnsupportedPlatformError extends Error {
   }
 }
 
+export class NativeProcessError extends Error {
+  constructor() {
+    super("native process could not be started");
+    this.name = "NativeProcessError";
+  }
+}
+
 export function nativeTarget(platform = process.platform, arch = process.arch) {
   const combos = {
     darwin: {
@@ -39,13 +46,19 @@ export function nativePath(packageRoot, platform = process.platform, arch = proc
 
 export function runNative(binary, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, {
-      ...options,
-      detached: process.platform !== "win32",
-      shell: false,
-      stdio: "inherit",
-      windowsHide: true,
-    });
+    let child;
+    try {
+      child = spawn(binary, args, {
+        ...options,
+        detached: process.platform !== "win32",
+        shell: false,
+        stdio: "inherit",
+        windowsHide: true,
+      });
+    } catch {
+      reject(new NativeProcessError());
+      return;
+    }
 
     let signal = null;
 
@@ -66,9 +79,9 @@ export function runNative(binary, args, options = {}) {
       process.off("SIGTERM", handleSignal);
     };
 
-    child.once("error", (error) => {
+    child.once("error", () => {
       cleanup();
-      reject(error);
+      reject(new NativeProcessError());
     });
 
     child.once("close", (code, childSignal) => {
@@ -92,12 +105,18 @@ export function runNativeCaptured(binary, args, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, {
-      detached: process.platform !== "win32",
-      shell: false,
-      stdio: ["inherit", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    let child;
+    try {
+      child = spawn(binary, args, {
+        detached: process.platform !== "win32",
+        shell: false,
+        stdio: ["inherit", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch {
+      reject(new NativeProcessError());
+      return;
+    }
     const stdout = [];
     const stderr = [];
     let stdoutBytes = 0;
@@ -134,11 +153,11 @@ export function runNativeCaptured(binary, args, options = {}) {
 
     child.stdout.on("data", (chunk) => capture(stdout, chunk, "stdout"));
     child.stderr.on("data", (chunk) => capture(stderr, chunk, "stderr"));
-    child.once("error", (error) => {
+    child.once("error", () => {
       if (settled) return;
       settled = true;
       cleanup();
-      reject(error);
+      reject(new NativeProcessError());
     });
     child.once("close", (code, childSignal) => {
       if (settled) return;
