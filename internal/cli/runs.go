@@ -143,18 +143,12 @@ func renderRunTable(w io.Writer, runs []runlog.Run) {
 // re-asks the grace-window question of unknown records, immediately
 // before the removal.
 func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader, stdout, stderr io.Writer) int {
-	// --json without --yes refuses up front, before anything else and
-	// before the records directory is even resolved: a --json caller
-	// is never handed a prompt, and the promise "always with --json
-	// without --yes, prune refuses, deletes nothing, and exits 2"
-	// must hold whatever the records directory holds — a missing or
-	// unreadable directory must not win the exit code. The refusal
-	// depends on nothing but the flags, so it comes before
-	// everything, not just before the nothing-selected shortcut: an
-	// empty selection can no longer turn a refusal into a success
-	// either, and neither can a directory that cannot be resolved or
-	// read.
-	if !opts.yes && opts.json {
+	// Without --yes, both documented non-deletion modes refuse before
+	// anything else: JSON callers must never be handed a prompt, and a
+	// non-terminal stdin cannot answer one. The flags-only JSON arm is
+	// short-circuited before terminal detection, so this remains safe
+	// before the records directory is resolved or read.
+	if !opts.yes && (opts.json || !stdinIsTerminal()) {
 		fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
 		return 2
 	}
@@ -283,15 +277,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	}
 	defer root.Close()
 
-	// Without --yes the deletion must be approved. A non-terminal stdin
-	// cannot answer a prompt, so it refuses verbatim rather than ask
-	// into the void; the --json arm of the refusal already returned
-	// above.
 	if !opts.yes {
-		if !stdinIsTerminal() {
-			fmt.Fprintln(stderr, "pi-worker: runs prune needs --yes when it cannot ask")
-			return 2
-		}
 		// The prompt shows exactly what it is about to delete before
 		// it asks, and both the listing and the question go to stderr:
 		// a person who redirected stdout must still see the question
