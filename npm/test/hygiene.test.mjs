@@ -244,13 +244,22 @@ test("trusted release workflow publishes tagged staged artifacts through OIDC", 
   assert.doesNotMatch(workflow, /RELEASE_VERSION:\s*v0\.1\.0/);
 });
 
-test("package Node floor is inherited from the pinned skills dependency, not chosen independently", () => {
+test("package Node floor and Go receipt pin are inherited from the pinned skills dependency", () => {
   const packageManifest = JSON.parse(readFileSync(join(repository, "package.json"), "utf8"));
   const installedSkills = JSON.parse(readFileSync(join(repository, "node_modules", "skills", "package.json"), "utf8"));
   assert.equal(
     installedSkills.version,
     packageManifest.dependencies.skills,
     "the installed skills version must be the exact version pinned in package.json dependencies.skills",
+  );
+  const receiptSource = readFileSync(join(repository, "internal", "skillinstall", "receipt.go"), "utf8");
+  const goPinMatch = receiptSource.match(/const PinnedSkillsVersion = \"([^\"]+)\"/);
+  assert.ok(goPinMatch, "internal/skillinstall/receipt.go must declare PinnedSkillsVersion");
+  const goPin = goPinMatch[1];
+  assert.equal(
+    goPin,
+    packageManifest.dependencies.skills,
+    `internal/skillinstall/receipt.go PinnedSkillsVersion (${goPin}) must match package.json dependencies.skills (${packageManifest.dependencies.skills})`,
   );
   assert.equal(
     packageManifest.engines.node,
