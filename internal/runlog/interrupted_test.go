@@ -279,6 +279,38 @@ func TestInterruptedEmptyRecordIsExaminedAgain(t *testing.T) {
 	}
 }
 
+// TestInterruptedEmptyRecordStaysAheadOfNewerSettledRecord asserts an
+// empty older record keeps the watermark from passing it when a newer
+// settled record is present. Once the writer fills the empty record with
+// an unfinished start line, the next scan must examine and report it.
+func TestInterruptedEmptyRecordStaysAheadOfNewerSettledRecord(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return false, nil })
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "20260830T101500Z-1.jsonl")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatalf("write empty record: %v", err)
+	}
+	writeRecord(t, dir, "20260830T102000Z-2", 4243, true)
+
+	paths, err := Interrupted(dir)
+	if err != nil {
+		t.Fatalf("Interrupted: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("first scan interrupted = %v, want none while the older record is empty", paths)
+	}
+
+	// The writer now adds the start line, but never adds a finish line.
+	writeRecord(t, dir, "20260830T101500Z-1", 4242, false)
+	paths, err = Interrupted(dir)
+	if err != nil {
+		t.Fatalf("Interrupted: %v", err)
+	}
+	if want := []string{emptyPath}; !slices.Equal(paths, want) {
+		t.Fatalf("second scan interrupted = %v, want %v", paths, want)
+	}
+}
+
 // TestInterruptedCorruptRecordIsSettled asserts a record that cannot
 // be read or parsed counts as settled: the watermark passes it, so one
 // corrupt file can never freeze the scan, and nothing about it is ever

@@ -133,6 +133,10 @@ func Interrupted(dir string) ([]string, error) {
 		// watermark nor the reported list moves, and the next scan
 		// looks at it again.
 		if info, err := entry.Info(); err == nil && info.Size() == 0 {
+			// Like an unfinished record, an empty record is unsettled:
+			// a newer record may be settled, but the watermark cannot
+			// pass this record until its eventual contents are seen.
+			advancing = false
 			continue
 		}
 		pid, createTime, finished, err := inspectRecord(filepath.Join(dir, name))
