@@ -809,11 +809,22 @@ func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
 }
 
 func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
-	// These are many individually legal deltas, not one oversized frame. The
-	// first assistant message and the newer in-flight message together exceed
-	// MaxFrameBytes, so the result seam must still return bounded valid UTF-8.
-	chunk := strings.Repeat("界", 4096) // exactly 12 KiB of UTF-8
-	firstDeltas := MaxFrameBytes / (2 * len(chunk))
+	// These are many individually legal text_delta frames, not one oversized
+	// frame. The older assistant message and the newer in-flight message share
+	// one MaxFrameBytes budget: once the aggregate crosses it, eviction drops
+	// the older retained text before the newer message's own prefix, and the
+	// result seam must still return the newest ~budget bytes as bounded valid
+	// UTF-8 rather than stopping or unbounded text.
+	//
+	// The volume is deliberately the smallest that exercises the seam. The
+	// in-flight message alone must exceed the budget so the retained tail can
+	// only come from it, and the older message needs just enough text to still
+	// be resident when eviction begins, so the first drops cross the message
+	// seam. Extra volume adds no coverage: the byte store and per-frame decode
+	// cost scale with streamed bytes, and an oversized script is what made
+	// this test blow past a tight deadline under -race on a loaded runner.
+	chunk := strings.Repeat("界", 16384) // exactly 48 KiB of UTF-8
+	firstDeltas := 2
 	currentDeltas := MaxFrameBytes/len(chunk) + 1
 	want := strings.Repeat("界", (MaxFrameBytes-2)/utf8.RuneLen('界'))
 	promptSteps := []script.Step{
@@ -848,7 +859,12 @@ func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
 	scriptConfig := happyPathScript("unused")
 	scriptConfig.Triggers["prompt"] = promptSteps
 	setupFakePiEnv(t, scriptConfig)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The scripted stream is deterministic and finishes in a few seconds even
+	// under -race, so this deadline is not a performance budget: it is a stall
+	// guard that turns a genuine hang into a fast failure instead of waiting
+	// out go test's default ten-minute package timeout, and it is far above
+	// any measured or plausible -race runtime of the fixed workload.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
