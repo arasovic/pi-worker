@@ -188,7 +188,11 @@ func (c *verifyCapture) finishLog() string {
 		c.removeLog()
 		return ""
 	}
-	_ = c.log.Close()
+	if err := c.log.Close(); err != nil {
+		c.log = nil
+		c.removeLog()
+		return ""
+	}
 	c.log = nil
 	return c.logPath
 }
@@ -209,34 +213,30 @@ func (c *verifyCapture) removeLog() {
 }
 
 func (c *verifyCapture) excerpt() string {
-	headEnd := verifyHeadBytes
-	for headEnd > 0 && !utf8.RuneStart(c.head[headEnd]) {
-		headEnd--
-	}
-	tailStart := 0
-	for tailStart < len(c.tail) && !utf8.RuneStart(c.tail[tailStart]) {
-		tailStart++
-	}
-	return string(c.head[:headEnd]) +
-		fmt.Sprintf("\n[... %d bytes elided ...]\n", c.total-int64(verifyTailBytes)+int64(tailStart)-int64(headEnd)) +
-		string(c.tail[tailStart:])
+	return formatVerifyExcerpt(c.head, c.tail, c.total)
 }
 
-// verifyExcerpt keeps the first 2 KiB and the last 6 KiB of a long
+// formatVerifyExcerpt keeps the first 2 KiB and the last 6 KiB of a long
 // capture, moving each cut to a rune boundary so no multi-byte
 // character is split, and marks the elided middle with the dropped byte
 // count. The byte budgets are upper bounds: the head and the tail may
 // come out a few bytes short of their budgets, never longer.
-func verifyExcerpt(output string) string {
+func formatVerifyExcerpt(head, tail []byte, total int64) string {
 	headEnd := verifyHeadBytes
-	for headEnd > 0 && !utf8.RuneStart(output[headEnd]) {
+	for headEnd > 0 && !utf8.RuneStart(head[headEnd]) {
 		headEnd--
 	}
-	tailStart := len(output) - verifyTailBytes
-	for tailStart < len(output) && !utf8.RuneStart(output[tailStart]) {
+	tailStart := 0
+	for tailStart < len(tail) && !utf8.RuneStart(tail[tailStart]) {
 		tailStart++
 	}
-	head := output[:headEnd]
-	tail := output[tailStart:]
-	return head + fmt.Sprintf("\n[... %d bytes elided ...]\n", tailStart-headEnd) + tail
+	return string(head[:headEnd]) +
+		fmt.Sprintf("\n[... %d bytes elided ...]\n", total-int64(len(tail))+int64(tailStart)-int64(headEnd)) +
+		string(tail[tailStart:])
+}
+
+func verifyExcerpt(output string) string {
+	head := []byte(output[:verifyHeadBytes+1])
+	tail := []byte(output[len(output)-verifyTailBytes:])
+	return formatVerifyExcerpt(head, tail, int64(len(output)))
 }

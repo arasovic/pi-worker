@@ -291,6 +291,25 @@ func TestVerifyExcerptKeepsUTF8CharactersWhole(t *testing.T) {
 	}
 }
 
+func TestVerifyCaptureRemovesLogWhenCloseFails(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "verify-close-failure-*.log")
+	if err != nil {
+		t.Fatalf("create temp log: %v", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatalf("close temp log: %v", err)
+	}
+
+	capture := &verifyCapture{log: file, logPath: path}
+	if got := capture.finishLog(); got != "" {
+		t.Fatalf("finishLog returned %q after close failure", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("partial log stat error = %v, want os.IsNotExist", err)
+	}
+}
+
 func TestDefaultVerifierKeepsResultWhenLogWriteFails(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "unwritable"))
