@@ -241,6 +241,39 @@ func TestProcessKillTreeSkipsAReapedChildIdentity(t *testing.T) {
 	}
 }
 
+func TestProcessCloseIsIdempotent(t *testing.T) {
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	// Recreate the removed session path with a sentinel. A second Close must
+	// not repeat the destructive cleanup against a path that could now belong
+	// to someone else.
+	if err := os.Mkdir(proc.SessionDir(), 0o700); err != nil {
+		t.Fatalf("recreate session directory: %v", err)
+	}
+	sentinel := filepath.Join(proc.SessionDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(proc.SessionDir()) })
+	if err := proc.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("second close repeated destructive cleanup: %v", err)
+	}
+	if proc.Running() {
+		t.Fatal("process still running after close")
+	}
+}
+
 func TestProcessCloseKillsChildThatIgnoresEOF(t *testing.T) {
 	original := processCloseGrace
 	processCloseGrace = 50 * time.Millisecond

@@ -262,6 +262,29 @@ func TestWorkerOmittedThinkingReportsConfirmedDefault(t *testing.T) {
 	}
 }
 
+func TestWorkerRejectsMismatchedActiveModelConfirmation(t *testing.T) {
+	scriptConfig := happyPathScript("must not be returned")
+	scriptConfig.Triggers["get_state"] = []script.Step{{Response: &script.Response{
+		Success: true,
+		Data:    json.RawMessage(`{"model":{"provider":"acme","id":"m-2"},"thinkingLevel":"medium"}`),
+	}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusError || result.Error != "protocol error: get_state confirmed a different active model" {
+		t.Fatalf("result = %#v, want exact active-model confirmation protocol error", result)
+	}
+	types := waitRequestLog(t, logPath, 3)
+	if slices.Contains(types, "prompt") {
+		t.Fatalf("request log = %v; mismatched active model must stop before prompt", types)
+	}
+}
+
 func TestWorkerExplicitThinkingAppliesAndConfirms(t *testing.T) {
 	scriptConfig := happyPathScript("max answer")
 	scriptConfig.TriggerSequences = map[string][][]script.Step{
