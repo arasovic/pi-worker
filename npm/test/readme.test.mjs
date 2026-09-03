@@ -192,6 +192,30 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /bash.*current user's host permissions/i);
   assert.match(normalizedSkill, /not a sandbox/i);
   assert.match(normalizedSkill, /separate working directory, not containment/i);
+  assert.match(normalizedSkill, /cleanup is best-effort lifecycle recovery/i);
+  assert.match(normalizedSkill, /not a sandbox or a no-escape guarantee/i);
+  assert.match(normalizedSkill, /deliberately daemonized or reparented Unix descendants/i);
+  assert.match(normalizedSkill, /processes spawned during teardown/i);
+  assert.match(normalizedSkill, /Windows pre-assignment window can escape/i);
+  assert.match(normalizedSkill, /exit of 7 or 8 means it was cut short/i);
+  assert.match(normalizedSkill, /without a document, report interruption and stop/i);
+  assert.match(normalizedSkill, /with a document, read and report/i);
+  assert.doesNotMatch(normalizedSkill, /Do not treat empty output as any kind of success/i);
+  for (const field of [
+    "model",
+    "thinkingLevel",
+    "status",
+    "explanation",
+    "partialExplanation",
+    "error",
+    "changes",
+    "writes",
+    "verification",
+  ]) {
+    assert.match(normalizedSkill, new RegExp("`" + field + "`"), `skill names ${field}`);
+  }
+  assert.match(normalizedSkill, /parent-started side jobs must self-terminate/i);
+  assert.doesNotMatch(normalizedSkill, /worker's `failure`/i);
   assert.match(normalizedSkill, /Luna Max.*--thinking max/i);
   assert.doesNotMatch(normalizedSkill, /Spark Max/i);
 });
