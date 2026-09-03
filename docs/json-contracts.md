@@ -275,6 +275,14 @@ without the flag, or one that did not complete, carries none:
 - `logFile`: present only when a truncated capture was also written in
   full to a `pi-worker-verify-*.log` file in the system temp directory
 
+The worktree result is additive and optional, so `schemaVersion` stays `1`.
+Root `worktree` is present only for a run started with `--worktree`; it is
+absent otherwise. When present, it is an object with exactly two string
+fields:
+
+- `path`: the checkout path assigned to the run
+- `branch`: the branch created for the checkout
+
 Git state is additive and optional, so `schemaVersion` stays `1`. Root
 `git` appears only when a run moved the workspace's HEAD, its branch,
 or a stash entry appeared or disappeared between the start and the end
