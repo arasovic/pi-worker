@@ -9,6 +9,17 @@ export class UnsupportedPlatformError extends Error {
   }
 }
 
+export class NativeProcessError extends Error {
+  constructor() {
+    super("native process could not be started");
+    this.name = "NativeProcessError";
+  }
+}
+
+function nativeProcessError(error, spawned) {
+  return spawned ? error : new NativeProcessError();
+}
+
 export function nativeTarget(platform = process.platform, arch = process.arch) {
   const combos = {
     darwin: {
@@ -39,15 +50,26 @@ export function nativePath(packageRoot, platform = process.platform, arch = proc
 
 export function runNative(binary, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, {
-      ...options,
-      detached: process.platform !== "win32",
-      shell: false,
-      stdio: "inherit",
-      windowsHide: true,
-    });
+    let child;
+    try {
+      child = spawn(binary, args, {
+        ...options,
+        detached: process.platform !== "win32",
+        shell: false,
+        stdio: "inherit",
+        windowsHide: true,
+      });
+    } catch {
+      reject(new NativeProcessError());
+      return;
+    }
 
+    let spawned = false;
     let signal = null;
+
+    child.once("spawn", () => {
+      spawned = true;
+    });
 
     const handleSignal = (signalName) => {
       if (signal) {
@@ -68,7 +90,7 @@ export function runNative(binary, args, options = {}) {
 
     child.once("error", (error) => {
       cleanup();
-      reject(error);
+      reject(nativeProcessError(error, spawned));
     });
 
     child.once("close", (code, childSignal) => {
@@ -92,14 +114,21 @@ export function runNativeCaptured(binary, args, options = {}) {
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, {
-      detached: process.platform !== "win32",
-      shell: false,
-      stdio: ["inherit", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    let child;
+    try {
+      child = spawn(binary, args, {
+        detached: process.platform !== "win32",
+        shell: false,
+        stdio: ["inherit", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch {
+      reject(new NativeProcessError());
+      return;
+    }
     const stdout = [];
     const stderr = [];
+    let spawned = false;
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let signal = null;
@@ -118,6 +147,11 @@ export function runNativeCaptured(binary, args, options = {}) {
       process.off("SIGINT", handleSignal);
       process.off("SIGTERM", handleSignal);
     };
+
+    child.once("spawn", () => {
+      spawned = true;
+    });
+
     const capture = (chunks, chunk, streamName) => {
       if (captureError) return;
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -138,7 +172,7 @@ export function runNativeCaptured(binary, args, options = {}) {
       if (settled) return;
       settled = true;
       cleanup();
-      reject(error);
+      reject(nativeProcessError(error, spawned));
     });
     child.once("close", (code, childSignal) => {
       if (settled) return;
