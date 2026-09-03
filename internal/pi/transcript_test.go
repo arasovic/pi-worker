@@ -207,3 +207,54 @@ func TestTranscriptAccumulatorMessageEndKeepsText(t *testing.T) {
 		t.Fatalf("snapshot = %q, want %q: message_end must not clear the text", got, "finished")
 	}
 }
+
+func TestTranscriptAssistantErrorStateFollowsAssistantBoundaries(t *testing.T) {
+	// A failed low-level attempt can be followed by agent_end(willRetry:true)
+	// and a retry. User and tool-result messages do not start a newer
+	// assistant turn, while the retry's assistant message supersedes the old
+	// error even when its stopReason is missing or malformed.
+	tests := []struct {
+		name       string
+		messageEnd string
+	}{
+		{name: "missing stop reason", messageEnd: `{"type":"message_end","message":{"role":"assistant"}}`},
+		{name: "malformed stop reason", messageEnd: `{"type":"message_end","message":{"role":"assistant","stopReason":42}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			a := &transcriptAccumulator{}
+			stream := []Event{
+				{Type: "message_start", Raw: json.RawMessage(`{"type":"message_start","message":{"role":"assistant"}}`)},
+				{Type: "message_end", Raw: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","stopReason":"error"}}`)},
+				{Type: "agent_end", Raw: json.RawMessage(`{"type":"agent_end","willRetry":true}`)},
+				{Type: "message_start", Raw: json.RawMessage(`{"type":"message_start","message":{"role":"user"}}`)},
+			}
+			for _, ev := range stream {
+				if err := a.OnEvent(ev); err != nil {
+					t.Fatalf("OnEvent(%s) = %v, want nil", ev.Type, err)
+				}
+			}
+			if !a.assistantError() {
+				t.Fatal("user message_start cleared the prior assistant error")
+			}
+			if err := a.OnEvent(Event{Type: "message_start", Raw: json.RawMessage(`{"type":"message_start","message":{"role":"toolResult"}}`)}); err != nil {
+				t.Fatalf("tool-result message_start = %v, want nil", err)
+			}
+			if !a.assistantError() {
+				t.Fatal("tool-result message_start cleared the prior assistant error")
+			}
+			if err := a.OnEvent(Event{Type: "message_start", Raw: json.RawMessage(`{"type":"message_start","message":{"role":"assistant"}}`)}); err != nil {
+				t.Fatalf("retry assistant message_start = %v, want nil", err)
+			}
+			if a.assistantError() {
+				t.Fatal("new assistant message_start did not clear the prior error")
+			}
+			if err := a.OnEvent(Event{Type: "message_end", Raw: json.RawMessage(test.messageEnd)}); err != nil {
+				t.Fatalf("retry message_end = %v, want nil", err)
+			}
+			if a.assistantError() {
+				t.Fatal("missing or malformed retry stopReason inherited the prior error")
+			}
+		})
+	}
+}

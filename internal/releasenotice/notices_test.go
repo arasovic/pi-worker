@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -230,9 +231,14 @@ func TestInventoryMatchesTargetDependencyUnion(t *testing.T) {
 	}
 
 	got := make(map[string]string)
+	actualTargets := make(map[string]map[string]bool)
 	for _, target := range targets {
 		for module, version := range modulesForTarget(t, target.goos, target.goarch) {
 			got[module] = version
+			if actualTargets[module] == nil {
+				actualTargets[module] = make(map[string]bool)
+			}
+			actualTargets[module][target.goos] = true
 		}
 	}
 
@@ -258,6 +264,26 @@ func TestInventoryMatchesTargetDependencyUnion(t *testing.T) {
 			t.Fatalf("unexpected dependency present in union: %q", module)
 		}
 	}
+
+	for _, dep := range Inventory() {
+		declared := make(map[string]bool, len(dep.Targets))
+		for _, target := range dep.Targets {
+			declared[target] = true
+		}
+		actual := actualTargets[dep.Module]
+		if !reflect.DeepEqual(declared, actual) {
+			t.Fatalf("target membership mismatch for %q: got=%v want=%v", dep.Module, sortedTargetSet(actual), sortedTargetSet(declared))
+		}
+	}
+}
+
+func sortedTargetSet(targets map[string]bool) []string {
+	result := make([]string, 0, len(targets))
+	for target := range targets {
+		result = append(result, target)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func writeNoticeFixtureFiles(t *testing.T, moduleCache string) {

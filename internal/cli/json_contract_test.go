@@ -203,6 +203,101 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 	})
 }
 
+func TestRunJSONGitObjectExactKeysWithBranchAndStash(t *testing.T) {
+	repo := newGitWorkspace(t)
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/model", Status: pi.StatusCompleted, Explanation: "done"})
+	fake.runHook = func() {
+		gitRun(t, repo, "checkout", "-q", "-b", "feature")
+		if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("stashed\n"), 0o644); err != nil {
+			t.Errorf("write file: %v", err)
+			return
+		}
+		gitRun(t, repo, "stash", "push", "-q", "-m", "saved")
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	assertExactJSONKeys(t, document, "changes", "git", "outcome", "schemaVersion", "status", "workers")
+	git, ok := document["git"].(map[string]any)
+	if !ok {
+		t.Fatalf("git = %#v, want object", document["git"])
+	}
+	assertExactJSONKeys(t, git, "before", "after", "stash")
+	before, ok := git["before"].(map[string]any)
+	if !ok {
+		t.Fatalf("git.before = %#v, want object", git["before"])
+	}
+	after, ok := git["after"].(map[string]any)
+	if !ok {
+		t.Fatalf("git.after = %#v, want object", git["after"])
+	}
+	assertExactJSONKeys(t, before, "head", "branch", "dirty", "stashes")
+	assertExactJSONKeys(t, after, "head", "branch", "dirty", "stashes")
+	if branch, ok := before["branch"].(string); !ok || branch == "" {
+		t.Fatalf("git.before.branch = %v, want the fixture's initial branch", before["branch"])
+	}
+	if after["branch"] != "feature" {
+		t.Fatalf("git.after.branch = %v, want feature", after["branch"])
+	}
+	if before["stashes"] != float64(0) {
+		t.Fatalf("git.before.stashes = %v, want 0", before["stashes"])
+	}
+	if after["stashes"] != float64(1) {
+		t.Fatalf("git.after.stashes = %v, want 1", after["stashes"])
+	}
+	stash, ok := git["stash"].(map[string]any)
+	if !ok {
+		t.Fatalf("git.stash = %#v, want object", git["stash"])
+	}
+	assertExactJSONKeys(t, stash, "added")
+	if len(requireJSONArray(t, stash["added"], "git.stash.added")) != 1 {
+		t.Fatalf("git.stash.added = %v, want one entry", stash["added"])
+	}
+}
+
+func TestRunJSONGitObjectExactKeysOmitsDetachedBranch(t *testing.T) {
+	repo := newGitWorkspace(t)
+	gitRun(t, repo, "checkout", "--detach", "HEAD")
+	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/model", Status: pi.StatusCompleted, Explanation: "done"})
+	fake.runHook = func() {
+		if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("two\n"), 0o644); err != nil {
+			t.Errorf("write file: %v", err)
+			return
+		}
+		gitRun(t, repo, "add", "file.txt")
+		gitRun(t, repo, "commit", "-q", "-m", "detached")
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	assertExactJSONKeys(t, document, "changes", "git", "outcome", "schemaVersion", "status", "workers")
+	git, ok := document["git"].(map[string]any)
+	if !ok {
+		t.Fatalf("git = %#v, want object", document["git"])
+	}
+	assertExactJSONKeys(t, git, "before", "after")
+	before, ok := git["before"].(map[string]any)
+	if !ok {
+		t.Fatalf("git.before = %#v, want object", git["before"])
+	}
+	after, ok := git["after"].(map[string]any)
+	if !ok {
+		t.Fatalf("git.after = %#v, want object", git["after"])
+	}
+	assertExactJSONKeys(t, before, "head", "dirty", "stashes")
+	assertExactJSONKeys(t, after, "head", "dirty", "stashes")
+	if _, present := before["branch"]; present {
+		t.Fatalf("git.before unexpectedly carries branch: %v", before)
+	}
+	if _, present := after["branch"]; present {
+		t.Fatalf("git.after unexpectedly carries branch: %v", after)
+	}
+}
+
 func TestDurableReceiptJSONShape(t *testing.T) {
 	receipt := skillinstall.Receipt{
 		SchemaVersion:    skillinstall.SchemaVersion,
