@@ -58,14 +58,18 @@ func anyWritesDeclared(tasks []Task) bool {
 // always returned; the caller decides whether the check runs at all by
 // whether at least one task carried a write declaration. The comparison
 // is pure over two in-memory slices: it runs no commands, so it takes no
-// context and has no timeout of its own.
-func checkWrites(changes *Changes, tasks []Task) *WriteCheck {
+// context and has no timeout of its own. workspace is the coordinate
+// system of the declarations; the boundary translates them to the
+// manifest's repository-root coordinates before comparing.
+func checkWrites(changes *Changes, tasks []Task, workspace string) *WriteCheck {
 	if changes == nil || changes.Omitted != "" {
 		return &WriteCheck{Skipped: reasonManifestUnavailable}
 	}
 	declared := make([]string, 0)
 	for _, task := range tasks {
-		declared = append(declared, task.Writes.Paths...)
+		for _, path := range task.Writes.Paths {
+			declared = append(declared, reanchorWritePath(changes.root, workspace, path))
+		}
 	}
 	var undeclared []string
 	for _, path := range changes.allPaths {
@@ -102,6 +106,35 @@ func writesDeclaredOnEveryTask(tasks []Task) bool {
 		}
 	}
 	return true
+}
+
+// reanchorWritePath translates one workspace-relative declaration into
+// a repository-root-relative path, the coordinate system used by the
+// change manifest. It is deliberately done at the shared write-check
+// boundary so validation and the public workspace-relative contract stay
+// unchanged.
+func reanchorWritePath(root, workspace, path string) string {
+	if root == "" || workspace == "" {
+		return path
+	}
+	var err error
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return path
+	}
+	workspace, err = filepath.Abs(workspace)
+	if err != nil {
+		return path
+	}
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return path
+	}
+	anchored, err := filepath.Rel(root, filepath.Join(workspace, filepath.Clean(path)))
+	if err != nil {
+		return path
+	}
+	return filepath.Clean(anchored)
 }
 
 // pathDeclared reports whether any declared path covers changed: the

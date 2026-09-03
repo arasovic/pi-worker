@@ -44,6 +44,10 @@ type Changes struct {
 	// manifest list. Unexported, so encoding/json never sees it and
 	// schemaVersion stays 1.
 	allPaths []string
+	// root is the repository root used to measure allPaths. It lets the
+	// write check translate workspace-relative declarations into the same
+	// coordinate system once at its shared comparison boundary.
+	root string
 }
 
 // FileChange is one changed workspace path with its measured line
@@ -368,7 +372,7 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 		}
 		return files[i].Path < files[j].Path
 	})
-	changes := &Changes{Files: files, TotalFiles: total, allPaths: allPaths}
+	changes := &Changes{Files: files, TotalFiles: total, allPaths: allPaths, root: root}
 	if total > maxChangeFiles {
 		changes.Files = changes.Files[:maxChangeFiles]
 		changes.Truncated = true

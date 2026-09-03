@@ -340,7 +340,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// context and no timeout of its own. No declaration, no field:
 	// silence means the caller never asked.
 	if anyWritesDeclared(req.Tasks) {
-		result.Writes = checkWrites(result.Changes, req.Tasks)
+		result.Writes = checkWrites(result.Changes, req.Tasks, req.Workspace)
 	}
 	// Verification runs once for the whole run after every worker has
 	// settled, and only on a completed run with a live context: a partial
