@@ -50,11 +50,30 @@ function launcherFixture(name, { status = false } = {}) {
     for (const module of ["external-inspection.mjs", "skill-receipt.mjs", "skill-rules.mjs", "skill-status.mjs", "skill-tree.mjs"]) {
       copyFileSync(new URL(`../lib/${module}`, import.meta.url), join(libDir, module));
     }
+    const generatedDir = join(packageRoot, "npm", "generated");
+    mkdirSync(generatedDir, { recursive: true });
+    copyFileSync(
+      new URL("../generated/skills-rules.json", import.meta.url),
+      join(generatedDir, "skills-rules.json"),
+    );
   }
   return {
     packageRoot,
     launcher: join(binDir, "pi-worker.mjs"),
     binary: join(packageRoot, nativeTarget().relativePath),
+  };
+}
+
+function nativeStatusDocument() {
+  return {
+    schemaVersion: 1,
+    receiptPath: "/receipt.json",
+    status: "verified",
+    verifiedTargets: [],
+    trackedTargets: [],
+    affectedTargets: [],
+    recovery: [],
+    externalInspection: { state: "unavailable", targets: [] },
   };
 }
 
@@ -279,6 +298,40 @@ describe("launcher process behavior", () => {
     assert.equal(child.signal, null);
     assert.equal(child.stdout, "");
     assert.equal(child.stderr, "");
+  });
+
+  test("routes skill status JSON through the augmentation path", (t) => {
+    if (!["darwin", "linux"].includes(process.platform) ||
+      !["arm64", "x64"].includes(process.arch)) {
+      t.skip("requires a supported npm platform and architecture");
+      return;
+    }
+
+    const fixture = launcherFixture("status-routing", { status: true });
+    const home = join(fixture.packageRoot, "home");
+    const external = join(home, ".agents", "skills", "pi-worker");
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(external, "PI_WORKER_IDENTITY"), "pi-worker-skill/v1\n");
+    writeFileSync(join(external, "SKILL.md"), "---\nname: pi-worker\n---\nexternal\n");
+    mkdirSync(join(fixture.binary, ".."), { recursive: true });
+    writeExecutable(
+      fixture.binary,
+      `process.stdout.write(${JSON.stringify(`${JSON.stringify(nativeStatusDocument())}\n`)});`,
+    );
+
+    const child = spawnSync(bin, [fixture.launcher, "skill", "status", "--json"], {
+      encoding: "utf8",
+      env: { HOME: home, PATH: process.env.PATH },
+    });
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.signal, null);
+    assert.equal(child.stderr, "");
+    const result = JSON.parse(child.stdout);
+    assert.deepEqual(result.externalInspection, {
+      state: "performed",
+      targets: [{ path: external, identity: "current" }],
+    });
   });
 
   for (const [name, args] of [
