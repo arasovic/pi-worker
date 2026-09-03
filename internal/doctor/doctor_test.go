@@ -173,6 +173,28 @@ func TestRunChecksConfiguredDefaultAgainstCatalog(t *testing.T) {
 	}
 }
 
+func TestRunRejectsDefaultThatRunnableSelectorGrammarCannotAddress(t *testing.T) {
+	const selector = "ac/me/model"
+	model := pi.ModelProjection{Provider: "ac/me", ID: "model"}
+	provider, id, ok := strings.Cut(selector, "/")
+	if !ok || (provider == model.Provider && id == model.ID) {
+		t.Fatalf("first-slash selector grammar unexpectedly addresses %#v", model)
+	}
+
+	deps := readyDependencies()
+	deps.LoadConfig = func() (config.Config, error) {
+		return config.Config{SchemaVersion: 1, DefaultModel: selector}, nil
+	}
+	deps.Catalog = &catalogFake{models: []pi.ModelProjection{model}}
+	result, err := Run(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if result.Ready || result.Checks[4].Status != CheckFailed {
+		t.Fatalf("result = %#v, want an unavailable default model", result)
+	}
+}
+
 func TestRunReportsConfigStatusInDefaultModelCheck(t *testing.T) {
 	for _, test := range []struct {
 		name string
