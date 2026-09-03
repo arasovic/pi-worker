@@ -220,7 +220,17 @@ Worker fields are conditionally present:
   assistant text but retained assistant text exists; carries the most
   recent retained assistant text, which may precede the message in flight,
   and never appears together with `explanation`
-- `error`: present when the worker reports an error
+- `error`: present when the worker reports an error. When the latest assistant
+  `message_end` has the stable `stopReason: "error"`, the worker reports the
+  exact fixed wording `upstream/model turn ended with an error`. This does not
+  claim that no text existed or attribute the error to a particular provider
+  mechanism. Text emitted by that failed turn is partial evidence in
+  `partialExplanation`, never a final `explanation`; the assistant
+  `errorMessage` is never copied. A newer assistant message supersedes the
+  prior classification; user and tool-result messages do not, and a missing
+  or malformed stopReason does not inherit an earlier error. A settled empty
+  assistant message with another stop reason retains the generic empty-answer
+  failure wording.
 - `data`: present only when the task carried `--data` files; one entry
   per carried file, each with `path`, `byteCount`, and `sha256`
 - `usage`: present only when at least one assistant message reported a

@@ -773,6 +773,40 @@ func TestWorkerOmittedTextFieldIsTaskFailure(t *testing.T) {
 	}
 }
 
+// TestWorkerAssistantErrorWithTextRemainsFailed drives a settled assistant
+// error that also emitted text. The text is evidence from the failed turn,
+// not a final explanation, and the upstream errorMessage is never projected.
+func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-7a2f"
+	scriptConfig := happyPathScript("partial evidence")
+	scriptConfig.Triggers["prompt"] = []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"partial evidence"}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial evidence"}],"stopReason":"error","errorMessage":"` + upstreamSecret + `"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	setupFakePiEnv(t, scriptConfig)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed; result = %#v", result.Status, result)
+	}
+	if result.Error != "upstream/model turn ended with an error" {
+		t.Fatalf("error = %q, want stable upstream/model wording", result.Error)
+	}
+	if result.Explanation != "" || result.PartialExplanation != "partial evidence" {
+		t.Fatalf("result = %#v, want partial evidence without final explanation", result)
+	}
+	if strings.Contains(result.Error, upstreamSecret) {
+		t.Fatalf("error leaked errorMessage: %q", result.Error)
+	}
+}
+
 func TestWorkerTimeoutCleansUpProcessAndSession(t *testing.T) {
 	script := &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
