@@ -39,13 +39,15 @@ is rejected up front, not executed.
 Parse the single JSON document. A run can end without producing a document;
 then the exit code is the signal. An exit of 2 always means the command was
 rejected — fix your argv and re-run; an exit of 9 is an internal failure; an
-exit of 7 or 8 means it was cut short before it could report, so say so and
-stop rather than treating empty output as any kind of success. The
-rejection message is on stderr, not stdout — the documented invocation sends
-its debug output there too — so read stderr when no document appears. Report
-each worker's model, effective `thinkingLevel`, status, explanation, and
-failure. When `thinkingFallback` is true, surface its warning: the selected
-model continued with Pi's confirmed default effort. Read root `outcome`:
+exit of 7 or 8 means it was cut short: without a document, report interruption
+and stop; with a document, read and report each worker's `model`, effective
+`thinkingLevel`, `status`, `explanation`, `partialExplanation` when present, and
+`error`, plus root `changes`, `writes` when present, and `verification` when
+present. The rejection message is on stderr, not stdout — the documented
+invocation sends its debug output there too — so read stderr when no document
+appears.
+When `thinkingFallback` is true, surface its warning: the selected model
+continued with Pi's confirmed default effort. Read root `outcome`:
 `completed` is the only done state — a `writes.skipped` value means a check
 could not run, unproven, not clean. When `writes.skipped` is `change manifest
 unavailable`, the manifest was not measured: read `changes.omitted`, which is
@@ -67,15 +69,15 @@ live context. `unborn head` means the repository has no commits, which no
 retry can change. `verification-failed` means the `verification` object is
 there; report it, fix the workspace, and re-run. Any other word means report
 it with its object when one exists (`writes`, `verification`, or the worker's
-`failure`) and stop.
+`error`) and stop.
 
 ## Boundaries
 
 - Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a checkout of its own: a separate working directory, not containment — a worker can still reach outside it. Without the flag, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed.
 - When a run moves HEAD, the branch, or the stash list, the result carries a `git` object with the before and after state. Its presence means something moved that a bounded edit does not normally move: read it as a notification, not a prohibition — a caller may legitimately want a worker to commit.
 - Use trusted workspaces. Parallel writes must be disjoint, and whenever `--writes` is used, one run at a time per workspace: if one run writes a stray path, a concurrent run that declared it writes nothing is the one reported as undeclared — a run that wrote nothing gets accused.
-- Each run's Pi process and its descendants are terminated when the run ends, times out, or is cancelled.
-- That guarantee covers pi-worker's own children only. A delegation runs for minutes, so a background job the parent agent starts beside one is exposed to a harness timeout that can SIGKILL the shell. Make that job self-terminating: it must end on its own without any cleanup step running. Where `timeout` exists, use `timeout 60 <command>`; where it does not, use a loop with a fixed iteration count that cannot run forever.
+- Cleanup is best-effort lifecycle recovery, not a sandbox or a no-escape guarantee. Deliberately daemonized or reparented Unix descendants, processes spawned during teardown, and the Windows pre-assignment window can escape.
+- Parent-started side jobs must self-terminate.
 - Keep a `trap 'kill 0' EXIT INT TERM` as a secondary layer only. It does not run on SIGKILL, which a harness timeout can deliver, so it cannot substitute for the bounded command.
 - Debug is bounded stderr lifecycle data, not the result. A heartbeat proves only that the managed Pi process is alive; it does not prove model progress.
 - Do not repeat raw debug frames, prompts, credentials, or assistant output unnecessarily.
