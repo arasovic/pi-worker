@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
@@ -804,6 +805,87 @@ func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
 	}
 	if strings.Contains(result.Error, upstreamSecret) {
 		t.Fatalf("error leaked errorMessage: %q", result.Error)
+	}
+}
+
+func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
+	// These are many individually legal text_delta frames, not one oversized
+	// frame. The older assistant message and the newer in-flight message share
+	// one MaxFrameBytes budget: once the aggregate crosses it, eviction drops
+	// the older retained text before the newer message's own prefix, and the
+	// result seam must still return the newest ~budget bytes as bounded valid
+	// UTF-8 rather than stopping or unbounded text.
+	//
+	// The volume is deliberately the smallest that exercises the seam. The
+	// in-flight message alone must exceed the budget so the retained tail can
+	// only come from it, and the older message needs just enough text to still
+	// be resident when eviction begins, so the first drops cross the message
+	// seam. Extra volume adds no coverage: the byte store and per-frame decode
+	// cost scale with streamed bytes, and an oversized script is what made
+	// this test blow past a tight deadline under -race on a loaded runner.
+	chunk := strings.Repeat("界", 16384) // exactly 48 KiB of UTF-8
+	firstDeltas := 2
+	currentDeltas := MaxFrameBytes/len(chunk) + 1
+	want := strings.Repeat("界", (MaxFrameBytes-2)/utf8.RuneLen('界'))
+	promptSteps := []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+	}
+	for i := 0; i < firstDeltas; i++ {
+		data, err := json.Marshal(map[string]any{
+			"type":                  "message_update",
+			"assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": chunk},
+		})
+		if err != nil {
+			t.Fatalf("marshal first delta %d: %v", i, err)
+		}
+		promptSteps = append(promptSteps, script.Step{Event: data})
+	}
+	promptSteps = append(promptSteps, script.Step{Event: json.RawMessage(`{"type":"message_start","message":{"role":"toolResult"}}`)})
+	for i := 0; i < currentDeltas; i++ {
+		data, err := json.Marshal(map[string]any{
+			"type":                  "message_update",
+			"assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": chunk},
+		})
+		if err != nil {
+			t.Fatalf("marshal current delta %d: %v", i, err)
+		}
+		promptSteps = append(promptSteps, script.Step{Event: data})
+	}
+	// Do not emit agent_settled: EOF returns through withThinking, making
+	// this exercise the worker/result seam rather than final text. Exit only
+	// after all deltas have flushed so the result is deterministic and quick.
+	promptSteps = append(promptSteps, script.Step{Exit: true})
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.Triggers["prompt"] = promptSteps
+	setupFakePiEnv(t, scriptConfig)
+	// The scripted stream is deterministic and finishes in a few seconds even
+	// under -race, so this deadline is not a performance budget: it is a stall
+	// guard that turns a genuine hang into a fast failure instead of waiting
+	// out go test's default ten-minute package timeout, and it is far above
+	// any measured or plausible -race runtime of the fixed workload.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusError {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if result.Explanation != "" {
+		t.Fatalf("explanation = %q, want absent on interrupted run", result.Explanation)
+	}
+	if len(result.PartialExplanation) != len(want) {
+		t.Fatalf("partialExplanation = %d bytes, want exact bounded size %d", len(result.PartialExplanation), len(want))
+	}
+	if result.PartialExplanation != want {
+		t.Fatal("partialExplanation did not preserve the most recent UTF-8 suffix")
+	}
+	if len(result.PartialExplanation) > MaxFrameBytes || !utf8.ValidString(result.PartialExplanation) {
+		t.Fatalf("partialExplanation violates the %d-byte UTF-8 bound", MaxFrameBytes)
 	}
 }
 

@@ -66,11 +66,13 @@ type WorkerResult struct {
 	Warning                string        `json:"warning,omitempty"`
 	Explanation            string        `json:"explanation,omitempty"`
 	// PartialExplanation is the assistant text observed before the run ended
-	// without a final text: the concatenated text_delta content of the last
-	// assistant message, captured while it streamed. It is present only when
-	// explanation is absent — a run that ended mid-message still reports
-	// what it produced, while a completed run never carries it — so a
-	// consumer reading explanation can always assume the model finished.
+	// without a final text: the retained recent text_delta content captured
+	// while it streamed. It is at most MaxFrameBytes UTF-8 bytes; when the
+	// stream exceeds that shared aggregate budget, older text is evicted on a
+	// UTF-8 boundary. It is present only when explanation is absent — a run
+	// that ended mid-message still reports what it produced, while a completed
+	// run never carries it — so a consumer reading explanation can always
+	// assume the model finished.
 	PartialExplanation string `json:"partialExplanation,omitempty"`
 	Status             string `json:"status"`
 	Error              string `json:"error,omitempty"`

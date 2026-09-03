@@ -219,7 +219,8 @@ Worker fields are conditionally present:
 - `partialExplanation`: present when the run ended without a final
   assistant text but retained assistant text exists; carries the most
   recent retained assistant text, which may precede the message in flight,
-  and never appears together with `explanation`
+  is at most `MaxFrameBytes` (8 MiB) in UTF-8 bytes, and never appears
+  together with `explanation`
 - `error`: present when the worker reports an error. When the latest assistant
   `message_end` has the stable `stopReason: "error"`, the worker reports the
   exact fixed wording `upstream/model turn ended with an error`. This does not
@@ -242,9 +243,11 @@ stays `1`. Worker `partialExplanation` appears only when a run ended
 without a final text — timed out, cancelled, or failed before
 settlement — and retained assistant text exists. It carries the most
 recent retained assistant text, which may come from the message preceding
-the one in flight when that message has no assistant text. Text from at
-most two messages is retained; older text is discarded. It is never
-present together with `explanation`: a consumer reading `explanation`
+the one in flight when that message has no assistant text. The two retained
+message buffers share one `MaxFrameBytes` (8 MiB) UTF-8 byte budget; when the
+budget is exceeded, older text is evicted, including the oldest prefix of the
+current message when necessary. It is never present together with
+`explanation`: a consumer reading `explanation`
 can always assume the model finished, so truncated text under that name
 can never turn an interrupted run into a complete-looking answer.
 
