@@ -733,12 +733,11 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `git`, when the run moved HEAD, the branch, or the stash list:
     `before` and `after` states, each with `head`, `branch`, `dirty`,
     and `stashes`
-  A run that started emits a document on every terminal status, timed-out
-  and cancelled included; the no-document shapes are only the aborted ones
-  — a usage rejection before any worker ran, an internal failure, or a
-  timeout or cancellation landing while the `--verify` check runs —
-  deliberately, rather than a partial one, and only the exit code and
-  stderr remain.
+  A run whose first worker starts emits a document on every terminal
+  status, timed-out and cancelled included. An ending before the first worker
+  starts emits no document. A timeout or cancellation landing while the
+  `--verify` check runs also emits no document; these shapes are deliberate
+  rather than partial documents, and only the exit code and stderr remain.
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
