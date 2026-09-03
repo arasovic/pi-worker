@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 
 import {
+  NativeProcessError,
   UnsupportedPlatformError,
   nativePath,
   nativeTarget,
@@ -36,7 +37,13 @@ try {
     process.exitCode = await runNative(binary, args);
   }
 } catch (error) {
-  if (!(error instanceof UnsupportedPlatformError)) throw error;
-  process.stderr.write(`${unsupportedPlatformDiagnostic(error)}\n`);
-  process.exitCode = 1;
+  if (error instanceof UnsupportedPlatformError) {
+    process.stderr.write(`${unsupportedPlatformDiagnostic(error)}\n`);
+    process.exitCode = 1;
+  } else if (error instanceof NativeProcessError) {
+    process.stderr.write(`pi-worker: ${error.message}\n`);
+    process.exitCode = 9;
+  } else {
+    throw error;
+  }
 }
