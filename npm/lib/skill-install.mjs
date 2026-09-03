@@ -103,6 +103,10 @@ function treesEqual(left, right) {
   return JSON.stringify(treeFiles(left)) === JSON.stringify(treeFiles(right));
 }
 
+function receiptHasIdentity(target) {
+  return target.files.some((file) => file.path === IDENTITY_FILE && file.sha256 === IDENTITY_SHA256);
+}
+
 function temporaryReceipt(version) {
   return {
     schemaVersion: 1,
@@ -548,49 +552,6 @@ async function verifyReceiptTargets(receipt, targets, classify) {
   return verified;
 }
 
-function receiptActualTargetPaths(receipt) {
-  return receipt.targets.flatMap((target) => target.kind === "symlink"
-    ? target.files.map((file) => path.join(target.path, file.path))
-    : [target.path]);
-}
-
-function receiptHasIdentity(target) {
-  return target.files.some((file) => file.path === IDENTITY_FILE && file.sha256 === IDENTITY_SHA256);
-}
-
-async function priorReceiptIsStillCurrent(priorReceipt, targets, platform, classify) {
-  if (
-    priorReceipt?.outcome !== "installed" ||
-    priorReceipt.skillsVersion !== PINNED_SKILLS_VERSION ||
-    priorReceipt.affectedTargets.length !== 0 ||
-    !Array.isArray(targets)
-  ) return false;
-  const canonicals = priorReceipt.targets.filter((target) => target.kind === "canonical");
-  if (canonicals.length !== 1 || !receiptHasIdentity(canonicals[0])) return false;
-
-  // If package inspection got far enough to build the conservative inventory,
-  // do not restore receipt entries that are no longer in that inventory. This
-  // is the same stale-target boundary used by the installed-receipt checks.
-  const inventory = new Set(targets.map((target) => pathKey(target, platform)));
-  if (receiptActualTargetPaths(priorReceipt).some((target) => !inventory.has(pathKey(target, platform)))) {
-    return false;
-  }
-
-  // Recheck every live target against the old receipt manifest. This uses the
-  // old canonical manifest instead of the failed package inspection, so it
-  // validates prior evidence without adopting any new package content.
-  try {
-    const verified = await verifyReceiptTargets(
-      { document: priorReceipt, __bundledTree: { files: canonicals[0].files } },
-      priorReceipt.targets,
-      classify,
-    );
-    return verified.length === priorReceipt.targets.length;
-  } catch {
-    return false;
-  }
-}
-
 /** Install the bundled pi-worker skill conservatively and record its topology. */
 export async function installSkill(options = {}) {
   const platform = options.platform ?? process.platform;
@@ -637,24 +598,47 @@ export async function installSkill(options = {}) {
     return result("skipped", "Unable to prepare the skill installation receipt.");
   }
 
-  let beforeChild = true;
   const failAfterGuard = async (
     diagnostic = "Skill installation failed.",
     failedTargets = [],
     affectedTargets = [],
   ) => {
     try {
-      const preservePrior = beforeChild && failedTargets.length === 0 && affectedTargets.length === 0 &&
-        await priorReceiptIsStillCurrent(priorReceipt, targets, platform, classify);
-      if (preservePrior) {
-        // The temporary guard may have replaced a healthy receipt before a
-        // package-only failure. Restore that receipt only after independently
-        // validating every old target; an installed receipt remains the only
-        // form that can authorize ownership on a later retry.
-        await persist(writer, receiptPath, priorReceipt, options.receiptWriteOptions);
-      } else {
-        await persist(writer, receiptPath, failedReceipt(version, failedTargets, affectedTargets), options.receiptWriteOptions);
+      await persist(writer, receiptPath, failedReceipt(version, failedTargets, affectedTargets), options.receiptWriteOptions);
+    } catch {
+      // The diagnostic remains deliberately generic if persistence also fails.
+    }
+    return result("failed", diagnostic);
+  };
+
+  // Only package-only failures may restore the receipt replaced by the
+  // temporary guard. The validation deliberately uses the production
+  // classifier and the old canonical manifest, never package inventory or an
+  // injected classifier supplied to this installation attempt.
+  const restorePriorReceiptAfterPackageOnlyFailure = async (diagnostic) => {
+    let document = failedReceipt(version);
+    try {
+      const prior = validateReceipt(priorReceipt);
+      const canonicals = prior.targets.filter((target) => target.kind === "canonical");
+      if (
+        prior.skillsVersion === PINNED_SKILLS_VERSION &&
+        prior.outcome === "installed" &&
+        prior.affectedTargets.length === 0 &&
+        canonicals.length === 1 &&
+        receiptHasIdentity(canonicals[0])
+      ) {
+        const verified = await verifyReceiptTargets(
+          { document: prior, __bundledTree: { files: canonicals[0].files } },
+          prior.targets,
+          classifyTarget,
+        );
+        if (verified.length === prior.targets.length) document = prior;
       }
+    } catch {
+      // Invalid or no-longer-owned prior evidence receives an ordinary failure.
+    }
+    try {
+      await persist(writer, receiptPath, document, options.receiptWriteOptions);
     } catch {
       // The diagnostic remains deliberately generic if persistence also fails.
     }
@@ -670,12 +654,26 @@ export async function installSkill(options = {}) {
     platform,
     exists: (candidate) => existsSync(candidate),
   };
+  // Rules loading says nothing about installed target state: no target
+  // inventory exists yet, so a validated prior receipt is safe to restore.
   try {
     rules = load(options.rulesPath ?? path.join(packageRoot, "npm", "generated", "skills-rules.json"));
+  } catch {
+    return restorePriorReceiptAfterPackageOnlyFailure("Unable to load the skill target rules.");
+  }
+  // Target resolution is likewise package/rules work performed before target
+  // classification; it cannot report a target conflict of its own.
+  try {
     targets = targetList({ home, cwd, rules, runtime, resolveTargets, platform });
+  } catch {
+    return restorePriorReceiptAfterPackageOnlyFailure("Unable to resolve skill targets.");
+  }
+  // Bundled-tree hashing only inspects package content and does not observe an
+  // installed target, so this is the third package-only restoration callsite.
+  try {
     bundledTree = await hash(bundledSkill);
   } catch {
-    return failAfterGuard("Unable to inspect the bundled skill.");
+    return restorePriorReceiptAfterPackageOnlyFailure("Unable to inspect the bundled skill.");
   }
 
   const canonical = path.join(home, ".agents", "skills", SKILL_NAME);
@@ -705,7 +703,14 @@ export async function installSkill(options = {}) {
       initialStates.set(target, entry);
     }
   } catch {
-    return failAfterGuard("Unable to inspect existing skill targets.");
+    const affected = states
+      .filter(({ state }) => ["unmanaged", "drifted", "conflicting"].includes(state))
+      .map(({ path: targetPath, state }) => ({
+        path: targetPath,
+        state,
+        recovery: affectedRecovery(targetPath, state),
+      }));
+    return failAfterGuard("Unable to inspect existing skill targets.", [], affected);
   }
   const persistBlocked = async (currentStates) => {
     const affected = currentStates.filter(({ state }) => (
@@ -716,13 +721,19 @@ export async function installSkill(options = {}) {
     try {
       await persist(writer, receiptPath, document, options.receiptWriteOptions);
     } catch {
-      return failAfterGuard("Unable to record the blocked skill installation.");
+      return failAfterGuard("Unable to record the blocked skill installation.", [], document.affectedTargets);
     }
     return { ...result("blocked", "Skill installation is blocked."), affectedTargets: document.affectedTargets };
   };
   if (states.some(({ state }) => (
     state !== "absent" && state !== "owned" && !state.startsWith("external-")
   ))) {
+    return persistBlocked(states);
+  }
+  // A failed receipt with affected evidence is an observation that must stay
+  // visible on retry. Do not let an intact, unrelated Pi Worker target take
+  // the external-preservation path and hide that evidence.
+  if (priorReceipt?.outcome === "failed" && priorReceipt.affectedTargets.length > 0) {
     return persistBlocked(states);
   }
   if (states.some(({ state }) => state.startsWith("external-"))) {
@@ -755,7 +766,9 @@ export async function installSkill(options = {}) {
     const resolveCLI = options.resolveCLI ?? (() => createRequire(import.meta.url).resolve("skills/bin/cli.mjs"));
     cli = options.cli ?? resolveCLI();
   } catch {
-    return failAfterGuard("Unable to resolve the package-local skills CLI.");
+    // Package-local CLI resolution has not spawned or inspected the child and
+    // says nothing about installed target state.
+    return restorePriorReceiptAfterPackageOnlyFailure("Unable to resolve the package-local skills CLI.");
   }
 
   // Recheck both topology expectations and classifications at the last safe
@@ -772,7 +785,14 @@ export async function installSkill(options = {}) {
       rechecked.push({ path: target, state, expectedKind });
     }
   } catch {
-    return failAfterGuard("Unable to recheck existing skill targets.");
+    const affected = rechecked
+      .filter(({ state }) => ["unmanaged", "drifted", "conflicting"].includes(state))
+      .map(({ path: targetPath, state }) => ({
+        path: targetPath,
+        state,
+        recovery: affectedRecovery(targetPath, state),
+      }));
+    return failAfterGuard("Unable to recheck existing skill targets.", [], affected);
   }
   const changed = states.length !== rechecked.length || states.some((entry, index) => (
     entry.path !== rechecked[index].path || entry.state !== rechecked[index].state ||
@@ -805,10 +825,11 @@ export async function installSkill(options = {}) {
     }
     agentIds = detectedGlobalAgentIds.length === 0 ? ["universal"] : detectedGlobalAgentIds;
   } catch {
-    return failAfterGuard("Unable to inspect the bundled skill.");
+    // Agent detection and required-target/rule checks are package-only here:
+    // preflight already found no target conflict, and no child has run.
+    return restorePriorReceiptAfterPackageOnlyFailure("Unable to inspect the bundled skill.");
   }
 
-  beforeChild = false;
   const childResult = await captureChild(
     spawn,
     process.execPath,
