@@ -77,12 +77,15 @@ function samePath(left, right, platform) {
 
 function receiptTracksPath(receipt, targetPath, platform) {
   if (!receipt) return false;
-  return receipt.targets.some((target) => {
+  if (receipt.targets.some((target) => {
     if (target.kind === "symlink") {
       return target.files.some((file) => samePath(path.join(target.path, file.path), targetPath, platform));
     }
     return samePath(target.path, targetPath, platform);
-  });
+  })) return true;
+  // A failed postcondition is still an installer observation. Do not let a
+  // later identity scan reinterpret that observed partial tree as external.
+  return receipt.affectedTargets.some((target) => samePath(target.path, targetPath, platform));
 }
 
 function treeFiles(tree) {
@@ -111,14 +114,14 @@ function temporaryReceipt(version) {
   };
 }
 
-function failedReceipt(version, targets = []) {
+function failedReceipt(version, targets = [], affectedTargets = []) {
   return {
     schemaVersion: 1,
     installerVersion: version,
     skillsVersion: PINNED_SKILLS_VERSION,
     outcome: "failed",
     targets: [...targets],
-    affectedTargets: [],
+    affectedTargets: [...affectedTargets],
     recovery: [GLOBAL_RETRY],
   };
 }
@@ -378,6 +381,18 @@ async function inspectInstalledTargets(
   const symlinkRecords = new Map();
   const requiredKeys = new Set(requiredTargets.map((target) => pathKey(target, platform)));
   const missingRequired = [];
+  const affectedTargets = [];
+  const affectedKeys = new Set();
+  const markAffected = (targetPath) => {
+    const key = pathKey(targetPath, platform);
+    if (affectedKeys.has(key)) return;
+    affectedKeys.add(key);
+    affectedTargets.push({
+      path: targetPath,
+      state: "conflicting",
+      recovery: affectedRecovery(targetPath, "conflicting"),
+    });
+  };
   let postconditionFailed = false;
   let canonicalReal;
   let canonicalVerified = false;
@@ -395,6 +410,12 @@ async function inspectInstalledTargets(
     records.push({ path: canonical, kind: "canonical", files: treeFiles(bundledTree) });
   } catch {
     postconditionFailed = true;
+    try {
+      await lstatAsync(canonical);
+      markAffected(canonical);
+    } catch (error) {
+      if (error?.code !== "ENOENT") markAffected(canonical);
+    }
   }
 
   const priorCopy = (target) => priorReceipt?.targets.find((candidate) =>
@@ -412,6 +433,7 @@ async function inspectInstalledTargets(
         continue;
       }
       postconditionFailed = true;
+      markAffected(target);
       continue;
     }
 
@@ -427,6 +449,7 @@ async function inspectInstalledTargets(
         if (!treesEqual(await hashTree(resolved), bundledTree)) throw new Error("symlink destination drifted");
       } catch {
         postconditionFailed = true;
+        markAffected(target);
         continue;
       }
       const parent = path.dirname(target);
@@ -437,6 +460,7 @@ async function inspectInstalledTargets(
     }
     if (!info.isDirectory()) {
       postconditionFailed = true;
+      markAffected(target);
       continue;
     }
     let currentTree;
@@ -444,6 +468,7 @@ async function inspectInstalledTargets(
       currentTree = await hashTree(target);
     } catch {
       postconditionFailed = true;
+      markAffected(target);
       continue;
     }
     let files;
@@ -453,6 +478,7 @@ async function inspectInstalledTargets(
       const previous = initialStates.get(target)?.state === "owned" ? priorCopy(target) : null;
       if (!previous || !treesEqual(currentTree, { files: previous.files })) {
         postconditionFailed = true;
+        markAffected(target);
         continue;
       }
       files = treeFiles(previous.files);
@@ -464,7 +490,8 @@ async function inspectInstalledTargets(
     records.push({ path: parent, kind: "symlink", files: files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0) });
   }
   records.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
-  return { records, missingRequired, postconditionFailed };
+  affectedTargets.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return { records, missingRequired, postconditionFailed, affectedTargets };
 }
 
 async function expectedTargetKind(target, canonical, platform) {
@@ -564,9 +591,13 @@ export async function installSkill(options = {}) {
     return result("skipped", "Unable to prepare the skill installation receipt.");
   }
 
-  const failAfterGuard = async (diagnostic = "Skill installation failed.", targets = []) => {
+  const failAfterGuard = async (
+    diagnostic = "Skill installation failed.",
+    targets = [],
+    affectedTargets = [],
+  ) => {
     try {
-      await persist(writer, receiptPath, failedReceipt(version, targets), options.receiptWriteOptions);
+      await persist(writer, receiptPath, failedReceipt(version, targets, affectedTargets), options.receiptWriteOptions);
     } catch {
       // The diagnostic remains deliberately generic if persistence also fails.
     }
@@ -737,7 +768,12 @@ export async function installSkill(options = {}) {
       initialStates,
     );
   } catch {
-    inspection = { records: [], missingRequired: [], postconditionFailed: true };
+    inspection = {
+      records: [],
+      missingRequired: [],
+      postconditionFailed: true,
+      affectedTargets: [],
+    };
   }
 
   let verifiedTargets = inspection.records;
@@ -768,9 +804,13 @@ export async function installSkill(options = {}) {
   const childFailed = !childResult.ok || hasInvalidFailureProse(childResult);
   if (inspection.postconditionFailed || inspection.missingRequired.length > 0 || ownershipFailed || childFailed) {
     if (!childResult.ok) {
-      return failAfterGuard(`Skill installation failed: ${childResult.reason}.`, verifiedTargets);
+      return failAfterGuard(
+        `Skill installation failed: ${childResult.reason}.`,
+        verifiedTargets,
+        inspection.affectedTargets,
+      );
     }
-    return failAfterGuard("Skill installation failed.", verifiedTargets);
+    return failAfterGuard("Skill installation failed.", verifiedTargets, inspection.affectedTargets);
   }
 
   const document = {
