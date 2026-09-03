@@ -1785,14 +1785,18 @@ func TestRunStatusErrorAndUnavailableExitCode9(t *testing.T) {
 
 func TestRunTimeoutFlag(t *testing.T) {
 	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
+	// Keep the worker in flight longer than the requested deadline. This makes
+	// the test about the deadline passed to the worker, rather than whether
+	// setup and a successful worker result happen to fit inside 250ms.
+	fake.runHook = func() { time.Sleep(300 * time.Millisecond) }
 	// Anchor the measurement before the run: the deadline is fixed at
 	// 250ms from when the run created it, so measuring against this
 	// anchor does not decay while the run completes the way
 	// time.Until(deadline) measured afterwards would.
 	start := time.Now()
 	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--timeout", "250ms"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	if code != 7 {
+		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
 	deadline, ok := fake.deadlineForWorker(1)
 	if !ok {
