@@ -104,8 +104,17 @@ Use pi-worker with provider/model at high effort to complete this task.
 ```
 
 Run up to three independent tasks by repeating `--task` or `--task-file`.
-Parallel writes must target disjoint files because every worker shares the
-current writable workspace.
+Parallel writes must target disjoint files because every worker shares
+the current writable workspace. For all-declared disjoint multi-task
+runs with Git measurement, the monitor compares two identities per task
+— immediately after that worker returns and after all workers settle
+(not continuous tracing) — and proven interference (final identity
+differs from settled identity) is reported as undeclared and exits 4;
+pi-worker never restores files; a foreign write fully made/reverted
+before the owner's settlement snapshot is invisible, as is an interim
+post-settlement write restored to the exact settled identity before the
+final snapshot (in that latter case the owner's final output is intact);
+see [detailed usage](./docs/v0-usage.md).
 
 Manage checkouts created with `run --worktree <name>` — only the exact
 Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on

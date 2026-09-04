@@ -841,18 +841,49 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   is how a task that writes nothing takes part. It is a pre-flight
   contract, not a sandbox or worktree:
   pi-worker does not enforce it during the run.
-- While any run declares `--writes`, that workspace must have one run at a
-  time: the check compares against the whole workspace's pre-run git
-  state, so a concurrent writer lands in whichever run is measuring.
+- The normal final `--writes` comparison still pools declarations at run
+  level. For a multi-task run where every task declared disjoint writes
+  and Git measurement is available, pi-worker also monitors settled
+  outputs: the monitor compares two identities per task — the identities
+  of that task's declared dirty outputs immediately after that worker
+  returns and again after all workers settle — it is not continuous
+  tracing. If the final identity differs from the settled identity,
+  pi-worker reports those paths through the existing
+  `writes.undeclared` / `undeclaredCount` fields and the run exits `4`
+  with outcome `undeclared-writes`, even though the path was declared by
+  its owner. Proven interference means the final identity differs from
+  that settled identity. No JSON field or schema version changes.
+  Identity includes content/kind/executable state and relevant
+  directory/nested-repository shape; contents/hashes are never exposed.
+  Pi-worker never restores or overwrites files to repair interference. A
+  required settlement/final snapshot failure returns a controller error;
+  the CLI exits 9 on stderr and emits no result/JSON document — no
+  clean/success result is produced.
+  Honest limits (still post-hoc, not a sandbox, not continuous tracing):
+  a foreign write fully made and reverted before the owner's settlement
+  snapshot is invisible; so is an interim post-settlement write restored
+  to the exact settled identity before the final snapshot — in that
+  latter case the owner's final output is intact, so the run is not
+  accused despite the interim interference. Final changes remain pooled,
+  but this post-settlement window now has narrow ownership evidence from
+  disjoint declarations.
+- While any run declares `--writes`, pi-worker does not enforce a
+  cross-run lock: callers must serialize runs sharing a workspace or give
+  them separate worktrees (e.g. `--worktree`), because cross-run writes
+  can be attributed to whichever run measures them — a concurrent writer
+  lands in whichever run is measuring. This caller-serialization rule is
+  not relaxed by the settled-output monitor.
 - When every task declared — empty set or not — and the check passes,
   the shared workspace warning is suppressed; when no task declared, the
   warning stays.
-- The run reports the changed paths no task declared, and exits `4`
-  (policy) when it found any. The run `status` field is unaffected: a run
-  whose workers all succeeded stays `completed`, and the process exit
-  code, the reported error, and the root `outcome` carry the failure.
-  When the change manifest was not measured, the check is skipped with a
-  stated reason rather than answered.
+- The run reports `writes.undeclared` — both final changed paths no
+  task declared and task-owned output paths proven changed/added/erased
+  after their owner settled — and exits `4` (policy) when it found any.
+  The run `status` field is unaffected: a run whose workers all
+  succeeded stays `completed`, and the process exit code, the reported
+  error, and the root `outcome` carry the failure. When the change
+  manifest was not measured, the check is skipped with a stated reason
+  rather than answered.
 
 ### Carried material
 
