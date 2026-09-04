@@ -261,9 +261,7 @@ pair. Success without that confirmation is never accepted.
 Pi 0.85.0 observes the `get_available_thinking_levels` success container as
 `data:{levels: ThinkingLevel[]}`, where the levels are the active model's
 supported subset of the recognized seven levels (`off`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, `max`), not always all seven; the promptless probe
-returned `high`, `max` for Command Code DeepSeek and `low`, `medium`, `high`,
-`xhigh`, `max` after switching to Command Code Muse. V0 requires a non-null
+`medium`, `high`, `xhigh`, `max`), not always all seven. V0 requires a non-null
 array of unique, recognized strings (a non-null unique subset of recognized
 levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
