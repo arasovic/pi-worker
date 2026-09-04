@@ -95,6 +95,27 @@ func withStdinIsTerminal(t *testing.T, value bool) {
 	t.Cleanup(func() { stdinIsTerminal = original })
 }
 
+type runlogListResponse struct {
+	runs []runlog.Run
+	err  error
+}
+
+func withRunlogListResponses(t *testing.T, responses ...runlogListResponse) *int {
+	t.Helper()
+	original := runlogList
+	calls := 0
+	runlogList = func(string) ([]runlog.Run, error) {
+		if calls >= len(responses) {
+			t.Fatalf("runlogList called %d times, want at most %d", calls+1, len(responses))
+		}
+		resp := responses[calls]
+		calls++
+		return resp.runs, resp.err
+	}
+	t.Cleanup(func() { runlogList = original })
+	return &calls
+}
+
 // failingReader is the unreadable-stdin script: every Read fails, so
 // the prompt counts it as no answer.
 type failingReader struct{}
@@ -500,6 +521,189 @@ func TestRunsPruneYesDeletesWithoutPromptOrStdinRead(t *testing.T) {
 				t.Fatalf("record %s still exists: %v", path, err)
 			}
 		})
+	}
+}
+
+// TestRunsPruneInteractiveSelectionDeletesNormally asserts the retry
+// listing does not change the normal interactive path: after an
+// affirmative answer, prune lists the candidates again once, then
+// deletes the same record and reports the same summary as the
+// non-interactive path.
+func TestRunsPruneInteractiveSelectionDeletesNormally(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	calls := withRunlogListResponses(t,
+		runlogListResponse{runs: []runlog.Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: path}}},
+		runlogListResponse{runs: []runlog.Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: path}}},
+	)
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0"}, "y\n")
+	if code != 0 {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 0", code, stdout, stderr)
+	}
+	if want := "deleted 20260830T101500Z-1\nkept 0 newest\n"; stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	const wantStderr = "RUN ID                STARTED                 OUTCOME      TASKS    WORKSPACE\n" +
+		"20260830T101500Z-1    2026-08-30T10:15:00Z    completed    1        /ws-a\n" +
+		"delete 1 run records? [y/N] "
+	if stderr != wantStderr {
+		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+	}
+	if got := *calls; got != 2 {
+		t.Fatalf("runlogList calls = %d, want 2", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("record %s still exists: %v", path, err)
+	}
+}
+
+// TestRunsPruneInteractiveRetryRejectsReorderedSelection asserts the
+// retry gate treats the ordered deletion list as part of the contract:
+// the same two Path/RunID candidates in opposite order exits 9,
+// deletes nothing, calls the list twice, and leaves both records in
+// place.
+func TestRunsPruneInteractiveRetryRejectsReorderedSelection(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	firstPath := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	secondPath := writeListRecord(t, dir, "20260830T102000Z-2", deadPID, "2026-08-30T10:20:00Z", "/ws-b", 1, true, "completed", "")
+	calls := withRunlogListResponses(t,
+		runlogListResponse{runs: []runlog.Run{
+			{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: firstPath},
+			{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/ws-b", Tasks: 1, Outcome: "completed", Path: secondPath},
+		}},
+		runlogListResponse{runs: []runlog.Run{
+			{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/ws-b", Tasks: 1, Outcome: "completed", Path: secondPath},
+			{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: firstPath},
+		}},
+	)
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0"}, "y\n")
+	if code != 9 || stdout != "" {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr)
+	}
+	if got := *calls; got != 2 {
+		t.Fatalf("runlogList calls = %d, want 2", got)
+	}
+	for _, path := range []string{firstPath, secondPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("record %s vanished after a reorder mismatch: %v", path, err)
+		}
+	}
+}
+
+// TestRunsPruneInteractiveRetryRejectsChangedSelection asserts the
+// post-confirmation retry refuses any changed ordered deletion list:
+// a changed path or changed run id exits 9, deletes nothing, and
+// leaves the file in place.
+func TestRunsPruneInteractiveRetryRejectsChangedSelection(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		first  runlog.Run
+		second runlog.Run
+	}{
+		{
+			name:   "changed path",
+			first:  runlog.Run{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: filepath.Join(t.TempDir(), "first.jsonl")},
+			second: runlog.Run{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: filepath.Join(t.TempDir(), "second.jsonl")},
+		},
+		{
+			name:   "changed run id",
+			first:  runlog.Run{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: filepath.Join(t.TempDir(), "record.jsonl")},
+			second: runlog.Run{RunID: "20260830T101500Z-2", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: filepath.Join(t.TempDir(), "record.jsonl")},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			withRunlogDir(t, dir)
+			withStdinIsTerminal(t, true)
+			path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+			test.first.Path = path
+			if test.name == "changed path" {
+				test.second.Path = filepath.Join(dir, "20260830T102000Z-2.jsonl")
+			} else {
+				test.second.Path = path
+			}
+			calls := withRunlogListResponses(t,
+				runlogListResponse{runs: []runlog.Run{test.first}},
+				runlogListResponse{runs: []runlog.Run{test.second}},
+			)
+
+			code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0"}, "y\n")
+			if code != 9 || stdout != "" {
+				t.Fatalf("runs prune = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+			}
+			if !strings.Contains(stderr, "runs prune retry: selection changed") {
+				t.Fatalf("stderr = %q, want the retry selection-change message", stderr)
+			}
+			if got := *calls; got != 2 {
+				t.Fatalf("runlogList calls = %d, want 2", got)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("record %s vanished after a retry mismatch: %v", path, err)
+			}
+		})
+	}
+}
+
+// TestRunsPruneInteractiveSecondListErrorDeletesNothing asserts a
+// failed retry listing deletes nothing and exits 9 before any delete
+// starts.
+func TestRunsPruneInteractiveSecondListErrorDeletesNothing(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	calls := withRunlogListResponses(t,
+		runlogListResponse{runs: []runlog.Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: path}}},
+		runlogListResponse{err: errors.New("retry failed")},
+	)
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0"}, "y\n")
+	if code != 9 || stdout != "" {
+		t.Fatalf("runs prune = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "runs prune retry: list runs: retry failed") {
+		t.Fatalf("stderr = %q, want the retry error", stderr)
+	}
+	if got := *calls; got != 2 {
+		t.Fatalf("runlogList calls = %d, want 2", got)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("record %s vanished after a retry error: %v", path, err)
+	}
+}
+
+// TestRunsPruneYesListsExactlyOnce asserts --yes keeps the one-list
+// path: prune reads the records once, skips the retry listing, and
+// otherwise behaves the same as before.
+func TestRunsPruneYesListsExactlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	path := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	calls := withRunlogListResponses(t,
+		runlogListResponse{runs: []runlog.Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: path}}},
+	)
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes"}, "ignored\n")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs prune --yes = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	if want := "deleted 20260830T101500Z-1\nkept 0 newest\n"; stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if got := *calls; got != 1 {
+		t.Fatalf("runlogList calls = %d, want 1", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("record %s still exists: %v", path, err)
 	}
 }
 
@@ -1476,12 +1680,11 @@ func (s *swapRecordsDirOnFirstRead) Read(p []byte) (int, error) {
 // records directory out from under the prune while the deletion
 // question is on screen — the directory is renamed aside, a symlink
 // to an unrelated directory is put in its place, and then "y" is
-// answered — and pins that the delete still lands only inside the
-// directory the listing named: the unrelated directory's file with
-// the same base name survives, the record the command named is gone
-// from the renamed-aside directory, and the exit is 0. A prune that
-// resolved the directory again after the prompt would delete the
-// unrelated directory's file instead.
+// answered — and pins the retry contract: a changed ordered
+// selection deletes nothing, exits 9, and leaves both the unrelated
+// file and the renamed-aside record untouched. A prune that reused
+// the first selection's per-file identities after the prompt would
+// still be able to delete the unrelated file instead.
 func TestRunsPruneSwapDuringPromptCannotRedirectTheDelete(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1515,14 +1718,62 @@ func TestRunsPruneSwapDuringPromptCannotRedirectTheDelete(t *testing.T) {
 	if stdin.err != nil {
 		t.Fatalf("swap during the prompt failed: %v", stdin.err)
 	}
-	if code != 0 {
-		t.Fatalf("prune with the swap during the prompt = (%d, %q, %q), want exit 0", code, stdout.String(), stderr.String())
+	if code != 9 || stdout.String() != "" {
+		t.Fatalf("prune with the swap during the prompt = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr.String())
 	}
 	if _, err := os.Stat(otherPath); err != nil {
-		t.Fatalf("%s was deleted although prune never listed %s: %v", otherPath, dir, err)
+		t.Fatalf("%s was removed after the retry: %v", otherPath, err)
 	}
-	if _, err := os.Stat(filepath.Join(aside, recordName)); err == nil {
-		t.Fatalf("record %s still exists in the listed directory after the prune", filepath.Join(aside, recordName))
+	if _, err := os.Stat(filepath.Join(aside, recordName)); err != nil {
+		t.Fatalf("record %s vanished from the listed directory after the retry: %v", filepath.Join(aside, recordName), err)
+	}
+}
+
+// TestRunsPruneSwapDuringPromptDeletesTheRenamedAsideRecord asserts
+// the prompt-time directory swap still deletes the record the command
+// originally listed when the replacement directory carries a valid
+// record with the same basename and RunID. The second listing sees the
+// same ordered (Path, RunID) selection, so prune succeeds; the original
+// record disappears from the renamed-aside directory, the substituted
+// record survives, and the success output contract stays intact.
+func TestRunsPruneSwapDuringPromptDeletesTheRenamedAsideRecord(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	withStdinIsTerminal(t, true)
+	runID := "20260830T101500Z-1"
+	recordName := runID + ".jsonl"
+	writeListRecord(t, dir, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	other := t.TempDir()
+	replacementPath := writeListRecord(t, other, runID, deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
+	aside := t.TempDir()
+	if err := os.Remove(aside); err != nil {
+		t.Fatalf("vacate aside: %v", err)
+	}
+
+	stdin := &swapRecordsDirOnFirstRead{dir: dir, aside: aside, other: other}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := mainWithContext(context.Background(), []string{"runs", "prune", "--keep", "0"}, stdin, &stdout, &stderr)
+	if stdin.err != nil {
+		t.Fatalf("swap during the prompt failed: %v", stdin.err)
+	}
+	if code != 0 || stdout.String() != "deleted 20260830T101500Z-1\nkept 0 newest\n" {
+		t.Fatalf("prune with the matching swap = (%d, %q, %q), want exit 0 with the success summary", code, stdout.String(), stderr.String())
+	}
+	const wantStderr = "RUN ID                STARTED                 OUTCOME      TASKS    WORKSPACE\n" +
+		"20260830T101500Z-1    2026-08-30T10:15:00Z    completed    1        /ws-a\n" +
+		"delete 1 run records? [y/N] "
+	if stderr.String() != wantStderr {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), wantStderr)
+	}
+	if _, err := os.Stat(filepath.Join(aside, recordName)); !os.IsNotExist(err) {
+		t.Fatalf("original record %s still exists after prune: %v", filepath.Join(aside, recordName), err)
+	}
+	if _, err := os.Stat(replacementPath); err != nil {
+		t.Fatalf("replacement record %s vanished after prune: %v", replacementPath, err)
 	}
 }
 
@@ -1555,18 +1806,9 @@ func (r *replaceRecordWithDirectoryOnFirstRead) Read(p []byte) (int, error) {
 // scenario test: while the confirmation question is on screen,
 // something else appears under the listed record's name — an empty
 // directory in the record file's place, the way a renamed-away
-// record's name can be left — the answer is y, and prune refuses:
-// exit 9, the directory still there, and the record's own id never
-// on a deleted line. It deliberately does not say which guard
-// refuses: the identity guard speaks first today, and both the
-// identity and the type guards would refuse this name — the only
-// difference a user could see between the two refusals is the
-// wording, so the test pins the refusal itself, never the wording.
-// The identity guard is pinned specifically by
-// TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused and
-// TestRunsPruneRecordAppearsDuringPromptRefused, both of which turn
-// red when the identity check is removed; the type guard is pinned
-// by TestRunsPruneSelectedDirectoryRefusedByType.
+// record's name can be left — the answer is y, and the changed
+// selection retry fires instead of any delete-time guard: exit 9,
+// nothing deleted, and the directory still there.
 func TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1580,19 +1822,16 @@ func TestRunsPruneRecordReplacedByDirectoryDuringPromptRefused(t *testing.T) {
 	if stdin.err != nil {
 		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
 	}
-	if code != 9 {
-		t.Fatalf("prune with the record replaced by a directory = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	if code != 9 || stdout.String() != "" {
+		t.Fatalf("prune with the record replaced by a directory = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr.String())
 	}
 	if info, err := os.Lstat(recordPath); err != nil {
 		t.Fatalf("the replacement directory %s vanished: %v", recordPath, err)
 	} else if !info.IsDir() {
-		t.Fatalf("%s is not a directory after the prune", recordPath)
-	}
-	if strings.Contains(stdout.String(), "deleted "+runID) {
-		t.Fatalf("stdout = %q: the record's own id must never be on a deleted line", stdout.String())
-	}
-	if want := "kept 0 newest\n"; stdout.String() != want {
-		t.Fatalf("stdout = %q, want %q: no id may be reported as deleted", stdout.String(), want)
+		t.Fatalf("%s is not a directory after the retry", recordPath)
 	}
 }
 
@@ -1619,14 +1858,11 @@ func (r *replaceRecordWithSymlinkOnFirstRead) Read(p []byte) (int, error) {
 }
 
 // TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused asserts
-// the identity gate for a symlink replacement: the listed record's
+// the retry contract for a symlink replacement: the listed record's
 // name is replaced by a symlink pointing outside the records
 // directory while the question is on screen, the answer is y, and
-// prune refuses — exit 9, the refusal naming that the name no longer
-// holds the file that was listed, and both the link and its target
-// survive, byte-identical. The refusal is identity, not type: a
-// symlink that was what the listing showed is deleted, and one that
-// merely appears under the listed name is not.
+// the second listing changes, so prune stops before any delete. The
+// link and its target survive, byte-identical.
 func TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1646,26 +1882,23 @@ func TestRunsPruneRecordReplacedBySymlinkDuringPromptRefused(t *testing.T) {
 	if stdin.err != nil {
 		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
 	}
-	if code != 9 {
-		t.Fatalf("prune with the record replaced by a symlink = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	if code != 9 || stdout.String() != "" {
+		t.Fatalf("prune with the record replaced by a symlink = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr.String())
 	}
 	if info, err := os.Lstat(recordPath); err != nil {
 		t.Fatalf("the replacement symlink %s is gone: %v", recordPath, err)
 	} else if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("%s is not a symlink after the prune", recordPath)
+		t.Fatalf("%s is not a symlink after the retry", recordPath)
 	}
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		t.Fatalf("the symlink's target %s was touched: %v", targetPath, err)
 	}
 	if string(data) != "not a record\n" {
-		t.Fatalf("the target changed by the prune: %q", data)
-	}
-	if want := "kept 0 newest\n"; stdout.String() != want {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
-	}
-	if !strings.Contains(stderr.String(), "no longer the record that was listed") {
-		t.Fatalf("stderr = %q, want the identity refusal naming the replacement", stderr.String())
+		t.Fatalf("the target changed by the retry: %q", data)
 	}
 }
 
@@ -1686,13 +1919,11 @@ func (r *removeRecordOnFirstRead) Read(p []byte) (int, error) {
 	return copy(p, "y\n"), io.EOF
 }
 
-// TestRunsPruneRecordVanishedDuringPromptRefused asserts the gate's
-// failure arm: the listed record is gone when the delete is about to
-// happen, and prune says so — exit 9, the refusal on stderr, no
-// deleted line — instead of pretending the run was deleted. Without
-// the gate the remove itself would fail with a raw "no such file"
-// error; the gate turns the vanished name into the same refusal
-// family as the other gates.
+// TestRunsPruneRecordVanishedDuringPromptRefused asserts the retry
+// gate's failure arm: the listed record is gone when the question is
+// on screen, the second listing no longer matches, and prune stops
+// before any delete — exit 9, the concise retry message, no deleted
+// line.
 func TestRunsPruneRecordVanishedDuringPromptRefused(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1706,17 +1937,14 @@ func TestRunsPruneRecordVanishedDuringPromptRefused(t *testing.T) {
 	if stdin.err != nil {
 		t.Fatalf("removal during the prompt failed: %v", stdin.err)
 	}
-	if code != 9 {
-		t.Fatalf("prune with the record vanished during the prompt = (%d, %q, %q), want exit 9", code, stdout.String(), stderr.String())
+	if code != 9 || stdout.String() != "" {
+		t.Fatalf("prune with the record vanished during the prompt = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr.String())
 	}
 	if _, err := os.Lstat(recordPath); !os.IsNotExist(err) {
-		t.Fatalf("%s exists after the prune: %v", recordPath, err)
-	}
-	if want := "kept 0 newest\n"; stdout.String() != want {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
-	}
-	if !strings.Contains(stderr.String(), "refusing to delete") || !strings.Contains(stderr.String(), "cannot be examined") {
-		t.Fatalf("stderr = %q, want the refusal for the vanished record", stderr.String())
+		t.Fatalf("%s exists after the retry: %v", recordPath, err)
 	}
 }
 
@@ -1738,16 +1966,11 @@ func (c *createRecordOnFirstRead) Read(p []byte) (int, error) {
 	return copy(p, "y\n"), io.EOF
 }
 
-// TestRunsPruneRecordAppearsDuringPromptRefused asserts the gate's
-// no-identity arm: a candidate whose file could not be looked up when
-// it was chosen — here a path that does not exist, injected through
-// the list seam — keeps nothing, so the delete cannot anchor on
-// anything, and a file that appears under the name while the question
-// is on screen is refused even though it is a regular file: nothing
-// about that file was ever shown, the delete says so with the
-// identity refusal, exit 9, and the file stays. The selection-time
-// lookup failure invents no new arm — the not-listed file gets the
-// same refusal every not-listed file gets.
+// TestRunsPruneRecordAppearsDuringPromptRefused asserts the
+// unchanged-selection path for a record appearing under a
+// previously missing name: the second selection is still the one the
+// user saw, so the original per-file identity guard refuses the
+// newly appeared file.
 func TestRunsPruneRecordAppearsDuringPromptRefused(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1799,16 +2022,10 @@ func (r *touchRecordOnFirstRead) Read(p []byte) (int, error) {
 }
 
 // TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime asserts the
-// grace-window re-check at the moment of the delete: an unknown
-// record selected while stale is touched during the prompt — the
-// record is being written right now, after selection already looked —
-// and the answer is y. Prune spares it and reports it as kept — the
-// kept line, and the summary counts it in the unreadable clause, the
-// same reporting a selection-time spare gets, never the still-running
-// clause — and exits 0: sparing is not a failure. A record with a
-// real outcome would go whatever its modification time, but this
-// record's outcome is unknown, so the freshness question is the one
-// that decides.
+// retry gate for a stale unknown record: the selection was a delete
+// candidate, the record is touched during the prompt, the second
+// listing now keeps it unreadable, and prune stops before any delete
+// — exit 9, the concise retry message, no kept line.
 func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1829,28 +2046,22 @@ func TestRunsPruneTouchedUnknownRecordKeptAtDeleteTime(t *testing.T) {
 	if stdin.err != nil {
 		t.Fatalf("touch during the prompt failed: %v", stdin.err)
 	}
-	want := "kept " + runID + "\nkept 0 newest, 1 unreadable\n"
-	if code != 0 || stdout.String() != want {
-		t.Fatalf("prune with the record touched during the prompt = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
+	if code != 9 || stdout.String() != "" {
+		t.Fatalf("prune with the record touched during the prompt = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr.String())
 	}
 	if _, err := os.Stat(recordPath); err != nil {
-		t.Fatalf("the touched unknown record %s was deleted: %v", recordPath, err)
+		t.Fatalf("the touched unknown record %s vanished after the retry: %v", recordPath, err)
 	}
 }
 
 // TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime
-// asserts the delete-time freshness check's sparing arm: a stale
-// malformed record selected as unknown is replaced during the prompt
-// by a different fresh thing under the same name — an empty
-// directory, the starkest replacement — and the answer is y. Prune
-// spares it before the identity and type questions are even asked:
-// exit 0, `kept <id>` on stdout, the summary counting the record
-// unreadable, and the directory still there afterwards. The identity
-// check would refuse this very name — that is why it is asked after
-// freshness — and sparing destroys nothing, so the record is
-// reported as kept even though the name no longer holds what was
-// listed. Without the freshness check, identity would refuse the
-// directory and the prune would exit 9.
+// asserts the retry gate for a stale malformed record: the unknown
+// record is replaced during the prompt by a directory under the same
+// name, the second listing no longer matches, and prune stops before
+// any delete — exit 9, the concise retry message, nothing kept.
 func TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime(t *testing.T) {
 	dir := t.TempDir()
 	withRunlogDir(t, dir)
@@ -1871,14 +2082,16 @@ func TestRunsPruneUnknownRecordReplacedByDirectoryKeptAtDeleteTime(t *testing.T)
 	if stdin.err != nil {
 		t.Fatalf("replacement during the prompt failed: %v", stdin.err)
 	}
-	want := "kept " + runID + "\nkept 0 newest, 1 unreadable\n"
-	if code != 0 || stdout.String() != want {
-		t.Fatalf("prune with the unknown record replaced by a directory = (%d, %q, %q), want (0, %q)", code, stdout.String(), stderr.String(), want)
+	if code != 9 || stdout.String() != "" {
+		t.Fatalf("prune with the unknown record replaced by a directory = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "runs prune retry: selection changed") {
+		t.Fatalf("stderr = %q, want the retry selection-change message", stderr.String())
 	}
 	if info, err := os.Lstat(recordPath); err != nil {
 		t.Fatalf("the replacement directory %s vanished: %v", recordPath, err)
 	} else if !info.IsDir() {
-		t.Fatalf("%s is not a directory after the prune", recordPath)
+		t.Fatalf("%s is not a directory after the retry", recordPath)
 	}
 }
 

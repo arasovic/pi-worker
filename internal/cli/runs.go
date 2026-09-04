@@ -131,17 +131,18 @@ func renderRunTable(w io.Writer, runs []runlog.Run) {
 	tab.Flush()
 }
 
-// runsPruneCommand deletes run records. Selection runs entirely on top
-// of runlogList — the same reader runs list uses — so prune and list
+// runsPruneCommand deletes run records. Selection starts on top of
+// runlogList — the same reader runs list uses — so prune and list
 // can never disagree about what is a record, what its outcome is, or
-// which runs are still alive, and the records directory is never
-// walked a second time. This is the first code in pi-worker that
-// deletes a user's files; the identity of each selected record's file
-// is captured when the candidate is chosen, and removeRunRecord
-// re-validates each path against the directory and the .jsonl rule,
-// re-checks that the name still holds the file that was listed, and
-// re-asks the grace-window question of unknown records, immediately
-// before the removal.
+// which runs are still alive. An affirmed interactive prune lists the
+// delete candidates again immediately before deletion and refuses to
+// delete anything if that second deletion list no longer matches the
+// first. This is the first code in pi-worker that deletes a user's
+// files; the identity of each selected record's file is captured when
+// the candidate is chosen, and removeRunRecord re-validates each path
+// against the directory and the .jsonl rule, re-checks that the name
+// still holds the file that was listed, and re-asks the grace-window
+// question of unknown records, immediately before the removal.
 func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader, stdout, stderr io.Writer) int {
 	// Without --yes, both documented non-deletion modes refuse before
 	// anything else: JSON callers must never be handed a prompt, and a
@@ -168,63 +169,15 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	}
 
 	// The first --keep entries are kept whatever their outcome and
-	// are never candidates. Every later entry is a candidate. Two
-	// kinds of candidate are kept, and they are reported apart. A
-	// candidate whose run is still running is kept and reported as
-	// running — a run still writing to its record must never have
-	// that record pulled out from under it. A candidate too
-	// unreadable to classify is kept and reported separately when
-	// its file could be one being written: either the file changed
-	// within the grace window, or its timestamp could not be read at
-	// all — a record whose timestamp this reader cannot even examine
-	// is exactly the one not to delete. The same freshness question
-	// is asked a second time, at the moment of each delete, because
-	// the prompt below can wait on a person: a record stale when
-	// listed may be freshly changed by the time the delete happens —
-	// see removeRunRecord. Every other candidate is deleted, stale
-	// unknown ones included: an unreadable record is exactly the
-	// junk this command exists to clear.
-	keptNewest := opts.keep
-	if keptNewest > len(runs) {
-		keptNewest = len(runs)
-	}
-	var toDelete []runlog.Run
-	var keptRunning []runlog.Run
-	var keptUnreadable []runlog.Run
-	// listedFiles holds, keyed by record path, the file each
-	// candidate was when it was chosen: what the delete compares
-	// against, so a name that no longer holds the file that was
-	// shown is refused instead of removed. A file that cannot be
-	// looked up here keeps nothing for its path — the delete-time
-	// lookup then produces the refusal, exactly the refusal the
-	// driver of that lookup already produces for any record it
-	// cannot examine.
-	listedFiles := make(map[string]os.FileInfo)
-	for i, run := range runs {
-		if i < opts.keep {
-			continue
-		}
-		if run.Outcome == "running" {
-			keptRunning = append(keptRunning, run)
-			continue
-		}
-		if run.Outcome == "unknown" && recordRecentlyModified(run.Path) {
-			keptUnreadable = append(keptUnreadable, run)
-			continue
-		}
-		toDelete = append(toDelete, run)
-		if info, err := os.Lstat(run.Path); err == nil {
-			listedFiles[run.Path] = info
-		}
-	}
-	keptRunningIDs := make([]string, 0, len(keptRunning))
-	for _, run := range keptRunning {
-		keptRunningIDs = append(keptRunningIDs, run.RunID)
-	}
-	keptUnreadableIDs := make([]string, 0, len(keptUnreadable))
-	for _, run := range keptUnreadable {
-		keptUnreadableIDs = append(keptUnreadableIDs, run.RunID)
-	}
+	// are never candidates. Every later entry is a candidate, and
+	// two kinds of candidate are kept and reported apart — a run
+	// still writing to its record must never have that record
+	// pulled out from under it, and a record too unreadable to
+	// classify is kept when its file could be one being written,
+	// the same freshness question asked a second time at the moment
+	// of each delete because the prompt below can wait on a person —
+	// see selectPruneRuns and removeRunRecord.
+	selection := selectPruneRuns(runs, opts.keep)
 
 	// Nothing selected is not an error: a missing or empty records
 	// directory lists no runs, and every later record may belong to a
@@ -235,12 +188,12 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// message on stderr and exit 9, with nothing claimed deleted, and
 	// the --json arm still rendering the empty document the way the
 	// cancelled path always reports what was deleted.
-	if len(toDelete) == 0 {
+	if len(selection.toDelete) == 0 {
 		if parent.Err() != nil {
-			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
+			return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		}
 		if opts.json {
-			return renderPruneDocument(stdout, stderr, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
+			return renderPruneDocument(stdout, stderr, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		}
 		fmt.Fprintln(stdout, "nothing to prune")
 		return 0
@@ -282,8 +235,8 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		// it asks, and both the listing and the question go to stderr:
 		// a person who redirected stdout must still see the question
 		// they are expected to answer.
-		renderRunTable(stderr, toDelete)
-		fmt.Fprintf(stderr, "delete %d run records? [y/N] ", len(toDelete))
+		renderRunTable(stderr, selection.toDelete)
+		fmt.Fprintf(stderr, "delete %d run records? [y/N] ", len(selection.toDelete))
 		// The answer is read on its own goroutine, and the command
 		// takes whichever arrives first — the answer or a cancelled
 		// context — so a Ctrl-C while the question is on screen ends
@@ -310,7 +263,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		}()
 		select {
 		case <-parent.Done():
-			return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
+			return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		case answer := <-answerCh:
 			if answer != "y" && answer != "yes" {
 				// Any other answer — n, an empty line, an EOF —
@@ -320,12 +273,40 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 				// a command that was told to stop never reports a
 				// finished prune.
 				if parent.Err() != nil {
-					return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
+					return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 				}
 				fmt.Fprintln(stdout, "nothing deleted")
 				return 0
 			}
 		}
+	}
+
+	if !opts.yes {
+		// The prompt has already shown the first selection. If the
+		// answer was affirmative, list the candidates again right
+		// before deletion and refuse to delete anything when the
+		// ordered deletion list no longer matches.
+		if parent.Err() != nil {
+			return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
+		}
+		freshRuns, err := runlogList(dir)
+		if parent.Err() != nil {
+			return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "pi-worker: runs prune retry: list runs: %v\n", err)
+			return 9
+		}
+		freshSelection := selectPruneRuns(freshRuns, opts.keep)
+		if !pruneDeletionSelectionEqual(selection.toDelete, freshSelection.toDelete) {
+			fmt.Fprintln(stderr, "pi-worker: runs prune retry: selection changed")
+			return 9
+		}
+		selection.keptRunning = freshSelection.keptRunning
+		selection.keptUnreadable = freshSelection.keptUnreadable
+		selection.keptRunningIDs = freshSelection.keptRunningIDs
+		selection.keptUnreadableIDs = freshSelection.keptUnreadableIDs
+		selection.keptNewest = freshSelection.keptNewest
 	}
 
 	// The context is read immediately after the prompt returned (or
@@ -336,7 +317,7 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// is covered by the select above, which takes a cancelled context
 	// while the question is on screen.
 	if parent.Err() != nil {
-		return cancelledPrune(stdout, stderr, opts, nil, keptRunningIDs, keptUnreadableIDs, keptNewest)
+		return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 	}
 
 	// Each candidate is deleted one at a time, oldest first, and a
@@ -348,30 +329,30 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// a candidate refused there is a failure like any other, and one
 	// spared there is reported as kept, not as deleted.
 	code := 0
-	deletedIDs := make([]string, 0, len(toDelete))
-	for i := len(toDelete) - 1; i >= 0; i-- {
+	deletedIDs := make([]string, 0, len(selection.toDelete))
+	for i := len(selection.toDelete) - 1; i >= 0; i-- {
 		// A cancelled context stops the prune before this delete: what
 		// was already deleted stays deleted and is reported, nothing
 		// further is removed, and the exit is 9.
 		if parent.Err() != nil {
-			return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptUnreadableIDs, keptNewest)
+			return cancelledPrune(stdout, stderr, opts, deletedIDs, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		}
-		run := toDelete[i]
-		spared, err := removeRunRecord(root, dir, run, listedFiles[run.Path])
+		run := selection.toDelete[i]
+		spared, err := removeRunRecord(root, dir, run, selection.listedFiles[run.Path])
 		if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: delete %s: %v\n", run.RunID, err)
 			code = 9
 			continue
 		}
 		if spared {
-			// A record spared at the moment of the delete joins the
-			// unreadable list the same way a selection-time spare did:
-			// removeRunRecord only spares a record it could not
+			// A delete-time spare is exactly the unreadable kind:
+			// removeRunRecord spares only a record it could not
 			// classify whose file changed within the grace window,
-			// never one it knows is running, so its id lands in the
-			// keptUnreadable summary count and --json array.
-			keptUnreadable = append(keptUnreadable, run)
-			keptUnreadableIDs = append(keptUnreadableIDs, run.RunID)
+			// never one it knows is running, so the record and its id
+			// join the keptUnreadable summary count and --json array
+			// just as a selection-time spare did.
+			selection.keptUnreadable = append(selection.keptUnreadable, run)
+			selection.keptUnreadableIDs = append(selection.keptUnreadableIDs, run.RunID)
 			if !opts.json {
 				fmt.Fprintf(stdout, "kept %s\n", run.RunID)
 			}
@@ -401,11 +382,11 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	//     the result is out, and a command that printed its result
 	//     must not then claim it was interrupted.
 	if parent.Err() != nil {
-		return cancelledPrune(stdout, stderr, opts, deletedIDs, keptRunningIDs, keptUnreadableIDs, keptNewest)
+		return cancelledPrune(stdout, stderr, opts, deletedIDs, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 	}
 
 	if opts.json {
-		if docCode := renderPruneDocument(stdout, stderr, deletedIDs, keptRunningIDs, keptUnreadableIDs, keptNewest); docCode != 0 {
+		if docCode := renderPruneDocument(stdout, stderr, deletedIDs, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest); docCode != 0 {
 			return docCode
 		}
 		return code
@@ -415,15 +396,100 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// The unreadable clause claims only what is known — the record
 	// could not be read, and nothing about when — and never calls an
 	// unreadable record running.
-	fmt.Fprintf(stdout, "kept %d newest", keptNewest)
-	if len(keptRunning) > 0 {
-		fmt.Fprintf(stdout, ", %d still running", len(keptRunning))
+	fmt.Fprintf(stdout, "kept %d newest", selection.keptNewest)
+	if len(selection.keptRunning) > 0 {
+		fmt.Fprintf(stdout, ", %d still running", len(selection.keptRunning))
 	}
-	if len(keptUnreadable) > 0 {
-		fmt.Fprintf(stdout, ", %d unreadable", len(keptUnreadable))
+	if len(selection.keptUnreadable) > 0 {
+		fmt.Fprintf(stdout, ", %d unreadable", len(selection.keptUnreadable))
 	}
 	fmt.Fprintln(stdout)
 	return code
+}
+
+// pruneSelection is one prune's whole selection in runs-newest-first
+// order: the records to delete, the running and unreadable records
+// spared and reported apart — with keptRunningIDs and
+// keptUnreadableIDs holding their ids in the same order — the
+// per-path file each delete candidate was when chosen, which
+// removeRunRecord compares the name against at the delete, and
+// keptNewest, the kept count capped at the number of listed runs.
+type pruneSelection struct {
+	toDelete          []runlog.Run
+	keptRunning       []runlog.Run
+	keptUnreadable    []runlog.Run
+	keptRunningIDs    []string
+	keptUnreadableIDs []string
+	listedFiles       map[string]os.FileInfo
+	keptNewest        int
+}
+
+// selectPruneRuns chooses what a prune deletes and what it spares,
+// running entirely on top of runlogList. The first keep entries are
+// kept whatever their outcome and are never candidates. Every later
+// entry is a candidate. Two kinds of candidate are kept, and they are
+// reported apart. A candidate whose run is still running is kept and
+// reported as running — a run still writing to its record must never
+// have that record pulled out from under it. A candidate too
+// unreadable to classify is kept and reported separately when its
+// file could be one being written: either the file changed within the
+// grace window, or its timestamp could not be read at all — a record
+// whose timestamp this reader cannot even examine is exactly the one
+// not to delete. The same freshness question is asked a second time,
+// at the moment of each delete, because the prompt can wait on a
+// person: a record stale when listed may be freshly changed by the
+// time the delete happens — see removeRunRecord. Every other
+// candidate is deleted, stale unknown ones included: an unreadable
+// record is exactly the junk this command exists to clear.
+func selectPruneRuns(runs []runlog.Run, keep int) pruneSelection {
+	var selection pruneSelection
+	selection.keptNewest = keep
+	if selection.keptNewest > len(runs) {
+		selection.keptNewest = len(runs)
+	}
+	// A candidate whose file cannot be looked up here keeps nothing
+	// for its path: what delete-time would compare is absent, and
+	// removeRunRecord refuses any record it cannot examine, so the
+	// entry-less candidate gets exactly that refusal at the delete.
+	selection.listedFiles = make(map[string]os.FileInfo)
+	for i, run := range runs {
+		if i < keep {
+			continue
+		}
+		if run.Outcome == "running" {
+			selection.keptRunning = append(selection.keptRunning, run)
+			continue
+		}
+		if run.Outcome == "unknown" && recordRecentlyModified(run.Path) {
+			selection.keptUnreadable = append(selection.keptUnreadable, run)
+			continue
+		}
+		selection.toDelete = append(selection.toDelete, run)
+		if info, err := os.Lstat(run.Path); err == nil {
+			selection.listedFiles[run.Path] = info
+		}
+	}
+	selection.keptRunningIDs = make([]string, 0, len(selection.keptRunning))
+	for _, run := range selection.keptRunning {
+		selection.keptRunningIDs = append(selection.keptRunningIDs, run.RunID)
+	}
+	selection.keptUnreadableIDs = make([]string, 0, len(selection.keptUnreadable))
+	for _, run := range selection.keptUnreadable {
+		selection.keptUnreadableIDs = append(selection.keptUnreadableIDs, run.RunID)
+	}
+	return selection
+}
+
+func pruneDeletionSelectionEqual(a, b []runlog.Run) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Path != b[i].Path || a[i].RunID != b[i].RunID {
+			return false
+		}
+	}
+	return true
 }
 
 // pruneDocument is the runs prune JSON document's shape. It is this
