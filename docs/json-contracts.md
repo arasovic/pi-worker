@@ -633,28 +633,30 @@ stated skip reason — and a caller who never declared gets no field at all.
 Silence is never a clean check. The normal final `--writes` comparison
 still pools declarations at run level. For a multi-task run where every
 task declared disjoint writes and Git measurement is available, pi-worker
-also records each task's own declared dirty-output identities when that
-worker settles and compares them with final state after all workers settle;
-if a later still-running worker changes, adds under, or erases a settled
-task's declared output, those paths are reported through the existing
-`writes.undeclared` / `undeclaredCount` fields and the run exits 4 with
-outcome `undeclared-writes`, even though the path was declared by its
-owner — no JSON field or schema version changes. Identity covers
+also monitors settled outputs: the monitor compares two identities per task
+— the identities of that task's declared dirty outputs immediately after
+that worker returns and again after all workers settle (not continuous
+tracing) — and proven interference (final identity differs from settled
+identity) is reported through the existing `writes.undeclared` /
+`undeclaredCount` fields and the run exits 4 with outcome
+`undeclared-writes`, even though the path was declared by its owner — no
+JSON field or schema version changes. Identity covers
 content/kind/executable state and relevant directory/nested-repository
 shape; contents/hashes are never exposed. Pi-worker never restores or
 overwrites files to repair interference. A required settlement/final
 snapshot failure returns a controller error; the CLI exits 9 on stderr
 and emits no result/JSON document — no clean/success result is produced.
-Honest limit: a foreign write fully made and
-reverted before the owner settles is not observable without process-level
-tracing; `--writes` remains post-hoc checking, not a sandbox. Final
-changes otherwise remain pooled, but this post-settlement window now has
-narrow ownership evidence from disjoint declarations — replacing the older
-"wholly unknowable" phrasing for that window. The same limit holds one
-level up: a concurrent writer — another run, an editor, a build — lands
-in whichever run is measuring, so while any run declares `--writes`,
-that workspace must have one run at a time; separate concurrent runs in
-the same workspace remain disallowed. Root `writes` carries either a
+Honest limits (still post-hoc, not a sandbox, not continuous tracing): a
+foreign write fully made and reverted before the owner's settlement
+snapshot is invisible; so is an interim post-settlement write restored to
+the exact settled identity before the final snapshot — in that latter case
+the owner's final output is intact, so the run is not accused despite the
+interim interference. Final changes otherwise remain pooled, but this
+post-settlement window now has narrow ownership evidence from disjoint
+declarations. Cross-run writes can be attributed to whichever run measures
+them, so pi-worker does not enforce a cross-run lock: callers must
+serialize runs sharing a workspace or give them separate worktrees (e.g.
+`--worktree`). Root `writes` carries either a
 reason it could not run or the verdict, never both:
 
 - `skipped`: present only when the check could not run, with the single
