@@ -4,7 +4,7 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `0.84.4`.
+Observed version: `0.85.0`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
@@ -39,10 +39,55 @@ appear on the end frame of each content block (`thinking_end`,
 usage so far, so a message may report more than one such frame with the
 same figure. The delta frames report all-zero usage, and one provider
 reported all-zero usage on every frame of a tool-using run.
+The surface was re-probed on 2026-09-04 against 0.85.0 from `pi --version`
+and `pi --help` (`npm view @earendil-works/pi-coding-agent version` and the
+local global package both report `0.85.0`); `pi --help` still exposes every
+required pi-worker launch flag (`--mode rpc`, `--model`, `--session-dir`,
+`--name`, `--no-context-files`, `--no-extensions`, `--no-skills`,
+`--no-prompt-templates`, `--no-themes`, `--no-approve`, `--tools`), and
+`pi auth --help` still lists `print-api-key`, `print-bearer-token`, and
+`check`; no credential-printing/check command was run. A promptless direct
+RPC session confirmed success shapes for `get_state`,
+`get_available_models`, `get_available_thinking_levels`, `set_model`,
+`set_thinking_level`, and `get_last_assistant_text` (empty final text
+remained `data:{}`) with exact model and medium thinking confirmation for
+`opencodex/command-code/meta-muse-spark-1.2-contributor`; `pi-worker models --json --debug --timeout 30s` succeeded; one real pi-worker Muse medium
+implementation task created an isolated worktree, read and edited Go files,
+ran tests, returned `outcome:completed` with exact model/thinking
+confirmation, usage, declared-writes success, verification success, and
+worktree metadata; and one bounded read-only direct RPC prompt using Muse
+medium called `read` and replied `OK`, then emitted `agent_settled` with
+`get_last_assistant_text` returning `data:{text:"OK"}`. The installed
+`rpc-types.d.ts` and `rpc-mode.js` retain the response containers, command
+names, `agent_settled`, `message_update`, `assistantMessageEvent`, and
+failure response used by pi-worker; direct RPC `bash` still exists upstream
+and remains outside pi-worker's outbound allowlist. Pi 0.85.0 changelog
+changes relevant to pi-worker are compatible — provider stream
+event-sequence fixes, built-in tools now honoring `ctx.cwd`, restored client
+compatibility entry point, and RPC abort fix — and require no pi-worker
+production adaptation beyond updating compatibility evidence and locking the
+repeated-usage-frame observation.
+The usage frame vocabulary was re-measured on 2026-09-04 against 0.85.0
+with a direct read-only RPC prompt using Muse medium; the
+`assistantMessageEvent.type` subtypes directly observed on that prompt were
+`toolcall_start`, `toolcall_delta`, `toolcall_end`, `text_start`,
+`text_delta`, and `text_end`, with no `done` or `error` subtype forwarded by
+the RPC transport and no thinking frames emitted on that run; installed source
+retains the broader event vocabulary (`thinking_start`, `thinking_delta`,
+`thinking_end`, `text_start`, `text_delta`, `text_end`, `toolcall_start`,
+`toolcall_delta`, `toolcall_end`). That direct tool run
+repeated the same cumulative usage on `toolcall_start`, `toolcall_delta`,
+and `toolcall_end` (input 1283, output 152, cacheRead 0, cacheWrite 0,
+reasoning 0, totalTokens 1435), and the following text message emitted zero
+usage on `text_start` and `text_delta`, then the final figure on `text_end`
+(input 158, output 142, cacheRead 1265, cacheWrite 0, totalTokens 1565)
+for a correct run total of input 1441, output 294, cacheRead 1265,
+totalTokens 3000; repeated frames within one message must replace, not sum,
+and pi-worker's latest-frame-per-message rule remains correct.
 
 ## Compatibility gate
 
-**Gate result: pass for Pi 0.84.4.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 0.85.0.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.
@@ -191,7 +236,7 @@ The `get_available_models` success container is exactly
 data:{models: Model[]}}`. The `set_model` success container is exactly
 `{type:"response", command:"set_model", success:true, data:Model}`. The
 full version-pinned upstream `Model` declaration is in
-`@earendil-works/pi-coding-agent@0.84.1/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
+`@earendil-works/pi-coding-agent@0.85.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
 it is not duplicated here because v0 must not validate or reconstruct it.
 
 V0 decodes each catalog entry as this projection only:
@@ -213,20 +258,24 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 0.84.1 observes the `get_available_thinking_levels` success container as
-`data:{levels: ThinkingLevel[]}`, with exact levels `off`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, and `max`. V0 requires a non-null array of unique,
-recognized strings. A well-formed `set_thinking_level success:false` is the
+Pi 0.85.0 observes the `get_available_thinking_levels` success container as
+`data:{levels: ThinkingLevel[]}`, where the levels are the active model's
+supported subset of the recognized seven levels (`off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`), not always all seven; the promptless probe
+returned `high`, `max` for Command Code DeepSeek and `low`, `medium`, `high`,
+`xhigh`, `max` after switching to Command Code Muse. V0 requires a non-null
+array of unique, recognized strings (a non-null unique subset of recognized
+levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
 malformed responses remain failures.
 
-Pi 0.84.1 observes the `get_state` success container exactly as
+Pi 0.85.0 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
 V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
 required after model activation; the model must equal the selected catalog
 entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
-`@earendil-works/pi-coding-agent@0.84.1/dist/modes/rpc/rpc-types.d.ts`; V0
+`@earendil-works/pi-coding-agent@0.85.0/dist/modes/rpc/rpc-types.d.ts`; V0
 does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
@@ -249,7 +298,7 @@ The observed upstream RPC `abort` command is not on this allowlist. Pi-worker
 must reject and must not emit it.
 
 Pi-worker must reject and must not emit every other RPC type. In particular,
-it must reject direct RPC `bash`: Pi 0.84.1 dispatches that command directly,
+it must reject direct RPC `bash`: Pi 0.85.0 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
 ### Debug observability
@@ -305,14 +354,16 @@ Relevant events include:
 `message_update` is delta-only for message content: reconstruct live text
 by `contentIndex` from `message_start` plus update events, and do not
 expect a cumulative `message` field. Its `usage` field is the exception to
-the delta semantics in the other direction: numbers appear on the end
-frame of each content block (`thinking_end`, `toolcall_end`, `text_end`)
-and carry the message's cumulative usage so far, so a message may report
-more than one such frame with the same figure; the delta frames carried
-all-zero usage objects in the observed runs — never a running total and
-never a delta. No `message_update` frame type terminates the
-measurement; pi-worker reads the latest usage a message reported, bounded
-by `message_start` and `message_end`. Assistant `stopReason` can be
+the delta semantics in the other direction: Pi 0.85.0 can repeat the same
+cumulative usage on `toolcall_start`, `toolcall_delta`, and `toolcall_end`,
+and the measured text message emitted zero usage on `text_start` and
+`text_delta`, then the final figure on `text_end`; each frame that carries
+usage carries the message's cumulative usage so far, so a message may report
+more than one such frame with the same figure. No `message_update` frame
+type terminates the measurement; pi-worker reads the latest usage a message
+reported, bounded by `message_start` and `message_end`, and that
+latest-frame-per-message rule remains correct — repeated frames within one
+message must replace, not sum. Assistant `stopReason` can be
 `stop`, `length`, `toolUse`, `error`, or `aborted`; it is not the session
 terminal condition. A latest assistant `message_end` with
 `stopReason: "error"` makes the worker fail with `upstream/model turn ended
@@ -329,11 +380,13 @@ assistant message does not inherit an earlier error. The assistant's
 
 ## Tool semantics
 
-Built-in tool names reported by `pi --help` are `read`, `bash`, `edit`,
-`write`, `grep`, `find`, and `ls`. In v0, Pi-worker currently enables all seven
-and always includes `bash`, which can run arbitrary shell commands with the
-user's host permissions. `--tools` is an allowlist of capabilities, not a
-sandbox.
+Built-in tool names reported by `pi --help` as of Pi 0.85.0 are `read`,
+`bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell`. Pi-worker
+intentionally continues enabling only its established seven
+(`read,grep,find,ls,edit,write,bash`) and does not enable `powershell` in
+this update. In v0, `bash` is always enabled and can run arbitrary shell
+commands with the user's host permissions. `--tools` is an allowlist of
+capabilities, not a sandbox.
 
 `find` accepts `{ "pattern": string, "path"?: string, "limit"?: number }`.
 Its installed implementation searches files by glob pattern, returns paths
