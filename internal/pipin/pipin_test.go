@@ -64,8 +64,9 @@ Pi 1.2.7 is stale deep in the tree.
 		"README.md": `# Fixture readme
 Pi 1.2.3 matches the pin already.
 `,
-		"node_modules/dep/README.md": "Pi 5.5.5 inside node_modules is skipped.\n",
-		"dist/out.md":                "Pi 5.5.5 inside dist is skipped.\n",
+		"node_modules/dep/README.md":               "Pi 5.5.5 inside node_modules is skipped.\n",
+		"dist/out.md":                              "Pi 5.5.5 inside dist is skipped.\n",
+		".pi-worker/worktrees/stale/docs/guide.md": "Pi 9.9.9 inside .pi-worker is skipped.\n",
 	})
 	return root
 }
@@ -183,8 +184,9 @@ Pi 1.2.3 is stale deep in the tree.
 		"README.md": `# Fixture readme
 Pi 1.2.3 matches the pin already.
 `,
-		"node_modules/dep/README.md": "Pi 5.5.5 inside node_modules is skipped.\n",
-		"dist/out.md":                "Pi 5.5.5 inside dist is skipped.\n",
+		"node_modules/dep/README.md":               "Pi 5.5.5 inside node_modules is skipped.\n",
+		"dist/out.md":                              "Pi 5.5.5 inside dist is skipped.\n",
+		".pi-worker/worktrees/stale/docs/guide.md": "Pi 9.9.9 inside .pi-worker is skipped.\n",
 	}
 	for path, want := range expect {
 		data, err := os.ReadFile(filepath.Join(root, path))
