@@ -149,9 +149,10 @@ type Result struct {
 // workspace git state before and after the run and measures the change
 // manifest against the before-state HEAD.
 type Controller struct {
-	worker       pi.Worker
-	verifier     Verifier
-	gitInspector GitInspector
+	worker             pi.Worker
+	verifier           Verifier
+	gitInspector       GitInspector
+	afterWorkerSettled func(index int)
 }
 
 // Option configures a Controller.
@@ -244,16 +245,25 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// unborn-head omission — or outside a git work tree.
 	var dirtyStamps map[string]fileStamp
 	var metadata *gitMetadataSnapshot
+	var repoRootVal string
 	if before != nil && beforeErr == nil && before.Head != "" {
 		root, err := repoRoot(ctx, req.Workspace)
 		if err != nil {
 			beforeErr = err
 		} else {
+			repoRootVal = root
 			metadata, beforeErr = snapshotGitMetadata(ctx, root)
 			if beforeErr == nil && before.Dirty {
 				dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
 			}
 		}
+	}
+	monitoringEnabled := len(req.Tasks) > 1 && writesDeclaredOnEveryTask(req.Tasks) && before != nil && beforeErr == nil && before.Head != "" && repoRootVal != ""
+	var settledProjections []map[string]fileStamp
+	var settlementErr error
+	var settlementMu sync.Mutex
+	if monitoringEnabled {
+		settledProjections = make([]map[string]fileStamp, len(req.Tasks))
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
@@ -288,9 +298,46 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			// know them.
 			result.DataFiles = dataFiles
 			results[index] = result
+			if monitoringEnabled {
+				// Use the manifest budget: same dirty-stamp work as measureChanges.
+				snapCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
+				stamps, snapErr := snapshotDirtyStamps(snapCtx, req.Workspace)
+				cancel()
+				var captured bool
+				settlementMu.Lock()
+				if snapErr != nil && settlementErr == nil {
+					settlementErr = fmt.Errorf("controller: settlement snapshot task %d: %w", index+1, snapErr)
+				} else if snapErr == nil {
+					settledProjections[index] = projectedTaskStamps(stamps, task, repoRootVal, req.Workspace)
+					captured = true
+				}
+				settlementMu.Unlock()
+				if captured && c.afterWorkerSettled != nil {
+					c.afterWorkerSettled(index)
+				}
+			}
 		}(i, task)
 	}
 	wg.Wait()
+	if monitoringEnabled && settlementErr != nil {
+		return Result{}, settlementErr
+	}
+	var extraUndeclared []string
+	if monitoringEnabled {
+		// Use the manifest budget: same dirty-stamp work as measureChanges.
+		finalCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
+		finalStamps, finalErr := snapshotDirtyStamps(finalCtx, req.Workspace)
+		cancel()
+		if finalErr != nil {
+			return Result{}, fmt.Errorf("controller: final snapshot: %w", finalErr)
+		}
+		for idx := range req.Tasks {
+			settled := settledProjections[idx]
+			finalProj := projectedTaskStamps(finalStamps, req.Tasks[idx], repoRootVal, req.Workspace)
+			diff := diffProjectedStamps(settled, finalProj)
+			extraUndeclared = append(extraUndeclared, diff...)
+		}
+	}
 	result := Result{
 		SchemaVersion: contracts.SchemaVersion,
 		Status:        aggregateStatus(ctx, results),
@@ -356,7 +403,11 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// context and no timeout of its own. No declaration, no field:
 	// silence means the caller never asked.
 	if anyWritesDeclared(req.Tasks) {
-		result.Writes = checkWrites(result.Changes, req.Tasks, req.Workspace)
+		if monitoringEnabled {
+			result.Writes = checkWritesWithExtra(result.Changes, req.Tasks, req.Workspace, extraUndeclared)
+		} else {
+			result.Writes = checkWrites(result.Changes, req.Tasks, req.Workspace)
+		}
 	}
 	// Verification runs once for the whole run after every worker has
 	// settled, and only on a completed run with a live context: a partial

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -844,4 +846,246 @@ func TestControllerLabelsDebugLinesWithWorkerIdentity(t *testing.T) {
 			t.Fatalf("no debug line labeled %q:\n%s", id, out)
 		}
 	}
+}
+
+func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *testing.T) {
+	dir := t.TempDir()
+	isolateGitConfig(t)
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "test@pi-worker")
+	runGit(t, dir, "config", "user.name", "pi-worker test")
+	originalA := []byte("original A\n")
+	originalB := []byte("original B\n")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), originalA, 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), originalB, 0o644); err != nil {
+		t.Fatalf("write b.txt: %v", err)
+	}
+	runGit(t, dir, "add", "a.txt", "b.txt")
+	runGit(t, dir, "commit", "-q", "-m", "initial")
+
+	gate := make(chan struct{})
+	afterA := make(chan struct{})
+	type regressionWorker struct {
+		mu        sync.Mutex
+		active    int
+		maxActive int
+		dir       string
+		gate      chan struct{}
+		gateAt    int
+		afterA    chan struct{}
+	}
+	w := &regressionWorker{dir: dir, gate: gate, gateAt: 2, afterA: afterA}
+	// Use closure to capture worker behavior via prompt dispatch.
+	worker := &funcWorker{
+		fn: func(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+			w.mu.Lock()
+			w.active++
+			if w.active > w.maxActive {
+				w.maxActive = w.active
+			}
+			if w.gate != nil && w.active == w.gateAt {
+				close(w.gate)
+			}
+			w.mu.Unlock()
+			defer func() {
+				w.mu.Lock()
+				w.active--
+				w.mu.Unlock()
+			}()
+			if w.gate != nil {
+				<-w.gate
+			}
+			switch req.Prompt {
+			case "task-a":
+				if err := os.WriteFile(filepath.Join(w.dir, "a.txt"), []byte("changed by A\n"), 0o644); err != nil {
+					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+				}
+				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "a done"}
+			case "task-b":
+				<-w.afterA
+				if err := os.WriteFile(filepath.Join(w.dir, "b.txt"), []byte("changed by B\n"), 0o644); err != nil {
+					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+				}
+				if err := os.WriteFile(filepath.Join(w.dir, "a.txt"), originalA, 0o644); err != nil {
+					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+				}
+				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "b done"}
+			default:
+				return pi.WorkerResult{Status: pi.StatusError, Error: "unknown prompt"}
+			}
+		},
+	}
+	controller := New(worker, WithGitInspector(NewDefaultGitInspector()))
+	controller.afterWorkerSettled = func(index int) {
+		if index == 0 {
+			close(afterA)
+		}
+	}
+	req := Request{
+		Tasks: []Task{
+			{Prompt: "task-a", Model: "acme/m-1", Writes: declaredPaths("a.txt")},
+			{Prompt: "task-b", Model: "acme/m-1", Writes: declaredPaths("b.txt")},
+		},
+		Workspace: dir,
+	}
+	result, err := controller.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if w.maxActive != 2 {
+		t.Fatalf("peak concurrency = %d, want 2 (workers did not run concurrently)", w.maxActive)
+	}
+	if len(result.Workers) != 2 {
+		t.Fatalf("workers len = %d, want 2", len(result.Workers))
+	}
+	for i, wr := range result.Workers {
+		if wr.Status != pi.StatusCompleted {
+			t.Fatalf("worker %d status = %q, want completed", i, wr.Status)
+		}
+	}
+	if result.Changes == nil || result.Changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want measured manifest with only b.txt", result.Changes)
+	}
+	// Final manifest must contain only b.txt (a.txt was restored to HEAD).
+	hasB, hasA := false, false
+	for _, f := range result.Changes.Files {
+		if f.Path == "b.txt" {
+			hasB = true
+		}
+		if f.Path == "a.txt" {
+			hasA = true
+		}
+	}
+	if !hasB {
+		t.Fatalf("changes missing b.txt: %#v", result.Changes.Files)
+	}
+	if hasA {
+		t.Fatalf("changes must not contain a.txt (it was restored), got %#v", result.Changes.Files)
+	}
+	if result.Changes.TotalFiles != 1 {
+		t.Fatalf("TotalFiles = %d, want 1", result.Changes.TotalFiles)
+	}
+	if result.Writes == nil {
+		t.Fatalf("writes is nil, want undeclared a.txt")
+	}
+	if result.Writes.Skipped != "" {
+		t.Fatalf("writes skipped = %q, want empty", result.Writes.Skipped)
+	}
+	if result.Writes.UndeclaredCount != 1 || len(result.Writes.Undeclared) != 1 || result.Writes.Undeclared[0] != "a.txt" {
+		t.Fatalf("writes = %#v, want exactly [a.txt]", result.Writes)
+	}
+	if result.Writes.Truncated {
+		t.Fatalf("writes truncated unexpectedly")
+	}
+	// Controller must not have auto-restored files; final workspace reflects B's actions.
+	gotA, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatalf("read a.txt: %v", err)
+	}
+	if string(gotA) != string(originalA) {
+		t.Fatalf("a.txt = %q, want original %q (controller must not restore)", string(gotA), string(originalA))
+	}
+	gotB, err := os.ReadFile(filepath.Join(dir, "b.txt"))
+	if err != nil {
+		t.Fatalf("read b.txt: %v", err)
+	}
+	if string(gotB) != "changed by B\n" {
+		t.Fatalf("b.txt = %q, want changed by B", string(gotB))
+	}
+}
+
+func TestControllerDisjointOutputsPreservedWritesOk(t *testing.T) {
+	dir := t.TempDir()
+	isolateGitConfig(t)
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "test@pi-worker")
+	runGit(t, dir, "config", "user.name", "pi-worker test")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("orig A\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("orig B\n"), 0o644); err != nil {
+		t.Fatalf("write b.txt: %v", err)
+	}
+	runGit(t, dir, "add", "a.txt", "b.txt")
+	runGit(t, dir, "commit", "-q", "-m", "initial")
+
+	gate := make(chan struct{})
+	type disjointWorker struct {
+		mu        sync.Mutex
+		active    int
+		maxActive int
+		dir       string
+		gate      chan struct{}
+		gateAt    int
+	}
+	dw := &disjointWorker{dir: dir, gate: gate, gateAt: 2}
+	worker := &funcWorker{
+		fn: func(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+			dw.mu.Lock()
+			dw.active++
+			if dw.active > dw.maxActive {
+				dw.maxActive = dw.active
+			}
+			if dw.gate != nil && dw.active == dw.gateAt {
+				close(dw.gate)
+			}
+			dw.mu.Unlock()
+			defer func() {
+				dw.mu.Lock()
+				dw.active--
+				dw.mu.Unlock()
+			}()
+			<-dw.gate
+			switch req.Prompt {
+			case "task-a":
+				if err := os.WriteFile(filepath.Join(dw.dir, "a.txt"), []byte("new A\n"), 0o644); err != nil {
+					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+				}
+				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "a done"}
+			case "task-b":
+				if err := os.WriteFile(filepath.Join(dw.dir, "b.txt"), []byte("new B\n"), 0o644); err != nil {
+					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+				}
+				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "b done"}
+			default:
+				return pi.WorkerResult{Status: pi.StatusError, Error: "unknown"}
+			}
+		},
+	}
+	req := Request{
+		Tasks: []Task{
+			{Prompt: "task-a", Model: "acme/m-1", Writes: declaredPaths("a.txt")},
+			{Prompt: "task-b", Model: "acme/m-1", Writes: declaredPaths("b.txt")},
+		},
+		Workspace: dir,
+	}
+	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Writes == nil {
+		t.Fatalf("writes is nil, want ok")
+	}
+	if result.Writes.Skipped != "" {
+		t.Fatalf("writes skipped = %q, want empty", result.Writes.Skipped)
+	}
+	if result.Writes.UndeclaredCount != 0 {
+		t.Fatalf("writes undeclaredCount = %d, want 0", result.Writes.UndeclaredCount)
+	}
+	if len(result.Writes.Undeclared) != 0 {
+		t.Fatalf("writes undeclared = %v, want empty", result.Writes.Undeclared)
+	}
+	if result.Writes.Truncated {
+		t.Fatalf("writes truncated unexpectedly")
+	}
+}
+
+type funcWorker struct {
+	fn func(context.Context, pi.WorkerRequest) pi.WorkerResult
+}
+
+func (f *funcWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+	return f.fn(ctx, req)
 }
