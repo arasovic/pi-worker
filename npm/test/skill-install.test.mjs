@@ -40,6 +40,9 @@ const rules = {
   }],
 };
 
+const windowsSymlinkSkip = process.platform === "win32" ? "symlink permissions vary on windows" : undefined;
+const windowsProcessGroupSkip = process.platform === "win32" ? "process-group signals are not portable on windows" : undefined;
+
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "pi-worker-install-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -909,8 +912,7 @@ test("retries a one-shot blocked receipt failure as a failed receipt", async (t)
   assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "failed");
 });
 
-test("a symlinked prior receipt never confers ownership on a recognized external skill", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("a symlinked prior receipt never confers ownership on a recognized external skill", { skip: windowsSymlinkSkip }, async (t) => {
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const copy = join(f.home, ".test", "skills", "pi-worker");
@@ -962,10 +964,7 @@ test("malformed and oversized prior receipts never confer ownership on recognize
 
 test("foreign agent copy and symlink targets block without mutation", async (t) => {
   for (const topology of ["copy", "symlink"]) {
-    await t.test(topology, async (t) => {
-      if (topology === "symlink" && process.platform === "win32") {
-        t.skip("symlink permissions vary on windows");
-      }
+    await t.test(topology, { skip: topology === "symlink" ? windowsSymlinkSkip : undefined }, async (t) => {
       const f = fixture(t);
       const agentTarget = join(f.home, ".test", "skills", "pi-worker");
       mkdirSync(join(agentTarget, ".."), { recursive: true });
@@ -1036,8 +1035,7 @@ test("does not add process signal listeners for a non-detached Windows-mode inst
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  test(`forwards ${signal} to the detached installer and keeps partial ownership recoverable`, { timeout: 10_000 }, async (t) => {
-    if (process.platform === "win32") t.skip("process-group signals are not portable on windows");
+  test(`forwards ${signal} to the detached installer and keeps partial ownership recoverable`, { timeout: 10_000, skip: windowsProcessGroupSkip }, async (t) => {
 
     const f = fixture(t);
     const canonical = join(f.home, ".agents", "skills", "pi-worker");
@@ -1183,8 +1181,7 @@ process.stdout.write("RESULT:" + result.outcome + "\\n");
   });
 }
 
-test("detached installer terminates shortly after owner is hard-killed", { timeout: 10_000 }, async (t) => {
-  if (process.platform === "win32") return t.skip("process-group signals are not portable on windows");
+test("detached installer terminates shortly after owner is hard-killed", { timeout: 10_000, skip: windowsProcessGroupSkip }, async (t) => {
 
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
