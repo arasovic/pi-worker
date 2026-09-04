@@ -29,7 +29,7 @@ type worktreeListEntry struct {
 	Merged bool   `json:"merged"`
 }
 
-func worktreesCommand(parent context.Context, args []string, stdout, stderr io.Writer) int {
+func worktreesCommand(parent context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	opts, err := parseWorktreesArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
@@ -40,7 +40,7 @@ func worktreesCommand(parent context.Context, args []string, stdout, stderr io.W
 	case "list":
 		return worktreesListCommand(parent, opts, stdout, stderr)
 	case "remove":
-		return worktreesRemoveCommand(parent, opts, stdout, stderr)
+		return worktreesRemoveCommand(parent, opts, stdin, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "pi-worker: unknown worktrees command %q\n", opts.command)
 		printUsage(stderr)
@@ -48,7 +48,7 @@ func worktreesCommand(parent context.Context, args []string, stdout, stderr io.W
 	}
 }
 
-func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdout, stderr io.Writer) int {
+func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, _ io.Reader, stdout, stderr io.Writer) int {
 	if !opts.yes {
 		fmt.Fprint(stderr, "pi-worker: worktrees remove needs --yes when it cannot ask\n")
 		return 2

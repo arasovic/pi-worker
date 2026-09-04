@@ -142,7 +142,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "worktrees":
 		ctx, stop := interruptContext()
 		defer stop()
-		return worktreesCommand(ctx, args[1:], stdout, stderr)
+		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -177,7 +177,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "runs":
 		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "worktrees":
-		return worktreesCommand(ctx, args[1:], stdout, stderr)
+		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
