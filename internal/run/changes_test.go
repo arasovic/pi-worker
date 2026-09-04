@@ -231,11 +231,14 @@ func TestControllerChangesDirtyBeforeStateRevertedToCommit(t *testing.T) {
 }
 
 func TestControllerChangesDirtyBeforeStateRestoredToPreRunContent(t *testing.T) {
-	// A worker that restores an already-dirty file to its exact pre-run
-	// content leaves the stamp unchanged — same size, same modification
-	// time — so the path is subtracted and absent from the manifest.
-	// The deliberate, accepted false negative: net change is zero and
-	// the stamp cannot see a write that leaves no trace.
+	// A worker that restores an already-dirty tracked file to its exact
+	// pre-run content leaves the stamp unchanged — same size, same
+	// modification time, same content hash — so the path is subtracted
+	// and absent from the manifest. The deliberate, accepted absence:
+	// net change is zero. This is the legitimate net-zero restoration
+	// that the content-identity check must keep subtracting, as distinct
+	// from a same-size rewrite with a restored modification time, whose
+	// bytes differ and which must stay reported.
 	dir := newGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty content\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -252,7 +255,7 @@ func TestControllerChangesDirtyBeforeStateRestoredToPreRunContent(t *testing.T) 
 			return err
 		}
 		// Restore the modification time too, so the stamp matches: the
-		// run wrote nothing the manifest can see, by construction.
+		// run wrote the same bytes back, and net change is zero.
 		return os.Chtimes(filepath.Join(dir, "file.txt"), stampTime, stampTime)
 	}}, dir)
 	changes := result.Changes
@@ -261,6 +264,176 @@ func TestControllerChangesDirtyBeforeStateRestoredToPreRunContent(t *testing.T) 
 	}
 	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
 		t.Fatalf("changes = %#v, want the restored path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateSameSizeRewriteRestoredMtimeReported(t *testing.T) {
+	// Regression for #71: a worker that rewrites an already-dirty
+	// tracked file with different content of the same size and restores
+	// the pre-run modification time leaves the stat stamp — size,
+	// modification time, executable bit — unchanged, so before the
+	// content-identity fix the path was subtracted as untouched and the
+	// manifest reported a confident zero while the file on disk held
+	// the worker's content. The pre-run snapshot now carries the
+	// tracked path's content hash, the subtraction sees that the bytes
+	// moved even though the stat did not, and the path stays in the
+	// manifest with its counts measured against the before-state HEAD
+	// and dirtyBefore marked.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	stampTime := info.ModTime()
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("clean\n"), 0o644); err != nil {
+			return err
+		}
+		// Restore the modification time, the move that used to make the
+		// rewrite indistinguishable from an untouched file.
+		return os.Chtimes(filepath.Join(dir, "file.txt"), stampTime, stampTime)
+	}}, dir)
+	if got, err := os.ReadFile(filepath.Join(dir, "file.txt")); err != nil || string(got) != "clean\n" {
+		t.Fatalf("tracked file after run = %q, err %v; want the worker's rewrite on disk", got, err)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the rewritten path in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 1 || file.Deleted != 1 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +1/-1 with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateUntrackedSameSizeRewriteRestoredMtimeReported(t *testing.T) {
+	// Regression for #132: a worker that rewrites an already-dirty
+	// untracked regular file with different content of the same size
+	// and restores the pre-run modification time leaves the stat stamp
+	// — size, modification time, executable bit — unchanged, so before
+	// the fix the path was subtracted as untouched and the manifest
+	// reported a confident zero while the file on disk held the
+	// worker's content. The pre-run snapshot now carries the untracked
+	// regular file's content hash, the subtraction sees that the bytes
+	// moved even though the stat did not, and the path stays in the
+	// manifest.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "stray.txt"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	stampTime := info.ModTime()
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("clean\n"), 0o644); err != nil {
+			return err
+		}
+		// Restore the modification time, the move that used to make the
+		// rewrite indistinguishable from an untouched file.
+		return os.Chtimes(filepath.Join(dir, "stray.txt"), stampTime, stampTime)
+	}}, dir)
+	if got, err := os.ReadFile(filepath.Join(dir, "stray.txt")); err != nil || string(got) != "clean\n" {
+		t.Fatalf("untracked file after run = %q, err %v; want the worker's rewrite on disk", got, err)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the rewritten path in the manifest", changes)
+	}
+	file := changes.Files[0]
+	// An untracked file is measured against /dev/null, so the counts
+	// are a literal new-file comparison: the rewritten one-line file
+	// reads +1/-0 against the empty side. What matters for #132 is that
+	// the path stayed — the identity check kept it out of the
+	// subtraction — not the arithmetic shape of the counts.
+	if file.Path != "stray.txt" || file.Status != "added" || file.Added != 1 || file.Deleted != 0 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want stray.txt added +1/-0 with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateUntrackedRestoredToPreRunContentAbsent(t *testing.T) {
+	// A worker that restores an already-dirty untracked regular file to
+	// its exact pre-run content leaves the stamp unchanged — same size,
+	// same modification time, same content hash — so the path is
+	// subtracted and absent from the manifest. The deliberate, accepted
+	// absence: net change is zero. This is the legitimate net-zero
+	// restoration that the content-identity check must keep subtracting,
+	// as distinct from a same-size rewrite with a restored modification
+	// time, whose bytes differ and which must stay reported.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("dirty content\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "stray.txt"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	stampTime := info.ModTime()
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("dirty content\n"), 0o644); err != nil {
+			return err
+		}
+		// Restore the modification time too, so the stamp matches: the
+		// run wrote the same bytes back, and net change is zero.
+		return os.Chtimes(filepath.Join(dir, "stray.txt"), stampTime, stampTime)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the restored path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateUntrackedSymlinkRewriteReported(t *testing.T) {
+	// A symlink's content is its target string, and that content can be
+	// rewritten in place without moving the stat stamp: re-pointing a
+	// pre-existing untracked symlink at a different target of the same
+	// byte length leaves size, modification time, and the mode's
+	// symlink bit unchanged, so a stat-only stamp would subtract the
+	// move. The pre-run snapshot captures the target string, and the
+	// subtraction sees the re-pointing; the manifest lists the symlink.
+	dir := newGitRepo(t)
+	if err := os.Symlink("target-one.txt", filepath.Join(dir, "stray-link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "stray-link"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	stampTime := info.ModTime()
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.Remove(filepath.Join(dir, "stray-link")); err != nil {
+			return err
+		}
+		if err := os.Symlink("target-two.txt", filepath.Join(dir, "stray-link")); err != nil {
+			return err
+		}
+		// Restore the modification time, the move that used to make the
+		// re-pointing indistinguishable from an untouched link.
+		return os.Chtimes(filepath.Join(dir, "stray-link"), stampTime, stampTime)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the re-pointed symlink in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "stray-link" || file.Status != "added" || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want stray-link added with dirtyBefore", file)
 	}
 }
 
@@ -1072,6 +1245,337 @@ func TestControllerChangesMeasurementFailureOmitted(t *testing.T) {
 	}
 	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
 		t.Fatalf("changes = %#v, want no measured fields alongside the reason", changes)
+	}
+}
+
+func TestControllerChangesPreExistingIndexVisibilityMarkerOmitted(t *testing.T) {
+	// Regression for #78, pre-existing side: an index visibility marker
+	// — skip-worktree or assume-unchanged — that was already set when
+	// the run started suppresses git's worktree comparison for that
+	// entry entirely, so a rewrite of it during the run is invisible to
+	// every command the measurement runs, with no post-run metadata
+	// drift for the snapshot to detect. The run may even have changed
+	// nothing and the "changed nothing" claim would still be a promise
+	// the index cannot support: the manifest states the
+	// measurement-failed reason instead of a confident zero.
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "skip-worktree", args: []string{"update-index", "--skip-worktree", "--", "file.txt"}},
+		{name: "assume-unchanged", args: []string{"update-index", "--assume-unchanged", "--", "file.txt"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := newGitRepo(t)
+			runGit(t, dir, test.args...)
+			result := runWithChanges(t, newScriptedWorker(), dir)
+			changes := result.Changes
+			if changes == nil || changes.Omitted != reasonMeasurementFail {
+				t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+			}
+			if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+				t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+			}
+		})
+	}
+}
+
+func TestControllerChangesPreExistingTrustCtimeFalseOmitted(t *testing.T) {
+	// Regression for #130, pre-existing side: with core.trustctime=false
+	// in effect before the run, git ignores ctime and trusts the stat
+	// cache over content, so a same-size rewrite with a restored
+	// modification time is invisible to git itself — the probe in #130
+	// shows git status and git diff both silent. A run that changed
+	// nothing would report a confident zero the repository's own trust
+	// setting cannot support, so the manifest states the
+	// measurement-failed reason instead.
+	dir := newGitRepo(t)
+	runGit(t, dir, "config", "core.trustctime", "false")
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesSameRunTrustCtimeFalseOmitted(t *testing.T) {
+	// Regression for #130, drift side: a worker that sets
+	// core.trustctime=false during the run changes the trust input the
+	// post-run measurement runs under. Even a plainly visible write is
+	// then measured under a setting that can hide its siblings, so the
+	// changed value makes the measurement unavailable rather than
+	// producing a manifest the repository's own configuration no longer
+	// supports.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		cmd := exec.Command("git", "config", "core.trustctime", "false")
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("set trustctime: %v\n%s", err, output)
+		}
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesExplicitTrustCtimeTrueStillMeasured(t *testing.T) {
+	// The trust gate reads the effective value: a repository that sets
+	// core.trustctime=true explicitly means the same thing as the
+	// default and must measure normally — the gate is about the unsafe
+	// value, never about the key being present.
+	dir := newGitRepo(t)
+	runGit(t, dir, "config", "core.trustctime", "true")
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the modified file measured", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 1 || file.Deleted != 0 || file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +1/-0 without dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesPreExistingFileModeFalseOmitted(t *testing.T) {
+	// Regression for #133, pre-existing side: with core.fileMode=false
+	// in effect before the run, git suppresses every tracked mode-only
+	// difference, so a chmod a worker makes on an untouched file is
+	// invisible to the diff the measurement runs. A run that changed
+	// nothing would report a confident zero the repository's own trust
+	// setting cannot support, so the manifest states the
+	// measurement-failed reason instead.
+	dir := newGitRepo(t)
+	runGit(t, dir, "config", "core.fileMode", "false")
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesSameRunFileModeValueFlipOmitted(t *testing.T) {
+	// Regression for #133, drift side: a worker that flips
+	// core.fileMode=false during the run changes the trust input the
+	// post-run measurement runs under. Even a plainly visible write is
+	// then measured under a setting that can hide its siblings, so the
+	// changed value makes the measurement unavailable rather than
+	// producing a manifest the repository's own configuration no longer
+	// supports.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		cmd := exec.Command("git", "config", "core.fileMode", "false")
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("set fileMode: %v\n%s", err, output)
+		}
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesExplicitFileModeTrueStillMeasured(t *testing.T) {
+	// The trust gate reads the effective value: a repository that sets
+	// core.fileMode=true explicitly means the same thing as the default
+	// and must measure normally — the gate is about the unsafe value,
+	// never about the key being present.
+	dir := newGitRepo(t)
+	runGit(t, dir, "config", "core.fileMode", "true")
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the modified file measured", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 1 || file.Deleted != 0 || file.DirtyBefore {
+		t.Fatalf("file = %#v, want file.txt modified +1/-0 without dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesStaticExcludesFileConfigStillMeasured(t *testing.T) {
+	// A core.excludesFile value that names a real file before the run
+	// and never changes during it is a stable ignore-rule input, not
+	// drift: the ignore rules it carries applied equally to the pre-run
+	// and post-run listings, and a run that only modifies a tracked
+	// file must measure normally. The gate is about the input moving,
+	// never about the input existing.
+	dir := newGitRepo(t)
+	excludes := filepath.Join(dir, ".git", "test-excludes")
+	if err := os.WriteFile(excludes, nil, 0o644); err != nil {
+		t.Fatalf("write excludes: %v", err)
+	}
+	runGit(t, dir, "config", "core.excludesFile", excludes)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the modified file measured", changes)
+	}
+	if changes.Files[0].Path != "file.txt" || changes.Files[0].Status != "modified" {
+		t.Fatalf("file = %#v, want file.txt modified", changes.Files[0])
+	}
+}
+
+// gitignoredPayloadHidden reports whether git currently hides path in dir
+// behind an ignore rule, the precondition of the in-tree rule-file gap:
+// without a rule actually hiding the payload, the payload would be a
+// visible untracked path and the manifest would name it.
+func gitignoredPayloadHidden(t *testing.T, dir, path string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "check-ignore", "-q", "--", path)
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
+func TestControllerChangesSameRunTrackedGitignoreAppendHidesUntrackedPayloadOmitted(t *testing.T) {
+	// Regression for the spec-review gap on #78: a worker that appends an
+	// ignore rule to a tracked .gitignore and then creates an untracked
+	// file the new rule matches makes the post-run exclude-standard
+	// listing hide the payload, while the tracked diff reports only the
+	// .gitignore edit — a manifest that names the rule file but never
+	// the file it was written to hide. In-tree .gitignore rule files are
+	// a trust input: their set and content identity are captured before
+	// the run and compared after, and a rule file that moved makes the
+	// measurement unavailable rather than a confident but incomplete
+	// manifest. Ordinary staging and committing never touch a rule
+	// file's content, so they never trip the watch.
+	dir := newGitRepo(t)
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".gitignore"), []byte("# base rules\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		rule := filepath.Join(dir, "sub", ".gitignore")
+		file, err := os.OpenFile(rule, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := file.WriteString("\n*.tmp\n"); err != nil {
+			file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "sub", "payload.tmp"), []byte("hidden\n"), 0o644)
+	}}, dir)
+	// The gap is real only when the new rule hides the payload from the
+	// untracked listing; assert that precondition so the regression test
+	// cannot pass vacuously on a git that never applied the rule.
+	if !gitignoredPayloadHidden(t, dir, "sub/payload.tmp") {
+		t.Fatalf("test setup: git did not hide sub/payload.tmp behind the appended rule")
+	}
+	if out := runGit(t, dir, "ls-files", "--others", "--exclude-standard"); strings.Contains(out, "payload.tmp") {
+		t.Fatalf("test setup: sub/payload.tmp still visible to ls-files: %q", out)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesSameRunNewSelfIgnoredGitignoreHidesUntrackedPayloadOmitted(t *testing.T) {
+	// Regression for the spec-review gap on #78, self-ignored shape: a
+	// worker that creates a .gitignore whose first rule ignores the file
+	// itself and whose next rule hides a payload next to it leaves both
+	// the rule file and the payload invisible to the exclude-standard
+	// listing — the manifest would report nothing at all while the
+	// payload sits hidden on disk. The newly created rule file is a
+	// trust-input drift (the set grew during the run), so the
+	// measurement is unavailable rather than a confident zero.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sub", ".gitignore"), []byte(".gitignore\npayload.dat\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "sub", "payload.dat"), []byte("hidden\n"), 0o644)
+	}}, dir)
+	// Git must actually support the shape: the .gitignore ignores itself
+	// and the payload stays hidden. On a git that refuses to read rules
+	// from a self-ignored rule file, the payload would be a visible
+	// untracked path and the manifest would name it — which is a
+	// different, honest result this test does not pin.
+	if !gitignoredPayloadHidden(t, dir, "sub/.gitignore") || !gitignoredPayloadHidden(t, dir, "sub/payload.dat") {
+		t.Skipf("git does not support the self-ignored .gitignore shape")
+	}
+	if out := runGit(t, dir, "ls-files", "--others", "--exclude-standard"); out != "" {
+		t.Fatalf("test setup: self-ignored rule file or payload still visible: %q", out)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesUnchangedTrackedGitignoreRuleFileMeasured(t *testing.T) {
+	// The rule-file watch must never make an ordinary run unavailable:
+	// a tracked .gitignore that existed before the run, was not touched
+	// by it, and whose rules applied equally to the pre-run and post-run
+	// passes is a stable input. The manifest measures the run's real
+	// change — the modified tracked file — and never lists the
+	// untouched rule file.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want exactly the modified file", changes)
+	}
+	if changes.Files[0].Path != "file.txt" || changes.Files[0].Status != "modified" {
+		t.Fatalf("file = %#v, want file.txt modified and no rule file listed", changes.Files[0])
 	}
 }
 
