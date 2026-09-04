@@ -62,7 +62,18 @@ func anyWritesDeclared(tasks []Task) bool {
 // system of the declarations; the boundary translates them to the
 // manifest's repository-root coordinates before comparing.
 func checkWrites(changes *Changes, tasks []Task, workspace string) *WriteCheck {
+	return checkWritesWithExtra(changes, tasks, workspace, nil)
+}
+
+func checkWritesWithExtra(changes *Changes, tasks []Task, workspace string, extraUndeclared []string) *WriteCheck {
 	if changes == nil || changes.Omitted != "" {
+		if len(extraUndeclared) > 0 {
+			sorted := make([]string, len(extraUndeclared))
+			copy(sorted, extraUndeclared)
+			sort.Strings(sorted)
+			sorted = dedupSortedPaths(sorted)
+			return writeCheckFromPaths(sorted)
+		}
 		return &WriteCheck{Skipped: reasonManifestUnavailable}
 	}
 	declared := make([]string, 0)
@@ -77,15 +88,114 @@ func checkWrites(changes *Changes, tasks []Task, workspace string) *WriteCheck {
 			undeclared = append(undeclared, path)
 		}
 	}
-	sort.Strings(undeclared)
-	check := &WriteCheck{UndeclaredCount: len(undeclared)}
-	if len(undeclared) > maxChangeFiles {
-		check.Undeclared = undeclared[:maxChangeFiles]
+	merged := mergeUndeclaredPaths(undeclared, extraUndeclared)
+	return writeCheckFromPaths(merged)
+}
+
+func mergeUndeclaredPaths(base, extra []string) []string {
+	if len(extra) == 0 {
+		sorted := make([]string, len(base))
+		copy(sorted, base)
+		sort.Strings(sorted)
+		return dedupSortedPaths(sorted)
+	}
+	combined := make([]string, 0, len(base)+len(extra))
+	combined = append(combined, base...)
+	combined = append(combined, extra...)
+	sort.Strings(combined)
+	return dedupSortedPaths(combined)
+}
+
+func dedupSortedPaths(sorted []string) []string {
+	if len(sorted) == 0 {
+		return nil
+	}
+	deduped := make([]string, 0, len(sorted))
+	for _, p := range sorted {
+		if len(deduped) == 0 || deduped[len(deduped)-1] != p {
+			deduped = append(deduped, p)
+		}
+	}
+	return deduped
+}
+
+func writeCheckFromPaths(paths []string) *WriteCheck {
+	check := &WriteCheck{UndeclaredCount: len(paths)}
+	if len(paths) > maxChangeFiles {
+		check.Undeclared = paths[:maxChangeFiles]
 		check.Truncated = true
-	} else if len(undeclared) > 0 {
-		check.Undeclared = undeclared
+	} else if len(paths) > 0 {
+		check.Undeclared = paths
 	}
 	return check
+}
+
+func projectedTaskStamps(stamps map[string]fileStamp, task Task, root, workspace string) map[string]fileStamp {
+	if stamps == nil {
+		return nil
+	}
+	if !task.Writes.Declared {
+		return map[string]fileStamp{}
+	}
+	declared := make([]string, 0, len(task.Writes.Paths))
+	for _, p := range task.Writes.Paths {
+		declared = append(declared, reanchorWritePath(root, workspace, p))
+	}
+	out := make(map[string]fileStamp, len(stamps))
+	for path, stamp := range stamps {
+		if pathDeclared(declared, path) {
+			out[path] = stamp
+		}
+	}
+	return out
+}
+
+func fileStampEqual(a, b fileStamp) bool {
+	if a.size != b.size || a.exec != b.exec || a.absent != b.absent || a.dir != b.dir || a.gitMarker != b.gitMarker || a.hashed != b.hashed {
+		return false
+	}
+	if !a.modTime.Equal(b.modTime) {
+		return false
+	}
+	if a.hashed && a.contentHash != b.contentHash {
+		return false
+	}
+	if (a.descendants == nil) != (b.descendants == nil) {
+		return false
+	}
+	if len(a.descendants) != len(b.descendants) {
+		return false
+	}
+	for i := range a.descendants {
+		if a.descendants[i] != b.descendants[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func diffProjectedStamps(settled, final map[string]fileStamp) []string {
+	keys := make(map[string]bool, len(settled)+len(final))
+	for k := range settled {
+		keys[k] = true
+	}
+	for k := range final {
+		keys[k] = true
+	}
+	var diff []string
+	for path := range keys {
+		a, aOk := settled[path]
+		b, bOk := final[path]
+		if !aOk || !bOk {
+			diff = append(diff, path)
+			continue
+		}
+		if !fileStampEqual(a, b) {
+			diff = append(diff, path)
+		}
+	}
+	sort.Strings(diff)
+	return diff
 }
 
 // writesDeclaredOnEveryTask reports whether every task carried a write

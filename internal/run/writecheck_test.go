@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -1233,4 +1235,226 @@ func TestValidateWritePathAcceptedFormsNeverCleanToDotOrEscape(t *testing.T) {
 			t.Fatalf("accepted path %q cleaned to %q, must be neither . nor an escaping ..", value, clean)
 		}
 	}
+}
+
+func TestProjectedTaskStampsExactFileAndDirectory(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	stamps := map[string]fileStamp{
+		"src/a/b.go": {size: 1, modTime: now},
+		"src/ab.go":  {size: 2, modTime: now},
+		"src/a":      {size: 3, modTime: now, dir: true},
+		"other.txt":  {size: 4, modTime: now},
+	}
+	// Exact file declaration covers only that file.
+	projected := projectedTaskStamps(stamps, Task{Writes: declaredPaths("src/a/b.go")}, "", "")
+	if len(projected) != 1 || projected["src/a/b.go"].size != 1 {
+		t.Fatalf("exact file projection = %v, want only src/a/b.go", projected)
+	}
+	// Directory declaration covers itself and descendants on segment boundary.
+	projected = projectedTaskStamps(stamps, Task{Writes: declaredPaths("src/a")}, "", "")
+	if len(projected) != 2 || projected["src/a/b.go"].size != 1 || projected["src/a"].size != 3 {
+		t.Fatalf("directory projection = %v, want src/a and src/a/b.go", projected)
+	}
+	if _, ok := projected["src/ab.go"]; ok {
+		t.Fatalf("directory projection must not cover src/ab.go")
+	}
+	// Undeclared task projects nothing, not nil.
+	empty := projectedTaskStamps(stamps, Task{}, "", "")
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("undeclared task projection = %v, want empty map", empty)
+	}
+	// Nil input stays nil.
+	if got := projectedTaskStamps(nil, Task{Writes: declaredPaths("src/a")}, "", ""); got != nil {
+		t.Fatalf("nil stamps projection = %v, want nil", got)
+	}
+}
+
+func TestProjectedTaskStampsReanchoredFromSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "sub")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	now := time.Now().Truncate(time.Second)
+	stamps := map[string]fileStamp{
+		"sub/file.txt": {size: 1, modTime: now},
+		"file.txt":     {size: 2, modTime: now},
+	}
+	projected := projectedTaskStamps(stamps, Task{Writes: declaredPaths("file.txt")}, root, workspace)
+	if len(projected) != 1 || projected["sub/file.txt"].size != 1 {
+		t.Fatalf("reanchored projection = %v, want only sub/file.txt", projected)
+	}
+	if _, ok := projected["file.txt"]; ok {
+		t.Fatalf("reanchored projection must not include repository-root file.txt")
+	}
+}
+
+func TestFileStampEqualUnchangedIdentity(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	base := fileStamp{size: 10, modTime: now, exec: true, hashed: true, contentHash: sha256.Sum256([]byte("hello")), dir: false, gitMarker: false, descendants: []string{"a", "b"}}
+	copy := base
+	if !fileStampEqual(base, copy) {
+		t.Fatalf("identical stamps must be equal")
+	}
+	// descendants nil vs nil equal, nil vs empty not equal (collapsed vs tracked empty).
+	nilDesc := fileStamp{size: 1, modTime: now, descendants: nil}
+	emptyDesc := fileStamp{size: 1, modTime: now, descendants: []string{}}
+	if fileStampEqual(nilDesc, emptyDesc) {
+		t.Fatalf("nil vs empty descendants must not be equal")
+	}
+}
+
+func TestFileStampEqualDifferences(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	base := fileStamp{size: 10, modTime: now, exec: false, hashed: true, contentHash: sha256.Sum256([]byte("content-a")), gitMarker: false, dir: false, descendants: []string{"x"}}
+	tests := []struct {
+		name string
+		mut  func(fileStamp) fileStamp
+	}{
+		{name: "content hash", mut: func(s fileStamp) fileStamp { s.contentHash = sha256.Sum256([]byte("content-b")); return s }},
+		{name: "executable bit", mut: func(s fileStamp) fileStamp { s.exec = true; return s }},
+		{name: "entry kind absent", mut: func(s fileStamp) fileStamp { s.absent = true; return s }},
+		{name: "entry kind dir", mut: func(s fileStamp) fileStamp { s.dir = true; return s }},
+		{name: "gitMarker", mut: func(s fileStamp) fileStamp { s.gitMarker = true; return s }},
+		{name: "descendants", mut: func(s fileStamp) fileStamp { s.descendants = []string{"y"}; return s }},
+		{name: "hashed flag", mut: func(s fileStamp) fileStamp { s.hashed = false; return s }},
+		{name: "modTime", mut: func(s fileStamp) fileStamp { s.modTime = now.Add(time.Second); return s }},
+		{name: "size", mut: func(s fileStamp) fileStamp { s.size = 99; return s }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			other := tc.mut(base)
+			if fileStampEqual(base, other) {
+				t.Fatalf("stamps differing by %s must not be equal", tc.name)
+			}
+			if fileStampEqual(other, base) {
+				t.Fatalf("equality must be symmetric for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestDiffProjectedStampsErasedAppearedAndChanged(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	a := fileStamp{size: 1, modTime: now}
+	b := fileStamp{size: 2, modTime: now}
+	bChanged := fileStamp{size: 99, modTime: now}
+	// Erased: present in settled, absent in final.
+	diff := diffProjectedStamps(map[string]fileStamp{"a": a}, map[string]fileStamp{})
+	if len(diff) != 1 || diff[0] != "a" {
+		t.Fatalf("erased diff = %v, want [a]", diff)
+	}
+	// Newly appeared: absent in settled, present in final.
+	diff = diffProjectedStamps(map[string]fileStamp{}, map[string]fileStamp{"b": b})
+	if len(diff) != 1 || diff[0] != "b" {
+		t.Fatalf("appeared diff = %v, want [b]", diff)
+	}
+	// Unchanged identity: no diff.
+	diff = diffProjectedStamps(map[string]fileStamp{"a": a}, map[string]fileStamp{"a": a})
+	if len(diff) != 0 {
+		t.Fatalf("unchanged diff = %v, want empty", diff)
+	}
+	// Content/exec/any field change produces diff.
+	diff = diffProjectedStamps(map[string]fileStamp{"b": b}, map[string]fileStamp{"b": bChanged})
+	if len(diff) != 1 || diff[0] != "b" {
+		t.Fatalf("changed diff = %v, want [b]", diff)
+	}
+	// Sorted output.
+	diff = diffProjectedStamps(map[string]fileStamp{"z": a, "a": a}, map[string]fileStamp{})
+	if len(diff) != 2 || diff[0] != "a" || diff[1] != "z" {
+		t.Fatalf("sorted diff = %v, want [a z]", diff)
+	}
+}
+
+func TestMergeUndeclaredPathsSortingDedupCountCap(t *testing.T) {
+	// Sorting and deduplication across base and extra.
+	merged := mergeUndeclaredPaths([]string{"b", "a", "b"}, []string{"c", "a"})
+	want := []string{"a", "b", "c"}
+	if !writecheckEqualStrings(merged, want) {
+		t.Fatalf("merged = %v, want %v", merged, want)
+	}
+	// Extra empty still sorts and dedups.
+	merged = mergeUndeclaredPaths([]string{"b", "a"}, nil)
+	if !writecheckEqualStrings(merged, []string{"a", "b"}) {
+		t.Fatalf("merged base-only = %v, want [a b]", merged)
+	}
+	// True count and truncation via writeCheckFromPaths.
+	many := make([]string, maxChangeFiles+5)
+	for i := range many {
+		many[i] = fmt.Sprintf("f%03d", i)
+	}
+	check := writeCheckFromPaths(many)
+	if check.UndeclaredCount != maxChangeFiles+5 || len(check.Undeclared) != maxChangeFiles || !check.Truncated {
+		t.Fatalf("capped check = %#v, want truncated %d cap", check, maxChangeFiles)
+	}
+	if check.Undeclared[0] != "f000" || check.Undeclared[maxChangeFiles-1] != "f099" {
+		t.Fatalf("capped slice = %v, want f000..f099", check.Undeclared)
+	}
+	// Exactly at cap not truncated.
+	exact := make([]string, maxChangeFiles)
+	for i := range exact {
+		exact[i] = fmt.Sprintf("f%03d", i)
+	}
+	check = writeCheckFromPaths(exact)
+	if check.Truncated || check.UndeclaredCount != maxChangeFiles || len(check.Undeclared) != maxChangeFiles {
+		t.Fatalf("exact cap check = %#v, want not truncated", check)
+	}
+	// Merging via checkWritesWithExtra: dedup, sort, true count, cap.
+	// Extra paths are task-owned settled outputs later overwritten; they are
+	// merged verbatim even when a pooled declaration covers them, because the
+	// later worker was undeclared.
+	changes := &Changes{allPaths: []string{"a", "b", "z"}, root: ""}
+	tasks := []Task{{Writes: declaredPaths("a")}}
+	check = checkWritesWithExtra(changes, tasks, "", []string{"c", "b", "a"})
+	if !writecheckEqualStrings(check.Undeclared, []string{"a", "b", "c", "z"}) || check.UndeclaredCount != 4 || check.Truncated {
+		t.Fatalf("merged check = %#v, want [a b c z] count 4", check)
+	}
+	// Deduplication: duplicate across base and extra collapses.
+	changes = &Changes{allPaths: []string{"b"}, root: ""}
+	check = checkWritesWithExtra(changes, []Task{{Writes: declaredPaths("a")}}, "", []string{"b", "c", "c"})
+	if !writecheckEqualStrings(check.Undeclared, []string{"b", "c"}) || check.UndeclaredCount != 2 {
+		t.Fatalf("dedup merged = %#v, want [b c]", check)
+	}
+	// Preserves JSON shape without extra: checkWrites (no extra) still sorted, capped, same as before.
+	nilCheck := checkWrites(changes, []Task{{Writes: declaredPaths("a")}}, "")
+	extraNilCheck := checkWritesWithExtra(changes, []Task{{Writes: declaredPaths("a")}}, "", nil)
+	if nilCheck.UndeclaredCount != extraNilCheck.UndeclaredCount || !writecheckEqualStrings(nilCheck.Undeclared, extraNilCheck.Undeclared) || nilCheck.Truncated != extraNilCheck.Truncated || nilCheck.Skipped != extraNilCheck.Skipped {
+		t.Fatalf("nil extra must preserve checkWrites shape: without=%#v with nil extra=%#v", nilCheck, extraNilCheck)
+	}
+	// Omitted/nil manifest: no independently proven extra paths still skips.
+	if got := checkWritesWithExtra(nil, tasks, "", nil); got.Skipped != reasonManifestUnavailable || got.UndeclaredCount != 0 || got.Undeclared != nil || got.Truncated {
+		t.Fatalf("nil manifest without extra = %#v, want skip", got)
+	}
+	if got := checkWritesWithExtra(&Changes{Omitted: reasonMeasurementFail}, tasks, "", nil); got.Skipped != reasonManifestUnavailable {
+		t.Fatalf("omitted manifest without extra = %#v, want skip", got)
+	}
+	// Omitted/nil manifest with proven extra paths returns a normal violation, sorted/deduped and capped.
+	got := checkWritesWithExtra(nil, tasks, "", []string{"z", "a", "a"})
+	if got.Skipped != "" || !writecheckEqualStrings(got.Undeclared, []string{"a", "z"}) || got.UndeclaredCount != 2 || got.Truncated {
+		t.Fatalf("nil manifest with extra = %#v, want [a z] violation", got)
+	}
+	got = checkWritesWithExtra(&Changes{Omitted: reasonMeasurementFail}, tasks, "", []string{"b", "a"})
+	if got.Skipped != "" || !writecheckEqualStrings(got.Undeclared, []string{"a", "b"}) || got.UndeclaredCount != 2 {
+		t.Fatalf("omitted manifest with extra = %#v, want [a b] violation", got)
+	}
+	manyExtra := make([]string, maxChangeFiles+5)
+	for i := range manyExtra {
+		manyExtra[i] = fmt.Sprintf("f%03d", i)
+	}
+	got = checkWritesWithExtra(nil, tasks, "", manyExtra)
+	if got.Skipped != "" || got.UndeclaredCount != maxChangeFiles+5 || len(got.Undeclared) != maxChangeFiles || !got.Truncated {
+		t.Fatalf("nil manifest with many extra = %#v, want truncated cap", got)
+	}
+}
+
+func writecheckEqualStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
