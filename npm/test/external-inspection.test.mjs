@@ -35,6 +35,8 @@ function writeSkill(root, marker, name = "pi-worker") {
   writeFileSync(join(root, "SKILL.md"), `---\nname: ${name}\n---\nexternal\n`);
 }
 
+const windowsSymlinkSkip = process.platform === "win32" ? "symlink permissions vary on windows" : undefined;
+
 test("reports current, unknown, and markerless external identities atomically", async (t) => {
   const f = fixture(t);
   const current = join(f.home, ".agents", "skills", "pi-worker");
@@ -80,8 +82,7 @@ test("omits missing and receipt-managed targets", async (t) => {
   assert.deepEqual(result, { state: "performed", targets: [] });
 });
 
-test("discards partial results when any target cannot be inspected", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("discards partial results when any target cannot be inspected", { skip: windowsSymlinkSkip }, async (t) => {
   const f = fixture(t);
   const current = join(f.home, ".agents", "skills", "pi-worker");
   const dangling = join(f.home, ".test", "skills", "pi-worker");
@@ -102,8 +103,7 @@ test("discards partial results when any target cannot be inspected", async (t) =
   assert.deepEqual(result, { state: "unavailable", targets: [] });
 });
 
-test("recognizes a safe root symlink without adopting its destination", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("recognizes a safe root symlink without adopting its destination", { skip: windowsSymlinkSkip }, async (t) => {
   const f = fixture(t);
   const destination = join(f.root, "external-skill");
   const linked = join(f.home, ".test", "skills", "pi-worker");

@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -272,6 +273,25 @@ test("package Node floor and Go receipt pin are inherited from the pinned skills
     "package.json engines.node is inherited from the exact pinned skills dependency, not chosen independently; " +
       "when skills' Node floor moves, write the same number in package.json, README.md, docs/v0-usage.md, " +
       "docs/releasing.md, and the literal in npm/test/readme.test.mjs",
+  );
+});
+
+test("rejects body-level t.skip that can continue and hide failures", () => {
+  const pattern = /\bt\.skip\s*\(/;
+  const testDir = join(repository, "npm", "test");
+  const targetFiles = readdirSync(testDir)
+    .filter((name) => name.endsWith(".test.mjs"))
+    .sort()
+    .map((name) => join("npm/test", name));
+  const offenders = [];
+  for (const relativePath of targetFiles) {
+    const content = readFileSync(join(repository, relativePath), "utf8");
+    if (pattern.test(content)) offenders.push(relativePath);
+  }
+  assert.equal(
+    offenders.length,
+    0,
+    `body-level t.skip found in ${offenders.join(", ")} - use declaration-time { skip: ... } instead`,
   );
 });
 

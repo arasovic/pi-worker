@@ -228,6 +228,10 @@ describe("native target selection", () => {
 });
 
 describe("launcher process behavior", () => {
+  const unsupportedNativeSkip =
+    !["darwin", "linux"].includes(process.platform) || !["arm64", "x64"].includes(process.arch)
+      ? "requires a supported npm platform and architecture"
+      : undefined;
 	// Captured mode is reserved for the bounded skill-status projection.
 	test("captures bounded native status output without changing exit code", async () => {
 		const result = await runNativeCaptured(argsFixture, ["one", "two"], { maxOutputBytes: 1024 });
@@ -300,12 +304,7 @@ describe("launcher process behavior", () => {
     assert.equal(child.stderr, "");
   });
 
-  test("routes skill status JSON through the augmentation path", (t) => {
-    if (!["darwin", "linux"].includes(process.platform) ||
-      !["arm64", "x64"].includes(process.arch)) {
-      t.skip("requires a supported npm platform and architecture");
-      return;
-    }
+  test("routes skill status JSON through the augmentation path", { skip: unsupportedNativeSkip }, () => {
 
     const fixture = launcherFixture("status-routing", { status: true });
     const home = join(fixture.packageRoot, "home");
@@ -339,12 +338,7 @@ describe("launcher process behavior", () => {
     ["skill status human", ["skill", "status"]],
     ["skill status JSON", ["skill", "status", "--json"]],
   ]) {
-    test(`missing staged binary has the documented failure shape for ${name}`, (t) => {
-      if (!["darwin", "linux"].includes(process.platform) ||
-        !["arm64", "x64"].includes(process.arch)) {
-        t.skip("requires a supported npm platform and architecture");
-        return;
-      }
+    test(`missing staged binary has the documented failure shape for ${name}`, { skip: unsupportedNativeSkip }, () => {
       const fixture = launcherFixture(`missing-binary-${name.replaceAll(" ", "-")}`, {
         status: args[0] === "skill",
       });

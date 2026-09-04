@@ -21,6 +21,8 @@ import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
 const IDENTITY_FILE = "PI_WORKER_IDENTITY";
 const IDENTITY_CONTENT = "pi-worker-skill/v1\n";
 
+const windowsSymlinkSkip = process.platform === "win32" ? "symlink permissions vary on windows" : undefined;
+
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -306,8 +308,7 @@ test("expectedKind requires the receipt topology to match the filesystem role", 
   );
 });
 
-test("a copy receipt cannot authorize a root symlink destination", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("a copy receipt cannot authorize a root symlink destination", { skip: windowsSymlinkSkip }, async (t) => {
   const bundled = makeTree(t, {
     [IDENTITY_FILE]: IDENTITY_CONTENT,
     "SKILL.md": "---\nname: pi-worker\n---\n",
@@ -484,8 +485,7 @@ test("classification derives directory topology instead of trusting target.kind"
   );
 });
 
-test("root symlinks use the public parent-directory receipt topology", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("root symlinks use the public parent-directory receipt topology", { skip: windowsSymlinkSkip }, async (t) => {
 
   const bundled = makeTree(t, {
     [IDENTITY_FILE]: IDENTITY_CONTENT,
@@ -518,8 +518,7 @@ test("root symlinks use the public parent-directory receipt topology", async (t)
   );
 });
 
-test("a symlink receipt cannot borrow identity from an unrelated canonical target", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("a symlink receipt cannot borrow identity from an unrelated canonical target", { skip: windowsSymlinkSkip }, async (t) => {
 
   const bundled = makeTree(t, {
     [IDENTITY_FILE]: IDENTITY_CONTENT,
@@ -549,8 +548,7 @@ test("a symlink receipt cannot borrow identity from an unrelated canonical targe
   );
 });
 
-test("a hash-matching symlink receipt does not own a drifted canonical tree", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("a hash-matching symlink receipt does not own a drifted canonical tree", { skip: windowsSymlinkSkip }, async (t) => {
 
   const bundled = makeTree(t, {
     [IDENTITY_FILE]: IDENTITY_CONTENT,
@@ -643,8 +641,7 @@ test("frontmatter identity requires valid, unique metadata", async (t) => {
   );
 });
 
-test("an unowned root symlink may identify a safe skill tree but not unsafe trees", async (t) => {
-  if (process.platform === "win32") t.skip("symlink permissions vary on windows");
+test("an unowned root symlink may identify a safe skill tree but not unsafe trees", { skip: windowsSymlinkSkip }, async (t) => {
 
   const bundled = makeTree(t, {
     [IDENTITY_FILE]: IDENTITY_CONTENT,
