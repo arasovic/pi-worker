@@ -8,12 +8,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -71,6 +74,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	logPath := os.Getenv("FAKEPI_LOG")
 	metaPath := os.Getenv("FAKEPI_META")
 	envEcho := os.Getenv("FAKEPI_ENV")
+	sequenceStatePath := os.Getenv("FAKEPI_SEQUENCE_STATE")
 
 	if metaPath != "" {
 		writeJSONFile(metaPath, map[string]any{
@@ -135,7 +139,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	scanner := bufio.NewScanner(stdin)
 	scanner.Buffer(make([]byte, 64*1024), 16<<20)
-	sequenceIndex := make(map[string]int)
+	sequenceIndex, err := loadSequenceIndex(sequenceStatePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "fakepi: sequence state unavailable")
+		return 1
+	}
 	for scanner.Scan() {
 		var req struct {
 			ID   string `json:"id"`
@@ -150,6 +158,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if sequences := scriptConfig.TriggerSequences[req.Type]; len(sequences) > 0 {
 			index := sequenceIndex[req.Type]
 			sequenceIndex[req.Type] = index + 1
+			if err := saveSequenceIndex(sequenceStatePath, sequenceIndex); err != nil {
+				fmt.Fprintln(stderr, "fakepi: sequence state unavailable")
+				return 1
+			}
 			if index < len(sequences) {
 				steps = sequences[index]
 			} else {
@@ -334,4 +346,59 @@ func spawnDetachedStdoutDescendant(pidPath string) {
 
 func writePIDFile(path string, pid int) {
 	_ = os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o600)
+}
+
+func loadSequenceIndex(path string) (map[string]int, error) {
+	if path == "" {
+		return make(map[string]int), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return make(map[string]int), nil
+		}
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("sequence state is empty")
+	}
+	out := make(map[string]int)
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func saveSequenceIndex(path string, index map[string]int) error {
+	if path == "" {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".fakepi-sequence-state-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	success := false
+	defer func() {
+		if success {
+			return
+		}
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}()
+	data, err := json.Marshal(index)
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	success = true
+	return nil
 }

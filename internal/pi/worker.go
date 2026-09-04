@@ -170,106 +170,92 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	if req.ThinkingLevel != "" {
 		requestedDebug = string(req.ThinkingLevel)
 	}
-	debug.Log(debugStarting, "provider="+provider, "model="+id, "thinking-requested="+requestedDebug)
 
-	proc, err := NewProcess(w.executable, req.Workspace)
-	if err != nil {
-		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: err.Error()})
-	}
-	defer proc.Close()
+	var (
+		successProc               *Process
+		client                    *Client
+		successThinking           thinkingOutcome
+		startupWarning            string
+		lastRetryableFailureClass string
+	)
+	for attempt := 1; attempt <= 3; attempt++ {
+		debug.Log(debugStarting, "provider="+provider, "model="+id, "thinking-requested="+requestedDebug)
+		attemptThinking := thinkingOutcome{requested: req.ThinkingLevel}
 
-	if err := proc.Start(ctx); err != nil {
-		switch {
-		case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
-			// A start failure caused by an expired deadline is a timeout
-			// (exit 7 path), not a cancellation or readiness failure.
-			return withThinking(WorkerResult{Model: req.Model, Status: StatusTimedOut, Error: fmt.Sprintf("timed out: %v", err)})
-		case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
-			return withThinking(WorkerResult{Model: req.Model, Status: StatusCancelled, Error: fmt.Sprintf("cancelled: %v", err)})
-		}
-		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("start pi: %v", err)})
-	}
-	stopHeartbeat = debug.startHeartbeat(proc.Running)
-	if req.OnProcessStart != nil {
-		// The observer receives the raw WorkerID, never the debug-label
-		// normalization on the line above: the record must pair the pid
-		// with the identity the caller assigned, not the label a direct
-		// caller's zero value would map to worker 1. The pid guard
-		// mirrors Pid's condition: no identity exists before the child
-		// starts, and Pid never reports one after it is reaped.
-		if pid := proc.Pid(); pid != 0 {
-			req.OnProcessStart(req.WorkerID, pid)
-		}
-	}
-
-	client := NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript}, debug)
-
-	models, err := client.GetAvailableModels(ctx)
-	if err != nil {
-		return withThinking(w.classify(req.Model, ctx, err))
-	}
-	found := false
-	for _, model := range models {
-		if model.Provider == provider && model.ID == id {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("model %q is not in the available catalog; no fallback attempted", req.Model)})
-	}
-	if err := client.SetModel(ctx, provider, id); err != nil {
-		return withThinking(w.classify(req.Model, ctx, err))
-	}
-	baseline, err := client.GetState(ctx)
-	if err != nil {
-		return withThinking(w.classify(req.Model, ctx, err))
-	}
-	if err := validateStateModel(baseline, provider, id); err != nil {
-		return withThinking(w.classify(req.Model, ctx, err))
-	}
-	thinking.effective = baseline.ThinkingLevel
-
-	if req.ThinkingLevel != "" {
-		levels, err := client.GetAvailableThinkingLevels(ctx)
+		proc, err := NewProcess(w.executable, req.Workspace)
 		if err != nil {
-			return withThinking(w.classify(req.Model, ctx, err))
+			if attempt < 3 {
+				lastRetryableFailureClass = StatusUnavailable
+				continue
+			}
+			thinking = attemptThinking
+			return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: err.Error()})
 		}
-		if !thinkingLevelsContain(levels, req.ThinkingLevel) {
-			thinking.fallback = true
-			thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "unavailable")
-		} else {
-			err := client.SetThinkingLevel(ctx, req.ThinkingLevel)
-			var rejected *ThinkingLevelRejectedError
-			switch {
-			case err == nil:
-				confirmed, stateErr := client.GetState(ctx)
-				if stateErr != nil {
-					return withThinking(w.classify(req.Model, ctx, stateErr))
-				}
-				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
-					return withThinking(w.classify(req.Model, ctx, stateErr))
-				}
-				if confirmed.ThinkingLevel != req.ThinkingLevel {
-					return withThinking(w.classify(req.Model, ctx, newProtocolError("get_state did not confirm requested thinking level")))
-				}
-				thinking.effective = confirmed.ThinkingLevel
-			case errors.As(err, &rejected):
-				confirmed, stateErr := client.GetState(ctx)
-				if stateErr != nil {
-					return withThinking(w.classify(req.Model, ctx, stateErr))
-				}
-				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
-					return withThinking(w.classify(req.Model, ctx, stateErr))
-				}
-				if confirmed.ThinkingLevel != baseline.ThinkingLevel {
-					return withThinking(w.classify(req.Model, ctx, newProtocolError("rejected thinking change did not preserve Pi default")))
-				}
-				thinking.fallback = true
-				thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "rejected")
-			default:
+
+		if err := proc.Start(ctx); err != nil {
+			_ = proc.Close()
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				thinking = attemptThinking
 				return withThinking(w.classify(req.Model, ctx, err))
 			}
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				thinking = attemptThinking
+				return withThinking(w.classify(req.Model, ctx, err))
+			}
+			failure := WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("start pi: %v", err)}
+			if attempt < 3 {
+				lastRetryableFailureClass = failure.Status
+				continue
+			}
+			thinking = attemptThinking
+			return withThinking(failure)
+		}
+
+		attemptStop := debug.startHeartbeat(proc.Running)
+		stopHeartbeat = attemptStop
+		if req.OnProcessStart != nil {
+			// The observer receives the raw WorkerID, never the debug-label
+			// normalization on the line above: the record must pair the pid
+			// with the identity the caller assigned, not the label a direct
+			// caller's zero value would map to worker 1. The pid guard
+			// mirrors Pid's condition: no identity exists before the child
+			// starts, and Pid never reports one after it is reaped.
+			if pid := proc.Pid(); pid != 0 {
+				req.OnProcessStart(req.WorkerID, pid)
+			}
+		}
+
+		client = NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript}, debug)
+		attemptThinking, failure, retryable, ok := w.prePromptAttempt(ctx, req, provider, id, client)
+		if ok {
+			successProc = proc
+			successThinking = attemptThinking
+			if attempt > 1 {
+				startupWarning = startupRetryWarning(attempt, lastRetryableFailureClass)
+			}
+			break
+		}
+
+		thinking = attemptThinking
+		attemptStop()
+		_ = proc.Close()
+		if retryable && attempt < 3 {
+			lastRetryableFailureClass = failure.Status
+			continue
+		}
+		return withThinking(failure)
+	}
+	if successProc == nil {
+		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: "startup attempts exhausted"})
+	}
+	defer successProc.Close()
+
+	thinking = successThinking
+	if startupWarning != "" {
+		if thinking.warning != "" {
+			thinking.warning = startupWarning + "; " + thinking.warning
+		} else {
+			thinking.warning = startupWarning
 		}
 	}
 	debugFields := []string{"thinking-effective=" + string(thinking.effective)}
@@ -300,6 +286,97 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "agent settled without producing final text"})
 	}
 	return withThinking(WorkerResult{Model: req.Model, Status: StatusCompleted, Explanation: text})
+}
+
+// prePromptAttempt drives the entire startup handshake before the prompt is
+// submitted. It returns a filled thinking projection on success and a typed
+// failure plus retryability on transient pre-prompt problems.
+func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest, provider, id string, client *Client) (thinking thinkingOutcome, failure WorkerResult, retryable, ok bool) {
+	thinking = thinkingOutcome{requested: req.ThinkingLevel}
+
+	models, err := client.GetAvailableModels(ctx)
+	if err != nil {
+		return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+	}
+	found := false
+	for _, model := range models {
+		if model.Provider == provider && model.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return thinking, WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("model %q is not in the available catalog; no fallback attempted", req.Model)}, false, false
+	}
+	if err := client.SetModel(ctx, provider, id); err != nil {
+		return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+	}
+	baseline, err := client.GetState(ctx)
+	if err != nil {
+		return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+	}
+	if err := validateStateModel(baseline, provider, id); err != nil {
+		return thinking, w.classify(req.Model, ctx, err), false, false
+	}
+	thinking.effective = baseline.ThinkingLevel
+
+	if req.ThinkingLevel != "" {
+		levels, err := client.GetAvailableThinkingLevels(ctx)
+		if err != nil {
+			return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+		}
+		if !thinkingLevelsContain(levels, req.ThinkingLevel) {
+			thinking.fallback = true
+			thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "unavailable")
+		} else {
+			err := client.SetThinkingLevel(ctx, req.ThinkingLevel)
+			var rejected *ThinkingLevelRejectedError
+			switch {
+			case err == nil:
+				confirmed, stateErr := client.GetState(ctx)
+				if stateErr != nil {
+					return thinking, w.classify(req.Model, ctx, stateErr), retryableStartupFailure(stateErr), false
+				}
+				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
+					return thinking, w.classify(req.Model, ctx, stateErr), false, false
+				}
+				if confirmed.ThinkingLevel != req.ThinkingLevel {
+					return thinking, w.classify(req.Model, ctx, newProtocolError("get_state did not confirm requested thinking level")), false, false
+				}
+				thinking.effective = confirmed.ThinkingLevel
+			case errors.As(err, &rejected):
+				confirmed, stateErr := client.GetState(ctx)
+				if stateErr != nil {
+					return thinking, w.classify(req.Model, ctx, stateErr), retryableStartupFailure(stateErr), false
+				}
+				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
+					return thinking, w.classify(req.Model, ctx, stateErr), false, false
+				}
+				if confirmed.ThinkingLevel != baseline.ThinkingLevel {
+					return thinking, w.classify(req.Model, ctx, newProtocolError("rejected thinking change did not preserve Pi default")), false, false
+				}
+				thinking.fallback = true
+				thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "rejected")
+			default:
+				return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+			}
+		}
+	}
+	return thinking, WorkerResult{}, false, true
+}
+
+func startupRetryWarning(attempt int, priorFailureClass string) string {
+	if attempt <= 1 || priorFailureClass == "" {
+		return ""
+	}
+	return fmt.Sprintf("startup succeeded on attempt %d/3 after %s startup failure", attempt, priorFailureClass)
+}
+
+func retryableStartupFailure(err error) bool {
+	var protocolErr *ProtocolError
+	var readinessErr *ReadinessError
+	var transportErr *transportError
+	return errors.As(err, &transportErr) || errors.As(err, &readinessErr) || errors.As(err, &protocolErr)
 }
 
 // workerID maps an unset or invalid worker identity onto worker 1: direct

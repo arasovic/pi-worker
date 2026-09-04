@@ -60,8 +60,10 @@ func setupFakePiEnv(t *testing.T, scriptConfig *script.Script) string {
 		}
 	}
 	logPath := filepath.Join(dir, "requests.log")
+	sequenceStatePath := filepath.Join(dir, "sequence-state.json")
 	t.Setenv("FAKEPI_SCRIPT", scriptPath)
 	t.Setenv("FAKEPI_LOG", logPath)
+	t.Setenv("FAKEPI_SEQUENCE_STATE", sequenceStatePath)
 	return logPath
 }
 
