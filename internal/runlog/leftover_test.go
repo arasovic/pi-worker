@@ -197,6 +197,40 @@ func TestLeftoversSkipsWorkerWhoseRowCannotBeRead(t *testing.T) {
 	}
 }
 
+// TestLeftoversOneUnreadableWorkerDoesNotSkipTheOtherWorkers asserts
+// one unreadable process-table row skips only the worker whose row it
+// is, not every worker of the same run: a worker's identity is
+// unconfirmed and its group is not the run's to claim, but a second
+// worker's group is still fully readable and its survivors must still
+// be reported. This is the guard the per-worker skip protects: were
+// the skip applied to the whole record, the other worker's genuine
+// survivor below would never be reported.
+func TestLeftoversOneUnreadableWorkerDoesNotSkipTheOtherWorkers(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		// The first worker's row cannot be read: that worker is
+		// skipped, and its group's member must not be reported.
+		{pid: 5001, pgid: 5001, createTime: 1000, unreadable: true},
+		{pid: 5010, pgid: 5001, createTime: 1100},
+		// The second worker is gone, and its group holds a genuine
+		// survivor, which must still be reported.
+		{pid: 5020, pgid: 5002, createTime: 2100},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 5001, createTime: 1000},
+		workerSpec{pid: 5002, createTime: 2000},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5020}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
 // TestLeftoversSkipsWorkerWhoseRowCreateTimeIsUnusable asserts an
 // entry whose creation time was read but is unusable — here a
 // sub-second epoch value — does not establish the recorded worker's
@@ -272,11 +306,49 @@ func TestLeftoversSweepsWhenWorkerIsAbsent(t *testing.T) {
 	}
 }
 
-func TestLeftoversSkipsGroupWhosePidWasReused(t *testing.T) {
+// TestLeftoversReportsSurvivorWhenRecordedPidHeldByUnrelatedProcess
+// asserts the balanced reuse behavior: when the recorded worker pid is
+// now held by an unrelated process that does not lead the recorded
+// group — its pgid differs from its pid — the number's own group is
+// not the new holder's, so any live member of that group is the run's
+// genuine survivor and is reported under the existing age floor. The
+// holder being a non-leader is the fact that says it cannot own the
+// recorded group.
+func TestLeftoversReportsSurvivorWhenRecordedPidHeldByUnrelatedProcess(t *testing.T) {
 	withLiveProcesses(t, []liveProcess{
-		// The recorded pid 5001 now belongs to an unrelated process in
-		// group 5099, and the worker's old group still has a survivor.
+		// The recorded pid 5001 now belongs to an unrelated process
+		// whose own group is 5099 — its pgid is neither its own pid nor
+		// the recorded group's number, so it does not lead group 5001
+		// — and the worker's old group still has a survivor.
 		{pid: 5001, pgid: 5099, createTime: 9999},
+		{pid: 5010, pgid: 5001, createTime: 1100},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversSkipsReuseWhereHolderLeadsOwnGroup asserts the other
+// reuse shape: when the recorded worker pid is now held by an
+// unrelated process that leads its own process group — its pgid is
+// its own pid, the recorded number — the old group number is now the
+// new holder's own group, whose members are the holder's own
+// descendants rather than the run's, so nothing is reported even when
+// a member sits under that number. This is the skip that keeps a
+// fresh unrelated group from reading as the run's leftovers.
+func TestLeftoversSkipsReuseWhereHolderLeadsOwnGroup(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		// The recorded pid 5001 now leads a fresh group of its own,
+		// and a member sits under it.
+		{pid: 5001, pgid: 5001, createTime: 9999},
 		{pid: 5010, pgid: 5001, createTime: 1100},
 	}, nil)
 	dir := t.TempDir()

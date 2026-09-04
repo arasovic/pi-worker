@@ -687,9 +687,13 @@ func warnInterruptedRuns(paths []string, dir string, stderr io.Writer) {
 // records directory so the caller knows where to look. Each run's
 // line carries its pids, capped at ten, because the pids are the
 // actionable part: the product reports the condition — it never kills
-// the processes. It is reported on every run for as long as a
-// leftover process is running, and never once: a leftover is a
-// condition that is still true, not an event that happened.
+// the processes. The warning says the processes may be leftovers
+// associated with an earlier run rather than asserting that they are:
+// the reader itself documents the shapes it cannot distinguish, and
+// the line must not promise an attribution stronger than the scan can
+// support. It is reported on every run for as long as a leftover
+// process is running, and never once: a leftover is a condition that
+// is still true, not an event that happened.
 func warnLeftoverProcesses(leftovers []runlog.Leftover, dir string, stderr io.Writer) {
 	total, shown := 0, 0
 	for _, leftover := range leftovers {
@@ -704,10 +708,10 @@ func warnLeftoverProcesses(leftovers []runlog.Leftover, dir string, stderr io.Wr
 			continue
 		}
 		shown++
-		fmt.Fprintf(stderr, "pi-worker: warning: an earlier run left processes running: %s (pids %s)\n", leftover.Path, leftoverPidList(leftover.PIDs))
+		fmt.Fprintf(stderr, "pi-worker: warning: an earlier run may have left processes running: %s (pids %s)\n", leftover.Path, leftoverPidList(leftover.PIDs))
 	}
 	if total > shown {
-		fmt.Fprintf(stderr, "pi-worker: warning: %d more runs left processes running in %s\n", total-shown, dir)
+		fmt.Fprintf(stderr, "pi-worker: warning: %d more runs may have left processes running in %s\n", total-shown, dir)
 	}
 }
 

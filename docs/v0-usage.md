@@ -302,22 +302,37 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   not stop the other deletions, and the exit is `9`), or when the
   prune is cancelled.
 - At the start of every run, pi-worker also checks whether an earlier
-  settled run left processes running, and warns on stderr when it
-  finds any: one line per run naming the record's full path and the
-  leftover pids — up to ten, then a count of the rest, inside the same
-  parentheses — capped at five runs with one summary line naming the
-  records directory for the remainder. The warning appears at the
-  start of the next run and is repeated on every run for as long as
-  the processes are still running; it only reports, and never kills
-  or signals the processes it names.
+  settled run may have left processes running, and warns on stderr when
+  it finds any: one line per run naming the record's full path and the
+  possibly-leftover pids — up to ten, then a count of the rest, inside
+  the same parentheses — capped at five runs with one summary line
+  naming the records directory for the remainder. The warning appears at
+  the start of the next run and is repeated on every run for as long as
+  the processes are still running; it only reports, and never kills or
+  signals the processes it names. The wording says these are possible
+  leftovers associated with an earlier run rather than asserting that
+  they are: the scan cannot distinguish every shape it sees (below), so
+  the line must not promise an attribution stronger than it can
+  support.
 - A process the worker started in a group of its own is not reported:
   the warning finds survivors by the process group the run's worker
   led, and a command started in a fresh group carries no link back to
   the run once the worker is gone.
-- After a run's group has fully emptied, the operating system may hand
-  its number to something else, and the warning can then name a
-  process that has nothing to do with the run. It is rare, and it
-  costs one wrong line of text — the product never acts on the number.
+- When a run's group has fully emptied, the operating system may hand
+  its number to something else. If the new holder leads a process group
+  of its own under that number — its process-group id equals its pid —
+  the group is the holder's, not the run's, and the warning stays
+  silent; if the new holder belongs to some other group — its
+  process-group id differs from its pid — it does not lead the recorded
+  number's group, and any member still carrying that group number is
+  the run's genuine survivor, reported under the same age floor as any
+  other.
+- A record whose worker line carries no creation time is never
+  reported: every record written before that field existed is this
+  class, and the identity of the process the number names cannot be
+  confirmed, so those old records stay unreportable by design. A worker
+  process-table row that cannot be read skips only that worker; the
+  other workers of the same run are still scanned.
 
 ## Exact run command
 

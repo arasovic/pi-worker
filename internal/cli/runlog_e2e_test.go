@@ -413,7 +413,7 @@ func TestRunWarnsAboutLeftoverProcessesEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	want := "pi-worker: warning: an earlier run left processes running: " + recordPath + " (pids 4111, 4112)\n"
+	want := "pi-worker: warning: an earlier run may have left processes running: " + recordPath + " (pids 4111, 4112)\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
@@ -450,9 +450,9 @@ func TestRunWarnsFiveLeftoverRunsPlusCountEndToEnd(t *testing.T) {
 	}
 	var want strings.Builder
 	for _, leftover := range leftovers[:5] {
-		fmt.Fprintf(&want, "pi-worker: warning: an earlier run left processes running: %s (pids %d)\n", leftover.Path, leftover.PIDs[0])
+		fmt.Fprintf(&want, "pi-worker: warning: an earlier run may have left processes running: %s (pids %d)\n", leftover.Path, leftover.PIDs[0])
 	}
-	fmt.Fprintf(&want, "pi-worker: warning: 1 more runs left processes running in %s\n", logDir)
+	fmt.Fprintf(&want, "pi-worker: warning: 1 more runs may have left processes running in %s\n", logDir)
 	if stderr != want.String() {
 		t.Fatalf("stderr = %q, want %q", stderr, want.String())
 	}
@@ -483,7 +483,7 @@ func TestRunWarnsCapsLeftoverPidsAtTenEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	want := "pi-worker: warning: an earlier run left processes running: " + recordPath + " (pids 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 4 more)\n"
+	want := "pi-worker: warning: an earlier run may have left processes running: " + recordPath + " (pids 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 4 more)\n"
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
