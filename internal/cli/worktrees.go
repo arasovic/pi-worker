@@ -76,12 +76,8 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 		fmt.Fprintf(stderr, "pi-worker: worktree %q not found\n", opts.name)
 		return 2
 	}
-	if selected.dirty {
-		fmt.Fprintf(stderr, "pi-worker: refuse to remove worktree %q: checkout is dirty\n", selected.name)
-		return 2
-	}
-	if !selected.merged {
-		fmt.Fprintf(stderr, "pi-worker: refuse to remove worktree %q: branch %q is not merged\n", selected.name, selected.branch)
+	if err := validateRemoveEligibility(*selected); err != nil {
+		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
 		return 2
 	}
 	if !opts.yes {

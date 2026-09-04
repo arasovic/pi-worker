@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // worktreeError is the refusal shape prepareWorktree returns. usage
@@ -153,7 +154,6 @@ func parseManagedWorktreeList(root, output string) (map[string]managedWorktreeRe
 		branch      string
 		sawPath     bool
 		sawBranch   bool
-		sawDetached bool
 		sawBare     bool
 		sawLocked   bool
 		sawPrunable bool
@@ -226,7 +226,8 @@ func parseManagedWorktreeList(root, output string) (map[string]managedWorktreeRe
 		case strings.HasPrefix(line, "HEAD "):
 			// Ignored.
 		case line == "detached":
-			current.sawDetached = true
+			// Unrelated entries may be detached; managed detached checkouts
+			// lack the exact branch and are refused via the missing-branch check.
 		case line == "bare":
 			current.sawBare = true
 		case strings.HasPrefix(line, "locked"):
@@ -315,6 +316,19 @@ func checkoutHasChanges(ctx context.Context, path string) (bool, error) {
 	return out != "", nil
 }
 
+func validateRemoveEligibility(wt managedWorktree) error {
+	if !validWorktreeName(wt.name) {
+		return fmt.Errorf("invalid worktree name %q", wt.name)
+	}
+	if wt.dirty {
+		return fmt.Errorf("refuse to remove worktree %q: checkout is dirty", wt.name)
+	}
+	if !wt.merged {
+		return fmt.Errorf("refuse to remove worktree %q: branch %q is not merged", wt.name, wt.branch)
+	}
+	return nil
+}
+
 // removeManagedWorktree removes exactly the managed checkout and its
 // exact local branch described by expected, but only when still safe.
 // It refuses invalid names, any expected checkout marked dirty, or any
@@ -325,16 +339,13 @@ func checkoutHasChanges(ctx context.Context, path string) (bool, error) {
 // changed target returns a retry error with no mutation. It reconfirms
 // the fresh target is clean and merged, then runs git worktree remove
 // on the exact path without force, and only after that succeeds deletes
-// the exact branch with git branch -d without force.
+// the exact branch with git branch -d without force. If that branch
+// delete fails the helper makes one bounded, non-force attempt to
+// restore the checkout with git worktree add on the exact path and
+// branch and still returns an error.
 func removeManagedWorktree(ctx context.Context, cwd string, expected managedWorktree) error {
-	if !validWorktreeName(expected.name) {
-		return fmt.Errorf("invalid worktree name %q", expected.name)
-	}
-	if expected.dirty {
-		return fmt.Errorf("refuse to remove worktree %q: checkout is dirty", expected.name)
-	}
-	if !expected.merged {
-		return fmt.Errorf("refuse to remove worktree %q: branch %q is not merged", expected.name, expected.branch)
+	if err := validateRemoveEligibility(expected); err != nil {
+		return err
 	}
 	freshList, err := listManagedWorktrees(ctx, cwd)
 	if err != nil {
@@ -354,17 +365,20 @@ func removeManagedWorktree(ctx context.Context, cwd string, expected managedWork
 	if fresh.name != expected.name || fresh.path != expected.path || fresh.branch != expected.branch || fresh.dirty != expected.dirty || fresh.merged != expected.merged {
 		return fmt.Errorf("worktree %q changed: retry", expected.name)
 	}
-	if fresh.dirty {
-		return fmt.Errorf("refuse to remove worktree %q: checkout is dirty", fresh.name)
-	}
-	if !fresh.merged {
-		return fmt.Errorf("refuse to remove worktree %q: branch %q is not merged", fresh.name, fresh.branch)
+	if err := validateRemoveEligibility(*fresh); err != nil {
+		return err
 	}
 	if _, err := runGitFunc(ctx, cwd, "worktree", "remove", fresh.path); err != nil {
 		return fmt.Errorf("remove worktree %q: %w", fresh.path, err)
 	}
 	if _, err := runGitFunc(ctx, cwd, "branch", "-d", fresh.branch); err != nil {
-		return fmt.Errorf("delete branch %q: %w", fresh.branch, err)
+		branchErr := err
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if _, restoreErr := runGitFunc(restoreCtx, cwd, "worktree", "add", fresh.path, fresh.branch); restoreErr != nil {
+			return fmt.Errorf("delete branch %q: %w; restore checkout %q from branch %q failed: %v", fresh.branch, branchErr, fresh.path, fresh.branch, restoreErr)
+		}
+		return fmt.Errorf("delete branch %q: %w; checkout %q restored from branch %q", fresh.branch, branchErr, fresh.path, fresh.branch)
 	}
 	return nil
 }
