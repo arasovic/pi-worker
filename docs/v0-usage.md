@@ -405,7 +405,16 @@ pi-worker worktrees remove <name> [--yes] [--json]
   to stdout. `--json` (which requires `--yes`) emits one
   `schemaVersion: 1` document with `removed: { name, path, branch }`. See
   [`docs/json-contracts.md`](./json-contracts.md) for the detailed JSON
-  shape.
+  shape. Successful removal still removes the checkout first and then its
+  exact branch.
+
+- If branch deletion fails after checkout removal, the command makes one
+  bounded non-force attempt to restore that exact checkout from the
+  still-existing branch and still exits `9` without success output. If
+  restoration also fails, the error reports both failures; the branch is
+  never force-deleted and remains available for manual recovery.
+  `worktrees remove --json` emits no success document on either failure
+  path.
 
 - Exit codes: `0` on success (including a declined confirmation or an empty list), `2` for usage or refusal (invalid name, not found, dirty, not merged, or missing `--yes` when required), `9` for inventory or mutation failures and for the post-confirmation retry case.
 

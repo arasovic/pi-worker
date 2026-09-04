@@ -205,6 +205,14 @@ and exits `2`. A successful removal exits `0` and the root object has exactly
 - `path`: the absolute checkout path that was removed
 - `branch`: the branch that was removed (`run/<name>`)
 
+Successful removal removes the checkout first and then its exact branch. If
+branch deletion fails after checkout removal, the command makes one bounded
+non-force attempt to restore that exact checkout from the still-existing
+branch and still exits `9` without success output. If restoration also fails,
+the error reports both failures; the branch is never force-deleted and remains
+available for manual recovery. `worktrees remove --json` emits no success
+document on either failure path.
+
 Refusals (worktree not found, checkout dirty, branch not merged, or missing
 `--yes`) and inventory or removal failures emit no success document: refusals
 exit `2`, resolution or mutation failures exit `9`.
