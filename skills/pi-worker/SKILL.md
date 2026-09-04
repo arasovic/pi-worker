@@ -49,6 +49,24 @@ and stop; with a document, read and report each worker's `model`, effective
 present. The rejection message is on stderr, not stdout — the documented
 invocation sends its debug output there too — so read stderr when no document
 appears.
+7. For checkouts created by `run --worktree <name>`, manage only the exact
+Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on
+branch `run/<same-name>`: `pi-worker worktrees list [--json]` is read-only,
+sorted by name, reporting `name`/`path`/`branch`/`dirty`/`merged` (`merged`
+against the caller’s current `HEAD`, not `main`); `pi-worker worktrees remove
+<name> [--yes] [--json]` removes only a clean checkout whose branch is merged
+into the caller’s current `HEAD` — no force option. Malformed, missing,
+mismatched, locked, bare, prunable, or otherwise unprovable pairs are
+refused. Human `remove` shows the selected row and asks `[y/N]` (only `y`/`yes`
+proceeds; `--yes` skips only the question); JSON and nonterminal use require
+`--yes`. After an interactive yes the exact pair is re-checked and a change
+removes nothing and asks to retry. On success the checkout is removed then
+its branch; human mode prints `removed worktree "<name>" on branch
+"<branch>"`, JSON emits `{ schemaVersion: 1, removed: { name, path, branch }
+}`. See
+`https://github.com/arasovic/pi-worker/blob/main/docs/json-contracts.md` for
+the detailed JSON shape.
+
 When `thinkingFallback` is true, surface its warning: the selected model
 continued with Pi's confirmed default effort. Each worker gets at most three
 startup/handshake attempts before the prompt, each attempt uses a fresh
@@ -79,7 +97,7 @@ it with its object when one exists (`writes`, `verification`, or the worker's
 
 ## Boundaries
 
-- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a checkout of its own: a separate working directory, not containment — a worker can still reach outside it. Without the flag, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed.
+- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a checkout of its own: a separate working directory, not containment — a worker can still reach outside it. Without the flag, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed. Runs never automatically remove leftover checkouts or branches; removal is only via the explicit safe `pi-worker worktrees remove` command which requires a clean, merged pair.
 - When a run moves HEAD, the branch, or the stash list, the result carries a `git` object with the before and after state. Its presence means something moved that a bounded edit does not normally move: read it as a notification, not a prohibition — a caller may legitimately want a worker to commit.
 - Use trusted workspaces. Parallel writes must be disjoint, and whenever `--writes` is used, one run at a time per workspace: if one run writes a stray path, a concurrent run that declared it writes nothing is the one reported as undeclared — a run that wrote nothing gets accused.
 - Cleanup is best-effort lifecycle recovery, not a sandbox or a no-escape guarantee. Deliberately daemonized or reparented Unix descendants, processes spawned during teardown, and the Windows pre-assignment window can escape.

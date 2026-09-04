@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -200,6 +201,64 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 		}
 		workers := requireJSONArray(t, document["workers"], "workers")
 		assertExactJSONKeys(t, workers[0].(map[string]any), "model", "requestedThinkingLevel", "thinkingLevel", "thinkingFallback", "warning", "explanation", "status")
+	})
+
+	t.Run("worktrees list", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		bravoPath, _, err := prepareWorktree(context.Background(), repo, "bravo")
+		if err != nil {
+			t.Fatalf("prepareWorktree bravo: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(bravoPath, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatalf("dirty bravo: %v", err)
+		}
+		alphaPath, _, err := prepareWorktree(context.Background(), repo, "alpha")
+		if err != nil {
+			t.Fatalf("prepareWorktree alpha: %v", err)
+		}
+		code, stdout, stderr := runCLI(t, []string{"worktrees", "list", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("worktrees list = (%d, %q, %q)", code, stdout, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		assertExactJSONKeys(t, document, "schemaVersion", "worktrees")
+		worktrees := requireJSONArray(t, document["worktrees"], "worktrees")
+		if len(worktrees) != 2 {
+			t.Fatalf("worktrees len = %d, want 2", len(worktrees))
+		}
+		first := worktrees[0].(map[string]any)
+		second := worktrees[1].(map[string]any)
+		assertExactJSONKeys(t, first, "name", "path", "branch", "dirty", "merged")
+		assertExactJSONKeys(t, second, "name", "path", "branch", "dirty", "merged")
+		if first["name"] != "alpha" || second["name"] != "bravo" {
+			t.Fatalf("worktrees order = %v %v, want alpha bravo", first["name"], second["name"])
+		}
+		if first["path"] != alphaPath || second["path"] != bravoPath {
+			t.Fatalf("worktrees paths = %v %v, want %q %q", first["path"], second["path"], alphaPath, bravoPath)
+		}
+	})
+
+	t.Run("worktrees remove", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe", "--yes", "--json"}, "")
+		if code != 0 || stderr != "" {
+			t.Fatalf("worktrees remove = (%d, %q, %q)", code, stdout, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		assertExactJSONKeys(t, document, "schemaVersion", "removed")
+		removed, ok := document["removed"].(map[string]any)
+		if !ok {
+			t.Fatalf("removed = %#v, want object", document["removed"])
+		}
+		assertExactJSONKeys(t, removed, "name", "path", "branch")
+		if removed["name"] != "probe" || removed["path"] != wtPath || removed["branch"] != branch {
+			t.Fatalf("removed = %#v, want name probe path %q branch %q", removed, wtPath, branch)
+		}
+		_ = repo
 	})
 }
 

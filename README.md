@@ -107,6 +107,25 @@ Run up to three independent tasks by repeating `--task` or `--task-file`.
 Parallel writes must target disjoint files because every worker shares the
 current writable workspace.
 
+Manage checkouts created with `run --worktree <name>` — only the exact
+Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on
+branch `run/<same-name>` is managed:
+
+```sh
+pi-worker worktrees list
+pi-worker worktrees list --json
+pi-worker worktrees remove my-feature --yes
+```
+
+`list` is read-only, sorted by name, and reports
+`name`/`path`/`branch`/`dirty`/`merged` (`merged` against the caller’s
+current `HEAD`, not a branch named `main`). `remove` deletes only a clean
+checkout whose branch is merged into the caller’s current `HEAD`; there is no
+force option. Human mode shows the selected row and asks `[y/N]` — only
+`y`/`yes` proceeds and `--yes` skips only the question; JSON and nonterminal
+use require `--yes`. See [detailed usage](./docs/v0-usage.md) for refusal and
+retry rules and [JSON contracts](./docs/json-contracts.md) for JSON shapes.
+
 ## Safety
 
 Pi Worker is not a sandbox. bash has the current user's host permissions, and
