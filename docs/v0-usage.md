@@ -234,34 +234,44 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   counts as alive); `interrupted` when there is no finish line and
   that process is gone; `unknown` when the record has no usable start
   line at all.
-- `runs prune --keep <n>` keeps the newest `n` records and deletes the
-  rest — one file at a time, stale `unknown` records included — and
-  never deletes a record whose run is still running, whatever its age.
-  `--keep 0` keeps none by age; running runs are still spared. An
-  `unknown` record is deleted like any other, except while its file
-  has changed within the last hour: prune cannot tell an unreadable
-  record apart from one being written, so a record that changed
-  recently is kept and reported — a later prune deletes it once it
-  stops changing. That freshness question is asked twice, when the
-  records are chosen and again at the moment each one is deleted,
-  because the confirmation question in between waits on a person for
-  as long as they take. A stale symlink named like a record is
-  deleted like any other unreadable record — the link is removed,
-  never whatever it points at. Pruned ids are never removed from the
+- `runs prune --keep <n>` keeps the newest `n` records in that command's
+  final selection and deletes the rest — one file at a time, stale
+  `unknown` records included — and never deletes a record whose run is
+  still running, whatever its age. `--keep 0` keeps none by age;
+  running runs are still spared. An `unknown` record is deleted like
+  any other, except while its file has changed within the last hour:
+  prune cannot tell an unreadable record apart from one being written,
+  so a record that changed recently is kept and reported — a later
+  prune deletes it once it stops changing. That freshness question is
+  asked twice, when the records are chosen and again at the moment
+  each one is deleted, because the confirmation question in between
+  waits on a person for as long as they take. `--keep` applies only to
+  that command's final selection; it is not a lasting minimum for a
+  later separate prune. A stale symlink named like a record is deleted
+  like any other unreadable record — the link is removed, never
+  whatever it points at. Pruned ids are never removed from the
   interrupted-run marker, and the marker itself is never a deletion
   target.
 - Without `--yes`, prune lists on stderr the records it is about to
-  delete and asks `delete <n> run records? [y/N]`; only `y` or `yes`
-  (case-insensitive, after trimming spaces) proceeds, and anything
-  else — `n`, an empty line, an EOF — deletes nothing, prints
-  `nothing deleted`, and exits `0`. With neither `--yes` nor a
-  terminal on stdin, and always with `--json` without `--yes`, prune
-  refuses, deletes nothing, and exits `2` — the refusal comes before
-  everything, the records directory not even resolved first, so it
-  exits `2` even when the directory cannot be resolved or read. A
-  Ctrl-C stops the prune, including while the confirmation question
-  is on screen: what was already deleted stays deleted and is still
-  reported, nothing further is removed, and the exit is `9`.
+  delete and asks `delete <n> run records? [y/N]`. After an
+  affirmative answer, it re-lists immediately before deletion, making
+  one fresh selection; if the ordered records selected for deletion
+  changed, it deletes nothing, exits `9`, and asks the caller to
+  retry. Only `y` or `yes` (case-insensitive, after trimming spaces)
+  proceeds, and anything else — `n`, an empty line, an EOF — deletes
+  nothing, prints `nothing deleted`, and exits `0`. Existing per-file
+  identity checks and running/unreadable safety checks still apply.
+  With neither `--yes` nor a terminal on stdin, and always with
+  `--json` without `--yes`, prune refuses, deletes nothing, and exits
+  `2` — the refusal comes before everything, the records directory not
+  even resolved first, so it exits `2` even when the directory cannot
+  be resolved or read. A Ctrl-C stops the prune, including while the
+  confirmation question is on screen: what was already deleted stays
+  deleted and is still reported, nothing further is removed, and the
+  exit is `9`.
+- With `--yes`, prune has no human wait. It lists/selects once
+  immediately before deletion, adds no lock, and does not coordinate
+  another prune.
 - The human output prints one line per record as it goes — `deleted
   <id>` for a record it removed, `kept <id>` for one it spared at the
   last moment — and then a summary line, `kept <n> newest`, plus one
