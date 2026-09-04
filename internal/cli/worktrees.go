@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,8 +49,8 @@ func worktreesCommand(parent context.Context, args []string, stdin io.Reader, st
 	}
 }
 
-func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, _ io.Reader, stdout, stderr io.Writer) int {
-	if !opts.yes {
+func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin io.Reader, stdout, stderr io.Writer) int {
+	if !opts.yes && (opts.json || !stdinIsTerminal()) {
 		fmt.Fprint(stderr, "pi-worker: worktrees remove needs --yes when it cannot ask\n")
 		return 2
 	}
@@ -82,6 +83,20 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, _ io.
 	if !selected.merged {
 		fmt.Fprintf(stderr, "pi-worker: refuse to remove worktree %q: branch %q is not merged\n", selected.name, selected.branch)
 		return 2
+	}
+	if !opts.yes {
+		renderWorktreeTable(stderr, []managedWorktree{*selected})
+		fmt.Fprintf(stderr, "remove worktree %q on branch %q at %q? [y/N] ", selected.name, selected.branch, selected.path)
+		line, err := bufio.NewReader(stdin).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintln(stdout, "nothing removed")
+			return 0
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(stdout, "nothing removed")
+			return 0
+		}
 	}
 	if err := removeManagedWorktree(parent, cwd, *selected); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)

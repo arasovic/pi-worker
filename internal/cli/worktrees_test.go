@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -581,5 +582,98 @@ func TestWorktreesRemoveYesNoYes(t *testing.T) {
 	}
 	if code != 2 || stdout != "" || stderr != want {
 		t.Fatalf("no-yes json = (%d, %q, %q), want (2, \"\", %q)", code, stdout, stderr, want)
+	}
+}
+
+func TestWorktreesRemoveInteractiveAnswerSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{name: "y", input: "y\n"},
+		{name: "YES", input: "YES\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := canonicalRepo(t, newGitWorkspace(t))
+			wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+			if err != nil {
+				t.Fatalf("prepareWorktree: %v", err)
+			}
+			withStdinIsTerminal(t, true)
+			code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe"}, tc.input)
+			if code != 0 {
+				t.Fatalf("remove probe with %q = %d, want 0; stderr %q stdout %q", tc.input, code, stderr, stdout)
+			}
+			wantOut := fmt.Sprintf("removed worktree %q on branch %q\n", "probe", branch)
+			if stdout != wantOut {
+				t.Fatalf("stdout = %q, want %q", stdout, wantOut)
+			}
+			if strings.Contains(stdout, "[y/N]") || strings.Contains(stdout, "NAME") {
+				t.Fatalf("stdout = %q, want no table or prompt", stdout)
+			}
+			if !strings.Contains(stderr, "NAME") || !strings.Contains(stderr, "DIRTY") || !strings.Contains(stderr, "MERGED") {
+				t.Fatalf("stderr = %q, want table header", stderr)
+			}
+			if !strings.Contains(stderr, "probe") || !strings.Contains(stderr, branch) || !strings.Contains(stderr, wtPath) {
+				t.Fatalf("stderr = %q, want selected row probe %q %q", stderr, branch, wtPath)
+			}
+			wantQ := fmt.Sprintf("remove worktree %q on branch %q at %q? [y/N] ", "probe", branch, wtPath)
+			if !strings.Contains(stderr, wantQ) {
+				t.Fatalf("stderr = %q, want question %q", stderr, wantQ)
+			}
+			if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+				t.Fatalf("checkout %q still exists: %v", wtPath, err)
+			}
+			if gitRefExists(t, repo, "refs/heads/"+branch) {
+				t.Fatalf("branch %q still exists", branch)
+			}
+		})
+	}
+}
+
+func TestWorktreesRemoveInteractiveAnswerDecline(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stdin io.Reader
+	}{
+		{name: "n", stdin: strings.NewReader("n\n")},
+		{name: "blank", stdin: strings.NewReader("\n")},
+		{name: "EOF", stdin: strings.NewReader("")},
+		{name: "unreadable", stdin: failingReader{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := canonicalRepo(t, newGitWorkspace(t))
+			wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+			if err != nil {
+				t.Fatalf("prepareWorktree: %v", err)
+			}
+			withStdinIsTerminal(t, true)
+			code, stdout, stderr := runCLIReader(t, []string{"worktrees", "remove", "probe"}, tc.stdin)
+			if code != 0 {
+				t.Fatalf("decline %s = %d, want 0; stderr %q stdout %q", tc.name, code, stderr, stdout)
+			}
+			if stdout != "nothing removed\n" {
+				t.Fatalf("stdout = %q, want %q", stdout, "nothing removed\n")
+			}
+			if strings.Contains(stdout, "[y/N]") || strings.Contains(stdout, "NAME") {
+				t.Fatalf("stdout = %q, want no table or prompt", stdout)
+			}
+			if !strings.Contains(stderr, "NAME") || !strings.Contains(stderr, "DIRTY") || !strings.Contains(stderr, "MERGED") {
+				t.Fatalf("stderr = %q, want table header", stderr)
+			}
+			if !strings.Contains(stderr, "probe") || !strings.Contains(stderr, branch) || !strings.Contains(stderr, wtPath) {
+				t.Fatalf("stderr = %q, want selected row probe %q %q", stderr, branch, wtPath)
+			}
+			wantQ := fmt.Sprintf("remove worktree %q on branch %q at %q? [y/N] ", "probe", branch, wtPath)
+			if !strings.Contains(stderr, wantQ) {
+				t.Fatalf("stderr = %q, want question %q", stderr, wantQ)
+			}
+			if _, err := os.Stat(wtPath); err != nil {
+				t.Fatalf("checkout %q missing after decline: %v", wtPath, err)
+			}
+			if !gitRefExists(t, repo, "refs/heads/"+branch) {
+				t.Fatalf("branch %q missing after decline", branch)
+			}
+		})
 	}
 }
