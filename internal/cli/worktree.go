@@ -315,6 +315,60 @@ func checkoutHasChanges(ctx context.Context, path string) (bool, error) {
 	return out != "", nil
 }
 
+// removeManagedWorktree removes exactly the managed checkout and its
+// exact local branch described by expected, but only when still safe.
+// It refuses invalid names, any expected checkout marked dirty, or any
+// expected branch marked unmerged without mutating state. Immediately
+// before mutation it re-inventories from cwd via listManagedWorktrees,
+// finds the same name, and requires the full observable snapshot to
+// match exactly: name, path, branch, dirty, merged. A missing or
+// changed target returns a retry error with no mutation. It reconfirms
+// the fresh target is clean and merged, then runs git worktree remove
+// on the exact path without force, and only after that succeeds deletes
+// the exact branch with git branch -d without force.
+func removeManagedWorktree(ctx context.Context, cwd string, expected managedWorktree) error {
+	if !validWorktreeName(expected.name) {
+		return fmt.Errorf("invalid worktree name %q", expected.name)
+	}
+	if expected.dirty {
+		return fmt.Errorf("refuse to remove worktree %q: checkout is dirty", expected.name)
+	}
+	if !expected.merged {
+		return fmt.Errorf("refuse to remove worktree %q: branch %q is not merged", expected.name, expected.branch)
+	}
+	freshList, err := listManagedWorktrees(ctx, cwd)
+	if err != nil {
+		return fmt.Errorf("list worktrees: %w", err)
+	}
+	var fresh *managedWorktree
+	for i := range freshList {
+		if freshList[i].name == expected.name {
+			v := freshList[i]
+			fresh = &v
+			break
+		}
+	}
+	if fresh == nil {
+		return fmt.Errorf("worktree %q not found: retry", expected.name)
+	}
+	if fresh.name != expected.name || fresh.path != expected.path || fresh.branch != expected.branch || fresh.dirty != expected.dirty || fresh.merged != expected.merged {
+		return fmt.Errorf("worktree %q changed: retry", expected.name)
+	}
+	if fresh.dirty {
+		return fmt.Errorf("refuse to remove worktree %q: checkout is dirty", fresh.name)
+	}
+	if !fresh.merged {
+		return fmt.Errorf("refuse to remove worktree %q: branch %q is not merged", fresh.name, fresh.branch)
+	}
+	if _, err := runGitFunc(ctx, cwd, "worktree", "remove", fresh.path); err != nil {
+		return fmt.Errorf("remove worktree %q: %w", fresh.path, err)
+	}
+	if _, err := runGitFunc(ctx, cwd, "branch", "-d", fresh.branch); err != nil {
+		return fmt.Errorf("delete branch %q: %w", fresh.branch, err)
+	}
+	return nil
+}
+
 // prepareWorktree gives one run a private checkout of its own. It
 // resolves the repository root from cwd — os.Getwd may be a
 // subdirectory of the repository, and the checkout must live under the
