@@ -82,6 +82,15 @@ otherwise it must be one exact provider/model selector. Loading rejects
 unknown fields, trailing data, invalid selectors, and unsupported schema
 versions.
 
+Loading also distinguishes an absent file from a dangling link: a missing
+`config.json` is a valid empty configuration (exit `0` for `config show`,
+`run` reading a default, `doctor` warning), while a `config.json` that is
+itself a symbolic link whose target does not exist fails every read path
+with a clear dangling-link error and leaves the link untouched. Only the
+final component produces that error: a dangling link in a parent directory
+is an ordinary missing file, and a link whose target exists resolves like
+any other document.
+
 ## `skill receipt-path --json`
 
 Required fields are `schemaVersion` and the absolute string `receiptPath`.

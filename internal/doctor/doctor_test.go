@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -126,6 +129,51 @@ func TestRunReportsMissingConfigAsWarning(t *testing.T) {
 	result, err := Run(context.Background(), deps)
 	if err != nil || !result.Ready || result.Checks[2].Status != CheckWarning || result.Checks[4].Status != CheckWarning {
 		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+}
+
+func TestRunReportsDanglingConfigLinkAsFailed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// The real user configuration document is a dangling final-component
+	// link: doctor must report the config check failed — never the missing-
+	// configuration warning meant for a genuinely absent file — and leave
+	// the link untouched. loadUserConfig is the production read path, so
+	// this pins the shared behavior exactly as DefaultDependencies wires it.
+	missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
+	path := installUserConfigPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(missingTarget, path); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := readyDependencies()
+	deps.LoadConfig = loadUserConfig
+	result, err := Run(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+	if result.Ready || result.Checks[2].Status != CheckFailed || result.Checks[4].Status != CheckFailed {
+		t.Fatalf("result = %#v, want failed config and default-model checks", result)
+	}
+	// doctor keeps its failed-config message categorical — it never echoes
+	// the underlying error — so the check must fail rather than read as the
+	// missing-file warning that would leave the environment ready.
+	if msg := result.Checks[2].Message; msg == "No pi-worker configuration found" {
+		t.Fatalf("config message = %q, a dangling link must not read as a missing configuration", msg)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config symlink replaced = %v, %v", info, err)
+	}
+	if got, err := os.Readlink(path); err != nil || got != missingTarget {
+		t.Fatalf("config symlink target = %q, %v; want %q", got, err, missingTarget)
+	}
+	if _, err := os.Stat(missingTarget); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(%q) after doctor = %v, want fs.ErrNotExist", missingTarget, err)
 	}
 }
 
@@ -368,6 +416,27 @@ func assertRedacted(t *testing.T, result Result) {
 	if strings.Contains(text, seededSecret) || strings.Contains(text, seededEnvironment) {
 		t.Fatalf("messages leak seeded value: %q", text)
 	}
+}
+
+// installUserConfigPath redirects the operating-system user configuration
+// directory to an isolated temp location and returns the pi-worker
+// config.json path there, so loadUserConfig — the production read path —
+// reads an entirely hermetic document instead of the real home directory.
+func installUserConfigPath(t *testing.T) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("AppData", filepath.Join(t.TempDir(), "AppData"))
+	case "darwin":
+		t.Setenv("HOME", t.TempDir())
+	default:
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+	}
+	path, err := config.UserPath()
+	if err != nil {
+		t.Fatalf("UserPath(): %v", err)
+	}
+	return path
 }
 
 func timeoutContext(t *testing.T) context.Context {
