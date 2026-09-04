@@ -69,7 +69,9 @@ func ReadPin(root string) (string, error) {
 // deterministic order: the Go constant first, then Markdown files in walk
 // order. The tree is walked rather than read from git, so the result does not
 // depend on a git process and works the same in every job that runs the
-// check.
+// check. The walk skips .git, node_modules, dist, and the repository-root
+// .pi-worker directory (and everything beneath it), and ignores
+// docs/pi-cli-surface.md.
 func Sites(root string) ([]Site, error) {
 	sites := make([]Site, 0, 8)
 	goSite, err := siteFromVersionGo(root)
@@ -82,13 +84,22 @@ func Sites(root string) ([]Site, error) {
 	// was actually observed when the Pi surface was probed, including a
 	// 0.84.1 stratum from an earlier probe. Those are observation records,
 	// not claims about the current pin; rewriting them would falsify history.
+	// The repository-root .pi-worker directory is also skipped entirely: it
+	// holds managed linked checkouts that are ignored by Git and must not be
+	// treated as repository content. The skip is rooted at join(root,
+	// ".pi-worker") so an unrelated nested directory merely named .pi-worker
+	// elsewhere in the tree is still scanned.
 	excluded := filepath.Join(root, "docs", "pi-cli-surface.md")
+	piWorkerRoot := filepath.Join(root, ".pi-worker")
 
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
+			if path == piWorkerRoot {
+				return filepath.SkipDir
+			}
 			if entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == "dist" {
 				return filepath.SkipDir
 			}
