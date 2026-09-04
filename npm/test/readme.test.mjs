@@ -124,7 +124,8 @@ test("README is the concise public entry point with the approved contract", () =
   assert.doesNotMatch(readme, /not published|not currently usable|intended\s+post-publication/i);
   assert.match(readme, /source builds.*docs\/v0-usage\.md/is);
   assert.match(readme, /npm package supports only macOS and Linux on arm64 and x64/i);
-  assert.match(readme, /Windows[\s\S]*build from source[\s\S]*compile-checked[\s\S]*not runtime-tested/i);
+  assert.match(readme, /Windows[\s\S]*compile\s+gates?\s+only[\s\S]*build\s+from\s+source/is);
+  assert.doesNotMatch(readme, /compile-checked|not runtime-tested/i);
   assert.match(readme, /native binary.*provider-neutral.*skill/is);
   assert.match(readme, /npm install attempts to install.*detected\s+coding agents/is);
   assert.match(readme, new RegExp(`pinned \`skills@${escapeRegex(PINNED_SKILLS_VERSION)}\``));
@@ -159,7 +160,7 @@ test("README is the concise public entry point with the approved contract", () =
       "https://img.shields.io/badge/Node.js-22.20%2B-339933?logo=nodedotjs&logoColor=white",
       "https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white",
       "https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black",
-      "https://img.shields.io/badge/Windows-source-0078D4",
+      "https://img.shields.io/badge/Windows-compile%20only-0078D4",
       "https://img.shields.io/badge/MIT-green.svg",
     ],
     "README has the approved badges and project image",
@@ -293,7 +294,7 @@ test("security guidance states the current public reporting boundary", () => {
     const url = rawUrl.replaceAll("&amp;", "&");
     assert.match(
       url,
-      /^(?:https:\/\/github\.com\/arasovic\/pi-worker\/(?:actions\/workflows\/ci\.yml(?:\/badge\.svg)?|releases|security\/advisories\/new)$|https:\/\/www\.npmjs\.com\/package\/pi-worker$|https:\/\/img\.shields\.io\/(?:npm\/v\/pi-worker\.svg|badge\/(?:Go-1\.25%2B-00ADD8\?logo=go&logoColor=white|Node\.js-22\.20%2B-339933\?logo=nodedotjs&logoColor=white|macOS-000000\?logo=apple&logoColor=white|Linux-FCC624\?logo=linux&logoColor=black|Windows-source-0078D4|MIT-green\.svg))$|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$|https:\/\/pi\.dev\/$)/,
+      /^(?:https:\/\/github\.com\/arasovic\/pi-worker\/(?:actions\/workflows\/ci\.yml(?:\/badge\.svg)?|releases|security\/advisories\/new)$|https:\/\/www\.npmjs\.com\/package\/pi-worker$|https:\/\/img\.shields\.io\/(?:npm\/v\/pi-worker\.svg|badge\/(?:Go-1\.25%2B-00ADD8\?logo=go&logoColor=white|Node\.js-22\.20%2B-339933\?logo=nodedotjs&logoColor=white|macOS-000000\?logo=apple&logoColor=white|Linux-FCC624\?logo=linux&logoColor=black|Windows-compile%20only-0078D4|MIT-green\.svg))$|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$|https:\/\/pi\.dev\/$)/,
     );
   }
   assert.doesNotMatch(publicDocs, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);

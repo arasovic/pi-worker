@@ -58,7 +58,7 @@ jobs:
       - name: Build
         run: go build ./...
 
-  windows-readiness:
+  windows-crossbuild:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -82,6 +82,27 @@ jobs:
               -o "$RUNNER_TEMP/windows-test-binaries/$index.test.exe" \
               "$package"
           done < <(GOOS=windows GOARCH=amd64 go list ./...)
+
+  go-crossbuild:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Compile-only gates: the sources build for these targets, but none is
+        # runtime-tested or a distributed release platform. macOS and Linux
+        # remain the distributed runtime targets.
+        goos: [freebsd, openbsd, netbsd, solaris, plan9]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Cross-build ${{ matrix.goos }} amd64 (compile-only)
+        run: GOOS=${{ matrix.goos }} GOARCH=amd64 CGO_ENABLED=0 go build ./...
 
   node-package:
     runs-on: ubuntu-latest

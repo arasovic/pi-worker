@@ -5,7 +5,8 @@
 ## How it was verified
 
 <!--
-CI already runs gofmt, go vet, go test -race, the Windows cross-build, and
+CI already runs gofmt, go vet, go test -race, the Windows/Unix cross-compile
+gates, and
 npm run verify, so there is no need to say those pass.
 
 Worth saying:
