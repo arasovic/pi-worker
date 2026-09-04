@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestParseWorktreesArgsAccepted asserts the accepted forms and the
@@ -676,4 +677,93 @@ func TestWorktreesRemoveInteractiveAnswerDecline(t *testing.T) {
 			}
 		})
 	}
+}
+
+type worktreeChangingReader struct {
+	wtPath string
+	done   bool
+}
+
+func (r *worktreeChangingReader) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		if err := os.WriteFile(filepath.Join(r.wtPath, "file.txt"), []byte("dirty during prompt\n"), 0o644); err != nil {
+			return 0, err
+		}
+	}
+	return copy(p, "y\n"), io.EOF
+}
+
+func TestWorktreesRemoveInteractiveSafety(t *testing.T) {
+	t.Run("changed checkout during prompt", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		withStdinIsTerminal(t, true)
+		reader := &worktreeChangingReader{wtPath: wtPath}
+		code, stdout, stderr := runCLIReader(t, []string{"worktrees", "remove", "probe"}, reader)
+		if code != 9 {
+			t.Fatalf("changed checkout = %d, want 9; stdout %q stderr %q", code, stdout, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(strings.ToLower(stderr), "retry") && !strings.Contains(strings.ToLower(stderr), "changed") {
+			t.Fatalf("stderr = %q, want it to contain retry/change", stderr)
+		}
+		if _, err := os.Stat(wtPath); err != nil {
+			t.Fatalf("checkout %q missing after changed-state retry: %v", wtPath, err)
+		}
+		if !gitRefExists(t, repo, "refs/heads/"+branch) {
+			t.Fatalf("branch %q missing after changed-state retry", branch)
+		}
+	})
+	t.Run("cancelled while prompt blocked", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		withStdinIsTerminal(t, true)
+		pr, pw := io.Pipe()
+		t.Cleanup(func() { pw.Close() })
+		question := fmt.Sprintf("remove worktree %q on branch %q at %q? [y/N] ", "probe", branch, wtPath)
+		recorder := &promptRecorder{question: question, seen: make(chan struct{})}
+		var stdout bytes.Buffer
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan int, 1)
+		go func() {
+			done <- mainWithContext(ctx, []string{"worktrees", "remove", "probe"}, pr, &stdout, recorder)
+		}()
+		select {
+		case <-recorder.seen:
+		case <-time.After(10 * time.Second):
+			t.Fatal("worktrees remove question never appeared on stderr")
+		}
+		cancel()
+		var code int
+		select {
+		case code = <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("worktrees remove did not return after cancellation while prompt was blocked")
+		}
+		if code != 9 {
+			t.Fatalf("exit = %d, want 9; stdout %q stderr %q", code, stdout.String(), recorder.String())
+		}
+		if stdout.String() != "" {
+			t.Fatalf("stdout = %q, want empty", stdout.String())
+		}
+		const suffix = "pi-worker: worktrees remove cancelled\n"
+		if !strings.HasSuffix(recorder.String(), suffix) {
+			t.Fatalf("stderr = %q, want suffix %q", recorder.String(), suffix)
+		}
+		if _, err := os.Stat(wtPath); err != nil {
+			t.Fatalf("checkout %q missing after cancelled prompt: %v", wtPath, err)
+		}
+		if !gitRefExists(t, repo, "refs/heads/"+branch) {
+			t.Fatalf("branch %q missing after cancelled prompt", branch)
+		}
+	})
 }

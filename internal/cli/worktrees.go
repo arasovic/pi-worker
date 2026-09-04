@@ -87,16 +87,36 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 	if !opts.yes {
 		renderWorktreeTable(stderr, []managedWorktree{*selected})
 		fmt.Fprintf(stderr, "remove worktree %q on branch %q at %q? [y/N] ", selected.name, selected.branch, selected.path)
-		line, err := bufio.NewReader(stdin).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			fmt.Fprintln(stdout, "nothing removed")
-			return 0
+		answerCh := make(chan string, 1)
+		go func() {
+			line, err := bufio.NewReader(stdin).ReadString('\n')
+			if err != nil && !errors.Is(err, io.EOF) {
+				line = ""
+			}
+			answerCh <- strings.ToLower(strings.TrimSpace(line))
+		}()
+		select {
+		case <-parent.Done():
+			fmt.Fprintln(stderr, "pi-worker: worktrees remove cancelled")
+			return 9
+		case answer := <-answerCh:
+			if answer != "y" && answer != "yes" {
+				if parent.Err() != nil {
+					fmt.Fprintln(stderr, "pi-worker: worktrees remove cancelled")
+					return 9
+				}
+				fmt.Fprintln(stdout, "nothing removed")
+				return 0
+			}
+			if parent.Err() != nil {
+				fmt.Fprintln(stderr, "pi-worker: worktrees remove cancelled")
+				return 9
+			}
 		}
-		answer := strings.ToLower(strings.TrimSpace(line))
-		if answer != "y" && answer != "yes" {
-			fmt.Fprintln(stdout, "nothing removed")
-			return 0
-		}
+	}
+	if parent.Err() != nil {
+		fmt.Fprintln(stderr, "pi-worker: worktrees remove cancelled")
+		return 9
 	}
 	if err := removeManagedWorktree(parent, cwd, *selected); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
