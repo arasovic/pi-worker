@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -279,4 +282,62 @@ func expiredDoctorContext(t *testing.T, kind error) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return ctx
+}
+
+func TestDoctorDanglingConfigLinkReadsAsFailedNotMissing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// Doctor's config check must not read a dangling final-component link
+	// as a missing configuration: the command exits 3 (readiness failure),
+	// never 0 with the ready-warning shape of a missing file, and the link
+	// stays untouched. The deps are defaulted — only the
+	// executable/version/catalog/workspace seams are faked — and the
+	// LoadConfig reads through the cli's own userConfigPath seam, the
+	// same UserPath-plus-Load shape the doctor package wires in its
+	// loadUserConfig, so the check inspects the symlink this test builds.
+	missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
+	path := installCLIConfigPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(missingTarget, path); err != nil {
+		t.Fatal(err)
+	}
+	deps := readyDoctorDependencies()
+	deps.LoadConfig = func() (config.Config, error) {
+		p, err := userConfigPath()
+		if err != nil {
+			return config.Config{}, err
+		}
+		return config.Load(p)
+	}
+	installDoctorDependencies(t, deps)
+
+	code, stdout, stderr := runCLI(t, []string{"doctor"}, "")
+	if code != 3 || stderr != "" {
+		t.Fatalf("doctor dangling link = (%d, %q), want readiness exit 3", code, stderr)
+	}
+	for _, line := range []string{
+		"config: failed - Pi-worker configuration is invalid",
+		"default-model: failed - Configured default model could not be checked",
+		"ready: no",
+	} {
+		if !strings.Contains(stdout, line) {
+			t.Fatalf("doctor output = %q, want it to contain %q", stdout, line)
+		}
+	}
+	if strings.Contains(stdout, "No pi-worker configuration found") {
+		t.Fatalf("doctor output = %q, a dangling link must not read as a missing configuration", stdout)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config symlink replaced = %v, %v", info, err)
+	}
+	if got, err := os.Readlink(path); err != nil || got != missingTarget {
+		t.Fatalf("config symlink target = %q, %v; want %q", got, err, missingTarget)
+	}
+	if _, err := os.Stat(missingTarget); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(%q) after doctor = %v, want fs.ErrNotExist", missingTarget, err)
+	}
 }

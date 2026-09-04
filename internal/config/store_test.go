@@ -183,6 +183,47 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadRefusesDanglingSymlinkedConfigPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// The path is a final-component symlink whose target does not exist.
+	// Reading it must fail with the dangling-link error — never with the
+	// plain not-exist error, which the callers read as a valid empty
+	// configuration — and must leave the link untouched.
+	missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Symlink(missingTarget, path); err != nil {
+		t.Fatalf("Symlink(%q -> %q): %v", path, missingTarget, err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatalf("Load(%q) = nil error, want the dangling-link error", path)
+	}
+	if !errors.Is(err, errDanglingConfigLink) {
+		t.Fatalf("Load(%q) error = %v, want the dangling-link error", path, err)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Load(%q) error = %v, must not read as a missing file", path, err)
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Load(%q) error = %v, want a message naming the symbolic link", path, err)
+	}
+	// The dangling link is untouched: still a link, still pointing where it
+	// pointed, and the target was never created.
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("dangling link changed after refused Load: err=%v mode=%v", err, info.Mode())
+	}
+	if got, err := os.Readlink(path); err != nil || got != missingTarget {
+		t.Fatalf("dangling link target after refused Load = %q, %v; want %q", got, err, missingTarget)
+	}
+	if _, err := os.Stat(missingTarget); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(%q) after refused Load = %v, want fs.ErrNotExist", missingTarget, err)
+	}
+}
+
 func TestSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

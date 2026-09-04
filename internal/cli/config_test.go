@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,6 +45,15 @@ func installConfigPath(t *testing.T, path string) {
 	original := userConfigPath
 	userConfigPath = func() (string, error) { return path, nil }
 	t.Cleanup(func() { userConfigPath = original })
+}
+
+// installCLIConfigPath redirects the real user-config path seam to a
+// hermetic location and returns the config.json path there.
+func installCLIConfigPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	installConfigPath(t, path)
+	return path
 }
 
 func runCLIReader(t *testing.T, args []string, stdin io.Reader) (int, string, string) {
@@ -86,7 +96,7 @@ func TestConfigShowJSONIsSingleDocument(t *testing.T) {
 	}
 }
 
-func TestConfigShowReportsMissingAndMalformedConfig(t *testing.T) {
+func TestConfigShowReportsMissingMalformedAndDanglingLinkConfig(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.json")
 		installConfigPath(t, path)
@@ -110,6 +120,38 @@ func TestConfigShowReportsMissingAndMalformedConfig(t *testing.T) {
 		code, _, stderr := runCLI(t, []string{"config", "show"}, "")
 		if code != 9 || stderr == "" {
 			t.Fatalf("config show malformed = (%d, %q)", code, stderr)
+		}
+	})
+	t.Run("dangling link", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("creating symlinks is not reliably available on Windows")
+		}
+		// A dangling final-component link is not a missing configuration: the
+		// path holds a broken link a person must repair, and reading through
+		// it must fail clearly instead of reporting an empty default. The
+		// link itself is left exactly as it was.
+		missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.Symlink(missingTarget, path); err != nil {
+			t.Fatal(err)
+		}
+		installConfigPath(t, path)
+
+		for _, args := range [][]string{
+			{"config", "show"},
+			{"config", "show", "--json"},
+		} {
+			code, stdout, stderr := runCLI(t, args, "")
+			if code != 9 || stdout != "" || !strings.Contains(stderr, "symbolic link") {
+				t.Fatalf("config show dangling link = (%d, %q, %q), want a clear dangling-link failure", code, stdout, stderr)
+			}
+		}
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("config symlink replaced = %v, %v", info, err)
+		}
+		if got, err := os.Readlink(path); err != nil || got != missingTarget {
+			t.Fatalf("config symlink target = %q, %v; want %q", got, err, missingTarget)
 		}
 	})
 }
@@ -409,6 +451,42 @@ func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 	}
 	if req, ok := fake.requestForWorker(1); !ok || req.Model != "acme/default" {
 		t.Fatalf("worker request = %#v, present=%v", req, ok)
+	}
+}
+
+func TestRunModelDanglingConfigLinkFailsClearlyWithoutLaunchingOrTouchingLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// A run needing the configured default reads through a dangling final
+	// link: it must fail clearly — exit 9 like an invalid config, never the
+	// missing-model usage error (2) meant for a genuinely absent file — and
+	// launch nothing. The link must stay a link to the same target, and the
+	// target must never be created.
+	missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Symlink(missingTarget, path); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--task", "work"}, "")
+	if code != 9 || stdout != "" || !strings.Contains(stderr, "symbolic link") {
+		t.Fatalf("run dangling link = (%d, %q, %q), want a clear dangling-link failure", code, stdout, stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("run dangling link launched %d workers", fake.callCount())
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config symlink replaced = %v, %v", info, err)
+	}
+	if got, err := os.Readlink(path); err != nil || got != missingTarget {
+		t.Fatalf("config symlink target = %q, %v; want %q", got, err, missingTarget)
+	}
+	if _, err := os.Stat(missingTarget); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(%q) after failed run = %v, want fs.ErrNotExist", missingTarget, err)
 	}
 }
 

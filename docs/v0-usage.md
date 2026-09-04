@@ -338,6 +338,15 @@ Replace the provider/model placeholder with one exact selector printed by
 - `config show` reads the local document only. It never launches Pi. A missing
   configuration is an empty default and exits `0`; an invalid configuration
   exits `9`.
+- `config show`, `run`, and `doctor` all read through the same `Load`: a
+  missing configuration is the empty default everywhere, while a dangling link
+  — a `config.json` that is a symlink whose target does not exist — is an
+  error everywhere. The load answers not-exist only when the final entry is
+  truly absent; when that entry is a link to a missing target it fails with a
+  clear dangling-link error instead, so a missing file keeps its meaning while
+  a broken link is never read as an empty configuration. The link itself is
+  left untouched, and reads through a link whose target exists keep resolving
+  as before.
 - `config set` requires an exact `provider/model` selector, queries Pi's model
   catalog once, and writes the default only when that exact selector is
   available. A missing or unavailable Pi executable is a readiness failure
@@ -353,7 +362,8 @@ Replace the provider/model placeholder with one exact selector printed by
   final `config.json` component is checked: a symlinked parent directory is
   not a refusal, and the write lands in the directory the parent link names.
   Reads still resolve the link: `config show`, `run`, and `doctor` report the
-  document the link points at.
+  document the link points at — except that a link whose target is missing is
+  reported as the dangling-link error, never as a missing configuration.
 - The refusal is one check at one instant, not a lock: another process can
   replace the path after the guard has passed it, and the save then replaces
   whatever holds the name — a swapped-in link included — because the write is
