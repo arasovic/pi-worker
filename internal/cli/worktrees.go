@@ -31,6 +31,23 @@ type worktreeListEntry struct {
 	Merged bool   `json:"merged"`
 }
 
+func worktreesCommand(parent context.Context, args []string, stdout, stderr io.Writer) int {
+	opts, err := parseWorktreesArgs(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
+		printUsage(stderr)
+		return 2
+	}
+	switch opts.command {
+	case "list":
+		return worktreesListCommand(parent, opts, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "pi-worker: unknown worktrees command %q\n", opts.command)
+		printUsage(stderr)
+		return 2
+	}
+}
+
 func worktreesListCommand(parent context.Context, opts worktreesOptions, stdout, stderr io.Writer) int {
 	cwd, err := os.Getwd()
 	if err != nil {

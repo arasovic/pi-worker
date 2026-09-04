@@ -256,3 +256,93 @@ func TestWorktreesListPreservesSpaces(t *testing.T) {
 		t.Fatalf("human output = %q, want it to contain spaced path", stdout.String())
 	}
 }
+
+func TestWorktreesListDispatchedViaMain(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "alpha"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "list"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("worktrees list = (%d, %q, %q), want exit 0", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "NAME") || !strings.Contains(stdout, "alpha") {
+		t.Fatalf("human stdout = %q, want header and alpha", stdout)
+	}
+	code, stdout, stderr = runCLI(t, []string{"worktrees", "list", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("worktrees list --json = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
+		t.Fatalf("json output has multiple lines: %q", stdout)
+	}
+	var doc struct {
+		SchemaVersion int `json:"schemaVersion"`
+		Worktrees     []struct {
+			Name string `json:"name"`
+		} `json:"worktrees"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("decode json %q: %v", stdout, err)
+	}
+	if doc.SchemaVersion != 1 || len(doc.Worktrees) != 1 || doc.Worktrees[0].Name != "alpha" {
+		t.Fatalf("document = %#v", doc)
+	}
+}
+
+func TestWorktreesListUsageErrorsViaMain(t *testing.T) {
+	for _, args := range [][]string{
+		{"worktrees"},
+		{"worktrees", "prune"},
+		{"worktrees", "list", "--json=1"},
+		{"worktrees", "list", "--bogus"},
+		{"worktrees", "list", "extra"},
+		{"worktrees", "--json", "list"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, args, "")
+			if code != 2 || stdout != "" || !strings.Contains(stderr, "pi-worker:") {
+				t.Fatalf("%v = (%d, %q, %q), want exit 2 with pi-worker: on stderr and no stdout", args, code, stdout, stderr)
+			}
+			if !strings.Contains(stderr, "usage:") {
+				t.Fatalf("stderr = %q, want usage text", stderr)
+			}
+		})
+	}
+}
+
+func TestWorktreesListWiredIntoMainWithContext(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "alpha"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	code, stdout, stderr := runCLIWithContext(t, context.Background(), []string{"worktrees", "list", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("mainWithContext worktrees list = (%d, %q, %q)", code, stdout, stderr)
+	}
+	var doc struct {
+		SchemaVersion int `json:"schemaVersion"`
+		Worktrees     []struct {
+			Name string `json:"name"`
+		} `json:"worktrees"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if doc.SchemaVersion != 1 || len(doc.Worktrees) != 1 || doc.Worktrees[0].Name != "alpha" {
+		t.Fatalf("document = %#v", doc)
+	}
+}
+
+func TestMainUsageIncludesWorktreesCommand(t *testing.T) {
+	code, stdout, stderr := runCLI(t, []string{}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("empty argv = (%d, %q)", code, stdout)
+	}
+	if !strings.Contains(stderr, "pi-worker worktrees list [--json]") {
+		t.Fatalf("usage missing worktrees list: %q", stderr)
+	}
+	if !strings.Contains(stderr, "pi-worker worktrees remove <name> [--yes] [--json]") {
+		t.Fatalf("usage missing worktrees remove: %q", stderr)
+	}
+}
