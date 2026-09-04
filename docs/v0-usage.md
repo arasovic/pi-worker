@@ -841,14 +841,40 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   is how a task that writes nothing takes part. It is a pre-flight
   contract, not a sandbox or worktree:
   pi-worker does not enforce it during the run.
+- The normal final `--writes` comparison still pools declarations at run
+  level. For a multi-task run where every task declared disjoint writes
+  and Git measurement is available, pi-worker also records each task's
+  own declared dirty-output identities when that worker settles and
+  compares them with final state after all workers settle. If a later
+  still-running worker changes, adds under, or erases a settled task's
+  declared output, those paths are reported through the existing
+  `writes.undeclared` / `undeclaredCount` fields and the run exits `4`
+  with outcome `undeclared-writes`, even though the path was declared by
+  its owner. No JSON field or schema version changes. Identity includes
+  content/kind/executable state and relevant directory/nested-repository
+  shape; contents/hashes are never exposed. Pi-worker never restores or
+  overwrites files to repair interference. A required settlement/final
+  snapshot failure returns a controller error; the CLI exits 9 on stderr
+  and emits no result/JSON document — no clean/success result is
+  produced.
+  Honest limit: a foreign write fully made and reverted before the owner
+  worker settles is not observable without process-level tracing;
+  `--writes` remains post-hoc checking, not a sandbox. Final changes
+  remain pooled, but this post-settlement window now has narrow ownership
+  evidence from disjoint declarations — the older "wholly unknowable"
+  phrasing no longer applies there.
 - While any run declares `--writes`, that workspace must have one run at a
   time: the check compares against the whole workspace's pre-run git
   state, so a concurrent writer lands in whichever run is measuring.
+  Separate concurrent runs in the same workspace remain disallowed; use
+  `--worktree` for isolation or serialize runs. This one-run-per-workspace
+  rule is not relaxed by the settled-output monitor.
 - When every task declared — empty set or not — and the check passes,
   the shared workspace warning is suppressed; when no task declared, the
   warning stays.
-- The run reports the changed paths no task declared, and exits `4`
-  (policy) when it found any. The run `status` field is unaffected: a run
+- The run reports `writes.undeclared` — both final changed paths no
+  task declared and task-owned output paths proven changed/added/erased
+  after their owner settled — and exits `4` (policy) when it found any. The run `status` field is unaffected: a run
   whose workers all succeeded stays `completed`, and the process exit
   code, the reported error, and the root `outcome` carry the failure.
   When the change manifest was not measured, the check is skipped with a

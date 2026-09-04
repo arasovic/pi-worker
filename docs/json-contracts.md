@@ -630,13 +630,32 @@ The write check is additive and optional, so `schemaVersion` stays `1`.
 Root `writes` is present exactly when the request carried a write
 declaration: a caller who declared always gets an answer — a verdict or a
 stated skip reason — and a caller who never declared gets no field at all.
-Silence is never a clean check. The check is run-level, not task-level:
-which task wrote a given path is not knowable from a shared workspace, so
-the undeclared set belongs to the run. The same limit holds one level up:
-a concurrent writer — another run, an editor, a build — lands in whichever
-run is measuring, so while any run declares `--writes`, that workspace must
-have one run at a time. Root `writes` carries either a reason it could not run
-or the verdict, never both:
+Silence is never a clean check. The normal final `--writes` comparison
+still pools declarations at run level. For a multi-task run where every
+task declared disjoint writes and Git measurement is available, pi-worker
+also records each task's own declared dirty-output identities when that
+worker settles and compares them with final state after all workers settle;
+if a later still-running worker changes, adds under, or erases a settled
+task's declared output, those paths are reported through the existing
+`writes.undeclared` / `undeclaredCount` fields and the run exits 4 with
+outcome `undeclared-writes`, even though the path was declared by its
+owner — no JSON field or schema version changes. Identity covers
+content/kind/executable state and relevant directory/nested-repository
+shape; contents/hashes are never exposed. Pi-worker never restores or
+overwrites files to repair interference. A required settlement/final
+snapshot failure returns a controller error; the CLI exits 9 on stderr
+and emits no result/JSON document — no clean/success result is produced.
+Honest limit: a foreign write fully made and
+reverted before the owner settles is not observable without process-level
+tracing; `--writes` remains post-hoc checking, not a sandbox. Final
+changes otherwise remain pooled, but this post-settlement window now has
+narrow ownership evidence from disjoint declarations — replacing the older
+"wholly unknowable" phrasing for that window. The same limit holds one
+level up: a concurrent writer — another run, an editor, a build — lands
+in whichever run is measuring, so while any run declares `--writes`,
+that workspace must have one run at a time; separate concurrent runs in
+the same workspace remain disallowed. Root `writes` carries either a
+reason it could not run or the verdict, never both:
 
 - `skipped`: present only when the check could not run, with the single
   reason `change manifest unavailable`, reached by the four manifest
@@ -650,10 +669,14 @@ or the verdict, never both:
   usage error, never reported as a skip. `undeclaredCount`, `undeclared`,
   and `truncated` carry no meaning when `skipped` is present
 - `undeclaredCount`: always present on a verdict; the true number of
-  changed paths no task declared, before the entry cap. A checked run that
-  wrote nothing undeclared carries `0` rather than omitting the field
-- `undeclared`: present only when at least one path was undeclared; capped
-  at 100 entries
+  paths in `undeclared` — both final changed paths no task declared and
+  task-owned output paths proven changed/added/erased after their owner
+  settled — before the entry cap. A checked run that wrote nothing
+  undeclared carries `0` rather than omitting the field
+- `undeclared`: present only when at least one path was undeclared —
+  either a final changed path no task declared or a task-owned output path
+  proven changed/added/erased after its owner settled; capped at 100
+  entries
 - `truncated`: present and `true` only when the cap dropped entries
 
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
