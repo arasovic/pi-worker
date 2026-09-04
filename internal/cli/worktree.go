@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -46,6 +48,273 @@ func validWorktreeName(name string) bool {
 	return true
 }
 
+type managedWorktree struct {
+	name   string
+	path   string
+	branch string
+	dirty  bool
+	merged bool
+}
+
+var runGitFunc = runGit
+
+// listManagedWorktrees inventories the exact private worktrees the
+// CLI manages under <root>/.pi-worker/worktrees/<name> on branch
+// run/<name>. It never mutates repository state.
+func listManagedWorktrees(ctx context.Context, cwd string) ([]managedWorktree, error) {
+	root, err := runGitFunc(ctx, cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root: %w", err)
+	}
+	head, err := runGitFunc(ctx, root, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("resolve caller HEAD: %w", err)
+	}
+
+	worktreeOutput, err := runGitFunc(ctx, root, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees: %w", err)
+	}
+	worktrees, err := parseManagedWorktreeList(root, worktreeOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	branchOutput, err := runGitFunc(ctx, root, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return nil, fmt.Errorf("list run branches: %w", err)
+	}
+	branches, err := parseManagedBranchNames(branchOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	for name, checkout := range worktrees {
+		if _, ok := branches[name]; !ok {
+			return nil, fmt.Errorf("managed checkout %q is missing branch %q", checkout.path, checkout.branch)
+		}
+	}
+	for name := range branches {
+		if _, ok := worktrees[name]; !ok {
+			return nil, fmt.Errorf("managed branch %q is missing its checkout", "run/"+name)
+		}
+	}
+
+	mergedOutput, err := runGitFunc(ctx, root, "for-each-ref", "--merged="+head, "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return nil, fmt.Errorf("list merged run branches: %w", err)
+	}
+	mergedBranches, err := parseManagedBranchNames(mergedOutput)
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(worktrees))
+	for name := range worktrees {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	managed := make([]managedWorktree, 0, len(names))
+	for _, name := range names {
+		checkout := worktrees[name]
+		dirty, err := checkoutHasChanges(ctx, checkout.path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect worktree %q: %w", checkout.path, err)
+		}
+		_, merged := mergedBranches[name]
+		managed = append(managed, managedWorktree{
+			name:   name,
+			path:   checkout.path,
+			branch: checkout.branch,
+			dirty:  dirty,
+			merged: merged,
+		})
+	}
+	return managed, nil
+}
+
+type managedWorktreeRef struct {
+	path   string
+	branch string
+}
+
+func parseManagedWorktreeList(root, output string) (map[string]managedWorktreeRef, error) {
+	const maxEntries = 4096
+	const maxLine = 64 * 1024
+
+	managedDir := filepath.Join(root, ".pi-worker", "worktrees")
+	entries := make(map[string]managedWorktreeRef)
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 4096), maxLine)
+
+	type entry struct {
+		path        string
+		branch      string
+		sawPath     bool
+		sawBranch   bool
+		sawDetached bool
+		sawBare     bool
+		sawLocked   bool
+		sawPrunable bool
+	}
+	current := entry{}
+	count := 0
+	flush := func() error {
+		if !current.sawPath {
+			if current.sawBranch {
+				return fmt.Errorf("malformed git worktree output: entry missing worktree path")
+			}
+			return nil
+		}
+		count++
+		if count > maxEntries {
+			return fmt.Errorf("malformed git worktree output: too many entries")
+		}
+		name, managed, err := managedNameFromPath(managedDir, current.path)
+		if err != nil {
+			return err
+		}
+		if !managed {
+			return nil
+		}
+		if !current.sawBranch {
+			return fmt.Errorf("managed checkout %q is missing its branch", current.path)
+		}
+		if current.sawBare {
+			return fmt.Errorf("managed checkout %q is bare", current.path)
+		}
+		if current.sawPrunable {
+			return fmt.Errorf("managed checkout %q is prunable", current.path)
+		}
+		if current.sawLocked {
+			return fmt.Errorf("managed checkout %q is locked", current.path)
+		}
+		expected := "refs/heads/run/" + name
+		if current.branch != expected {
+			return fmt.Errorf("managed checkout %q points to %q, want %q", current.path, current.branch, expected)
+		}
+		if _, dup := entries[name]; dup {
+			return fmt.Errorf("duplicate managed checkout %q", current.path)
+		}
+		entries[name] = managedWorktreeRef{path: current.path, branch: "run/" + name}
+		return nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+			current = entry{}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			if current.sawPath {
+				return nil, fmt.Errorf("malformed git worktree output: duplicate worktree line %q", line)
+			}
+			current.sawPath = true
+			current.path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch "):
+			if current.sawBranch {
+				return nil, fmt.Errorf("malformed git worktree output: duplicate branch line %q", line)
+			}
+			current.sawBranch = true
+			current.branch = strings.TrimPrefix(line, "branch ")
+		case strings.HasPrefix(line, "HEAD "):
+			// Ignored.
+		case line == "detached":
+			current.sawDetached = true
+		case line == "bare":
+			current.sawBare = true
+		case strings.HasPrefix(line, "locked"):
+			current.sawLocked = true
+		case strings.HasPrefix(line, "prunable"):
+			current.sawPrunable = true
+		default:
+			return nil, fmt.Errorf("malformed git worktree output: unexpected line %q", line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("parse git worktree output: %w", err)
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func parseManagedBranchNames(output string) (map[string]struct{}, error) {
+	const maxEntries = 4096
+	const maxLine = 64 * 1024
+
+	names := make(map[string]struct{})
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 4096), maxLine)
+	count := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		count++
+		if count > maxEntries {
+			return nil, fmt.Errorf("malformed git ref output: too many entries")
+		}
+		if !strings.HasPrefix(line, "run/") {
+			continue
+		}
+		name := strings.TrimPrefix(line, "run/")
+		if !validWorktreeName(name) {
+			return nil, fmt.Errorf("managed branch %q has invalid name %q", line, name)
+		}
+		if _, dup := names[name]; dup {
+			return nil, fmt.Errorf("duplicate managed branch %q", line)
+		}
+		names[name] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("parse git ref output: %w", err)
+	}
+	return names, nil
+}
+
+func managedNameFromPath(managedDir, path string) (name string, managed bool, err error) {
+	if !filepath.IsAbs(path) {
+		return "", false, fmt.Errorf("malformed git worktree output: path %q is not absolute", path)
+	}
+	if filepath.Clean(path) != path {
+		return "", false, fmt.Errorf("malformed git worktree output: path %q is not clean", path)
+	}
+	rel, err := filepath.Rel(managedDir, path)
+	if err != nil {
+		return "", false, fmt.Errorf("malformed git worktree output: path %q: %w", path, err)
+	}
+	if rel == "." {
+		return "", false, fmt.Errorf("managed checkout path %q is missing a name", path)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false, nil
+	}
+	if strings.ContainsRune(rel, os.PathSeparator) {
+		return "", false, fmt.Errorf("managed checkout path %q is nested; want <root>/.pi-worker/worktrees/<name>", path)
+	}
+	if !validWorktreeName(rel) {
+		return "", false, fmt.Errorf("managed checkout path %q has invalid name %q", path, rel)
+	}
+	return rel, true, nil
+}
+
+func checkoutHasChanges(ctx context.Context, path string) (bool, error) {
+	out, err := runGitFunc(ctx, path, "status", "--porcelain=v1")
+	if err != nil {
+		return false, err
+	}
+	return out != "", nil
+}
+
 // prepareWorktree gives one run a private checkout of its own. It
 // resolves the repository root from cwd — os.Getwd may be a
 // subdirectory of the repository, and the checkout must live under the
@@ -61,7 +330,7 @@ func validWorktreeName(name string) bool {
 // leftover checkout or branch is reported by the next run that
 // collides with its name, never cleaned up.
 func prepareWorktree(ctx context.Context, cwd, name string) (path, branch string, err error) {
-	root, err := runGit(ctx, cwd, "rev-parse", "--show-toplevel")
+	root, err := runGitFunc(ctx, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", "", fmt.Errorf("resolve repository root: %w", ctxErr)
@@ -86,7 +355,7 @@ func prepareWorktree(ctx context.Context, cwd, name string) (path, branch string
 	// failure here is the normal "no such ref" answer, with one
 	// exception: a run context that expired or was cancelled is the
 	// run's own end, never a green light to keep going.
-	if _, err := runGit(ctx, root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+	if _, err := runGitFunc(ctx, root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		return "", "", &worktreeError{msg: fmt.Sprintf("branch %s already exists; collect it or choose another name", branch), usage: true}
 	} else if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", "", fmt.Errorf("create worktree %s: %w", path, ctxErr)
@@ -96,7 +365,7 @@ func prepareWorktree(ctx context.Context, cwd, name string) (path, branch string
 	// refusal too, carrying git's own words so the caller can see why.
 	// The one exception is the expired or cancelled run context, which
 	// is returned as the context's own error, never a refusal.
-	if _, err := runGit(ctx, root, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+	if _, err := runGitFunc(ctx, root, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", "", fmt.Errorf("create worktree %s: %w", path, ctxErr)
 		}
