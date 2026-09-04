@@ -63,6 +63,20 @@ func gitCommit(t *testing.T, dir string) {
 	runGit(t, dir, "commit", "-q", "-m", "work")
 }
 
+func prepareTrackedFileReplacement(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "replaced"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatalf("write replaced: %v", err)
+	}
+	gitCommit(t, dir)
+	if err := os.Remove(filepath.Join(dir, "replaced")); err != nil {
+		t.Fatalf("remove replaced: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "replaced"), 0o755); err != nil {
+		t.Fatalf("mkdir replaced: %v", err)
+	}
+}
+
 func runWithChanges(t *testing.T, worker pi.Worker, dir string) Result {
 	t.Helper()
 	req := validRequest("a")
@@ -952,6 +966,146 @@ func TestControllerChangesDirtyBeforeStateUntrackedUntouchedAbsent(t *testing.T)
 	}
 	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
 		t.Fatalf("changes = %#v, want the untouched untracked path absent", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateTrackedFileReplacedByPlainDirectoryUntouchedAbsent(t *testing.T) {
+	// Regression for #135: a tracked regular file replaced, before the
+	// run, by an ordinary untracked directory carrying an untracked
+	// file is pre-existing dirtiness of the same kind as the dirty
+	// files the subtraction already handles. The tracked root was
+	// already gone when the run started and the run never touched the
+	// directory or its child, so neither the root's tracked deletion
+	// nor the unchanged child may be attributed to the run. Before the
+	// fix the replacement's directory stamp and visible descendants did
+	// not stay matched after the run, so the phantom tracked deletion
+	// stayed in the manifest as the run's own change.
+	dir := newGitRepo(t)
+	prepareTrackedFileReplacement(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "replaced", "child.txt"), []byte("untracked child\n"), 0o644); err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+	result := runWithChanges(t, newScriptedWorker(), dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	for _, file := range changes.Files {
+		if file.Path == "replaced" || file.Path == "replaced/child.txt" {
+			t.Fatalf("manifest lists the untouched ordinary-directory replacement path %q: %#v", file.Path, changes.Files)
+		}
+	}
+	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the untouched ordinary-directory replacement absent entirely", changes)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateTrackedFileReplacedByNestedRepositoryUntouchedRetained(t *testing.T) {
+	// Regression for #135: the same tracked-file replacement, but the
+	// ordinary directory becomes a nested repository during the run.
+	// Even when git exposes no visible descendants at the path, the
+	// directory shape changed, so the tracked root must stay in the
+	// manifest and carry DirtyBefore.
+	dir := newGitRepo(t)
+	prepareTrackedFileReplacement(t, dir)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		newNestedRepo(t, dir, "replaced")
+		return nil
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the tracked root retained as one entry", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "replaced" || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want replaced retained with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateTrackedFileReplacedByPlainDirectoryChangedChildren(t *testing.T) {
+	type testCase struct {
+		name        string
+		setup       func(string) error
+		mutate      func(string) error
+		childPath   string
+		childStatus string
+		dirtyBefore bool
+		absentPath  string
+	}
+	cases := []testCase{
+		{
+			name: "modified child",
+			setup: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "replaced", "child.txt"), []byte("before\n"), 0o644)
+			},
+			mutate: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "replaced", "child.txt"), []byte("after\n"), 0o644)
+			},
+			childPath:   "replaced/child.txt",
+			childStatus: statusAdded,
+			dirtyBefore: true,
+		},
+		{
+			name: "added child",
+			setup: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "replaced", "old.txt"), []byte("old\n"), 0o644)
+			},
+			mutate: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "replaced", "new.txt"), []byte("new\n"), 0o644)
+			},
+			childPath:   "replaced/new.txt",
+			childStatus: statusAdded,
+			absentPath:  "replaced/old.txt",
+		},
+		{
+			name: "removed child",
+			setup: func(dir string) error {
+				return os.WriteFile(filepath.Join(dir, "replaced", "child.txt"), []byte("before\n"), 0o644)
+			},
+			mutate: func(dir string) error {
+				return os.Remove(filepath.Join(dir, "replaced", "child.txt"))
+			},
+			childPath:   "replaced/child.txt",
+			childStatus: statusDeleted,
+			dirtyBefore: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newGitRepo(t)
+			prepareTrackedFileReplacement(t, dir)
+			if err := tc.setup(dir); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			result := runWithChanges(t, &changesMutatingWorker{mutate: tc.mutate}, dir)
+			changes := result.Changes
+			if changes == nil || changes.Omitted != "" {
+				t.Fatalf("changes = %#v, want a measured manifest", changes)
+			}
+			if changes.TotalFiles != 2 || len(changes.Files) != 2 || changes.Truncated {
+				t.Fatalf("changes = %#v, want exactly the tracked root and changed child", changes)
+			}
+			byPath := map[string]FileChange{}
+			for _, file := range changes.Files {
+				byPath[file.Path] = file
+			}
+			root, ok := byPath["replaced"]
+			if !ok || root.Status != statusDeleted || !root.DirtyBefore {
+				t.Fatalf("replaced = %#v, want the tracked root retained as a dirtyBefore deleted path", byPath["replaced"])
+			}
+			child, ok := byPath[tc.childPath]
+			if !ok || child.Status != tc.childStatus || child.DirtyBefore != tc.dirtyBefore {
+				t.Fatalf("%s = %#v, want status %q dirtyBefore %v", tc.childPath, byPath[tc.childPath], tc.childStatus, tc.dirtyBefore)
+			}
+			if tc.absentPath != "" {
+				if _, ok := byPath[tc.absentPath]; ok {
+					t.Fatalf("manifest unexpectedly lists untouched child %q: %#v", tc.absentPath, changes.Files)
+				}
+			}
+		})
 	}
 }
 

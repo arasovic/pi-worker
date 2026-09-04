@@ -264,6 +264,7 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
+	untrackedRaw := nulSplit(untrackedOut)
 	// Git collapses an untracked nested repository — a directory with
 	// its own .git, never a gitlink submodule — to one directory entry
 	// with a trailing slash, without entering it. Those entries are the
@@ -284,7 +285,6 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// git lists are then measured exactly like every other listed file;
 	// the manifest makes no attempt to force a collapsed entry where git
 	// itself does not report one.
-	untrackedRaw := nulSplit(untrackedOut)
 	untracked := make([]string, 0, len(untrackedRaw))
 	untrackedDirs := make(map[string]bool, len(untrackedRaw))
 	for _, path := range untrackedRaw {
@@ -325,6 +325,21 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	unchanged := make(map[string]bool, len(dirtyStamps))
 	for path, stamp := range dirtyStamps {
 		if stamp.dir {
+			continue
+		}
+		matches, err := stampMatches(root, path, stamp)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		if matches {
+			unchanged[path] = true
+		}
+	}
+	for path, stamp := range dirtyStamps {
+		if !stamp.dir {
+			continue
+		}
+		if stamp.descendants == nil {
 			// A pre-existing collapsed repository left alone stays a
 			// collapsed entry in the after listing and is subtracted.
 			// The only identity a collapsed directory carries is its
@@ -339,11 +354,37 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 			}
 			continue
 		}
-		matches, err := stampMatches(root, path, stamp)
+		info, err := os.Lstat(filepath.Join(root, path))
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
-		if matches {
+		if !info.IsDir() {
+			continue
+		}
+		// The marker distinguishes an empty ordinary directory from a
+		// nested repository even when both list no descendants.
+		currentMarker, err := gitMarkerPresent(root, path)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s/.git: %w", path, err)
+		}
+		if currentMarker != stamp.gitMarker {
+			continue
+		}
+		current := visibleDescendantPaths(path, untracked)
+		if !stringSlicesEqual(current, stamp.descendants) {
+			continue
+		}
+		allUnchanged := true
+		for _, descendant := range current {
+			if !unchanged[descendant] {
+				allUnchanged = false
+				break
+			}
+		}
+		if allUnchanged {
 			unchanged[path] = true
 		}
 	}
@@ -631,6 +672,14 @@ type fileStamp struct {
 	absent  bool
 	// dir is true when the stamped path is a directory, not a file.
 	dir bool
+	// gitMarker is true when the directory had a .git entry at the
+	// snapshot: it distinguishes an ordinary directory from a nested
+	// repository without entering it.
+	gitMarker bool
+	// descendants is the sorted visible untracked descendant set for a
+	// tracked-path directory stamp; nil marks the collapsed-repository
+	// shape instead.
+	descendants []string
 	// contentHash is the identity of the path's content at snapshot
 	// time, captured for tracked paths, regular-file untracked paths,
 	// and symlinks; hashed reports whether it was captured. An absent
@@ -1143,11 +1192,23 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only: %w", err)
 	}
+	trackedRaw := nulSplit(trackedOut)
+	trackedPaths := make(map[string]bool, len(trackedRaw))
+	for _, path := range trackedRaw {
+		trackedPaths[strings.TrimSuffix(path, "/")] = true
+	}
 	untrackedOut, err := gitOutput(ctx, root, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
-	stamps := make(map[string]fileStamp, len(trackedOut)+len(untrackedOut))
+	untrackedRaw := nulSplit(untrackedOut)
+	untrackedDirs := make(map[string]bool, len(untrackedRaw))
+	for _, path := range untrackedRaw {
+		if strings.HasSuffix(path, "/") {
+			untrackedDirs[strings.TrimSuffix(path, "/")] = true
+		}
+	}
+	stamps := make(map[string]fileStamp, len(trackedRaw)+len(untrackedRaw))
 	// Tracked paths carry the content identity: their stat stamp alone
 	// would match a deliberate same-size rewrite with a restored
 	// modification time, and the subtraction must not rest on a stat
@@ -1164,7 +1225,7 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 	// repository's business, and presence in the listing is the only
 	// identity the workspace level can measure, so its stamp is a bare
 	// directory marker.
-	for _, raw := range append(nulSplit(trackedOut), nulSplit(untrackedOut)...) {
+	for _, raw := range append(trackedRaw, untrackedRaw...) {
 		// Stamp keys are canonicalised exactly like the measurement
 		// pass canonicalises its listing: drop the trailing slash git
 		// appends to a collapsed nested-repository entry, so a key and
@@ -1180,7 +1241,16 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
 		if info.IsDir() {
-			stamps[path] = fileStamp{dir: true}
+			stamp := fileStamp{dir: true}
+			gitMarker, err := gitMarkerPresent(root, path)
+			if err != nil {
+				return nil, fmt.Errorf("stat %s/.git: %w", path, err)
+			}
+			stamp.gitMarker = gitMarker
+			if trackedPaths[path] && !untrackedDirs[path] {
+				stamp.descendants = visibleDescendantPaths(path, untrackedRaw)
+			}
+			stamps[path] = stamp
 			continue
 		}
 		stamp, err := snapshotStamp(root, path, true)
@@ -1190,6 +1260,44 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 		stamps[path] = stamp
 	}
 	return stamps, nil
+}
+
+// gitMarkerPresent reports whether path/.git exists, without
+// following symlinks.
+func gitMarkerPresent(root, path string) (bool, error) {
+	_, err := os.Lstat(filepath.Join(root, path, ".git"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func visibleDescendantPaths(path string, names []string) []string {
+	prefix := path + "/"
+	descendants := make([]string, 0)
+	for _, name := range names {
+		name = strings.TrimSuffix(name, "/")
+		if strings.HasPrefix(name, prefix) {
+			descendants = append(descendants, name)
+		}
+	}
+	sort.Strings(descendants)
+	return descendants
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // snapshotStamp builds the pre-run stamp of one dirty path. With
