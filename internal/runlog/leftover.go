@@ -64,8 +64,9 @@ type liveProcess struct {
 // is incomplete, so the number alone cannot name a group. And when a
 // recorded pid is itself still alive it must still be the same
 // process — its creation time must equal the recorded one — or the
-// number has been reused by an unrelated process, and nothing in that
-// group is attributable to the run.
+// number has been reused by an unrelated process, and whether the old
+// group number still names a live group is decided by the pgid the
+// current holder carries, below.
 //
 // The process table is swept at most once per call and only when a
 // settled candidate exists; the per-record loop is pure map lookups
@@ -75,25 +76,41 @@ type liveProcess struct {
 // report nothing, and only a records directory that cannot be read is
 // an error worth returning.
 //
-// One ceiling is accepted by design, and its failure direction is
-// safe: if a worker's group empties completely, the pid wraps all the
-// way around, the new holder makes itself the leader of a new group,
-// and its members are younger than the recorded creation time, a clean
-// run reads as having left processes behind. The cost is one wrong
-// line of text and never a signal — leftover pids are reported, never
-// killed or otherwise acted on.
+// A recorded pid that is still alive must still be the same process —
+// its creation time must equal the recorded one — or the number has
+// been reused by an unrelated process, and the current holder's pgid
+// decides what the reuse means:
 //
-// A second limit is accepted by design, in the same shape: when a
-// recorded worker pid is absent from the process table, the worker is
-// treated as exited and the other members of its group are reported.
-// The sweep cannot tell that case apart from one where the worker's
-// number was reused by an unrelated process that led its own group
-// and has since died, leaving its own children carrying the same
-// group number — the identity pair cannot help, because a dead leader
-// leaves no creation time to compare against, and the orphans carry
-// the same group number either way. The cost is one warning line
-// naming someone else's processes, never an action: this reader only
-// ever reports.
+//  1. The holder leads the group the recorded number names — its pgid
+//     is its own pid, which is the recorded number. The number now
+//     names the holder's own group, so its members are the holder's
+//     own descendants, not the run's, and nothing is reported.
+//  2. The holder does not lead that group — its pgid is not the
+//     recorded number, so it belongs to some other group. The
+//     recorded number's group, if any live process still carries it,
+//     holds the recorded worker's genuine survivors, which are
+//     inspected under the existing age floor.
+//
+// A pid equal to its own pgid is the leader of that group, and only a
+// leader's number can name a group it owns; a pid that is not its own
+// pgid belongs to whatever group its pgid names.
+//
+// A recorded worker pid absent from the process table — the worker
+// exited, or its number was reused by a process that has since died —
+// leaves no holder to compare, and the group's members are inspected
+// the same way. The reader cannot tell a genuine survivor of the run
+// from a child of a dead leader that happened to take the number,
+// lead a group of its own, and die before the sweep: no live holder
+// remains to reveal the reuse. The cost is at most one wrong line of
+// text naming someone else's processes — the product never acts on
+// the numbers it reports.
+//
+// A record whose worker line carries no creation time is never
+// reportable, whatever the process table holds: the identity pair is
+// incomplete, so the group number alone cannot be attributed to the
+// run. Every record written before the worker createTime field
+// existed is exactly this class — old records stay unreportable by
+// design, and this limit is accepted rather than guessed around.
 //
 // A leftover is a condition that is still true, not an event that
 // happened once, so the report is answered fresh on every call: no
@@ -184,7 +201,7 @@ func Leftovers(dir string) ([]Leftover, error) {
 		// at all, or one whose creation time was read but is unusable
 		// — leaves the pid's identity unconfirmed, so it is recorded
 		// as unreadable and kept out of both indexes: a recorded
-		// worker holding such an entry is skipped whole, never looked
+		// worker holding such an entry is skipped, never looked
 		// absent.
 		if row.unreadable || !usableCreateTime(row.createTime, now) {
 			unreadablePIDs[row.pid] = true
@@ -195,32 +212,46 @@ func Leftovers(dir string) ([]Leftover, error) {
 	}
 	var leftovers []Leftover
 	for _, candidate := range candidates {
-		// An unreadable row for a recorded worker leaves its identity
-		// unconfirmed, so this whole record is skipped.
-		unreadableWorker := false
-		for _, w := range candidate.workers {
-			if unreadablePIDs[w.pid] {
-				unreadableWorker = true
-				break
-			}
-		}
-		if unreadableWorker {
-			continue
-		}
 		seen := make(map[int]bool)
 		var pids []int
 		for _, w := range candidate.workers {
-			// The recorded pid doubles as the group number. When that
-			// number is still alive it must still be the same
-			// process: a different creation time means the number was
-			// reused by an unrelated process, whose group is not this
-			// worker's to claim.
-			if row, ok := byPID[w.pid]; ok && row.createTime != w.createTime {
+			// A worker whose own row cannot be read has an unconfirmed
+			// identity, so that worker is skipped — but the skip is per
+			// worker, never per record: one unreadable row can no
+			// longer silence the other workers of the same run.
+			if unreadablePIDs[w.pid] {
 				continue
 			}
 			if !usableCreateTime(w.createTime, now) {
 				continue
 			}
+			// The recorded pid doubles as the group number. When that
+			// number is still alive, the current holder decides what the
+			// number means: a holder that leads the group the number
+			// names — its pgid equals its pid, the recorded number — is
+			// either the recorded worker still alive (its creation time
+			// matches) or an unrelated process that took the number
+			// over and leads a group of its own under it. A holder that
+			// does not lead that group belongs to some other group, so
+			// the number's own group is not the holder's and is
+			// inspected as the old group still holding its survivors.
+			if row, ok := byPID[w.pid]; ok && row.pid == row.pgid {
+				if row.createTime != w.createTime {
+					// The number was reused by an unrelated process
+					// that leads a fresh group of its own under it: the
+					// old group number is now this new group's number,
+					// and its members are the new holder's own, not the
+					// run's.
+					continue
+				}
+				// Still the same worker: its group is genuinely the
+				// worker's, and its members are inspected.
+			}
+			// The recorded number is not alive, is alive but does not
+			// lead the group it names — the old group still holds its
+			// survivors — or is the same worker still alive. All three
+			// leave the group number live, so its members are inspected
+			// under the existing age floor.
 			for _, pid := range byGroup[w.pid] {
 				row := byPID[pid]
 				// A process that already existed before the worker
