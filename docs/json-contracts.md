@@ -374,8 +374,12 @@ work tree: the directory is not a git work tree, git is missing entirely,
 or the guard failed for a transient reason. The code cannot tell the three
 apart, so the reason names only what is known and claims none of them — it
 does not say which cause it is, because the code does not know. It is
-distinct from `measurement failed`, which covers the other failure position:
-a guard that passed and a later command that failed.
+distinct from `measurement failed`, which covers the other failure
+positions: a guard that passed and a later command that failed, a git
+trust state that was already unsafe when the run started, and a trust
+input that changed while the run was in flight. The trust paragraph
+below names each input and why an unsafe or moved one makes the
+manifest unavailable rather than clean.
 
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
@@ -385,19 +389,65 @@ anyone else's: a file an editor or a watcher saves while the run is in
 flight appears as a change the run made, and with `--writes` declared the
 check reports it undeclared and the run exits `4`. While a run is in
 flight, keep one run at a time per workspace and leave the workspace
-alone. Paths already dirty when the run started are stamped up front
-with size, modification time, and the executable bit — the one mode bit
-git tracks, so a chmod between two non-executable modes does not register
-as a change — and the ones whose stamp never moved are subtracted from the
-result: they were equally dirty before the run and name no change it made.
-That subtraction accepts one false negative, and it is deliberate rather
-than an oversight: on a coarse-granularity filesystem — FAT, exFAT, some
-NFS mounts, older ext3 — a restore that lands within the same tick as
-the pre-run stamp leaves size and modification time unchanged, so the
-path is absent from the manifest even though the run wrote it, which is
-defensible because net change is zero. On the sub-second-resolution
-filesystems that are the normal case, the write moves the modification
-time, the stamp does not match, and the path stays.
+alone. Paths already dirty when the run started are stamped up front,
+and the ones whose identity never moved are subtracted from the result:
+they were equally dirty before the run and name no change it made. A
+stamp holds size, modification time, and the executable bit — the one
+mode bit git tracks, so a chmod between two non-executable modes does
+not register as a change — plus, for every tracked path, the SHA-256 of
+its content, read once up front, reduced to a hash, and never retained,
+reported, or transmitted. The content identity exists because the stat
+fields alone cannot tell an untouched file from a deliberate same-size
+rewrite with a restored modification time: the rewrite makes the stat
+stamp match by construction, and only the bytes can say the file moved.
+A tracked rewrite of that shape therefore stays in the manifest — with
+`dirtyBefore` true and its counts measured against the last commit —
+while a legitimate net-zero restoration still subtracts: when the bytes
+are exactly the pre-run bytes again, the hash matches and the manifest
+is quiet because net change is zero. Untracked paths are never hashed:
+the content identity is captured for tracked paths only, so an
+untracked pre-run file's stamp is the stat alone, and a same-size
+rewrite of one with a restored modification time is still subtracted —
+the one deliberate false negative left in the subtraction, the agreed
+price of not reading untracked files' contents. On a
+coarse-granularity filesystem — FAT, exFAT, some NFS mounts, older
+ext3 — a same-tick restore of an untracked path is invisible too,
+which is equally defensible because net change is zero; a tracked path
+is not affected, because its hash decides.
+
+The measurement trusts the path queries git itself runs, so a
+repository whose trust state could make those queries hide a write is
+never answered with a confident clean: the manifest is omitted with the
+`measurement failed` reason, and a declared-writes check skips, when
+the state was already unsafe before the run started or a trust input
+moved while the run was in flight. Three families of inputs are
+watched, captured from the repository itself before the first worker
+starts and re-read after the run ends:
+
+- Index visibility markers. A `skip-worktree` or `assume-unchanged`
+  entry makes git suppress the worktree comparison for that file, so a
+  rewrite of it is invisible to every diff the measurement runs: an
+  entry already marked before the run hides with no drift to detect,
+  and a marker that appears during the run is drift.
+- `core.trustctime`. Git trusts the stat cache without comparing
+  content when size and modification time match and ctime is not
+  trusted, so `core.trustctime=false` can make git itself report
+  nothing for a same-size rewrite with a restored modification time.
+  The effective value (false, true, or the true default) is recorded
+  before the run and compared after it: an unsafe pre-existing value
+  and a value that changed during the run are both unavailable.
+- Ignore-rule inputs beyond the tree. The untracked listing honours
+  `$GIT_DIR/info/exclude` and the effective `core.excludesFile` (the
+  configured file, or the XDG default when unset), so a rule appended
+  to either during the run can hide untracked paths the run wrote.
+  Each file is stamped without reading its contents, and the effective
+  value is recorded; a moved stamp or a moved value is drift.
+
+Any of these makes the measurement unavailable rather than clean — a
+wrong "clean" is worse than an admitted "unavailable". Ordinary worker
+activity never trips the watch: staging and committing change no trust
+input, and ignore rules that already existed when the run started
+applied equally to the pre-run and post-run passes.
 
 The manifest covers the paths `git` tracks or would track. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
@@ -426,7 +476,10 @@ or the verdict, never both:
   reason `change manifest unavailable`, reached by the four manifest
   omissions above and by an absent manifest, which carries no `omitted`
   field to consult (the run had no git inspector): a dirty before-state
-  is measured now, so it never triggers the skip. A declaration where
+  is measured rather than skipped, so it never triggers the skip on its
+  own — an unsafe or drifted trust state still omits the manifest with
+  `measurement failed`, and the check then skips like any other. A
+  declaration where
   some tasks declare and others do not is rejected before the run as a
   usage error, never reported as a skip. `undeclaredCount`, `undeclared`,
   and `truncated` carry no meaning when `skipped` is present

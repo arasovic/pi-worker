@@ -224,20 +224,34 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// The before-dirty snapshot runs immediately after the inspection
 	// and before any worker starts, under the same parent context the
 	// inspection used: it stamps every path already dirty in the
-	// workspace so the manifest can subtract the ones the run never
-	// moved. Its error rides the same slot as the inspection's, so a
-	// failed snapshot omits the manifest with the existing
+	// workspace — tracked paths with their content identity included —
+	// so the manifest can subtract the ones the run never moved. Its
+	// error rides the same slot as the inspection's, so a failed
+	// snapshot omits the manifest with the existing
 	// measurement-failed reason. The snapshot is never added to
 	// Inspect or GitState: the after pass has no use for it, the
-	// interface is faked in tests, and paying for two more git
-	// commands on every inspection is waste; it runs only when the
-	// tree is dirty, because a clean tree can only yield an empty
-	// map. It never runs on an unborn HEAD — its diff command would
-	// fail and displace the unborn-head omission — or outside a git
-	// work tree.
+	// interface is faked in tests, and paying for more git commands on
+	// every inspection is waste. The git-trust snapshot alongside it
+	// runs on every confirmed work tree, dirty or clean: the
+	// measurement must know the trust state it will run under — index
+	// visibility markers, the effective core.trustctime, and the
+	// ignore-rule inputs — before any worker can change any of it. The
+	// dirty stamping itself runs only when the tree is dirty, because
+	// a clean tree can only yield an empty map, and never on an unborn
+	// HEAD — its diff command would fail and displace the
+	// unborn-head omission — or outside a git work tree.
 	var dirtyStamps map[string]fileStamp
-	if before != nil && beforeErr == nil && before.Head != "" && before.Dirty {
-		dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
+	var metadata *gitMetadataSnapshot
+	if before != nil && beforeErr == nil && before.Head != "" {
+		root, err := repoRoot(ctx, req.Workspace)
+		if err != nil {
+			beforeErr = err
+		} else {
+			metadata, beforeErr = snapshotGitMetadata(ctx, root)
+			if beforeErr == nil && before.Dirty {
+				dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
+			}
+		}
 	}
 	results := make([]pi.WorkerResult, len(req.Tasks))
 	var wg sync.WaitGroup
@@ -313,7 +327,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		case before != nil:
 			changesCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
 			defer cancel()
-			result.Changes = measureChanges(changesCtx, req.Workspace, before, dirtyStamps)
+			result.Changes = measureChanges(changesCtx, req.Workspace, before, dirtyStamps, metadata)
 		case beforeContextDone:
 			// A context already done when the before-state inspection ran:
 			// nothing was measured and nothing failed, and an absent field

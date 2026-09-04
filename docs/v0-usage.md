@@ -507,31 +507,57 @@ Replace the provider/model placeholder with one exact selector printed by
   or cancelled run, under its own thirty-second budget: a run that stopped
   mid-edit is exactly the run whose changes a caller most needs.
 - A dirty working tree is measured by subtraction, not guessed: paths
-  already dirty when the run started are stamped up front with size,
+  already dirty when the run started are stamped up front, and the ones
+  whose identity never moved are subtracted — they were equally dirty
+  before the run and name no change it made. A stamp holds size,
   modification time, and the executable bit — the one mode bit git
   tracks, so a chmod between two non-executable modes does not register
-  as a change — and the ones whose stamp never moved are subtracted —
-  they were equally dirty before the run and name no change it made. One
-  false negative is accepted and deliberate, on a coarse-granularity
-  filesystem only: a restore that lands within the same clock tick as
-  the pre-run stamp leaves size and modification time unchanged, so the
-  path is subtracted even though the run wrote it — defensible because
-  net change is zero. On a normal filesystem the write moves the
-  modification time and the restore is still reported. Dirtiness
-  never depends on the repository's display preference: the status
-  command forces `status.showUntrackedFiles=all`, so a repository that
-  hides untracked files from `git status` still records a tree that is
-  genuinely dirty. An unborn HEAD, a context already done when the
-  inspection ran, a measurement that failed after the workspace was
-  confirmed to be a git work tree, and a work tree that could not be
-  confirmed — the directory is not a git work tree, git is missing
-  entirely, or the guard failed for a transient reason, which the code
-  cannot tell apart and the reason does not claim to — are all omitted
-  with a stated reason, and human mode prints `changes: omitted:
-  <reason>` for them. The manifest never vanishes from a real run: the
-  CLI always configures the git inspector, so a workspace outside a git
-  work tree reads `changes: omitted: work tree not confirmed` rather
-  than nothing.
+  as a change — plus, for tracked paths, the SHA-256 of the content,
+  read once up front and never retained, reported, or transmitted. The
+  hash exists because a same-size rewrite with a restored modification
+  time makes the stat stamp match by construction: only the bytes can
+  say the file moved. That tracked rewrite is therefore reported, with
+  `dirtyBefore` and its counts measured against the last commit, while
+  a legitimate net-zero restoration still subtracts — when the bytes
+  are the pre-run bytes again, the manifest is quiet because net change
+  is zero. Untracked pre-run files are stamped by stat alone, never
+  hashed, so a same-size rewrite of one with a restored modification
+  time is the one deliberate false negative left in the subtraction;
+  on a coarse-granularity filesystem a same-tick restore of one is
+  invisible too, which is defensible because net change is zero.
+  Dirtiness never depends on the repository's display preference: the
+  status command forces `status.showUntrackedFiles=all`, so a
+  repository that hides untracked files from `git status` still records
+  a tree that is genuinely dirty.
+- The measurement trusts the path queries git itself runs, so a
+  repository whose trust state could make those queries hide a write is
+  never answered with a confident clean: the manifest is omitted with
+  `measurement failed` and a declared-writes check skips when the
+  state was already unsafe before the run started or a trust input
+  moved while it ran. The watched inputs, captured from the repository
+  before the first worker starts and re-read after the run ends, are
+  the index visibility markers (`skip-worktree`, `assume-unchanged`),
+  the effective `core.trustctime` value, and the ignore-rule files
+  beyond the tree — `$GIT_DIR/info/exclude` and the effective
+  `core.excludesFile` file — each stamped without reading its contents.
+  A marker or unsafe value already present at the start, a marker that
+  appears during the run, a trust value that changes, or an ignore file
+  whose stamp or effective value moves all make the measurement
+  unavailable: a wrong "clean" is worse than an admitted "unavailable".
+  Ordinary run activity never trips the watch: staging and committing
+  change no trust input, and ignore rules that already existed when the
+  run started applied equally to both passes.
+- An unborn HEAD, a context already done when the inspection ran, a
+  measurement that failed after the workspace was confirmed to be a git
+  work tree, and a work tree that could not be confirmed — the
+  directory is not a git work tree, git is missing entirely, or the
+  guard failed for a transient reason, which the code cannot tell apart
+  and the reason does not claim to — are all omitted with a stated
+  reason, and human mode prints `changes: omitted: <reason>` for them.
+  The manifest never vanishes from a real run: the CLI always
+  configures the git inspector, so a workspace outside a git work tree
+  reads `changes: omitted: work tree not confirmed` rather than
+  nothing.
 
 ### Exactly one input mechanism
 
@@ -619,9 +645,11 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   unconfirmed work tree, or a manifest omitted for any of those reasons,
   the check skips with `change manifest unavailable` and the run exits
   `0`, whatever was declared. A dirty before-state is measured rather
-  than skipped, so there the check runs. A checked run that changed
-  nothing reports a clean verdict; one that changed a path reports it
-  undeclared and exits `4`.
+  than skipped, so there the check runs — except when the trust state
+  makes the measurement unavailable, in which case the manifest is
+  omitted with `measurement failed` and the check skips like any other
+  omitted manifest. A checked run that changed nothing reports a clean
+  verdict; one that changed a path reports it undeclared and exits `4`.
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per
