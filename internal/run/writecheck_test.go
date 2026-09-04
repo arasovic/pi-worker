@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -449,15 +448,17 @@ func TestControllerWritesCheckedOnTimedOutRun(t *testing.T) {
 	// a caller most needs: the check runs on the terminal status with
 	// the mid-edit file still in the workspace.
 	dir := newGitRepo(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
+	done := make(chan struct{})
+	ctx := &manualDeadlineContext{Context: context.Background(), done: done}
 	worker := &changesMutatingWorker{mutate: func(dir string) error {
 		if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("left behind\n"), 0o644); err != nil {
 			return err
 		}
-		// Still mid-edit when the deadline fires: wait the parent out
-		// instead of returning, so the run reports timed-out.
-		<-ctx.Done()
+		// The worker is still mid-edit when the deadline falls: closing
+		// done makes the manual context report the deadline exceeded
+		// only after this mutate returns and the worker settles, so the
+		// run deterministically reports timed-out with the edit on disk.
+		close(done)
 		return nil
 	}}
 	req := validRequest("a")

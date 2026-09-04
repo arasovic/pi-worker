@@ -30,6 +30,30 @@ func (w *changesMutatingWorker) Run(ctx context.Context, req pi.WorkerRequest) p
 	return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"}
 }
 
+// manualDeadlineContext is a test-only context whose deadline expiry the
+// test triggers by hand: it embeds a live parent context, overrides Done
+// to return the test's done channel, and overrides Err to report
+// context.DeadlineExceeded once that channel is closed and nil before.
+// aggregateStatus then deterministically sees the deadline exceeded at
+// the exact moment the worker closes the channel.
+type manualDeadlineContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *manualDeadlineContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *manualDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 // gitCommit stages and commits every change in dir, the way a run that
 // commits its own work does; the change manifest must still report the
 // files because its base is the before-state HEAD, not the current one.
