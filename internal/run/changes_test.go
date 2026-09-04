@@ -180,7 +180,10 @@ func TestControllerChangesPreExistingNestedRepositoryUntouchedAbsent(t *testing.
 	// made, and it must not appear as an added directory or as an
 	// undeclared write. The run here also declares writes it never
 	// makes, so the check must answer clean on a manifest that measured
-	// zero rather than on one that never ran.
+	// zero rather than on one that never ran. The run is settled by a
+	// scripted worker that never touches the workspace; the repository's
+	// collapsed directory stamp is measured by presence alone, and an
+	// untouched presence subtracts it out.
 	dir := newGitRepo(t)
 	newNestedRepo(t, dir, "nested")
 	result := runWithWrites(t, newScriptedWorker(), dir, []string{"a"}, []WriteDeclaration{declaredPaths("ordinary.txt")})
@@ -276,7 +279,12 @@ func TestControllerChangesFileReplacedByNestedRepositorySingleEntry(t *testing.T
 	// one entry under the canonical path: one added directory entry,
 	// dirtyBefore because the caller's file was replaced, and never a
 	// doubled pair where the same path is counted twice under two
-	// spellings. This is the trailing-slash double-count case.
+	// spellings. The merge is sound here because git itself reports the
+	// nested repository as one collapsed directory entry: no tracked
+	// file claims the path, so nothing descends into the repository.
+	// When a tracked file or tracked directory is replaced instead, git
+	// lists the inner files individually and the manifest reports them
+	// per-file (see TestControllerChangesTrackedDirectoryReplacedByNestedRepositoryReportsGitListedFiles).
 	dir := newGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "nested"), []byte("dirty file\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -325,6 +333,163 @@ func TestControllerChangesNestedRepositoryReplacedByFileSingleEntry(t *testing.T
 	file := changes.Files[0]
 	if file.Path != "nested" || file.Status != statusAdded || file.Directory || file.Added != 1 || file.Deleted != 0 || !file.DirtyBefore {
 		t.Fatalf("file = %#v, want one added dirtyBefore file entry for the replacement", file)
+	}
+}
+
+func TestControllerChangesTrackedDirectoryReplacedByNestedRepositoryReportsGitListedFiles(t *testing.T) {
+	// The honest exception to the one-collapsed-entry shape, pinned as a
+	// contract: when a tracked directory is replaced by a nested
+	// repository, git does not treat the directory as an embedded
+	// repository. The deletion of its tracked files makes the inner
+	// files individually untracked, so the untracked listing descends
+	// into the directory and names each inner file, and the manifest
+	// reports exactly what git lists: the tracked deletions plus each
+	// inner file as a new file. There is no collapsed directory entry —
+	// git itself produces none — and the inner paths are honestly
+	// measured, so a caller who declared them clears the write check and
+	// one who declared only the old tracked names does not. The one
+	// collapsed entry the original fix promised does not exist here:
+	// git itself does not produce it, and the manifest must not claim
+	// one, or the inner write would silently escape the write check.
+	dir := newGitRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "dir"), 0o755); err != nil {
+		t.Fatalf("mkdir dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dir", "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dir", "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatalf("write b: %v", err)
+	}
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-q", "-m", "tracked dir")
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.RemoveAll(filepath.Join(dir, "dir")); err != nil {
+			return err
+		}
+		newNestedRepo(t, dir, "dir")
+		return nil
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("dir/a.txt", "dir/b.txt", "dir/inside.txt")})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 3 || len(changes.Files) != 3 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the two tracked deletions and the inner file", changes)
+	}
+	byPath := map[string]FileChange{}
+	for _, file := range changes.Files {
+		if file.Directory {
+			t.Fatalf("file = %#v, want no directory entry where git lists inner files", file)
+		}
+		byPath[file.Path] = file
+	}
+	if file, ok := byPath["dir/a.txt"]; !ok || file.Status != statusDeleted || file.Added != 0 || file.Deleted != 1 {
+		t.Fatalf("dir/a.txt = %#v, want the tracked deletion +0/-1", byPath["dir/a.txt"])
+	}
+	if file, ok := byPath["dir/b.txt"]; !ok || file.Status != statusDeleted || file.Added != 0 || file.Deleted != 1 {
+		t.Fatalf("dir/b.txt = %#v, want the tracked deletion +0/-1", byPath["dir/b.txt"])
+	}
+	if file, ok := byPath["dir/inside.txt"]; !ok || file.Status != statusAdded || file.Added != 1 || file.Deleted != 0 {
+		t.Fatalf("dir/inside.txt = %#v, want the inner file added +1/-0", byPath["dir/inside.txt"])
+	}
+	// The inner path is a real changed path the write check sees: with
+	// the tracked deletions and the inner file all declared, the verdict
+	// is clean.
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want the declared tracked deletions and inner file covered", writes)
+	}
+}
+
+func TestControllerChangesNestedRepositoryAddedInsideKeptTrackedDirectoryIsOneCollapsedEntry(t *testing.T) {
+	// A nested repository added inside a tracked directory that the run
+	// keeps is a fresh unknown path: git does not descend into the
+	// embedded repository, and ls-files reports the whole directory as
+	// one collapsed entry dir/nested/ without entering it. The manifest
+	// reports that one collapsed directory entry — never the inner file
+	// — exactly as it does for a repository at a never-tracked path. The
+	// collapse depends on no tracked path being replaced at that point:
+	// when the run replaces a tracked directory with a repository, git
+	// lists the inner files individually instead (see
+	// TestControllerChangesTrackedDirectoryReplacedByNestedRepositoryReportsGitListedFiles).
+	dir := newGitRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "dir"), 0o755); err != nil {
+		t.Fatalf("mkdir dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dir", "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	runGit(t, dir, "add", "-A")
+	runGit(t, dir, "commit", "-q", "-m", "tracked dir")
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		newNestedRepo(t, dir, "dir/nested")
+		return nil
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("dir/nested")})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the one collapsed directory entry", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "dir/nested" || file.Status != statusAdded || !file.Directory || file.Added != 0 || file.Deleted != 0 {
+		t.Fatalf("file = %#v, want dir/nested added as a collapsed directory entry with zero counts", file)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want the declared collapsed directory covered", writes)
+	}
+}
+
+func TestControllerChangesTrackedFileReplacedByNestedRepositoryIsTrackedChange(t *testing.T) {
+	// A nested repository that replaces a tracked file of the same name
+	// is not an untracked directory at all: the path is claimed by a
+	// tracked file, git reports the replacement as a tracked change of
+	// that path and lists none of the repository's contents. The
+	// manifest must mirror git: one tracked entry for the file path with
+	// the replacement's counts and the deleted status — the tracked file
+	// is gone, and the directory that replaced it is another
+	// repository's business, never entered and never listed — never a
+	// directory entry and never an inner path. Declaring the file path
+	// covers the change.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "x"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write x: %v", err)
+	}
+	runGit(t, dir, "add", "x")
+	runGit(t, dir, "commit", "-q", "-m", "tracked file")
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.Remove(filepath.Join(dir, "x")); err != nil {
+			return err
+		}
+		newNestedRepo(t, dir, "x")
+		return nil
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("x")})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want exactly the one tracked path", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "x" || file.Status != statusDeleted || file.Directory || file.Added != 1 || file.Deleted != 1 {
+		t.Fatalf("file = %#v, want x deleted +1/-1 as a plain tracked entry", file)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want the declared tracked path covered", writes)
 	}
 }
 

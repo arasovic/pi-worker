@@ -374,13 +374,10 @@ Each entry in `files` carries:
   binary file
 - `binary`: present and `true` only when git reported the file as binary
 - `directory`: present and `true` only when the changed path is itself a
-  directory: an untracked nested repository — a directory carrying its
-  own `.git` that git reports as one collapsed entry, the shape a
+  directory: a collapsed untracked nested repository — a directory carrying
+  its own `.git` that git reports as one collapsed entry, the shape a
   worker's `git init` or `git clone` leaves inside the workspace — that
-  the run created or removed. The directory is never entered, so no
-  entry names a path inside it: its contents are another repository's
-  business, and no command inspects them, exactly as a submodule's
-  working tree is never inspected. `added` and `deleted` are both `0`,
+  the run created or removed. `added` and `deleted` are both `0`,
   because a directory has no lines to count, and `noFinalNewline` never
   accompanies the entry. `path` is the canonical workspace-relative
   path without the trailing slash git's listing prints, so the same
@@ -390,7 +387,32 @@ Each entry in `files` carries:
   subtracted like any other pre-run dirtiness and never appears; one
   the run removed is a `deleted` directory entry carrying
   `dirtyBefore`. The field is additive and optional, so `schemaVersion`
-  stays 1
+  stays 1.
+
+  The directory entry exists only when git itself collapses the
+  repository to one listing entry, which git does only while nothing
+  about the repository's directory is known to the index — a fresh
+  repository at a path no tracked file ever occupied, or one added
+  inside a tracked directory whose own files survive. The collapse is
+  how git keeps another repository's contents out of its own working
+  tree: it does not enter the collapsed directory, and neither does
+  the measurement, so no command inspects the contents and a write a
+  run makes into a pre-existing collapsed repository is invisible to
+  both the manifest and the write check, exactly as a submodule's
+  working tree is never inspected. That containment is git's, and it
+  has an honest, bounded exception: when the run deletes a tracked
+  file or tracked directory and leaves a nested repository where the
+  tracked entry stood — or a nested repository sits in a directory a
+  tracked file still claims — git does not collapse the repository; it
+  lists its inner files individually alongside the tracked deletions
+  or modifications, because the directory is known to the index. In
+  those shapes no `directory` entry exists: the inner files are
+  ordinary entries at their own paths, counted like any other listed
+  file, and a repository replacing a tracked file of the same name is
+  reported as a plain tracked change of that path with no inner path
+  listed at all. The manifest reports exactly what git reports in
+  every shape and never forces one collapsed entry where git itself
+  lists files.
 - `dirtyBefore`: present and `true` only when the path was already dirty
   before the run started; the line counts are measured against the last
   commit rather than against the pre-run content, so they include work
@@ -451,73 +473,22 @@ are exactly the pre-run bytes again, the hash matches and the manifest
 is quiet because net change is zero. An untracked directory tree is
 the one deliberately unhashed shape: it cannot rewrite in place, so its
 pre-run stat stamp alone is enough, and the subtraction stays exact for
-the files whose content it names. On a
+the files whose content it names. A collapsed nested-repository
+directory — an untracked directory carrying its own `.git` that git
+reports as one entry in the untracked listing without entering it — is
+the second deliberately unhashed shape, stamped by presence alone: its
+size and modification time describe contents that belong to another
+repository, presence in the listing is the only identity the workspace
+level can measure, and the directory is subtracted when the run leaves
+it a collapsed entry. A pre-existing repository that git listed file by
+file instead — the tracked-overlap shapes below, where the directory is
+known to the index — is stamped and subtracted as ordinary files, with
+the content identity those files carry, because git itself sees its
+contents. On a
 coarse-granularity filesystem — FAT, exFAT, some NFS mounts, older
 ext3 — a same-tick restore of any path is invisible too,
 which is equally defensible because net change is zero; a hash still
-protects the paths whose content the stamp carries. A collapsed
-nested-repository directory — an untracked directory carrying its own
-`.git` that git reports as one entry without entering it — is the
-second deliberately unhashed shape, stamped by presence alone: its size
-and modification time describe contents that belong to another
-repository, and presence in the listing is the only identity the
-workspace level can measure, so it is subtracted when the run leaves it
-a collapsed entry.
-
-The measurement trusts the path queries git itself runs, so a
-repository whose trust state could make those queries hide a write is
-never answered with a confident clean: the manifest is omitted with the
-`measurement failed` reason, and a declared-writes check skips, when
-the state was already unsafe before the run started or a trust input
-moved while the run was in flight. Five families of inputs are
-watched, captured from the repository itself before the first worker
-starts and re-read after the run ends:
-
-- Index visibility markers. A `skip-worktree` or `assume-unchanged`
-  entry makes git suppress the worktree comparison for that file, so a
-  rewrite of it is invisible to every diff the measurement runs: an
-  entry already marked before the run hides with no drift to detect,
-  and a marker that appears during the run is drift.
-- `core.trustctime`. Git trusts the stat cache without comparing
-  content when size and modification time match and ctime is not
-  trusted, so `core.trustctime=false` can make git itself report
-  nothing for a same-size rewrite with a restored modification time.
-  The effective value (false, true, or the true default) is recorded
-  before the run and compared after it: an unsafe pre-existing value
-  and a value that changed during the run are both unavailable.
-- `core.fileMode`. Git suppresses every tracked mode-only difference
-  when it is false, so a chmod the run made on an untouched file would
-  be invisible to every diff the measurement runs. The effective value
-  (false, true, or the true default) is recorded before the run and
-  compared after it: an unsafe pre-existing value and a value that
-  changed during the run are both unavailable.
-- Ignore-rule inputs beyond the tree. The untracked listing honours
-  `$GIT_DIR/info/exclude` and the effective `core.excludesFile` (the
-  configured file, or the XDG default when unset), so a rule appended
-  to either during the run can hide untracked paths the run wrote.
-  Each file is stamped without reading its contents, and the effective
-  value is recorded; a moved stamp or a moved value is drift.
-- In-tree `.gitignore` rule files. The untracked listing honours every
-  `.gitignore` rule file git consults in the tree, so a rule appended
-  to one during the run — or a new rule file created during the run,
-  including one whose own rules exclude it — can hide untracked paths
-  the run wrote. The rule files are enumerated with git's own listings
-  (the tracked ones, the visible untracked ones, and the ones git
-  itself ignores, each restricted to `.gitignore` names), never with a
-  filesystem walk and never by entering a nested repository, and their
-  set and local content identity are recorded: a rule file that
-  appears, disappears, or changes content during the run is drift.
-  Content identity means the bytes — for a symlink, its target string
-  — so a same-size rewrite with a restored modification time is still
-  drift, while a write that leaves the bytes identical is not. This is
-  a watch on the rule files git's own listings name, not a full audit
-  of every ignore source git could read.
-
-Any of these makes the measurement unavailable rather than clean — a
-wrong "clean" is worse than an admitted "unavailable". Ordinary worker
-activity never trips the watch: staging and committing change no trust
-input, and ignore rules that already existed when the run started
-applied equally to the pre-run and post-run passes.
+protects the paths whose content the stamp carries.
 
 The manifest covers the paths `git` tracks or would track. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
@@ -537,11 +508,25 @@ without entering it, and the manifest reports that one entry with the
 measurement cannot recurse into never disables the manifest. A nested
 repository already dirty before the run is measured by subtraction like
 any other pre-run dirtiness: untouched, it is absent; removed, it is
-one deleted directory entry. Because the collapsed directory is never
-entered, a write into the contents of a pre-existing nested repository
-is invisible to both the manifest and the write check, exactly as a
-write into a submodule's working tree is: the contents belong to the
-nested repository, and the caller answers for them there.
+one deleted directory entry. Because a collapsed directory is never
+entered, a write into the contents of a pre-existing collapsed
+repository is invisible to both the manifest and the write check,
+exactly as a write into a submodule's working tree is: the contents
+belong to the nested repository, and the caller answers for them there.
+
+That invisibility is bounded to the collapsed shape, and the bound is
+git's own: git stops collapsing a repository when the run replaces a
+tracked file or a tracked directory with it, or when the repository
+sits in a directory a tracked file still claims. There the untracked
+listing descends into the repository and lists its inner files, and the
+manifest measures and checks those paths like any other; a repository
+replacing a tracked file of the same name is a tracked change of that
+path whose contents git never lists. Each shape is reported as git
+reports it — one collapsed entry where git collapses, one ordinary
+entry per listed file where git lists — and the manifest never forces
+one collapsed entry where git itself reports files, never hides a
+listed inner path from the write check, and never disables itself on a
+repository it cannot collapse.
 
 The write check is additive and optional, so `schemaVersion` stays `1`.
 Root `writes` is present exactly when the request carried a write

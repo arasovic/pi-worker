@@ -60,20 +60,19 @@ type FileChange struct {
 	Added   int    `json:"added"`
 	Deleted int    `json:"deleted"`
 	// Directory is true only when the changed path is itself a
-	// directory: an untracked nested repository — a directory carrying
-	// its own .git that git reports as one collapsed entry in the
-	// untracked listing — that the run created or removed. Such a path
-	// is measured as one structural entry without entering the
-	// repository or listing anything inside it, because its contents
-	// belong to another repository. The line counts are always zero,
-	// since a directory has no lines to count, and noFinalNewline is
-	// never present; status is added for a repository the run created
-	// and deleted for one it removed. The path is the canonical
-	// root-relative form without the trailing slash git prints, so a
-	// directory and a file that replace each other at one path merge
-	// into a single entry and are never counted twice under two
-	// spellings. The field is additive and optional, so schemaVersion
-	// stays 1.
+	// directory: a collapsed untracked nested repository — a directory
+	// carrying its own .git that git reports as one trailing-slash
+	// entry in the untracked listing — that the run created or
+	// removed. Git collapses a repository only while nothing about its
+	// directory is known to the index; when git instead lists a
+	// repository's inner files individually — a repository replacing a
+	// tracked directory, or one that sits in a directory a tracked
+	// file still claims — the manifest reports those files as ordinary
+	// entries and no directory entry exists. The line counts are
+	// always zero, since a directory has no lines to count, and
+	// noFinalNewline is never present; status is added for a
+	// repository the run created and deleted for one it removed. The
+	// field is additive and optional, so schemaVersion stays 1.
 	Directory bool `json:"directory,omitempty"`
 	Binary    bool `json:"binary,omitempty"`
 	// DirtyBefore is true when the path was already dirty before the
@@ -213,6 +212,32 @@ func repoRoot(ctx context.Context, dir string) (string, error) {
 // branch, tag, or worktree operation. Any parse failure or command
 // failure fails the whole measurement: an approximate manifest
 // presented as truth is worse than none.
+//
+// The listing shapes the manifest must handle are bounded and exact,
+// and they are git's own shapes, taken as git reports them. Git
+// collapses an untracked nested repository to one directory entry only
+// while nothing about the directory is known to the index: a fresh
+// repository at a path no tracked file ever occupied, or one added
+// inside a tracked directory whose own files survive, lists as one
+// trailing-slash entry and nothing inside it is listed. The collapse
+// does not survive a tracked-path replacement: when a run deletes the
+// tracked files of a directory and leaves a nested repository at that
+// same directory — or a nested repository sits in a directory where a
+// tracked file still lives — git descends into the repository and lists
+// its files one by one alongside the tracked deletions or
+// modifications, because the directory is known to the index. And a
+// nested repository that replaces a tracked file of the same name is
+// not untracked at all: git reports the path as a tracked modification
+// and lists none of the repository's contents. The manifest reports
+// each shape as git reports it: one collapsed directory entry when git
+// collapses, one ordinary entry per listed file when git lists, and a
+// plain tracked entry when git treats the replacement as a tracked
+// change. A nested repository never disables the manifest: no
+// directory is ever diffed, every listed entry is a file the no-index
+// measurement can compare, and where the contents of a pre-existing
+// collapsed repository are invisible to the superproject's own listing
+// they are invisible here too — the manifest never claims more than
+// git itself can see.
 func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[string]fileStamp) (*Changes, error) {
 	trackedOut, err := gitOutput(ctx, root, "diff", "--numstat", "--no-renames", "--ignore-submodules=all", "-z", head, "--")
 	if err != nil {
@@ -249,7 +274,16 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// path whether it names a directory or a file: a path that was a
 	// file when the dirty snapshot ran and a nested repository when the
 	// measurement runs must merge into one entry, never two spellings
-	// of one path counted twice.
+	// of one path counted twice. The listing is git's own, taken as it
+	// is: git collapses the repository only while nothing about its
+	// directory is known to the index. A repository that replaces a
+	// tracked directory — or sits beside a tracked file inside the same
+	// directory — is listed by git file by file instead of collapsing, and
+	// one that replaces a tracked file of the same name is reported as a
+	// tracked modification with no untracked listing at all. Inner files
+	// git lists are then measured exactly like every other listed file;
+	// the manifest makes no attempt to force a collapsed entry where git
+	// itself does not report one.
 	untrackedRaw := nulSplit(untrackedOut)
 	untracked := make([]string, 0, len(untrackedRaw))
 	untrackedDirs := make(map[string]bool, len(untrackedRaw))
@@ -272,21 +306,34 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// contributed nothing to it, so it names no change this run made.
 	// The content hash is what keeps a same-size rewrite with a
 	// restored modification time out of the subtraction: its stat
-	// matches by construction, and only the bytes can say it moved. The
-	// dirty union term is not optional: without it a worker that
-	// reverts an already-dirty file to its committed content drops out
-	// of the HEAD diff completely and the manifest would go silent even
-	// though the caller's uncommitted work was destroyed.
+	// matches by construction, and only the bytes can say it moved. A
+	// collapsed nested repository that was already there when the run
+	// started is unchanged when the run left it a collapsed entry:
+	// directory presence in the listing is the only fact the workspace
+	// level can measure for a collapsed repository, and the contents
+	// inside are the embedded repository's own business, never
+	// inspected and never allowed to move the directory in or out of
+	// the manifest. A directory stamp whose path is no longer a
+	// collapsed entry in the after listing is not unchanged — the
+	// repository was removed or its tracked containment changed so git
+	// lists its files individually, and the after state must be
+	// reported rather than silently swallowed. The dirty
+	// union term is not optional: without it a worker that reverts an
+	// already-dirty file to its committed content drops out of the HEAD
+	// diff completely and the manifest would go silent even though the
+	// caller's uncommitted work was destroyed.
 	unchanged := make(map[string]bool, len(dirtyStamps))
 	for path, stamp := range dirtyStamps {
 		if stamp.dir {
-			// A collapsed nested repository that was already there when
-			// the run started is unchanged when the run left it a
-			// collapsed entry: directory presence in the listing is the
-			// only identity the workspace level can measure for it, and
-			// the contents inside are the embedded repository's own
-			// business, never inspected and never allowed to move the
-			// directory in or out of the manifest.
+			// A pre-existing collapsed repository left alone stays a
+			// collapsed entry in the after listing and is subtracted.
+			// The only identity a collapsed directory carries is its
+			// presence in that listing; anything the run changed about
+			// its shape — removed the repository, or moved tracked
+			// files in or out of its directory so git stops collapsing
+			// it and lists the inner files individually — drops out of
+			// the collapsed listing and must be reported through the
+			// entries git now lists, never silently subtracted.
 			if untrackedDirs[path] {
 				unchanged[path] = true
 			}
@@ -368,7 +415,14 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 		// measurement over one unmeasurable directory is exactly the
 		// bug being prevented. Report the directory as one added entry
 		// marked directory, with zero line counts, without entering its
-		// repository or claiming ownership of any file inside it.
+		// repository or claiming ownership of any file inside it. Only
+		// this collapsed shape reaches the directory branch: git lists
+		// the contents of a nested repository individually whenever the
+		// repository replaces a tracked directory or sits in a
+		// directory a tracked file still claims — only a repository at
+		// a path unknown to the index is collapsed — so every other
+		// nested-repository change is reported as the ordinary
+		// per-file entries git itself lists, honestly counted.
 		info, err := os.Lstat(filepath.Join(root, path))
 		if err != nil {
 			return nil, fmt.Errorf("stat untracked path %s: %w", path, err)
@@ -547,8 +601,11 @@ func measureNoFinalNewline(root string, f *FileChange) {
 // directory the dirty listing can carry — gets a directory stamp
 // instead: size, modification time and the executable bit describe a
 // file's contents, and a directory's contents are the embedded
-// repository's business. For a directory, presence in the untracked
-// listing is the only identity the workspace level can measure. Size plus
+// repository's business. For a collapsed directory, presence in the
+// after listing is the only identity the workspace level can measure;
+// when the run removes the repository or a tracked file lands inside
+// it, git stops collapsing the directory and the after state is
+// reported through the files git lists at the path instead. Size plus
 // modification time is exact where modification time has sub-second
 // resolution (APFS, ext4, NTFS, the normal case), and it can miss a
 // same-size rewrite inside one tick on a coarse-granularity filesystem
@@ -1065,7 +1122,12 @@ func snapshotGitMetadataAt(ctx context.Context, root string, before *gitMetadata
 // ls-files --others --exclude-standard -z — keeps both passes over the
 // same universe; the diff ignores submodules so a dirty submodule is
 // never stamped and never becomes a changed path, matching the
-// measurement pass. The snapshot is anchored at the repository root,
+// measurement pass. Both listings are git's own, so a nested repository
+// that git collapses to one directory entry is stamped as that
+// collapsed directory, and one that git descends into because a
+// tracked file still lives inside it is stamped file by file, its
+// inner contents visible to the run and therefore to the manifest. The
+// snapshot is anchored at the repository root,
 // resolved once from dir, so every stamp key is root-relative and the
 // after pass's keys agree with them whichever directory inside the
 // repository the run was started from: stamp keys and measurement
