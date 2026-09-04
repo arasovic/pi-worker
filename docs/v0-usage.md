@@ -94,6 +94,8 @@ one plain diagnostic line.
 - `pi-worker skill receipt-path [--json]`
 - `pi-worker runs list [--json]`
 - `pi-worker runs prune --keep <n> [--yes] [--json]`
+- `pi-worker worktrees list [--json]`
+- `pi-worker worktrees remove <name> [--yes] [--json]`
 - `pi-worker run ...`
 
 ## Version
@@ -346,6 +348,75 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   confirmed, so those old records stay unreportable by design. A worker
   process-table row that cannot be read skips only that worker; the
   other workers of the same run are still scanned.
+
+## Managed worktrees
+
+```text
+pi-worker worktrees list [--json]
+pi-worker worktrees remove <name> [--yes] [--json]
+```
+
+- Only the exact Git-registered pair at
+  `<repo-root>/.pi-worker/worktrees/<valid-name>` on branch
+  `run/<same-name>` is managed, where `<valid-name>` is 1 to 64
+  characters of lowercase letters, digits and hyphens, starting and
+  ending with a letter or digit. A checkout elsewhere, a branch without
+  its matching directory, or a name outside that form is not a managed
+  pair.
+
+- `worktrees list` is read-only, sorted by `name` ascending, and never
+  mutates repository state. Each entry reports `name`, absolute `path`,
+  `branch` (`run/<name>`), `dirty` (true when the checkout has
+  uncommitted changes), and `merged` (true when the branch is merged
+  into the caller’s current `HEAD`, not a branch named `main`). Human
+  mode prints a table with header `NAME\tPATH\tBRANCH\tDIRTY\tMERGED`
+  or `no managed worktrees` when none exist. `--json` emits one
+  `schemaVersion: 1` document with a `worktrees` array (empty, never
+  null). See [`docs/json-contracts.md`](./json-contracts.md) for the
+  detailed JSON shape.
+
+- Inventory is strict: a malformed entry, a missing counterpart (checkout
+  without its branch or branch without its checkout), a mismatched
+  branch, or any locked, bare, prunable, or otherwise unprovable managed
+  pair is refused as an error and no list or removal proceeds.
+
+- `worktrees remove <name>` accepts only a clean checkout whose exact
+  branch is merged into the caller’s current `HEAD`. A dirty checkout or
+  an unmerged branch is refused. No force option exists.
+
+- Confirmation: human mode shows the selected row as a table on stderr
+  and asks `remove worktree "<name>" on branch "<branch>" at
+  "<path>"? [y/N] ` on stderr. Only `y` or `yes` (case-insensitive,
+  after trimming spaces) proceeds; anything else — `n`, an empty line, or
+  EOF — prints `nothing removed` to stdout and exits `0` with nothing
+  deleted. `--yes` skips only the question; it does not skip clean/merged
+  checks. JSON mode and any nonterminal stdin require `--yes` and
+  otherwise refuse with exit `2` before inventory.
+
+- After an interactive `yes`, the exact pair and its clean/merged state
+  are checked again by a fresh inventory immediately before mutation; if
+  the `name`, `path`, `branch`, `dirty`, or `merged` state changed or the
+  entry disappeared, nothing is removed, the command exits `9`, and the
+  caller is asked to retry.
+
+- On success the checkout is removed with `git worktree remove` without
+  force, then its exact merged branch with `git branch -d` without force.
+  Human mode prints `removed worktree "<name>" on branch "<branch>"`
+  to stdout. `--json` (which requires `--yes`) emits one
+  `schemaVersion: 1` document with `removed: { name, path, branch }`. See
+  [`docs/json-contracts.md`](./json-contracts.md) for the detailed JSON
+  shape. Successful removal still removes the checkout first and then its
+  exact branch.
+
+- If branch deletion fails after checkout removal, the command makes one
+  bounded non-force attempt to restore that exact checkout from the
+  still-existing branch and still exits `9` without success output. If
+  restoration also fails, the error reports both failures; the branch is
+  never force-deleted and remains available for manual recovery.
+  `worktrees remove --json` emits no success document on either failure
+  path.
+
+- Exit codes: `0` on success (including a declined confirmation or an empty list), `2` for usage or refusal (invalid name, not found, dirty, not merged, or missing `--yes` when required), `9` for inventory or mutation failures and for the post-confirmation retry case.
 
 ## Exact run command
 
@@ -703,9 +774,11 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   exiting `2` and naming the leftover. A checkout git itself refuses
   to create is refused the same way, with git's own words in the
   message. Outside a git work tree the flag is refused the same way.
-- Nothing is ever removed: a leftover checkout or branch is reported by
-  the next run that collides with its name, never cleaned up by the
-  product.
+- Runs never automatically remove a leftover checkout or branch: a leftover
+  is reported by the next run that collides with its name. Removal is only
+  through the explicit safe `pi-worker worktrees remove` command below,
+  which removes only a clean checkout whose branch is merged into the
+  caller’s current `HEAD`; there is no force option.
 - The checkout path and branch are printed to stderr at creation time
   (the only trace a killed run leaves) and ride the `--json` result as
   `worktree.path` and `worktree.branch`.

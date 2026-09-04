@@ -139,6 +139,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := interruptContext()
 		defer stop()
 		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "worktrees":
+		ctx, stop := interruptContext()
+		defer stop()
+		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -172,6 +176,8 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		return skillCommand(ctx, args[1:], stdout, stderr)
 	case "runs":
 		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "worktrees":
+		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -335,6 +341,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
 	fmt.Fprintln(w, "       pi-worker runs list [--json]")
 	fmt.Fprintln(w, "       pi-worker runs prune --keep <n> [--yes] [--json]")
+	fmt.Fprintln(w, "       pi-worker worktrees list [--json]")
+	fmt.Fprintln(w, "       pi-worker worktrees remove <name> [--yes] [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--json] [--debug]")
 }
 

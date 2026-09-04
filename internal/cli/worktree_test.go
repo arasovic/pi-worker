@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,64 @@ func chdirPlain(t *testing.T) string {
 // these tests; the model matches what the CLI receives from --model.
 func completedResult() pi.WorkerResult {
 	return pi.WorkerResult{Model: "acme/model", Explanation: "done", Status: pi.StatusCompleted}
+}
+
+// newGitWorkspaceAt creates an isolated repository in the supplied
+// directory, using the same one-commit setup as newGitWorkspace. Tests
+// use it when the repository path itself matters, such as paths that
+// contain spaces.
+func newGitWorkspaceAt(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	// Keep temporary-repository tests independent of the host user's git
+	// configuration and commit-signing setup.
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("HOME", t.TempDir())
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "test@pi-worker")
+	git("config", "user.name", "pi-worker test")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	git("add", "file.txt")
+	git("commit", "-q", "-m", "initial")
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(original); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+	return dir
+}
+
+func repoSnapshot(t *testing.T, repo string) string {
+	t.Helper()
+	return gitRun(t, repo, "status", "--porcelain=v1") + "\n--refs--\n" +
+		gitRun(t, repo, "for-each-ref", "--format=%(refname:short)", "refs/heads") + "\n--worktrees--\n" +
+		gitRun(t, repo, "worktree", "list", "--porcelain")
+}
+
+func withRunGitFunc(t *testing.T, fn func(context.Context, string, ...string) (string, error)) {
+	t.Helper()
+	original := runGitFunc
+	runGitFunc = fn
+	t.Cleanup(func() { runGitFunc = original })
 }
 
 // TestParseRunArgsRejectsInvalidWorktreeNames pins the argv-time name
@@ -494,5 +553,719 @@ func TestRunWorktreeRequiresGitWorkTree(t *testing.T) {
 	}
 	if strings.Contains(stderr, "usage:") {
 		t.Fatalf("stderr = %q, want no usage block", stderr)
+	}
+}
+
+func TestListManagedWorktreesNoManagedPairs(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("managed worktrees = %#v, want none", got)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestListManagedWorktreesOneExactCleanMergedPair(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	path, branch, err := prepareWorktree(context.Background(), repo, "probe")
+	if err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("managed worktrees = %#v, want one entry", got)
+	}
+	wantPath := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
+	if path != wantPath {
+		t.Fatalf("prepareWorktree path = %q, want %q", path, wantPath)
+	}
+	if branch != "run/probe" {
+		t.Fatalf("prepareWorktree branch = %q, want run/probe", branch)
+	}
+	want := managedWorktree{name: "probe", path: wantPath, branch: "run/probe", dirty: false, merged: true}
+	if got[0] != want {
+		t.Fatalf("managed worktree = %#v, want %#v", got[0], want)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestListManagedWorktreesDirtyAndUnmergedReportingSorted(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	bravoPath, _, err := prepareWorktree(context.Background(), repo, "bravo")
+	if err != nil {
+		t.Fatalf("prepareWorktree bravo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bravoPath, "file.txt"), []byte("one\nmodified\n"), 0o644); err != nil {
+		t.Fatalf("dirty bravo: %v", err)
+	}
+	alphaPath, _, err := prepareWorktree(context.Background(), repo, "alpha")
+	if err != nil {
+		t.Fatalf("prepareWorktree alpha: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(alphaPath, "file.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("stage alpha content: %v", err)
+	}
+	gitRun(t, alphaPath, "add", "file.txt")
+	gitRun(t, alphaPath, "commit", "-q", "-m", "advance alpha")
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("managed worktrees = %#v, want two entries", got)
+	}
+	want := []managedWorktree{
+		{name: "alpha", path: filepath.Join(repo, ".pi-worker", "worktrees", "alpha"), branch: "run/alpha", dirty: false, merged: false},
+		{name: "bravo", path: filepath.Join(repo, ".pi-worker", "worktrees", "bravo"), branch: "run/bravo", dirty: true, merged: true},
+	}
+	if got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("managed worktrees = %#v, want %#v", got, want)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestListManagedWorktreesIgnoresUnrelatedWorktreesAndBranches(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	otherWorktree := filepath.Join(t.TempDir(), "other worktree")
+	gitRun(t, repo, "worktree", "add", "-b", "feature", otherWorktree)
+	gitRun(t, repo, "branch", "unrelated")
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	want := []managedWorktree{{name: "probe", path: filepath.Join(repo, ".pi-worker", "worktrees", "probe"), branch: "run/probe", dirty: false, merged: true}}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("managed worktrees = %#v, want %#v", got, want)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestListManagedWorktreesRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
+	t.Run("managed branch without checkout", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		gitRun(t, repo, "branch", "run/missing")
+		before := repoSnapshot(t, repo)
+		got, err := listManagedWorktrees(context.Background(), repo)
+		if err == nil || !strings.Contains(err.Error(), `managed branch "run/missing" is missing its checkout`) {
+			t.Fatalf("err = %v, want missing-checkout refusal", err)
+		}
+		if got != nil {
+			t.Fatalf("managed worktrees = %#v, want nil on failure", got)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+
+	t.Run("managed checkout without branch", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repo")
+		withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+			switch strings.Join(args, " ") {
+			case "rev-parse --show-toplevel":
+				return root, nil
+			case "rev-parse HEAD":
+				return "abc123", nil
+			case "worktree list --porcelain":
+				return "worktree " + filepath.Join(root, ".pi-worker", "worktrees", "alpha") + "\n", nil
+			case "for-each-ref --format=%(refname:short) refs/heads":
+				return "run/alpha\n", nil
+			case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
+				return "run/alpha\n", nil
+			default:
+				t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
+				return "", nil
+			}
+		})
+		got, err := listManagedWorktrees(context.Background(), root)
+		if err == nil || !strings.Contains(err.Error(), "is missing its branch") {
+			t.Fatalf("err = %v, want missing-branch refusal", err)
+		}
+		if got != nil {
+			t.Fatalf("managed worktrees = %#v, want nil on failure", got)
+		}
+	})
+
+	t.Run("managed checkout with mismatched branch", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repo")
+		withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+			switch strings.Join(args, " ") {
+			case "rev-parse --show-toplevel":
+				return root, nil
+			case "rev-parse HEAD":
+				return "abc123", nil
+			case "worktree list --porcelain":
+				return "worktree " + filepath.Join(root, ".pi-worker", "worktrees", "alpha") + "\nbranch refs/heads/run/beta\n", nil
+			case "for-each-ref --format=%(refname:short) refs/heads":
+				return "run/beta\n", nil
+			case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
+				return "run/beta\n", nil
+			default:
+				t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
+				return "", nil
+			}
+		})
+		got, err := listManagedWorktrees(context.Background(), root)
+		if err == nil || !strings.Contains(err.Error(), `points to "refs/heads/run/beta"`) {
+			t.Fatalf("err = %v, want mismatched-branch refusal", err)
+		}
+		if got != nil {
+			t.Fatalf("managed worktrees = %#v, want nil on failure", got)
+		}
+	})
+}
+
+func TestListManagedWorktreesPreservesSpacesAndSubdirectoryInvocation(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspaceAt(t, filepath.Join(t.TempDir(), "repo with spaces")))
+	subdir := filepath.Join(repo, "nested", "dir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	if _, _, err := prepareWorktree(context.Background(), subdir, "spacey"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), subdir)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	wantPath := filepath.Join(repo, ".pi-worker", "worktrees", "spacey")
+	want := []managedWorktree{{name: "spacey", path: wantPath, branch: "run/spacey", dirty: false, merged: true}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("managed worktrees = %#v, want %#v", got, want)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestParseManagedWorktreeListAndBranchNamesRejectMalformedManagedLookingOutput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	t.Run("missing path in managed-looking worktree output", func(t *testing.T) {
+		_, err := parseManagedWorktreeList(root, "branch refs/heads/run/alpha\n")
+		if err == nil || !strings.Contains(err.Error(), "entry missing worktree path") {
+			t.Fatalf("err = %v, want missing-path refusal", err)
+		}
+	})
+	t.Run("missing branch in managed-looking worktree output", func(t *testing.T) {
+		managed := filepath.Join(root, ".pi-worker", "worktrees", "alpha")
+		_, err := parseManagedWorktreeList(root, "worktree "+managed+"\n")
+		if err == nil || !strings.Contains(err.Error(), "missing its branch") {
+			t.Fatalf("err = %v, want missing-branch refusal", err)
+		}
+	})
+	t.Run("mismatched managed-looking worktree output", func(t *testing.T) {
+		managed := filepath.Join(root, ".pi-worker", "worktrees", "alpha")
+		_, err := parseManagedWorktreeList(root, "worktree "+managed+"\nbranch refs/heads/run/beta\n")
+		if err == nil || !strings.Contains(err.Error(), `points to "refs/heads/run/beta"`) {
+			t.Fatalf("err = %v, want mismatched-branch refusal", err)
+		}
+	})
+	t.Run("invalid managed branch name rejected", func(t *testing.T) {
+		_, err := parseManagedBranchNames("run/Bad\n")
+		if err == nil || !strings.Contains(err.Error(), "invalid name") {
+			t.Fatalf("err = %v, want invalid-name refusal", err)
+		}
+	})
+}
+
+func TestListManagedWorktreesIgnoresUnrelatedMetadataSeam(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "rev-parse --show-toplevel":
+			return root, nil
+		case "rev-parse HEAD":
+			return "abc123", nil
+		case "worktree list --porcelain":
+			return strings.Join([]string{
+				"worktree " + filepath.Join(filepath.Dir(root), "other worktree"),
+				"detached",
+				"bare",
+				"locked unrelated",
+				"prunable stale",
+				"",
+				"worktree " + filepath.Join(root, ".pi-worker", "worktrees", "probe"),
+				"branch refs/heads/run/probe",
+				"",
+			}, "\n"), nil
+		case "for-each-ref --format=%(refname:short) refs/heads":
+			return "feature\nother\nrun/probe\n", nil
+		case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
+			return "run/probe\n", nil
+		case "status --porcelain=v1":
+			return "", nil
+		default:
+			t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
+			return "", nil
+		}
+	})
+	got, err := listManagedWorktrees(context.Background(), root)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	want := []managedWorktree{{name: "probe", path: filepath.Join(root, ".pi-worker", "worktrees", "probe"), branch: "run/probe", dirty: false, merged: true}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("managed worktrees = %#v, want %#v", got, want)
+	}
+}
+
+func TestListManagedWorktreesLockedManagedCheckoutIsRefused(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	gitRun(t, repo, "worktree", "lock", checkout)
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err == nil || !strings.Contains(err.Error(), `managed checkout "`+checkout+`" is locked`) {
+		t.Fatalf("err = %v, want locked refusal naming %q", err, checkout)
+	}
+	if got != nil {
+		t.Fatalf("managed worktrees = %#v, want nil on failure", got)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestParseManagedWorktreeListRejectsDuplicateManagedCheckouts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	managed := filepath.Join(root, ".pi-worker", "worktrees", "alpha")
+	_, err := parseManagedWorktreeList(root,
+		"worktree "+managed+"\nbranch refs/heads/run/alpha\n\n"+
+			"worktree "+managed+"\nbranch refs/heads/run/alpha\n")
+	if err == nil || !strings.Contains(err.Error(), "duplicate managed checkout") {
+		t.Fatalf("err = %v, want duplicate-checkout refusal", err)
+	}
+}
+
+func TestParseManagedWorktreeListRejectsInvalidManagedName(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	managed := filepath.Join(root, ".pi-worker", "worktrees", "Bad_Name")
+	_, err := parseManagedWorktreeList(root, "worktree "+managed+"\nbranch refs/heads/run/Bad_Name\n")
+	if err == nil || !strings.Contains(err.Error(), "invalid name") {
+		t.Fatalf("err = %v, want invalid-name refusal", err)
+	}
+}
+
+func TestParseManagedBranchNamesRejectsDuplicates(t *testing.T) {
+	_, err := parseManagedBranchNames("run/alpha\nrun/alpha\n")
+	if err == nil || !strings.Contains(err.Error(), "duplicate managed branch") {
+		t.Fatalf("err = %v, want duplicate-branch refusal", err)
+	}
+}
+
+func TestListManagedWorktreesCallerHeadSemanticsWithoutMainBranch(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspaceAt(t, filepath.Join(t.TempDir(), "repo")))
+	// The merged/clean inventory must be measured against the caller's
+	// current HEAD, never against a local main or master the repository
+	// does not have. So the caller renames its own branch away from
+	// master and stays put while the managed pair advances with a commit
+	// the caller's HEAD lacks: run/advance must then report unmerged
+	// against that HEAD even though no main or master exists anywhere.
+	// With the default newGitWorkspace setup the caller's branch would
+	// itself be master, which would make a non-master expectation
+	// impossible to tell from a hard-coded "master is the truth" bug.
+	gitRun(t, repo, "branch", "-q", "-m", "caller-branch")
+	if _, _, err := prepareWorktree(context.Background(), repo, "advance"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	advancePath := filepath.Join(repo, ".pi-worker", "worktrees", "advance")
+	if err := os.WriteFile(filepath.Join(advancePath, "file.txt"), []byte("one\nfrom the managed pair\n"), 0o644); err != nil {
+		t.Fatalf("write managed advance: %v", err)
+	}
+	gitRun(t, advancePath, "add", "file.txt")
+	gitRun(t, advancePath, "commit", "-q", "-m", "advance the managed pair")
+	if branch := gitRun(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); branch != "caller-branch" {
+		t.Fatalf("setup: caller HEAD = %q, want caller-branch", branch)
+	}
+	before := repoSnapshot(t, repo)
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	want := []managedWorktree{{name: "advance", path: advancePath, branch: "run/advance", dirty: false, merged: false}}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("managed worktrees = %#v, want %#v", got, want)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestRemoveManagedWorktreeCleanMergedRemovesExactPair(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("listManagedWorktrees: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want one managed worktree, got %#v", got)
+	}
+	expected := got[0]
+	if err := removeManagedWorktree(context.Background(), repo, expected); err != nil {
+		t.Fatalf("removeManagedWorktree: %v", err)
+	}
+	if _, err := os.Stat(expected.path); !os.IsNotExist(err) {
+		t.Fatalf("checkout %q still exists after removal: %v", expected.path, err)
+	}
+	if gitRefExists(t, repo, "refs/heads/"+expected.branch) {
+		t.Fatalf("branch %q still exists after removal", expected.branch)
+	}
+	remaining, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("list after removal: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining worktrees = %#v, want none", remaining)
+	}
+}
+
+func TestRemoveManagedWorktreeRefusesDirtyAndUnmerged(t *testing.T) {
+	t.Run("dirty", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		checkout, _, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(checkout, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatalf("dirty checkout: %v", err)
+		}
+		got, err := listManagedWorktrees(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("listManagedWorktrees: %v", err)
+		}
+		expected := got[0]
+		if !expected.dirty {
+			t.Fatalf("expected dirty, got %#v", expected)
+		}
+		before := repoSnapshot(t, repo)
+		err = removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "dirty") {
+			t.Fatalf("err = %v, want dirty refusal", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+		if _, err := os.Stat(checkout); err != nil {
+			t.Fatalf("checkout removed despite refusal: %v", err)
+		}
+		if !gitRefExists(t, repo, "refs/heads/run/probe") {
+			t.Fatalf("branch removed despite refusal")
+		}
+	})
+	t.Run("unmerged", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		checkout, _, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(checkout, "file.txt"), []byte("advance\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		gitRun(t, checkout, "add", "file.txt")
+		gitRun(t, checkout, "commit", "-q", "-m", "advance")
+		got, err := listManagedWorktrees(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("listManagedWorktrees: %v", err)
+		}
+		expected := got[0]
+		if expected.merged {
+			t.Fatalf("expected unmerged, got %#v", expected)
+		}
+		before := repoSnapshot(t, repo)
+		err = removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "merged") {
+			t.Fatalf("err = %v, want merged refusal", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+		if _, err := os.Stat(checkout); err != nil {
+			t.Fatalf("checkout removed despite refusal: %v", err)
+		}
+		if !gitRefExists(t, repo, "refs/heads/run/probe") {
+			t.Fatalf("branch removed despite refusal")
+		}
+	})
+	t.Run("invalid name", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		before := repoSnapshot(t, repo)
+		expected := managedWorktree{name: "Bad", path: filepath.Join(repo, ".pi-worker", "worktrees", "Bad"), branch: "run/Bad", dirty: false, merged: true}
+		err := removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "invalid") {
+			t.Fatalf("err = %v, want invalid name refusal", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+}
+
+func TestRemoveManagedWorktreeStaleOrMissingSnapshotRetry(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		before := repoSnapshot(t, repo)
+		expected := managedWorktree{name: "ghost", path: filepath.Join(repo, ".pi-worker", "worktrees", "ghost"), branch: "run/ghost", dirty: false, merged: true}
+		err := removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "retry") {
+			t.Fatalf("err = %v, want retry for missing", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+	t.Run("changed dirty", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		checkout, _, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		got, err := listManagedWorktrees(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		expected := got[0]
+		// Make fresh state dirty after snapshot.
+		if err := os.WriteFile(filepath.Join(checkout, "file.txt"), []byte("dirty after\n"), 0o644); err != nil {
+			t.Fatalf("dirty: %v", err)
+		}
+		before := repoSnapshot(t, repo)
+		err = removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "retry") {
+			t.Fatalf("err = %v, want retry for changed", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+		if _, err := os.Stat(checkout); err != nil {
+			t.Fatalf("checkout removed despite stale retry: %v", err)
+		}
+		if !gitRefExists(t, repo, "refs/heads/run/probe") {
+			t.Fatalf("branch removed despite stale retry")
+		}
+	})
+	t.Run("changed path", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		got, err := listManagedWorktrees(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		expected := got[0]
+		expected.path = filepath.Join(repo, ".pi-worker", "worktrees", "probe") + "-other"
+		before := repoSnapshot(t, repo)
+		err = removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "retry") {
+			t.Fatalf("err = %v, want retry for changed path", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+	t.Run("changed merged", func(t *testing.T) {
+		repo := canonicalRepo(t, newGitWorkspace(t))
+		checkout, _, err := prepareWorktree(context.Background(), repo, "probe")
+		if err != nil {
+			t.Fatalf("prepareWorktree: %v", err)
+		}
+		got, err := listManagedWorktrees(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		expected := got[0]
+		// Advance branch so merged becomes false.
+		if err := os.WriteFile(filepath.Join(checkout, "file.txt"), []byte("advance\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		gitRun(t, checkout, "add", "file.txt")
+		gitRun(t, checkout, "commit", "-q", "-m", "advance")
+		before := repoSnapshot(t, repo)
+		err = removeManagedWorktree(context.Background(), repo, expected)
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "retry") {
+			t.Fatalf("err = %v, want retry for changed merged", err)
+		}
+		if after := repoSnapshot(t, repo); after != before {
+			t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+}
+
+func TestRemoveManagedWorktreeSpacesAndSubdirectory(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspaceAt(t, filepath.Join(t.TempDir(), "repo with spaces")))
+	subdir := filepath.Join(repo, "nested", "dir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	if _, _, err := prepareWorktree(context.Background(), subdir, "probe"); err != nil {
+		t.Fatalf("prepareWorktree from subdir: %v", err)
+	}
+	got, err := listManagedWorktrees(context.Background(), subdir)
+	if err != nil {
+		t.Fatalf("list from subdir: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %#v, want one", got)
+	}
+	expected := got[0]
+	if !strings.Contains(expected.path, "repo with spaces") {
+		t.Fatalf("path %q should contain spaces", expected.path)
+	}
+	if err := removeManagedWorktree(context.Background(), subdir, expected); err != nil {
+		t.Fatalf("remove from subdir with spaces: %v", err)
+	}
+	if _, err := os.Stat(expected.path); !os.IsNotExist(err) {
+		t.Fatalf("checkout still exists: %v", err)
+	}
+	if gitRefExists(t, repo, "refs/heads/"+expected.branch) {
+		t.Fatalf("branch still exists after removal")
+	}
+}
+
+func TestRemoveManagedWorktreeGitRemoveFailureDoesNotDeleteBranch(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	expected := got[0]
+	before := repoSnapshot(t, repo)
+	branchDeleteCalled := false
+	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		if joined == "worktree remove "+expected.path {
+			return "", fmt.Errorf("mock worktree remove failure")
+		}
+		if strings.HasPrefix(joined, "branch -d") {
+			branchDeleteCalled = true
+			return "", fmt.Errorf("branch -d must not be called after worktree remove failure")
+		}
+		return runGit(ctx, dir, args...)
+	})
+	err = removeManagedWorktree(context.Background(), repo, expected)
+	if err == nil || !strings.Contains(err.Error(), "remove worktree") {
+		t.Fatalf("err = %v, want remove worktree failure", err)
+	}
+	if branchDeleteCalled {
+		t.Fatalf("branch -d was called despite worktree remove failure")
+	}
+	if !gitRefExists(t, repo, "refs/heads/"+expected.branch) {
+		t.Fatalf("branch removed despite worktree remove failure")
+	}
+	if _, err := os.Stat(expected.path); err != nil {
+		t.Fatalf("checkout missing after failed remove: %v", err)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed beyond expected:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestParseManagedWorktreeListDetachedManagedIsRefused(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	managed := filepath.Join(root, ".pi-worker", "worktrees", "alpha")
+	_, err := parseManagedWorktreeList(root, "worktree "+managed+"\ndetached\n")
+	if err == nil || !strings.Contains(err.Error(), "missing its branch") {
+		t.Fatalf("err = %v, want missing-branch refusal", err)
+	}
+}
+
+func TestRemoveManagedWorktreeBranchDeleteRestoresCheckout(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	expected := got[0]
+	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+		if strings.Join(args, " ") == "branch -d "+expected.branch {
+			return "", fmt.Errorf("mock branch -d failure")
+		}
+		return runGit(ctx, dir, args...)
+	})
+	err = removeManagedWorktree(context.Background(), repo, expected)
+	if err == nil || !strings.Contains(err.Error(), "delete branch") || !strings.Contains(err.Error(), "restored") {
+		t.Fatalf("err = %v, want deletion failure with restore", err)
+	}
+	if !strings.Contains(err.Error(), expected.path) || !strings.Contains(err.Error(), expected.branch) {
+		t.Fatalf("err = %v, want path and branch in message", err)
+	}
+	after, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("list after restore: %v", err)
+	}
+	if len(after) != 1 || after[0].path != expected.path || after[0].branch != expected.branch {
+		t.Fatalf("managed worktrees after restore = %#v, want [%#v]", after, expected)
+	}
+}
+
+func TestRemoveManagedWorktreeBranchDeleteRestoreFailureReportsBoth(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	expected := got[0]
+	var cmds []string
+	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		cmds = append(cmds, joined)
+		if joined == "branch -d "+expected.branch {
+			return "", fmt.Errorf("mock branch -d failure")
+		}
+		if joined == "worktree add "+expected.path+" "+expected.branch {
+			return "", fmt.Errorf("mock restore failure")
+		}
+		return runGit(ctx, dir, args...)
+	})
+	err = removeManagedWorktree(context.Background(), repo, expected)
+	if err == nil || !strings.Contains(err.Error(), "delete branch") || !strings.Contains(err.Error(), "restore checkout") || !strings.Contains(strings.ToLower(err.Error()), "failed") {
+		t.Fatalf("err = %v, want both failures reported", err)
+	}
+	if !gitRefExists(t, repo, "refs/heads/"+expected.branch) {
+		t.Fatalf("branch removed despite restore failure")
+	}
+	if _, err := os.Stat(expected.path); !os.IsNotExist(err) {
+		t.Fatalf("checkout present despite restore failure: %v", err)
+	}
+	for _, c := range cmds {
+		if strings.Contains(c, "--force") || strings.Contains(c, " -f") || strings.Contains(c, "branch -D") {
+			t.Fatalf("force command attempted: %q", c)
+		}
 	}
 }

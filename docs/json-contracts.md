@@ -1,6 +1,6 @@
 # JSON contracts
 
-Pi Worker publishes ten versioned JSON documents. This page is the v1
+Pi Worker publishes eleven versioned JSON documents. This page is the v1
 contract for agents and other machine consumers.
 
 ## Shared rules
@@ -175,6 +175,47 @@ document and exits `2` before resolving the records directory. A successful prun
 records-directory resolution, read, or open failure exits `9` and emits no
 document. A delete failure or cancellation exits `9` after selection and emits
 the document, reporting the IDs known to have been deleted or kept.
+
+## `worktrees list --json`
+
+The root object has exactly `schemaVersion` and non-null `worktrees`.
+`worktrees` is always an array, ordered by `name` ascending, including when
+empty; it is never `null` or omitted. Each entry has exactly `name`,
+`path`, `branch`, `dirty`, and `merged`:
+
+- `name`: the worktree name (the directory name under
+  `<root>/.pi-worker/worktrees`)
+- `path`: the absolute checkout path
+- `branch`: the branch name (`run/<name>`)
+- `dirty`: `true` when the checkout has uncommitted changes
+- `merged`: `true` when the branch is merged into the caller’s current `HEAD`
+
+A successful command exits `0`, including when `worktrees` is empty. Usage
+errors exit `2`; a repository-root resolution or worktree-inventory failure
+exits `9`. Those failure paths emit no JSON document.
+
+## `worktrees remove --json`
+
+`--json` requires `--yes`; without it, `worktrees remove` emits no document
+and exits `2`. A successful removal exits `0` and the root object has exactly
+`schemaVersion` and `removed`. `removed` has exactly `name`, `path`, and
+`branch`:
+
+- `name`: the removed worktree name
+- `path`: the absolute checkout path that was removed
+- `branch`: the branch that was removed (`run/<name>`)
+
+Successful removal removes the checkout first and then its exact branch. If
+branch deletion fails after checkout removal, the command makes one bounded
+non-force attempt to restore that exact checkout from the still-existing
+branch and still exits `9` without success output. If restoration also fails,
+the error reports both failures; the branch is never force-deleted and remains
+available for manual recovery. `worktrees remove --json` emits no success
+document on either failure path.
+
+Refusals (worktree not found, checkout dirty, branch not merged, or missing
+`--yes`) and inventory or removal failures emit no success document: refusals
+exit `2`, resolution or mutation failures exit `9`.
 
 ## `run --json`
 
