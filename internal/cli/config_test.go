@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -111,6 +112,66 @@ func TestConfigShowReportsMissingAndMalformedConfig(t *testing.T) {
 			t.Fatalf("config show malformed = (%d, %q)", code, stderr)
 		}
 	})
+}
+
+func TestConfigShowReadsThroughSymlinkedConfigPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// Reads keep resolving the link: show reports the target's document even
+	// though config set refuses to write through the same path.
+	target := filepath.Join(t.TempDir(), "pi-worker.json")
+	if err := os.WriteFile(target, []byte("{\"schemaVersion\":1,\"defaultModel\":\"acme/linked\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+
+	code, stdout, stderr := runCLI(t, []string{"config", "show"}, "")
+	if code != 0 || stdout != "default-model: acme/linked\n" || stderr != "" {
+		t.Fatalf("config show through a symlink = (%d, %q, %q)", code, stdout, stderr)
+	}
+}
+
+func TestConfigSetRefusesSymlinkedConfigPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// The dotfiles arrangement from the report: config.json links to a file
+	// elsewhere that holds the current value. The catalog offers the model, so
+	// the refusal is the write guard's, not the catalog's.
+	target := filepath.Join(t.TempDir(), "dotfiles", "pi-worker.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := "{\"schemaVersion\":1,\"defaultModel\":\"acme/old\"}\n"
+	if err := os.WriteFile(target, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	installFakeCatalog(t, &countingCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "model"}}})
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/model"}, "")
+	if code != 9 || stdout != "" || !strings.Contains(stderr, "symbolic link") {
+		t.Fatalf("config set over a symlink = (%d, %q, %q)", code, stdout, stderr)
+	}
+	// The refusal came before anything was modified: the link is still a link
+	// and the target still holds the old value.
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config symlink replaced = %v, %v", info, err)
+	}
+	after, err := os.ReadFile(target)
+	if err != nil || string(after) != before {
+		t.Fatalf("config target changed = %q, %v", after, err)
+	}
 }
 
 func TestConfigSetValidatesExactSyntaxAndLiveCatalog(t *testing.T) {

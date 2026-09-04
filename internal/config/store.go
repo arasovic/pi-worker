@@ -2,8 +2,10 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,13 +43,46 @@ func Load(path string) (Config, error) {
 }
 
 // Save writes cfg to path atomically. The document is validated before the
-// existing file is touched. Missing parent directories are created, the new
-// content is written to a temporary file in the same directory with
-// owner-only permissions, synced to disk, and renamed over the destination;
-// finally the parent directory is synced where the platform supports it.
+// existing file is touched. A path whose final component is a symbolic link —
+// its target present or dangling — is refused before anything is touched: the
+// save never replaces or writes through the link it inspected, so the link
+// and its target stay exactly as they were. Missing parent directories are
+// created, the new content is written to a temporary file in the same
+// directory with owner-only permissions, synced to disk, and renamed over the
+// destination; finally the parent directory is synced where the platform
+// supports it.
+//
+// The refusal is a check at one instant, not a lock on the path: another
+// process can replace the destination after the guard has passed it, and the
+// atomic rename at the end then replaces whatever holds the name — a
+// swapped-in link included. No protection against that concurrent replacement
+// is claimed. The guarantee is exact and narrower: a final component observed
+// as a symbolic link is refused before anything is touched, and the write is
+// a rename over the destination name, never a follow, so a save can replace a
+// link but never write through one into its target.
 func Save(path string, cfg Config) error {
 	if err := Validate(cfg); err != nil {
 		return err
+	}
+	// The destination itself must never be a symbolic link. Replacing the link
+	// with a regular file would silently tear down an arrangement the user
+	// built — a dotfiles link, say — leaving its target stale and
+	// unreferenced, and writing through it would overwrite whatever the link
+	// points at, so both are refused up front, before the directory, the link,
+	// or the target is modified in any way. os.Lstat reports the entry itself,
+	// so a dangling link — one whose target does not exist — is refused too.
+	// Only the final component is inspected, so a symlinked parent directory
+	// keeps working: the temporary file and the rename land in the real
+	// directory the parent link names. A missing final component is a plain
+	// new destination and proceeds; any other Lstat failure — a path the
+	// operating system cannot inspect — is returned as a wrapped inspect-path
+	// error before MkdirAll or any other mutation.
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("save config %s: refusing to replace or write through a symbolic link", path)
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("save config %s: inspect path: %w", path, err)
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

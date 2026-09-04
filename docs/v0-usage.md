@@ -345,6 +345,22 @@ Replace the provider/model placeholder with one exact selector printed by
   fallback.
 - Configuration writes use a same-directory temporary file, file sync, atomic
   replacement, and owner-only permissions where supported.
+- When the configuration path itself is a symbolic link, `config set` refuses
+  before anything is touched: it never replaces or writes through the link it
+  inspected, prints the reason to stderr, exits `9`, and leaves the link and
+  its target exactly as they were. A dangling link — one whose target does not
+  exist — is refused the same way, and its target is never created. Only the
+  final `config.json` component is checked: a symlinked parent directory is
+  not a refusal, and the write lands in the directory the parent link names.
+  Reads still resolve the link: `config show`, `run`, and `doctor` report the
+  document the link points at.
+- The refusal is one check at one instant, not a lock: another process can
+  replace the path after the guard has passed it, and the save then replaces
+  whatever holds the name — a swapped-in link included — because the write is
+  an atomic rename over the destination, never a follow into a target. The
+  guarantee is that a final component observed as a symlink is refused before
+  anything is touched and that a save can replace a link but never write
+  through one.
 - Model precedence is a task's own `--model`, then the run-level
   `--model`, then the configured `defaultModel`, then a usage error
   (exit `2`). When no model resolves, stdin is not read.

@@ -296,6 +296,225 @@ func TestSaveFailureCleansUpTempFile(t *testing.T) {
 	assertNoTempFiles(t, dir)
 }
 
+func TestSaveReturnsWrappedInspectPathErrorBeforeMutation(t *testing.T) {
+	// A path whose parent component is a regular file cannot be inspected: the
+	// operating system answers ENOTDIR, which is neither the symlink refusal nor
+	// the plain-new-destination case. The error is returned wrapped as an
+	// inspect-path failure before MkdirAll or any other mutation happens.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "config.json")
+
+	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"})
+	if err == nil {
+		t.Fatalf("Save(%q) = nil error, want inspect-path failure", path)
+	}
+	if !strings.Contains(err.Error(), "inspect path") {
+		t.Fatalf("Save(%q) error = %v, want the wrapped inspect-path message", path, err)
+	}
+	// The blocker file was not removed or altered: nothing was mutated.
+	if _, statErr := os.Stat(blocker); statErr != nil {
+		t.Fatalf("Stat(%q) after failed Save: %v", blocker, statErr)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+func TestSaveRefusesSymlinkedDestinationWithExistingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// The dotfiles arrangement from the report: config.json is a link into
+	// another directory that holds the real document.
+	linkDir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "pi-worker.json")
+	before := "{\"schemaVersion\":1,\"defaultModel\":\"alpha/old\"}\n"
+	if err := os.WriteFile(target, []byte(before), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", target, err)
+	}
+	path := filepath.Join(linkDir, "config.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("Symlink(%q -> %q): %v", path, target, err)
+	}
+	linkBefore, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat(%q): %v", path, err)
+	}
+	targetBefore, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", target, err)
+	}
+
+	err = Save(path, Config{SchemaVersion: 1, DefaultModel: "beta/new"})
+	if err == nil {
+		t.Fatalf("Save(%q) over a symlink = nil error, want refusal", path)
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Save(%q) error = %v, want the symbolic-link refusal", path, err)
+	}
+
+	// The link is still the same link to the same target ...
+	linkAfter, err := os.Lstat(path)
+	if err != nil || linkAfter.Mode()&os.ModeSymlink == 0 || !os.SameFile(linkBefore, linkAfter) {
+		t.Fatalf("link changed after refused Save: err=%v mode=%v", err, linkAfter.Mode())
+	}
+	if got, err := os.Readlink(path); err != nil || got != target {
+		t.Fatalf("link target after refused Save = %q, %v; want %q", got, err, target)
+	}
+	// ... and the target was never written: same file, same content.
+	targetAfter, err := os.Stat(target)
+	if err != nil || !os.SameFile(targetBefore, targetAfter) {
+		t.Fatalf("target replaced after refused Save: err=%v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || string(content) != before {
+		t.Fatalf("target content after refused Save = %q, %v; want %q", content, err, before)
+	}
+	// The refusal happened before any temporary file was created.
+	assertNoTempFiles(t, linkDir)
+}
+
+func TestSaveRefusesDanglingSymlinkedDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	dir := t.TempDir()
+	missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
+	path := filepath.Join(dir, "config.json")
+	if err := os.Symlink(missingTarget, path); err != nil {
+		t.Fatalf("Symlink(%q -> %q): %v", path, missingTarget, err)
+	}
+
+	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "beta/new"})
+	if err == nil {
+		t.Fatalf("Save(%q) over a dangling symlink = nil error, want refusal", path)
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Save(%q) error = %v, want the symbolic-link refusal", path, err)
+	}
+
+	// The dangling link is untouched: still a link, still pointing where it
+	// pointed, and the target — its parent directories included — was never
+	// created.
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("dangling link changed after refused Save: err=%v mode=%v", err, info.Mode())
+	}
+	if got, err := os.Readlink(path); err != nil || got != missingTarget {
+		t.Fatalf("dangling link target after refused Save = %q, %v; want %q", got, err, missingTarget)
+	}
+	if _, err := os.Stat(missingTarget); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(%q) after refused Save = %v, want fs.ErrNotExist", missingTarget, err)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+func TestSaveRefusalLeavesLinkAndTargetUntouched(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	// Link and target share one directory, the tightest arrangement for a
+	// write-through or link-replacing implementation to disturb.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "pi-worker.json")
+	before := "{\"schemaVersion\":1,\"defaultModel\":\"alpha/old\"}\n"
+	if err := os.WriteFile(target, []byte(before), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", target, err)
+	}
+	path := filepath.Join(dir, "config.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("Symlink(%q -> %q): %v", path, target, err)
+	}
+	targetBefore, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", target, err)
+	}
+
+	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "beta/new"}); err == nil {
+		t.Fatalf("Save(%q) over a symlink = nil error, want refusal", path)
+	}
+
+	// The directory holds exactly what it held before — the link and its
+	// target, nothing else: no replaced link, no written-through target, no
+	// stray regular config.json, no temporary file.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q): %v", dir, err)
+	}
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("directory after refused Save holds %v, want exactly config.json and pi-worker.json", names)
+	}
+	// The link is still the link, and the target is still the same regular
+	// file with the same content and the same owner-only mode.
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link changed after refused Save: err=%v mode=%v", err, info.Mode())
+	}
+	targetAfter, err := os.Stat(target)
+	if err != nil || !os.SameFile(targetBefore, targetAfter) {
+		t.Fatalf("target replaced after refused Save: err=%v", err)
+	}
+	if perm := targetAfter.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("target mode after refused Save = %o, want 600", perm)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil || string(content) != before {
+		t.Fatalf("target content after refused Save = %q, %v; want %q", content, err, before)
+	}
+}
+
+func TestSaveThroughSymlinkedParentDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks is not reliably available on Windows")
+	}
+	realDir := t.TempDir()
+	// The link names only the directory; the config.json inside it is a plain
+	// regular file that Save creates and atomically replaces as usual.
+	linkDir := filepath.Join(t.TempDir(), "linked-config-dir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("Symlink(%q -> %q): %v", linkDir, realDir, err)
+	}
+	path := filepath.Join(linkDir, "config.json")
+
+	first := Config{SchemaVersion: 1, DefaultModel: "alpha/one"}
+	if err := Save(path, first); err != nil {
+		t.Fatalf("Save(%q) through a symlinked parent error: %v", path, err)
+	}
+	second := Config{SchemaVersion: 1, DefaultModel: "beta/two"}
+	if err := Save(path, second); err != nil {
+		t.Fatalf("Save(%q) replace through a symlinked parent error: %v", path, err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q) through a symlinked parent error: %v", path, err)
+	}
+	if got != second {
+		t.Fatalf("Load(%q) = %+v, want %+v", path, got, second)
+	}
+	// The write landed in the real directory, the parent link is untouched,
+	// and the file left behind is a regular owner-only file like any other
+	// save.
+	realPath := filepath.Join(realDir, "config.json")
+	info, err := os.Lstat(realPath)
+	if err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("real config after save = %v, %v; want a regular file", info, err)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		t.Fatalf("real config mode %o: group and other bits must be unset", perm)
+	}
+	if dirInfo, err := os.Lstat(linkDir); err != nil || dirInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("parent link changed after save: %v, %v", dirInfo, err)
+	}
+	assertNoTempFiles(t, realDir)
+}
+
 func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are not meaningful on Windows")
