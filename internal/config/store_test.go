@@ -296,6 +296,32 @@ func TestSaveFailureCleansUpTempFile(t *testing.T) {
 	assertNoTempFiles(t, dir)
 }
 
+func TestSaveReturnsWrappedInspectPathErrorBeforeMutation(t *testing.T) {
+	// A path whose parent component is a regular file cannot be inspected: the
+	// operating system answers ENOTDIR, which is neither the symlink refusal nor
+	// the plain-new-destination case. The error is returned wrapped as an
+	// inspect-path failure before MkdirAll or any other mutation happens.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "config.json")
+
+	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"})
+	if err == nil {
+		t.Fatalf("Save(%q) = nil error, want inspect-path failure", path)
+	}
+	if !strings.Contains(err.Error(), "inspect path") {
+		t.Fatalf("Save(%q) error = %v, want the wrapped inspect-path message", path, err)
+	}
+	// The blocker file was not removed or altered: nothing was mutated.
+	if _, statErr := os.Stat(blocker); statErr != nil {
+		t.Fatalf("Stat(%q) after failed Save: %v", blocker, statErr)
+	}
+	assertNoTempFiles(t, dir)
+}
+
 func TestSaveRefusesSymlinkedDestinationWithExistingTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks is not reliably available on Windows")
