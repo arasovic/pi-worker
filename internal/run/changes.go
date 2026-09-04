@@ -22,8 +22,9 @@ import (
 // configured the field always carries either a stated omission reason or
 // the measurement, and is nil only when no inspector was configured at
 // all. Paths that were already dirty before the run and whose identity
-// did not move — size, modification time, executable bit, and for
-// tracked paths the pre-run content hash — are subtracted, so the
+// did not move — size, modification time, executable bit, and the
+// pre-run content hash for tracked paths, regular-file untracked
+// paths, and symlinks — are subtracted, so the
 // manifest answers what this run changed even on a dirty before-state.
 // Unlike GitChange it is not gated by the git tripwire: leaving modified
 // files behind is the point of a delegation, and those files are exactly
@@ -133,13 +134,16 @@ func measureChanges(ctx context.Context, dir string, before *GitState, dirtyStam
 		// Unsafe pre-existing trust state makes the measurement
 		// unavailable even when nothing drifted during the run: an index
 		// visibility marker that was already set hides a rewrite with no
-		// post-run metadata drift to detect, and an effective
+		// post-run metadata drift to detect, an effective
 		// core.trustctime of false lets git trust the stat cache over
 		// content, so git itself cannot see a same-size rewrite with a
-		// restored modification time. A confident zero under either
-		// would be a promise git's own trust settings do not support,
-		// so the manifest states the measurement-failed reason instead.
-		if metadata.unsafeIndex || !metadata.trustCtime {
+		// restored modification time, and core.fileMode=false makes git
+		// suppress every mode-only tracked difference, so a chmod the
+		// run made on an untouched file is invisible to every diff the
+		// measurement runs. A confident zero under any of these would
+		// be a promise git's own trust settings do not support, so the
+		// manifest states the measurement-failed reason instead.
+		if metadata.unsafeIndex || !metadata.trustCtime || !metadata.fileMode {
 			return &Changes{Omitted: reasonMeasurementFail}
 		}
 		drifted, err := snapshotGitMetadataAt(ctx, root, metadata)
@@ -220,8 +224,9 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// against the before-state HEAD, the untracked listing, and the
 	// paths that were dirty before the run. From that union, every
 	// before-dirty path whose identity is unchanged — same size, same
-	// modification time, same executable bit, and for tracked paths the
-	// same pre-run content hash, or absent then and absent now — is
+	// modification time, same executable bit, and for tracked paths,
+	// regular-file untracked paths, and symlinks the same pre-run
+	// content hash, or absent then and absent now — is
 	// subtracted: it was equally dirty before the run and the run
 	// contributed nothing to it, so it names no change this run made.
 	// The content hash is what keeps a same-size rewrite with a
@@ -403,11 +408,12 @@ func measureChangeFiles(ctx context.Context, root, head string, dirtyStamps map[
 	// The field is measured only over the entries actually reported: a
 	// path the cap dropped — or an untracked path that was listed but
 	// never measured — carries no field at all, exactly as Binary
-	// behaves. This is the second place the manifest reads file content:
-	// the pre-run dirty snapshot hashes tracked paths up front for the
-	// subtraction identity, while this field reads one byte per listed
-	// file here — each read deliberate and bounded, never the whole
-	// file pulled into memory.
+	// behaves. This is the third place the manifest reads file content:
+	// the pre-run dirty snapshot hashes tracked paths, regular-file
+	// untracked paths, and symlinks up front for the subtraction
+	// identity, while this field reads one byte per listed file here —
+	// each read deliberate and bounded, never the whole file pulled
+	// into memory.
 	for i := range changes.Files {
 		measureNoFinalNewline(root, &changes.Files[i])
 	}
@@ -460,9 +466,10 @@ func measureNoFinalNewline(root string, f *FileChange) {
 
 // fileStamp is the identity clue captured for one path that was
 // already dirty when the run started: size, modification time, the
-// executable bit of the mode from Lstat, and — for tracked paths — the
-// SHA-256 of the path's content, or an explicit absence for a staged
-// or unstaged deletion, which is a legitimate dirty state. Size plus
+// executable bit of the mode from Lstat, and the SHA-256 of the path's
+// content — for tracked paths, regular-file untracked paths, and
+// symlinks — or an explicit absence for a staged or unstaged deletion,
+// which is a legitimate dirty state. Size plus
 // modification time is exact where modification time has sub-second
 // resolution (APFS, ext4, NTFS, the normal case), and it can miss a
 // same-size rewrite inside one tick on a coarse-granularity filesystem
@@ -471,10 +478,11 @@ func measureNoFinalNewline(root string, f *FileChange) {
 // time from being subtracted as untouched — git's own diff would still
 // see the rewrite through the ctime, but the stamp must not depend on
 // which of git's stat fields the repository still trusts. The hash
-// belongs only to tracked paths: they are the ones git's stat cache
-// can hide, and they are the ones whose pre-run identity the
-// subtraction needs — untracked files stay stamp-only, never hashed.
-// A regular file is hashed by its bytes and a symlink by its target
+// belongs to every dirty path whose content the subtraction must tell
+// "never moved" from "rewritten invisibly" — a tracked path, which
+// git's stat cache can hide, and an untracked regular file or symlink,
+// whose pre-run content the subtraction must likewise not lose. A
+// regular file is hashed by its bytes and a symlink by its target
 // string, the same content git would compare; the bytes are read once
 // up front, reduced to 32 bytes, and never retained, reported, or
 // transmitted. The executable bit is the one mode bit git tracks, so
@@ -486,15 +494,18 @@ type fileStamp struct {
 	exec    bool
 	absent  bool
 	// contentHash is the identity of the path's content at snapshot
-	// time, captured for tracked paths only; hashed reports whether it
-	// was captured. An absent or untracked path carries hashed false
-	// and is compared by its stat stamp alone.
+	// time, captured for tracked paths, regular-file untracked paths,
+	// and symlinks; hashed reports whether it was captured. An absent
+	// path, an entry kind whose content identity is not defined (not a
+	// regular file, not a symlink), and a path the stamping chose not
+	// to read carry hashed false and are compared by their stat stamp
+	// alone.
 	contentHash [sha256.Size]byte
 	hashed      bool
 }
 
 // gitMetadataSnapshot is the read-only pre-run record of the Git trust
-// inputs that can make the post-run path queries lie. Three families of
+// inputs that can make the post-run path queries lie. Four families of
 // inputs are captured, each from the actual repository rather than from
 // a hard-coded patch:
 //
@@ -512,6 +523,14 @@ type fileStamp struct {
 //     same-size restored-mtime rewrite invisible to every git command
 //     the measurement runs, and a value that changed during the run is
 //     drift. Unset means true, git's default.
+//   - The effective core.fileMode value. When it is false, git
+//     suppresses every tracked mode-only difference: a chmod a worker
+//     makes on an untouched file would be invisible to every diff the
+//     measurement runs, so the pre-existing value gates the
+//     measurement and a value that changed during the run is drift.
+//     Unset means true, git's default. (This feature does not implement
+//     core.ignoreStat; only the two mode/stat trust values git reads
+//     as booleans are watched.)
 //   - The ignore-rule files git consults beyond the tree: the effective
 //     repository info/exclude path and the effective core.excludesFile
 //     file (the configured value, or the XDG default when unset). Each
@@ -526,6 +545,11 @@ type fileStamp struct {
 type gitMetadataSnapshot struct {
 	unsafeIndex bool
 	trustCtime  bool
+	// fileMode is the effective core.fileMode value, defaulting to true
+	// when the key is unset: a false value makes git suppress every
+	// tracked mode-only difference, so a chmod the run made on an
+	// untouched file would be invisible to the post-run diff.
+	fileMode bool
 	// excludePath and exclude name and stamp the repository's
 	// info/exclude file, resolved once at snapshot time.
 	excludePath string
@@ -550,9 +574,10 @@ type metadataStamp struct {
 }
 
 // snapshotGitMetadata records the index visibility markers, the effective
-// core.trustctime value, and the effective ignore-rule files before
-// workers start. Every operation is a read-only Git query or an Lstat;
-// no index refresh, object write, or file content read is involved.
+// core.trustctime and core.fileMode values, and the effective
+// ignore-rule files before workers start. Every operation is a read-only
+// Git query or an Lstat; no index refresh, object write, or file content
+// read is involved.
 func snapshotGitMetadata(ctx context.Context, root string) (*gitMetadataSnapshot, error) {
 	unsafeIndex, err := readIndexMetadata(ctx, root)
 	if err != nil {
@@ -561,6 +586,10 @@ func snapshotGitMetadata(ctx context.Context, root string) (*gitMetadataSnapshot
 	trustCtime, err := readTrustCtime(ctx, root)
 	if err != nil {
 		return nil, fmt.Errorf("git config core.trustctime: %w", err)
+	}
+	fileMode, err := readFileMode(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("git config core.fileMode: %w", err)
 	}
 	excludePath, err := gitPath(ctx, root, "info/exclude")
 	if err != nil {
@@ -584,6 +613,7 @@ func snapshotGitMetadata(ctx context.Context, root string) (*gitMetadataSnapshot
 	return &gitMetadataSnapshot{
 		unsafeIndex:      unsafeIndex,
 		trustCtime:       trustCtime,
+		fileMode:         fileMode,
 		excludePath:      excludePath,
 		exclude:          exclude,
 		excludesFile:     excludesFile,
@@ -638,6 +668,34 @@ func readTrustCtime(ctx context.Context, root string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("unexpected core.trustctime value %q", value)
+}
+
+// readFileMode reports the effective core.fileMode value: false when
+// the repository configuration says false, true when it says true, and
+// true when the key is unset, which is git's default. When the value is
+// false, git suppresses every tracked mode-only difference, so a chmod
+// the run made on an untouched file would be invisible to the diff the
+// measurement runs; the effective value therefore gates the
+// measurement, and a value that changed during the run is drift. An
+// unreadable or otherwise failing configuration is an error — a
+// measurement must never guess which trust value git will act under.
+// --bool makes git itself normalize every accepted spelling, so the
+// comparison is over git's own words, not over the raw configuration
+// text.
+func readFileMode(ctx context.Context, root string) (bool, error) {
+	value, err := gitConfigValue(ctx, root, "--bool", "core.fileMode")
+	if err != nil {
+		return false, err
+	}
+	switch value {
+	case "":
+		return true, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("unexpected core.fileMode value %q", value)
 }
 
 // gitConfigValue reads one configuration value from the repository's
@@ -728,7 +786,7 @@ func metadataStampEqual(a, b metadataStamp) bool {
 // snapshotGitMetadataAt re-reads the post-run trust inputs from the same
 // root and the paths selected before the run, and reports whether any of
 // them drifted. Keeping the paths from the before pass avoids trusting a
-// worker-modified Git configuration to identify the files; the two
+// worker-modified Git configuration to identify the files; the three
 // effective values are re-read fresh, because a worker can redirect
 // them to different files. Each family is compared independently, so a
 // single drift is enough to make the measurement unavailable: one wrong
@@ -746,6 +804,13 @@ func snapshotGitMetadataAt(ctx context.Context, root string, before *gitMetadata
 		return false, err
 	}
 	if trustCtime != before.trustCtime {
+		return true, nil
+	}
+	fileMode, err := readFileMode(ctx, root)
+	if err != nil {
+		return false, err
+	}
+	if fileMode != before.fileMode {
 		return true, nil
 	}
 	afterExclude, err := statMetadata(before.excludePath)
@@ -807,9 +872,15 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 	// would match a deliberate same-size rewrite with a restored
 	// modification time, and the subtraction must not rest on a stat
 	// comparison the writer can forge — only a hash of the pre-run
-	// content can tell "never moved" from "rewritten invisibly".
-	// Untracked paths are stamp-only: their pre-run content is not read,
-	// by the same boundary that hashes tracked paths only.
+	// content can tell "never moved" from "rewritten invisibly". A
+	// pre-existing untracked regular file or symlink gets the same
+	// content identity, by the same reasoning and at the same price: a
+	// worker can rewrite it in place with identical size and a restored
+	// modification time, and only the bytes — or the link's target
+	// string, which is its content — can say it moved. Untracked
+	// directory trees cannot rewrite in place, and git never lists an
+	// empty one anyway, so a stat-only stamp for an untracked directory
+	// loses nothing the subtraction could need.
 	for _, path := range nulSplit(trackedOut) {
 		stamp, err := snapshotStamp(root, path, true)
 		if err != nil {
@@ -818,7 +889,7 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 		stamps[path] = stamp
 	}
 	for _, path := range nulSplit(untrackedOut) {
-		stamp, err := snapshotStamp(root, path, false)
+		stamp, err := snapshotStamp(root, path, true)
 		if err != nil {
 			return nil, err
 		}
@@ -832,7 +903,7 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 // read once and reduced to a hash: a regular file's bytes and a
 // symlink's target string — the content git itself would compare —
 // while any other entry kind is stamped without a hash rather than
-// guessed at. A read failure is an error, never a silent stamp-only
+// guessed at; a read failure is an error, never a silent stat-only
 // fallback: the manifest must not subtract a path whose pre-run
 // identity it failed to capture. root is the repository root and path
 // is root-relative, the same coordinates every stamp and measurement
@@ -912,17 +983,19 @@ func contentMatchesHash(root, path string, info os.FileInfo, want [sha256.Size]b
 
 // stampMatches reports whether the workspace path currently carries the
 // captured pre-run identity: both present with the same size, the same
-// modification time, and the same executable bit — plus, for a tracked
-// path whose pre-run stamp captured a content hash, the same content.
-// Absent then and absent now also matches. The content check is what
-// keeps a same-size rewrite with a restored modification time from
-// being subtracted as untouched: the stat fields match by construction,
-// and only the hash can see that the bytes are not the ones the run
-// started with. A path that was not absent before but is a directory
-// now has changed — a file replaced by a directory is not the same
-// path it was. root is the repository root and path is root-relative,
-// so a stamp taken in a run started inside a subdirectory still matches
-// the file it names.
+// modification time, and the same executable bit — plus, when the
+// pre-run stamp captured a content hash, the same content, which is
+// the identity captured for tracked paths, regular-file untracked
+// paths, and symlinks. Absent then and absent now also matches. The
+// content check is what keeps a same-size rewrite with a restored
+// modification time from being subtracted as untouched: the stat
+// fields match by construction, and only the hash can see that the
+// bytes are not the ones the run started with, or that a link's target
+// string is not the one the run started with. A path that was not
+// absent before but is a directory now has changed — a file replaced
+// by a directory is not the same path it was. root is the repository
+// root and path is root-relative, so a stamp taken in a run started
+// inside a subdirectory still matches the file it names.
 func stampMatches(root, path string, stamp fileStamp) (bool, error) {
 	info, err := os.Lstat(filepath.Join(root, path))
 	if err != nil {

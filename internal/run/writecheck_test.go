@@ -684,6 +684,47 @@ func TestControllerWritesDirtyBeforeSameSizeRewriteRestoredMtimeUndeclared(t *te
 	}
 }
 
+func TestControllerWritesDirtyBeforeUntrackedSameSizeRewriteRestoredMtimeUndeclared(t *testing.T) {
+	// Regression for #132, write-check side: an already-dirty untracked
+	// regular file that the worker rewrites with different content of
+	// the same size and a restored modification time used to drop out
+	// of the manifest entirely — its stat stamp matched, so it was
+	// subtracted — and the write check then reported checked-clean for
+	// a write that was never declared. The content-identity stamp now
+	// covers the untracked file, so the path stays in the manifest and
+	// the check must answer with an undeclared verdict, never a skip
+	// and never silence.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(dir, "stray.txt"))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	stampTime := info.ModTime()
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("clean\n"), 0o644); err != nil {
+			return err
+		}
+		return os.Chtimes(filepath.Join(dir, "stray.txt"), stampTime, stampTime)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 {
+		t.Fatalf("changes = %#v, want the rewritten path in the manifest", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict, not a skip", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "stray.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want stray.txt the single undeclared path", writes)
+	}
+}
+
 func TestControllerWritesPreExistingSkipWorktreeUnavailable(t *testing.T) {
 	// Regression for #78, declared-writes side of a pre-existing marker:
 	// a skip-worktree entry already set when the run started hides any
@@ -724,6 +765,39 @@ func TestControllerWritesPreExistingTrustCtimeFalseUnavailable(t *testing.T) {
 	dir := newGitRepo(t)
 	runGit(t, dir, "config", "core.trustctime", "false")
 	result := runWithWrites(t, newScriptedWorker(), dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes = %#v, want the exact unavailable skip", writes)
+	}
+	if writes.UndeclaredCount != 0 || writes.Undeclared != nil || writes.Truncated {
+		t.Fatalf("writes = %#v, want no verdict fields alongside the skip", writes)
+	}
+}
+
+func TestControllerWritesSameRunFileModeValueFlipUnavailable(t *testing.T) {
+	// Regression for #133, declared-writes side: a worker that flips
+	// core.fileMode=false during the run changes the trust input the
+	// post-run measurement runs under. Even a plainly visible write is
+	// then measured under a setting that can hide mode-only siblings,
+	// so the changed value makes the measurement unavailable rather
+	// than a verdict the repository's own configuration no longer
+	// supports.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		cmd := exec.Command("git", "config", "core.fileMode", "false")
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("set fileMode: %v\n%s", err, output)
+		}
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("two\n"), 0o644)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
 	changes := result.Changes
 	if changes == nil || changes.Omitted != reasonMeasurementFail {
 		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)

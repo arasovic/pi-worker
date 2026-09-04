@@ -512,19 +512,23 @@ Replace the provider/model placeholder with one exact selector printed by
   before the run and name no change it made. A stamp holds size,
   modification time, and the executable bit — the one mode bit git
   tracks, so a chmod between two non-executable modes does not register
-  as a change — plus, for tracked paths, the SHA-256 of the content,
-  read once up front and never retained, reported, or transmitted. The
-  hash exists because a same-size rewrite with a restored modification
-  time makes the stat stamp match by construction: only the bytes can
-  say the file moved. That tracked rewrite is therefore reported, with
-  `dirtyBefore` and its counts measured against the last commit, while
-  a legitimate net-zero restoration still subtracts — when the bytes
-  are the pre-run bytes again, the manifest is quiet because net change
-  is zero. Untracked pre-run files are stamped by stat alone, never
-  hashed, so a same-size rewrite of one with a restored modification
-  time is the one deliberate false negative left in the subtraction;
-  on a coarse-granularity filesystem a same-tick restore of one is
-  invisible too, which is defensible because net change is zero.
+  as a change — plus the SHA-256 of the path's content, read once up
+  front and never retained, reported, or transmitted. The content
+  identity is captured for every entry kind it defines — a tracked
+  path, and an untracked regular file or symlink, which a worker can
+  rewrite in place the same way — while an untracked directory tree,
+  which cannot rewrite in place, is stamped by stat alone. The hash
+  exists because a same-size rewrite with a restored modification time
+  makes the stat stamp match by construction: only the bytes can say
+  the file moved — for a symlink, the target string is its content, and
+  re-pointing it at a same-length target is the same shape of invisible
+  move. That rewrite is therefore reported — with `dirtyBefore` and its
+  counts measured against the last commit for a tracked path, against
+  the empty side for an untracked one — while a legitimate net-zero
+  restoration still subtracts: when the bytes are the pre-run bytes
+  again, the manifest is quiet because net change is zero. On a
+  coarse-granularity filesystem a same-tick restore is invisible too,
+  which is defensible because net change is zero.
   Dirtiness never depends on the repository's display preference: the
   status command forces `status.showUntrackedFiles=all`, so a
   repository that hides untracked files from `git status` still records
@@ -537,9 +541,10 @@ Replace the provider/model placeholder with one exact selector printed by
   moved while it ran. The watched inputs, captured from the repository
   before the first worker starts and re-read after the run ends, are
   the index visibility markers (`skip-worktree`, `assume-unchanged`),
-  the effective `core.trustctime` value, and the ignore-rule files
-  beyond the tree — `$GIT_DIR/info/exclude` and the effective
-  `core.excludesFile` file — each stamped without reading its contents.
+  the effective `core.trustctime` and `core.fileMode` values, and the
+  ignore-rule files beyond the tree — `$GIT_DIR/info/exclude` and the
+  effective `core.excludesFile` file — each stamped without reading its
+  contents.
   A marker or unsafe value already present at the start, a marker that
   appears during the run, a trust value that changes, or an ignore file
   whose stamp or effective value moves all make the measurement

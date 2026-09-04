@@ -224,18 +224,20 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// The before-dirty snapshot runs immediately after the inspection
 	// and before any worker starts, under the same parent context the
 	// inspection used: it stamps every path already dirty in the
-	// workspace — tracked paths with their content identity included —
-	// so the manifest can subtract the ones the run never moved. Its
-	// error rides the same slot as the inspection's, so a failed
-	// snapshot omits the manifest with the existing
-	// measurement-failed reason. The snapshot is never added to
-	// Inspect or GitState: the after pass has no use for it, the
+	// workspace — tracked paths with their content identity included,
+	// and so are untracked regular files and symlinks, the entry kinds
+	// whose content the stamping defines — so the manifest can subtract
+	// the ones the run never moved. Its error rides the same slot as
+	// the inspection's, so a failed snapshot omits the manifest with the
+	// existing measurement-failed reason. The snapshot is never added
+	// to Inspect or GitState: the after pass has no use for it, the
 	// interface is faked in tests, and paying for more git commands on
 	// every inspection is waste. The git-trust snapshot alongside it
 	// runs on every confirmed work tree, dirty or clean: the
 	// measurement must know the trust state it will run under — index
-	// visibility markers, the effective core.trustctime, and the
-	// ignore-rule inputs — before any worker can change any of it. The
+	// visibility markers, the effective core.trustctime and
+	// core.fileMode values, and the ignore-rule inputs — before any
+	// worker can change any of it. The
 	// dirty stamping itself runs only when the tree is dirty, because
 	// a clean tree can only yield an empty map, and never on an unborn
 	// HEAD — its diff command would fail and displace the

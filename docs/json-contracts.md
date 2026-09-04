@@ -394,33 +394,37 @@ and the ones whose identity never moved are subtracted from the result:
 they were equally dirty before the run and name no change it made. A
 stamp holds size, modification time, and the executable bit — the one
 mode bit git tracks, so a chmod between two non-executable modes does
-not register as a change — plus, for every tracked path, the SHA-256 of
-its content, read once up front, reduced to a hash, and never retained,
-reported, or transmitted. The content identity exists because the stat
+not register as a change — plus the SHA-256 of the path's content,
+read once up front, reduced to a hash, and never retained, reported, or
+transmitted. The content identity is captured for every entry kind it
+defines: a tracked path, whose stat cache git may trust, and an
+untracked regular file or symlink, whose in-place rewrite the stat
+fields cannot see either. The content identity exists because the stat
 fields alone cannot tell an untouched file from a deliberate same-size
 rewrite with a restored modification time: the rewrite makes the stat
-stamp match by construction, and only the bytes can say the file moved.
-A tracked rewrite of that shape therefore stays in the manifest — with
-`dirtyBefore` true and its counts measured against the last commit —
+stamp match by construction, and only the bytes can say the file moved
+— for a symlink, the target string is its content, and re-pointing it
+at a same-length target is the same shape of invisible move. A rewrite
+of that shape therefore stays in the manifest — with
+`dirtyBefore` true and its counts measured against the last commit for
+a tracked path, against the empty side for an untracked one —
 while a legitimate net-zero restoration still subtracts: when the bytes
 are exactly the pre-run bytes again, the hash matches and the manifest
-is quiet because net change is zero. Untracked paths are never hashed:
-the content identity is captured for tracked paths only, so an
-untracked pre-run file's stamp is the stat alone, and a same-size
-rewrite of one with a restored modification time is still subtracted —
-the one deliberate false negative left in the subtraction, the agreed
-price of not reading untracked files' contents. On a
+is quiet because net change is zero. An untracked directory tree is
+the one deliberately unhashed shape: it cannot rewrite in place, so its
+pre-run stat stamp alone is enough, and the subtraction stays exact for
+the files whose content it names. On a
 coarse-granularity filesystem — FAT, exFAT, some NFS mounts, older
-ext3 — a same-tick restore of an untracked path is invisible too,
-which is equally defensible because net change is zero; a tracked path
-is not affected, because its hash decides.
+ext3 — a same-tick restore of any path is invisible too,
+which is equally defensible because net change is zero; a hash still
+protects the paths whose content the stamp carries.
 
 The measurement trusts the path queries git itself runs, so a
 repository whose trust state could make those queries hide a write is
 never answered with a confident clean: the manifest is omitted with the
 `measurement failed` reason, and a declared-writes check skips, when
 the state was already unsafe before the run started or a trust input
-moved while the run was in flight. Three families of inputs are
+moved while the run was in flight. Four families of inputs are
 watched, captured from the repository itself before the first worker
 starts and re-read after the run ends:
 
@@ -436,6 +440,12 @@ starts and re-read after the run ends:
   The effective value (false, true, or the true default) is recorded
   before the run and compared after it: an unsafe pre-existing value
   and a value that changed during the run are both unavailable.
+- `core.fileMode`. Git suppresses every tracked mode-only difference
+  when it is false, so a chmod the run made on an untouched file would
+  be invisible to every diff the measurement runs. The effective value
+  (false, true, or the true default) is recorded before the run and
+  compared after it: an unsafe pre-existing value and a value that
+  changed during the run are both unavailable.
 - Ignore-rule inputs beyond the tree. The untracked listing honours
   `$GIT_DIR/info/exclude` and the effective `core.excludesFile` (the
   configured file, or the XDG default when unset), so a rule appended
