@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -364,5 +365,221 @@ func TestMainUsageIncludesWorktreesCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "pi-worker worktrees remove <name> [--yes] [--json]") {
 		t.Fatalf("usage missing worktrees remove: %q", stderr)
+	}
+}
+
+func TestWorktreesRemoveYesHuman(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+	if err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe", "--yes"}, "")
+	if code != 0 {
+		t.Fatalf("remove = %d, want 0; stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	want := "removed worktree \"probe\" on branch \"" + branch + "\"\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("checkout %q still exists: %v", wtPath, err)
+	}
+	if gitRefExists(t, repo, "refs/heads/"+branch) {
+		t.Fatalf("branch %q still exists", branch)
+	}
+}
+
+func TestWorktreesRemoveYesJSON(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	wtPath, branch, err := prepareWorktree(context.Background(), repo, "probe")
+	if err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe", "--yes", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("remove --json = %d, want 0; stderr %q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	raw := strings.TrimSpace(stdout)
+	if strings.Count(raw, "\n") != 0 {
+		t.Fatalf("json has multiple lines: %q", stdout)
+	}
+	var doc struct {
+		SchemaVersion int `json:"schemaVersion"`
+		Removed       struct {
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			Branch string `json:"branch"`
+		} `json:"removed"`
+	}
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if doc.SchemaVersion != 1 || doc.Removed.Name != "probe" || doc.Removed.Path != wtPath || doc.Removed.Branch != branch {
+		t.Fatalf("doc = %#v, want name probe path %q branch %q", doc, wtPath, branch)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("checkout still exists: %v", err)
+	}
+	if gitRefExists(t, repo, "refs/heads/"+branch) {
+		t.Fatalf("branch still exists")
+	}
+	// Exact shape: no extra keys, one line.
+	expected := fmt.Sprintf("{\"schemaVersion\":1,\"removed\":{\"name\":\"probe\",\"path\":%q,\"branch\":%q}}\n", wtPath, branch)
+	if stdout != expected {
+		t.Fatalf("json output = %q, want %q", stdout, expected)
+	}
+}
+
+func TestWorktreesRemoveYesSelectedOnly(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	alphaPath, alphaBranch, err := prepareWorktree(context.Background(), repo, "alpha")
+	if err != nil {
+		t.Fatalf("prepare alpha: %v", err)
+	}
+	bravoPath, bravoBranch, err := prepareWorktree(context.Background(), repo, "bravo")
+	if err != nil {
+		t.Fatalf("prepare bravo: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "alpha", "--yes"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("remove alpha = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "alpha") || !strings.Contains(stdout, alphaBranch) {
+		t.Fatalf("stdout = %q, want alpha and %q", stdout, alphaBranch)
+	}
+	if _, err := os.Stat(alphaPath); !os.IsNotExist(err) {
+		t.Fatalf("alpha checkout still exists")
+	}
+	if gitRefExists(t, repo, "refs/heads/"+alphaBranch) {
+		t.Fatalf("alpha branch still exists")
+	}
+	if _, err := os.Stat(bravoPath); err != nil {
+		t.Fatalf("bravo checkout missing: %v", err)
+	}
+	if !gitRefExists(t, repo, "refs/heads/"+bravoBranch) {
+		t.Fatalf("bravo branch missing")
+	}
+	got, err := listManagedWorktrees(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].name != "bravo" {
+		t.Fatalf("remaining = %#v, want only bravo", got)
+	}
+}
+
+func TestWorktreesRemoveYesMissing(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "alpha"); err != nil {
+		t.Fatalf("prepare alpha: %v", err)
+	}
+	before := repoSnapshot(t, repo)
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "ghost", "--yes"}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("missing = (%d, %q, %q), want (2, \"\", pi-worker:)", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "pi-worker:") || strings.Contains(stderr, "usage:") {
+		t.Fatalf("stderr = %q, want pi-worker: without usage", stderr)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	_ = repo
+}
+
+func TestWorktreesRemoveYesDirty(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	wtPath, _, err := prepareWorktree(context.Background(), repo, "probe")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("dirty: %v", err)
+	}
+	before := repoSnapshot(t, repo)
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe", "--yes"}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("dirty = (%d, %q, %q), want (2, \"\", pi-worker:)", code, stdout, stderr)
+	}
+	if !strings.Contains(strings.ToLower(stderr), "dirty") || strings.Contains(stderr, "usage:") {
+		t.Fatalf("stderr = %q, want dirty without usage", stderr)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("checkout missing after dirty refusal: %v", err)
+	}
+	if !gitRefExists(t, repo, "refs/heads/run/probe") {
+		t.Fatalf("branch missing after dirty refusal")
+	}
+}
+
+func TestWorktreesRemoveYesUnmerged(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	wtPath, _, err := prepareWorktree(context.Background(), repo, "probe")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("advance\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gitRun(t, wtPath, "add", "file.txt")
+	gitRun(t, wtPath, "commit", "-q", "-m", "advance")
+	before := repoSnapshot(t, repo)
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe", "--yes"}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("unmerged = (%d, %q, %q), want (2, \"\", pi-worker:)", code, stdout, stderr)
+	}
+	if !strings.Contains(strings.ToLower(stderr), "merged") || strings.Contains(stderr, "usage:") {
+		t.Fatalf("stderr = %q, want merged without usage", stderr)
+	}
+	if after := repoSnapshot(t, repo); after != before {
+		t.Fatalf("repository changed")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("checkout missing after unmerged refusal: %v", err)
+	}
+}
+
+func TestWorktreesRemoveYesNoYes(t *testing.T) {
+	repo := canonicalRepo(t, newGitWorkspace(t))
+	if _, _, err := prepareWorktree(context.Background(), repo, "probe"); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	called := false
+	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+		called = true
+		return "", os.ErrInvalid
+	})
+	_ = repo
+	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe"}, "")
+	if called {
+		t.Fatalf("inventory was called without --yes")
+	}
+	if code != 2 || stdout != "" {
+		t.Fatalf("no-yes = (%d, %q, %q), want (2, \"\", exact)", code, stdout, stderr)
+	}
+	want := "pi-worker: worktrees remove needs --yes when it cannot ask\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+	// With --json but without --yes, same refusal and no inventory.
+	called = false
+	code, stdout, stderr = runCLI(t, []string{"worktrees", "remove", "probe", "--json"}, "")
+	if called {
+		t.Fatalf("inventory was called without --yes (json)")
+	}
+	if code != 2 || stdout != "" || stderr != want {
+		t.Fatalf("no-yes json = (%d, %q, %q), want (2, \"\", %q)", code, stdout, stderr, want)
 	}
 }

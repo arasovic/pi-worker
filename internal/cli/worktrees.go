@@ -39,11 +39,78 @@ func worktreesCommand(parent context.Context, args []string, stdout, stderr io.W
 	switch opts.command {
 	case "list":
 		return worktreesListCommand(parent, opts, stdout, stderr)
+	case "remove":
+		return worktreesRemoveCommand(parent, opts, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "pi-worker: unknown worktrees command %q\n", opts.command)
 		printUsage(stderr)
 		return 2
 	}
+}
+
+func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdout, stderr io.Writer) int {
+	if !opts.yes {
+		fmt.Fprint(stderr, "pi-worker: worktrees remove needs --yes when it cannot ask\n")
+		return 2
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
+		return 9
+	}
+	worktrees, err := listManagedWorktrees(parent, cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: list worktrees: %v\n", err)
+		return 9
+	}
+	var selected *managedWorktree
+	for i := range worktrees {
+		if worktrees[i].name == opts.name {
+			v := worktrees[i]
+			selected = &v
+			break
+		}
+	}
+	if selected == nil {
+		fmt.Fprintf(stderr, "pi-worker: worktree %q not found\n", opts.name)
+		return 2
+	}
+	if selected.dirty {
+		fmt.Fprintf(stderr, "pi-worker: refuse to remove worktree %q: checkout is dirty\n", selected.name)
+		return 2
+	}
+	if !selected.merged {
+		fmt.Fprintf(stderr, "pi-worker: refuse to remove worktree %q: branch %q is not merged\n", selected.name, selected.branch)
+		return 2
+	}
+	if err := removeManagedWorktree(parent, cwd, *selected); err != nil {
+		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
+		return 9
+	}
+	if opts.json {
+		output := struct {
+			SchemaVersion int `json:"schemaVersion"`
+			Removed       struct {
+				Name   string `json:"name"`
+				Path   string `json:"path"`
+				Branch string `json:"branch"`
+			} `json:"removed"`
+		}{
+			SchemaVersion: worktreesSchemaVersion,
+		}
+		output.Removed.Name = selected.name
+		output.Removed.Path = selected.path
+		output.Removed.Branch = selected.branch
+		data, err := json.Marshal(output)
+		if err != nil {
+			fmt.Fprintf(stderr, "pi-worker: encode worktrees: %v\n", err)
+			return 9
+		}
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
+	fmt.Fprintf(stdout, "removed worktree %q on branch %q\n", selected.name, selected.branch)
+	return 0
 }
 
 func worktreesListCommand(parent context.Context, opts worktreesOptions, stdout, stderr io.Writer) int {
