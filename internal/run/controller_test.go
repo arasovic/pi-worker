@@ -848,26 +848,30 @@ func TestControllerLabelsDebugLinesWithWorkerIdentity(t *testing.T) {
 	}
 }
 
-func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *testing.T) {
+// runSettledInterferenceScenario is the shared harness for the two settled-output
+// cases: worker A writes a.txt and settles (snapshot captured via
+// afterWorkerSettled), then worker B overwrites a.txt with bOverwriteA and
+// writes b.txt. The gate proves concurrency without sleeps.
+func runSettledInterferenceScenario(t *testing.T, bOverwriteA []byte) (Result, string, []byte) {
+	t.Helper()
 	dir := t.TempDir()
 	isolateGitConfig(t)
 	runGit(t, dir, "init", "-q")
 	runGit(t, dir, "config", "user.email", "test@pi-worker")
 	runGit(t, dir, "config", "user.name", "pi-worker test")
-	originalA := []byte("original A\n")
-	originalB := []byte("original B\n")
-	if err := os.WriteFile(filepath.Join(dir, "a.txt"), originalA, 0o644); err != nil {
+	origA := []byte("original A\n")
+	origB := []byte("original B\n")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), origA, 0o644); err != nil {
 		t.Fatalf("write a.txt: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "b.txt"), originalB, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), origB, 0o644); err != nil {
 		t.Fatalf("write b.txt: %v", err)
 	}
 	runGit(t, dir, "add", "a.txt", "b.txt")
 	runGit(t, dir, "commit", "-q", "-m", "initial")
-
 	gate := make(chan struct{})
 	afterA := make(chan struct{})
-	type regressionWorker struct {
+	type state struct {
 		mu        sync.Mutex
 		active    int
 		maxActive int
@@ -876,39 +880,38 @@ func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *tes
 		gateAt    int
 		afterA    chan struct{}
 	}
-	w := &regressionWorker{dir: dir, gate: gate, gateAt: 2, afterA: afterA}
-	// Use closure to capture worker behavior via prompt dispatch.
+	s := &state{dir: dir, gate: gate, gateAt: 2, afterA: afterA}
 	worker := &funcWorker{
 		fn: func(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
-			w.mu.Lock()
-			w.active++
-			if w.active > w.maxActive {
-				w.maxActive = w.active
+			s.mu.Lock()
+			s.active++
+			if s.active > s.maxActive {
+				s.maxActive = s.active
 			}
-			if w.gate != nil && w.active == w.gateAt {
-				close(w.gate)
+			if s.gate != nil && s.active == s.gateAt {
+				close(s.gate)
 			}
-			w.mu.Unlock()
+			s.mu.Unlock()
 			defer func() {
-				w.mu.Lock()
-				w.active--
-				w.mu.Unlock()
+				s.mu.Lock()
+				s.active--
+				s.mu.Unlock()
 			}()
-			if w.gate != nil {
-				<-w.gate
+			if s.gate != nil {
+				<-s.gate
 			}
 			switch req.Prompt {
 			case "task-a":
-				if err := os.WriteFile(filepath.Join(w.dir, "a.txt"), []byte("changed by A\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(s.dir, "a.txt"), []byte("changed by A\n"), 0o644); err != nil {
 					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
 				}
 				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "a done"}
 			case "task-b":
-				<-w.afterA
-				if err := os.WriteFile(filepath.Join(w.dir, "b.txt"), []byte("changed by B\n"), 0o644); err != nil {
+				<-s.afterA
+				if err := os.WriteFile(filepath.Join(s.dir, "b.txt"), []byte("changed by B\n"), 0o644); err != nil {
 					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
 				}
-				if err := os.WriteFile(filepath.Join(w.dir, "a.txt"), originalA, 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(s.dir, "a.txt"), bOverwriteA, 0o644); err != nil {
 					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
 				}
 				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "b done"}
@@ -934,8 +937,8 @@ func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *tes
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if w.maxActive != 2 {
-		t.Fatalf("peak concurrency = %d, want 2 (workers did not run concurrently)", w.maxActive)
+	if s.maxActive != 2 {
+		t.Fatalf("peak concurrency = %d, want 2 (workers did not run concurrently)", s.maxActive)
 	}
 	if len(result.Workers) != 2 {
 		t.Fatalf("workers len = %d, want 2", len(result.Workers))
@@ -945,10 +948,15 @@ func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *tes
 			t.Fatalf("worker %d status = %q, want completed", i, wr.Status)
 		}
 	}
+	return result, dir, origA
+}
+
+func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *testing.T) {
+	bOverwrite := []byte("original A\n")
+	result, dir, origA := runSettledInterferenceScenario(t, bOverwrite)
 	if result.Changes == nil || result.Changes.Omitted != "" {
 		t.Fatalf("changes = %#v, want measured manifest with only b.txt", result.Changes)
 	}
-	// Final manifest must contain only b.txt (a.txt was restored to HEAD).
 	hasB, hasA := false, false
 	for _, f := range result.Changes.Files {
 		if f.Path == "b.txt" {
@@ -979,13 +987,13 @@ func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *tes
 	if result.Writes.Truncated {
 		t.Fatalf("writes truncated unexpectedly")
 	}
-	// Controller must not have auto-restored files; final workspace reflects B's actions.
+	// Final workspace reflects worker B's own restore, not Controller repair.
 	gotA, err := os.ReadFile(filepath.Join(dir, "a.txt"))
 	if err != nil {
 		t.Fatalf("read a.txt: %v", err)
 	}
-	if string(gotA) != string(originalA) {
-		t.Fatalf("a.txt = %q, want original %q (controller must not restore)", string(gotA), string(originalA))
+	if string(gotA) != string(origA) {
+		t.Fatalf("a.txt = %q, want original %q", string(gotA), string(origA))
 	}
 	gotB, err := os.ReadFile(filepath.Join(dir, "b.txt"))
 	if err != nil {
@@ -993,6 +1001,30 @@ func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *tes
 	}
 	if string(gotB) != "changed by B\n" {
 		t.Fatalf("b.txt = %q, want changed by B", string(gotB))
+	}
+}
+
+func TestControllerDoesNotRepairClobberedDisjointWrite(t *testing.T) {
+	clobbered := []byte("clobbered by B\n")
+	result, dir, _ := runSettledInterferenceScenario(t, clobbered)
+	if result.Writes == nil {
+		t.Fatalf("writes is nil, want undeclared a.txt")
+	}
+	if result.Writes.Skipped != "" {
+		t.Fatalf("writes skipped = %q, want empty", result.Writes.Skipped)
+	}
+	if result.Writes.UndeclaredCount != 1 || len(result.Writes.Undeclared) != 1 || result.Writes.Undeclared[0] != "a.txt" {
+		t.Fatalf("writes = %#v, want exactly [a.txt]", result.Writes)
+	}
+	if result.Writes.Truncated {
+		t.Fatalf("writes truncated unexpectedly")
+	}
+	gotA, err := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if err != nil {
+		t.Fatalf("read a.txt: %v", err)
+	}
+	if !bytes.Equal(gotA, clobbered) {
+		t.Fatalf("a.txt = %q, want clobbered %q (Controller must not auto-restore)", string(gotA), string(clobbered))
 	}
 }
 
