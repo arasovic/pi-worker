@@ -424,7 +424,7 @@ repository whose trust state could make those queries hide a write is
 never answered with a confident clean: the manifest is omitted with the
 `measurement failed` reason, and a declared-writes check skips, when
 the state was already unsafe before the run started or a trust input
-moved while the run was in flight. Four families of inputs are
+moved while the run was in flight. Five families of inputs are
 watched, captured from the repository itself before the first worker
 starts and re-read after the run ends:
 
@@ -452,6 +452,21 @@ starts and re-read after the run ends:
   to either during the run can hide untracked paths the run wrote.
   Each file is stamped without reading its contents, and the effective
   value is recorded; a moved stamp or a moved value is drift.
+- In-tree `.gitignore` rule files. The untracked listing honours every
+  `.gitignore` rule file git consults in the tree, so a rule appended
+  to one during the run — or a new rule file created during the run,
+  including one whose own rules exclude it — can hide untracked paths
+  the run wrote. The rule files are enumerated with git's own listings
+  (the tracked ones, the visible untracked ones, and the ones git
+  itself ignores, each restricted to `.gitignore` names), never with a
+  filesystem walk and never by entering a nested repository, and their
+  set and local content identity are recorded: a rule file that
+  appears, disappears, or changes content during the run is drift.
+  Content identity means the bytes — for a symlink, its target string
+  — so a same-size rewrite with a restored modification time is still
+  drift, while a write that leaves the bytes identical is not. This is
+  a watch on the rule files git's own listings name, not a full audit
+  of every ignore source git could read.
 
 Any of these makes the measurement unavailable rather than clean — a
 wrong "clean" is worse than an admitted "unavailable". Ordinary worker

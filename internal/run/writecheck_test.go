@@ -898,6 +898,91 @@ func TestControllerWritesSameRunExcludesFileTargetModifiedUnavailable(t *testing
 	}
 }
 
+func TestControllerWritesSameRunTrackedGitignoreAppendHidesUntrackedFileUnavailable(t *testing.T) {
+	// Regression for the spec-review gap on #78, declared-writes side: a
+	// worker that appends an ignore rule to a tracked .gitignore and then
+	// creates an untracked file the new rule matches hides the payload
+	// from the post-run exclude-standard listing while the tracked diff
+	// reports only the .gitignore edit. The in-tree rule file moved
+	// during the run, so the manifest omits with measurement-failed and
+	// the declared-writes check skips with the manifest-unavailable
+	// reason instead of a verdict the incomplete manifest cannot
+	// support.
+	dir := newGitRepo(t)
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".gitignore"), []byte("# base rules\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		rule := filepath.Join(dir, "sub", ".gitignore")
+		file, err := os.OpenFile(rule, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := file.WriteString("\n*.tmp\n"); err != nil {
+			file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "sub", "payload.tmp"), []byte("hidden\n"), 0o644)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
+	if _, err := os.Stat(filepath.Join(dir, "sub", "payload.tmp")); err != nil {
+		t.Fatalf("untracked file after run: %v", err)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes = %#v, want the exact unavailable skip", writes)
+	}
+	if writes.UndeclaredCount != 0 || writes.Undeclared != nil || writes.Truncated {
+		t.Fatalf("writes = %#v, want no verdict fields alongside the skip", writes)
+	}
+}
+
+func TestControllerWritesSameRunNewSelfIgnoredGitignoreHidesUntrackedFileUnavailable(t *testing.T) {
+	// Regression for the spec-review gap on #78, declared-writes side of
+	// the self-ignored shape: a worker that creates a .gitignore whose
+	// first rule ignores the file itself and whose next rule hides a
+	// payload leaves both invisible to the exclude-standard listing. The
+	// newly created rule file is trust-input drift, so the manifest
+	// omits with measurement-failed and the declared-writes check skips
+	// rather than reporting a checked-clean verdict for a payload it
+	// cannot see.
+	dir := newGitRepo(t)
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sub", ".gitignore"), []byte(".gitignore\npayload.dat\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "sub", "payload.dat"), []byte("hidden\n"), 0o644)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
+	if !gitignoredPayloadHidden(t, dir, "sub/.gitignore") || !gitignoredPayloadHidden(t, dir, "sub/payload.dat") {
+		t.Skipf("git does not support the self-ignored .gitignore shape")
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes = %#v, want the exact unavailable skip", writes)
+	}
+	if writes.UndeclaredCount != 0 || writes.Undeclared != nil || writes.Truncated {
+		t.Fatalf("writes = %#v, want no verdict fields alongside the skip", writes)
+	}
+}
+
 func TestControllerWritesIgnoredUntrackedPathOutsideManifest(t *testing.T) {
 	// The untracked pass (git ls-files --others --exclude-standard)
 	// honours ignore rules, so an ignored path a worker wrote is outside

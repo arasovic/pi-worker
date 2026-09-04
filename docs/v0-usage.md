@@ -542,13 +542,25 @@ Replace the provider/model placeholder with one exact selector printed by
   before the first worker starts and re-read after the run ends, are
   the index visibility markers (`skip-worktree`, `assume-unchanged`),
   the effective `core.trustctime` and `core.fileMode` values, and the
-  ignore-rule files beyond the tree — `$GIT_DIR/info/exclude` and the
-  effective `core.excludesFile` file — each stamped without reading its
-  contents.
+  ignore-rule files: the ones beyond the tree — `$GIT_DIR/info/exclude`
+  and the effective `core.excludesFile` file — each stamped without
+  reading its contents, and the in-tree `.gitignore` rule files
+  themselves,
+  enumerated with git's own listings (tracked, visible untracked, and
+  the ones git itself ignores, each restricted to `.gitignore` names)
+  and recorded by set and content identity. A new or edited in-tree
+  `.gitignore` can hide an untracked path the run wrote while the
+  rule-file edit itself is the only change the manifest could see, or
+  hide both when the rule file is new and self-ignored, so a rule file
+  that appears, disappears, or changes content during the run makes
+  the measurement unavailable like any other moved trust input. This
+  is a watch on the rule files git's own listings name, not a full
+  audit of every ignore source git could read.
   A marker or unsafe value already present at the start, a marker that
   appears during the run, a trust value that changes, or an ignore file
-  whose stamp or effective value moves all make the measurement
-  unavailable: a wrong "clean" is worse than an admitted "unavailable".
+  whose stamp, content identity, or effective value moves all make the
+  measurement unavailable: a wrong "clean" is worse than an admitted
+  "unavailable".
   Ordinary run activity never trips the watch: staging and committing
   change no trust input, and ignore rules that already existed when the
   run started applied equally to both passes.

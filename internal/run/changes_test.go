@@ -1448,6 +1448,137 @@ func TestControllerChangesStaticExcludesFileConfigStillMeasured(t *testing.T) {
 	}
 }
 
+// gitignoredPayloadHidden reports whether git currently hides path in dir
+// behind an ignore rule, the precondition of the in-tree rule-file gap:
+// without a rule actually hiding the payload, the payload would be a
+// visible untracked path and the manifest would name it.
+func gitignoredPayloadHidden(t *testing.T, dir, path string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "check-ignore", "-q", "--", path)
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
+func TestControllerChangesSameRunTrackedGitignoreAppendHidesUntrackedPayloadOmitted(t *testing.T) {
+	// Regression for the spec-review gap on #78: a worker that appends an
+	// ignore rule to a tracked .gitignore and then creates an untracked
+	// file the new rule matches makes the post-run exclude-standard
+	// listing hide the payload, while the tracked diff reports only the
+	// .gitignore edit — a manifest that names the rule file but never
+	// the file it was written to hide. In-tree .gitignore rule files are
+	// a trust input: their set and content identity are captured before
+	// the run and compared after, and a rule file that moved makes the
+	// measurement unavailable rather than a confident but incomplete
+	// manifest. Ordinary staging and committing never touch a rule
+	// file's content, so they never trip the watch.
+	dir := newGitRepo(t)
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".gitignore"), []byte("# base rules\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		rule := filepath.Join(dir, "sub", ".gitignore")
+		file, err := os.OpenFile(rule, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		if _, err := file.WriteString("\n*.tmp\n"); err != nil {
+			file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "sub", "payload.tmp"), []byte("hidden\n"), 0o644)
+	}}, dir)
+	// The gap is real only when the new rule hides the payload from the
+	// untracked listing; assert that precondition so the regression test
+	// cannot pass vacuously on a git that never applied the rule.
+	if !gitignoredPayloadHidden(t, dir, "sub/payload.tmp") {
+		t.Fatalf("test setup: git did not hide sub/payload.tmp behind the appended rule")
+	}
+	if out := runGit(t, dir, "ls-files", "--others", "--exclude-standard"); strings.Contains(out, "payload.tmp") {
+		t.Fatalf("test setup: sub/payload.tmp still visible to ls-files: %q", out)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesSameRunNewSelfIgnoredGitignoreHidesUntrackedPayloadOmitted(t *testing.T) {
+	// Regression for the spec-review gap on #78, self-ignored shape: a
+	// worker that creates a .gitignore whose first rule ignores the file
+	// itself and whose next rule hides a payload next to it leaves both
+	// the rule file and the payload invisible to the exclude-standard
+	// listing — the manifest would report nothing at all while the
+	// payload sits hidden on disk. The newly created rule file is a
+	// trust-input drift (the set grew during the run), so the
+	// measurement is unavailable rather than a confident zero.
+	dir := newGitRepo(t)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sub", ".gitignore"), []byte(".gitignore\npayload.dat\n"), 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "sub", "payload.dat"), []byte("hidden\n"), 0o644)
+	}}, dir)
+	// Git must actually support the shape: the .gitignore ignores itself
+	// and the payload stays hidden. On a git that refuses to read rules
+	// from a self-ignored rule file, the payload would be a visible
+	// untracked path and the manifest would name it — which is a
+	// different, honest result this test does not pin.
+	if !gitignoredPayloadHidden(t, dir, "sub/.gitignore") || !gitignoredPayloadHidden(t, dir, "sub/payload.dat") {
+		t.Skipf("git does not support the self-ignored .gitignore shape")
+	}
+	if out := runGit(t, dir, "ls-files", "--others", "--exclude-standard"); out != "" {
+		t.Fatalf("test setup: self-ignored rule file or payload still visible: %q", out)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
+	}
+}
+
+func TestControllerChangesUnchangedTrackedGitignoreRuleFileMeasured(t *testing.T) {
+	// The rule-file watch must never make an ordinary run unavailable:
+	// a tracked .gitignore that existed before the run, was not touched
+	// by it, and whose rules applied equally to the pre-run and post-run
+	// passes is a stable input. The manifest measures the run's real
+	// change — the modified tracked file — and never lists the
+	// untouched rule file.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	gitCommit(t, dir)
+	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\n"), 0o644)
+	}}, dir)
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want exactly the modified file", changes)
+	}
+	if changes.Files[0].Path != "file.txt" || changes.Files[0].Status != "modified" {
+		t.Fatalf("file = %#v, want file.txt modified and no rule file listed", changes.Files[0])
+	}
+}
+
 func TestControllerChangesNotGatedByGitTripwire(t *testing.T) {
 	// The manifest exists precisely for the files the git tripwire
 	// deliberately ignores: a run that only leaves modified files behind

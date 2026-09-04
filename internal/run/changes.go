@@ -505,7 +505,7 @@ type fileStamp struct {
 }
 
 // gitMetadataSnapshot is the read-only pre-run record of the Git trust
-// inputs that can make the post-run path queries lie. Four families of
+// inputs that can make the post-run path queries lie. Five families of
 // inputs are captured, each from the actual repository rather than from
 // a hard-coded patch:
 //
@@ -538,6 +538,22 @@ type fileStamp struct {
 //     can hide untracked paths from the exclude-standard listing, so if
 //     a file's metadata moves, or the effective value changes, the
 //     measurement is unavailable rather than a confident zero.
+//   - The in-tree .gitignore rule files, enumerated with git's own
+//     listings rather than a filesystem walk: the tracked ones, the
+//     visible untracked ones, and the ones git itself ignores — a
+//     rule file whose own rules exclude it still applies to the paths
+//     beside it, and a newly created self-ignored rule file would
+//     otherwise hide both itself and its payload from every listing.
+//     Each file's set membership and content identity are captured; a
+//     rule file that appears, disappears, or changes content during the
+//     run can hide untracked paths the run wrote, so any of those makes
+//     the measurement unavailable. Rule files that already existed when
+//     the run started applied equally to both passes, so an unchanged
+//     pre-existing rule file never trips the watch. This family reads
+//     the content of the rule files it names — they are workspace
+//     files, small, and their rules are exactly the trust input under
+//     test — unlike the beyond-tree exclude files, which stay
+//     metadata-only because they live outside the workspace.
 //
 // A git command failure while capturing any input fails the run's
 // measurement the same way a later command failure does: never a silent
@@ -561,6 +577,14 @@ type gitMetadataSnapshot struct {
 	excludesFile     string
 	excludesFilePath string
 	excludes         metadataStamp
+	// treeRules maps each in-tree .gitignore rule file git's own
+	// listings name — tracked, visible untracked, or itself ignored —
+	// to its content identity at snapshot time. A rule file that
+	// appears, disappears, or changes content during the run can hide
+	// untracked paths from the exclude-standard listing, so the set and
+	// the identities are compared after the run; the map is empty when
+	// the repository carries no .gitignore files at all.
+	treeRules map[string]gitignoreRuleStamp
 }
 
 // metadataStamp is deliberately metadata-only. In particular, this does
@@ -574,10 +598,11 @@ type metadataStamp struct {
 }
 
 // snapshotGitMetadata records the index visibility markers, the effective
-// core.trustctime and core.fileMode values, and the effective
-// ignore-rule files before workers start. Every operation is a read-only
-// Git query or an Lstat; no index refresh, object write, or file content
-// read is involved.
+// core.trustctime and core.fileMode values, the effective
+// ignore-rule files beyond the tree, and the in-tree .gitignore rule
+// files before workers start. Every operation is a read-only Git query
+// or an Lstat, plus a content read of the .gitignore rule files
+// themselves; no index refresh or object write is involved.
 func snapshotGitMetadata(ctx context.Context, root string) (*gitMetadataSnapshot, error) {
 	unsafeIndex, err := readIndexMetadata(ctx, root)
 	if err != nil {
@@ -610,6 +635,10 @@ func snapshotGitMetadata(ctx context.Context, root string) (*gitMetadataSnapshot
 			return nil, fmt.Errorf("stat %s: %w", excludesFilePath, err)
 		}
 	}
+	treeRules, err := snapshotTreeGitignoreRules(ctx, root)
+	if err != nil {
+		return nil, err
+	}
 	return &gitMetadataSnapshot{
 		unsafeIndex:      unsafeIndex,
 		trustCtime:       trustCtime,
@@ -619,6 +648,7 @@ func snapshotGitMetadata(ctx context.Context, root string) (*gitMetadataSnapshot
 		excludesFile:     excludesFile,
 		excludesFilePath: excludesFilePath,
 		excludes:         excludes,
+		treeRules:        treeRules,
 	}, nil
 }
 
@@ -783,6 +813,106 @@ func metadataStampEqual(a, b metadataStamp) bool {
 	return a.size == b.size && a.modTime.Equal(b.modTime) && a.mode == b.mode && a.absent == b.absent
 }
 
+// gitignoreRuleStamp is the content identity of one in-tree .gitignore
+// rule file at snapshot time: whether the file is absent, and the
+// SHA-256 of its content when present — a regular file's bytes or a
+// symlink's target string, the same content identity the dirty-path
+// stamping captures. The rules a .gitignore carries are its content, so
+// content identity is the precise ground truth for whether the rules
+// moved during the run: a same-size rewrite with a restored modification
+// time changes the rules and must be drift, while a write that leaves
+// the bytes identical — a touched file whose rules did not change —
+// must not make the measurement unavailable. An entry kind whose
+// content this identity does not define (a directory, which a
+// .gitignore never legitimately is) carries hashed false and can never
+// equal a hashed before-stamp, so a kind change is drift.
+type gitignoreRuleStamp struct {
+	absent      bool
+	contentHash [sha256.Size]byte
+	hashed      bool
+}
+
+func gitignoreRuleStampEqual(a, b gitignoreRuleStamp) bool {
+	if a.absent != b.absent || a.hashed != b.hashed {
+		return false
+	}
+	return a.absent || a.contentHash == b.contentHash
+}
+
+// snapshotTreeGitignoreRules enumerates the in-tree .gitignore rule
+// files with git's own listing commands, never with a filesystem walk
+// and never by entering a nested repository: git ls-files already
+// collapses an untracked nested repository to one directory entry and
+// never descends into it, so no .gitignore inside one is listed, and a
+// nested repository the outer git lists file by file contributes only
+// the entries git itself names. Three listings cover every rule file
+// git consults: the tracked ones (ls-files without --others, which
+// lists from the index and never consults ignore rules), the visible
+// untracked ones (--others --exclude-standard), and the ones git
+// itself ignores (--others --ignored --exclude-standard) — a rule
+// file whose own rules exclude it still applies to the paths beside
+// it, and a self-ignored rule file is invisible to the plain
+// exclude-standard listing. The pathspec (:(glob)**/.gitignore)
+// prunes each listing to the rule-file names, so the cost stays
+// proportional to the .gitignore files in the tree rather than to
+// every ignored file in it. Each listed file is stamped with its
+// content identity; a listed file that has disappeared is an absent
+// stamp, and a git command failure or an unreadable rule file is an
+// error — never a silent snapshot that trusts less than it recorded.
+func snapshotTreeGitignoreRules(ctx context.Context, root string) (map[string]gitignoreRuleStamp, error) {
+	paths := make(map[string]bool)
+	listings := [][]string{
+		{"ls-files", "-z", "--", ":(glob)**/.gitignore"},
+		{"ls-files", "--others", "--exclude-standard", "-z", "--", ":(glob)**/.gitignore"},
+		{"ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ":(glob)**/.gitignore"},
+	}
+	for _, args := range listings {
+		out, err := gitOutput(ctx, root, args...)
+		if err != nil {
+			return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		for _, path := range nulSplit(out) {
+			paths[path] = true
+		}
+	}
+	rules := make(map[string]gitignoreRuleStamp, len(paths))
+	for path := range paths {
+		info, err := os.Lstat(filepath.Join(root, path))
+		if err != nil {
+			if os.IsNotExist(err) {
+				rules[path] = gitignoreRuleStamp{absent: true}
+				continue
+			}
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		hash, hashed, err := hashPathContent(root, path, info)
+		if err != nil {
+			return nil, err
+		}
+		rules[path] = gitignoreRuleStamp{contentHash: hash, hashed: hashed}
+	}
+	return rules, nil
+}
+
+// gitignoreRuleSetsEqual reports whether two snapshots of the in-tree
+// .gitignore rule files name the same set of paths with the same
+// content identity at every path. A rule file that appeared or
+// disappeared during the run, or whose content changed, is drift: any
+// of them can hide untracked paths the run wrote behind rules the
+// pre-run listing never applied.
+func gitignoreRuleSetsEqual(a, b map[string]gitignoreRuleStamp) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for path, stamp := range a {
+		after, ok := b[path]
+		if !ok || !gitignoreRuleStampEqual(stamp, after) {
+			return false
+		}
+	}
+	return true
+}
+
 // snapshotGitMetadataAt re-reads the post-run trust inputs from the same
 // root and the paths selected before the run, and reports whether any of
 // them drifted. Keeping the paths from the before pass avoids trusting a
@@ -835,6 +965,13 @@ func snapshotGitMetadataAt(ctx context.Context, root string, before *gitMetadata
 		if !metadataStampEqual(before.excludes, afterExcludes) {
 			return true, nil
 		}
+	}
+	afterTreeRules, err := snapshotTreeGitignoreRules(ctx, root)
+	if err != nil {
+		return false, err
+	}
+	if !gitignoreRuleSetsEqual(before.treeRules, afterTreeRules) {
+		return true, nil
 	}
 	return false, nil
 }
