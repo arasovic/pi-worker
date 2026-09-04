@@ -886,8 +886,7 @@ func TestListManagedWorktreesCallerHeadSemanticsWithoutMainBranch(t *testing.T) 
 	// With the default newGitWorkspace setup the caller's branch would
 	// itself be master, which would make a non-master expectation
 	// impossible to tell from a hard-coded "master is the truth" bug.
-	gitRun(t, repo, "checkout", "-q", "-b", "caller-branch")
-	gitRun(t, repo, "branch", "-q", "-D", "master")
+	gitRun(t, repo, "branch", "-q", "-m", "caller-branch")
 	if _, _, err := prepareWorktree(context.Background(), repo, "advance"); err != nil {
 		t.Fatalf("prepareWorktree: %v", err)
 	}
