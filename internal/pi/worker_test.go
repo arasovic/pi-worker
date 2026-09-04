@@ -42,6 +42,16 @@ func happyPathScript(finalText string) *script.Script {
 	}}
 }
 
+func countStrings(values []string, want string) int {
+	n := 0
+	for _, value := range values {
+		if value == want {
+			n++
+		}
+	}
+	return n
+}
+
 func TestWorkerIDZeroDefaultsToOne(t *testing.T) {
 	// Direct callers leave the identity zero; it must label worker 1. The
 	// controller passes explicit identities 1..N through unchanged.
@@ -464,6 +474,235 @@ func TestWorkerTaskFailureRetainsConfirmedThinkingMetadata(t *testing.T) {
 
 	if result.Status != StatusFailed || result.RequestedThinkingLevel != ThinkingMax || result.ThinkingLevel != ThinkingMax {
 		t.Fatalf("result = %#v, want failed task with confirmed max metadata", result)
+	}
+}
+
+func TestWorkerRetriesTransientPrePromptFailuresThenSucceeds(t *testing.T) {
+	scriptConfig := happyPathScript("retry answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_available_models": {
+			{{Response: &script.Response{Success: false, Error: "temporary catalog outage"}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	var starts []int
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		OnProcessStart: func(workerID int, pid int) {
+			starts = append(starts, pid)
+		},
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("result = %#v, want completed after retry", result)
+	}
+	if result.Explanation != "retry answer" {
+		t.Fatalf("explanation = %q", result.Explanation)
+	}
+	if len(starts) != 2 || starts[0] == 0 || starts[1] == 0 {
+		t.Fatalf("process starts = %v, want exactly two started processes", starts)
+	}
+	if starts[0] == starts[1] {
+		t.Fatalf("process starts reused the same pid: %v", starts)
+	}
+	types := waitRequestLog(t, logPath, 6)
+	if got := countStrings(types, "prompt"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one prompt", types)
+	}
+	if got := countStrings(types, "get_available_models"); got != 2 {
+		t.Fatalf("request log = %v, want two catalog requests", types)
+	}
+	if result.Warning != "startup succeeded on attempt 2/3 after unavailable startup failure" {
+		t.Fatalf("warning = %q, want retry warning", result.Warning)
+	}
+}
+
+func TestWorkerCombinesRetryAndThinkingFallbackWarningsInStableOrder(t *testing.T) {
+	scriptConfig := happyPathScript("fallback answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_available_models": {
+			{{Response: &script.Response{Success: false, Error: "temporary catalog outage"}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium"]}`)}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	var starts []int
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+		OnProcessStart: func(workerID int, pid int) {
+			starts = append(starts, pid)
+		},
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("result = %#v, want completed", result)
+	}
+	if len(starts) != 2 {
+		t.Fatalf("process starts = %v, want two startup attempts", starts)
+	}
+	types := waitRequestLog(t, logPath, 7)
+	if got := countStrings(types, "prompt"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one prompt", types)
+	}
+	if got := countStrings(types, "get_available_models"); got != 2 {
+		t.Fatalf("request log = %v, want two catalog requests", types)
+	}
+	if !result.ThinkingFallback || result.ThinkingLevel != ThinkingMedium {
+		t.Fatalf("result = %#v, want fallback to confirmed medium", result)
+	}
+	wantWarning := "startup succeeded on attempt 2/3 after unavailable startup failure; requested thinking=max unavailable; continuing with Pi default thinking=medium"
+	if result.Warning != wantWarning {
+		t.Fatalf("warning = %q, want %q", result.Warning, wantWarning)
+	}
+}
+
+func TestWorkerRetriesAllAttemptsFail(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.Triggers["get_available_models"] = []script.Step{
+		{Response: &script.Response{Success: false, Error: "temporary outage 1"}},
+		{Response: &script.Response{Success: false, Error: "temporary outage 2"}},
+		{Response: &script.Response{Success: false, Error: "temporary outage 3"}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusUnavailable {
+		t.Fatalf("result = %#v, want unavailable after retries", result)
+	}
+	if got := waitRequestLog(t, logPath, 3); countStrings(got, "get_available_models") != 3 {
+		t.Fatalf("request log = %v, want three catalog attempts", got)
+	}
+}
+
+func TestWorkerReturnsOriginalConstructionErrorOnFinalRetry(t *testing.T) {
+	// NewProcess can fail before any child starts. The worker may retry that
+	// construction failure, but the final attempt must preserve the exact
+	// original error text and still classify the result as unavailable.
+	workspace := t.TempDir()
+	badTmpDir := filepath.Join(t.TempDir(), "missing-tmp")
+	t.Setenv("TMPDIR", badTmpDir)
+	_, wantErr := NewProcess(fakePiBin, workspace)
+	if wantErr == nil {
+		t.Fatal("NewProcess unexpectedly succeeded with a missing TMPDIR")
+	}
+
+	called := false
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: workspace,
+		OnProcessStart: func(workerID int, pid int) {
+			called = true
+		},
+	})
+
+	if result.Status != StatusUnavailable {
+		t.Fatalf("result = %#v, want unavailable after construction retries", result)
+	}
+	if result.Error != wantErr.Error() {
+		t.Fatalf("error = %q, want exact construction error %q", result.Error, wantErr.Error())
+	}
+	if called {
+		t.Fatal("observer called for a process that never started")
+	}
+}
+
+func TestWorkerDoesNotRetryDeterministicThinkingFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		script    *script.Script
+		wantCount int
+	}{
+		{
+			name: "missing model",
+			script: &script.Script{Triggers: map[string][]script.Step{
+				"get_available_models": {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-2"}]}`)}}},
+			}},
+			wantCount: 1,
+		},
+		{
+			name: "confirmation mismatch",
+			script: &script.Script{Triggers: map[string][]script.Step{
+				"get_available_models":          {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}}},
+				"get_state":                     {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}, {Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"high"}`)}}},
+				"get_available_thinking_levels": {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","max"]}`)}}},
+				"set_thinking_level":            {{Response: &script.Response{Success: true}}},
+			}},
+			wantCount: 6,
+		},
+		{
+			name: "rejected default changed",
+			script: &script.Script{Triggers: map[string][]script.Step{
+				"get_available_models":          {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}}},
+				"get_state":                     {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}, {Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"high"}`)}}},
+				"get_available_thinking_levels": {{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","max"]}`)}}},
+				"set_thinking_level":            {{Response: &script.Response{Success: false, Error: "rejected"}}},
+			}},
+			wantCount: 6,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logPath := setupFakePiEnv(t, test.script)
+			result := New(fakePiBin).Run(context.Background(), WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir(), ThinkingLevel: ThinkingMax})
+			if result.Status == StatusCompleted {
+				t.Fatalf("result = %#v, want failure", result)
+			}
+			types := waitRequestLog(t, logPath, test.wantCount)
+			if len(types) != test.wantCount {
+				t.Fatalf("request log = %v, want %d attempts", types, test.wantCount)
+			}
+			if test.wantCount == 1 && countStrings(types, "prompt") != 0 {
+				t.Fatalf("request log = %v; deterministic thinking failure reached prompt", types)
+			}
+		})
+	}
+}
+
+func TestWorkerDoesNotRetryPromptRejectionTaskFailureCancellationOrTimeout(t *testing.T) {
+	// prompt rejection
+	scriptPrompt := happyPathScript("unused")
+	scriptPrompt.Triggers["prompt"] = []script.Step{{Response: &script.Response{Success: false, Error: "prompt rejected"}}}
+	logPath := setupFakePiEnv(t, scriptPrompt)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir()})
+	if result.Status != StatusFailed {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := waitRequestLog(t, logPath, 4); countStrings(got, "prompt") != 1 || countStrings(got, "get_available_models") != 1 {
+		t.Fatalf("request log = %v", got)
+	}
+
+	// cancellation before launch
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	result = New(fakePiBin).Run(ctx, WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir()})
+	if result.Status != StatusCancelled {
+		t.Fatalf("result = %#v", result)
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Fatalf("pi launched for cancelled run")
+	}
+
+	// timeout before launch
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 0)
+	defer cancel2()
+	result = New(fakePiBin).Run(ctx2, WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir()})
+	if result.Status != StatusTimedOut {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

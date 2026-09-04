@@ -433,6 +433,7 @@ Replace the provider/model placeholder with one exact selector printed by
   3. `set_model`
   4. confirmation check that `set_model` returns the exact same `provider` and `id`
 - If no exact model match exists, or confirmation differs/missing, execution stops with an error. There is **no** pattern matching, fallback, or switching.
+- Each worker gets at most three startup/handshake attempts before the prompt. Every attempt launches a fresh process and reruns the pre-prompt checks; the task prompt itself is sent once only, never retried. If a later attempt succeeds after a retryable startup failure, the worker result carries a warning naming the successful retry, and the run record stores each started process through the existing worker-identity line.
 
 ### Thinking level
 

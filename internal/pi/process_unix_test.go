@@ -645,6 +645,9 @@ func TestWorkerOnProcessStartNotCalledWhenStartFails(t *testing.T) {
 	if result.Status != StatusUnavailable {
 		t.Fatalf("status = %q, want unavailable; error = %q", result.Status, result.Error)
 	}
+	if !strings.HasPrefix(result.Error, "start pi: ") {
+		t.Fatalf("error = %q, want safe start pi shape", result.Error)
+	}
 	if called {
 		t.Fatal("observer called for a process that failed to start")
 	}

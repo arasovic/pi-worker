@@ -50,7 +50,10 @@ present. The rejection message is on stderr, not stdout — the documented
 invocation sends its debug output there too — so read stderr when no document
 appears.
 When `thinkingFallback` is true, surface its warning: the selected model
-continued with Pi's confirmed default effort. Read root `outcome`:
+continued with Pi's confirmed default effort. Each worker gets at most three
+startup/handshake attempts before the prompt, each attempt uses a fresh
+process, and the prompt itself is sent once only; a later success carries a
+warning naming the retry. Read root `outcome`:
 `completed` is the only done state — a `writes.skipped` value means a check
 could not run, unproven, not clean. When `writes.skipped` is `change manifest
 unavailable`, the manifest was not measured: read `changes.omitted`, which is

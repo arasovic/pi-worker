@@ -113,8 +113,11 @@ Pi Worker is not a sandbox. bash has the current user's host permissions, and
 workers can edit the current workspace. Use one worker for overlapping work.
 
 An exact requested model never silently changes. Thinking fallback stays on the
-same model and reports the fallback. Installer state is recorded in a durable
-receipt; the stable identity marker distinguishes recognized Pi Worker content.
+same model and reports the fallback. Each worker gets at most three startup/
+handshake attempts before the prompt, each attempt uses a fresh process, and
+the task prompt itself is not retried. A later successful attempt carries a
+warning naming the retry. Installer state is recorded in a durable receipt;
+the stable identity marker distinguishes recognized Pi Worker content.
 
 ## Troubleshooting
 
