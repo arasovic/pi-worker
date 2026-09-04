@@ -11,9 +11,9 @@ import (
 )
 
 // TestParseWorktreesArgsAccepted asserts the accepted forms and the
-// options they parse into: the bare list subcommand, and list with the
-// single --json flag following the subcommand. The subcommand must be
-// first; only --json is a flag today.
+// options they parse into: list with optional --json, and remove with
+// exactly one valid name followed by optional --yes and --json in
+// either order.
 func TestParseWorktreesArgsAccepted(t *testing.T) {
 	for _, test := range []struct {
 		args []string
@@ -21,6 +21,11 @@ func TestParseWorktreesArgsAccepted(t *testing.T) {
 	}{
 		{args: []string{"list"}, want: worktreesOptions{command: "list"}},
 		{args: []string{"list", "--json"}, want: worktreesOptions{command: "list", json: true}},
+		{args: []string{"remove", "alpha"}, want: worktreesOptions{command: "remove", name: "alpha"}},
+		{args: []string{"remove", "alpha", "--yes"}, want: worktreesOptions{command: "remove", name: "alpha", yes: true}},
+		{args: []string{"remove", "alpha", "--json"}, want: worktreesOptions{command: "remove", name: "alpha", json: true}},
+		{args: []string{"remove", "alpha", "--yes", "--json"}, want: worktreesOptions{command: "remove", name: "alpha", yes: true, json: true}},
+		{args: []string{"remove", "alpha", "--json", "--yes"}, want: worktreesOptions{command: "remove", name: "alpha", yes: true, json: true}},
 	} {
 		opts, err := parseWorktreesArgs(test.args)
 		if err != nil {
@@ -35,8 +40,9 @@ func TestParseWorktreesArgsAccepted(t *testing.T) {
 // TestParseWorktreesArgsRejected asserts every rejected form fails
 // with a descriptive error: a missing subcommand, an unknown
 // subcommand (including flag-before-subcommand), an unknown flag, an
-// extra positional argument, a --json flag given a value, and a
-// repeated --json.
+// extra positional argument, a --json flag given a value, a repeated
+// flag, an invalid or missing worktree name, a flag in place of the
+// name, valued boolean flags, and remove-only --yes on list.
 func TestParseWorktreesArgsRejected(t *testing.T) {
 	for _, test := range []struct {
 		args []string
@@ -50,9 +56,23 @@ func TestParseWorktreesArgsRejected(t *testing.T) {
 		{args: []string{"list", "extra"}, want: "unexpected argument"},
 		{args: []string{"list", "--json", "extra"}, want: "unexpected argument"},
 		{args: []string{"list", "extra", "--json"}, want: "unexpected argument"},
+		{args: []string{"list", "--yes"}, want: "not valid with"},
+		{args: []string{"list", "--yes", "--json"}, want: "not valid with"},
 		{args: []string{"prune"}, want: "unknown worktrees command"},
 		{args: []string{"--json", "list"}, want: "unknown worktrees command"},
 		{args: []string{"--json", "--json", "list"}, want: "unknown worktrees command"},
+		{args: []string{"remove"}, want: "worktrees remove requires a name"},
+		{args: []string{"remove", "--yes"}, want: "worktrees remove requires a name"},
+		{args: []string{"remove", "--json"}, want: "worktrees remove requires a name"},
+		{args: []string{"remove", "Bad"}, want: "invalid worktree name"},
+		{args: []string{"remove", "alpha", "extra"}, want: "unexpected argument"},
+		{args: []string{"remove", "alpha", "--yes", "extra"}, want: "unexpected argument"},
+		{args: []string{"remove", "alpha", "--yes=1"}, want: "does not take a value"},
+		{args: []string{"remove", "alpha", "--json=1"}, want: "does not take a value"},
+		{args: []string{"remove", "alpha", "--yes", "--yes"}, want: "specified more than once"},
+		{args: []string{"remove", "alpha", "--json", "--json"}, want: "specified more than once"},
+		{args: []string{"remove", "alpha", "--bogus"}, want: "unknown flag"},
+		{args: []string{"remove", "alpha", "--yes", "--bogus"}, want: "unknown flag"},
 	} {
 		t.Run(strings.Join(test.args, " "), func(t *testing.T) {
 			_, err := parseWorktreesArgs(test.args)

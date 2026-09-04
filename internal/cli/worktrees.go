@@ -12,13 +12,11 @@ import (
 )
 
 // worktreesOptions carries one parsed `pi-worker worktrees` invocation.
-// Only the list subcommand exists today, so command holds no state of
-// its own beyond the one boolean the rendering will branch on; the
-// field stays because a future subcommand will set it, and keeping the
-// shape mirrors the sibling command families.
 type worktreesOptions struct {
 	command string
+	name    string
 	json    bool
+	yes     bool
 }
 
 const worktreesSchemaVersion = 1
@@ -99,12 +97,12 @@ func renderWorktreeTable(w io.Writer, worktrees []managedWorktree) {
 	tab.Flush()
 }
 
-// parseWorktreesArgs parses the `pi-worker worktrees` argv. The only
-// accepted form is `list`, optionally followed by the single --json
-// flag; --json is value-less, so `--json=1` is refused, and nothing
-// else is accepted. Every refusal is an ordinary descriptive error:
-// the top-level exit handling and usage printing belong to the command
-// wiring in a later task.
+// parseWorktreesArgs parses the `pi-worker worktrees` argv. Accepted
+// forms are `list [--json]` and `remove <name> [--yes] [--json]` where
+// the name is validated with validWorktreeName and the two value-less
+// flags may appear in either order after the name. Every refusal is an
+// ordinary descriptive error: the top-level exit handling and usage
+// printing belong to the command wiring.
 func parseWorktreesArgs(args []string) (worktreesOptions, error) {
 	opts := worktreesOptions{}
 	if len(args) == 0 {
@@ -113,16 +111,57 @@ func parseWorktreesArgs(args []string) (worktreesOptions, error) {
 	switch args[0] {
 	case "list":
 		opts.command = args[0]
+	case "remove":
+		opts.command = args[0]
 	default:
 		return opts, fmt.Errorf("unknown worktrees command %q", args[0])
 	}
 
+	if opts.command == "list" {
+		seen := map[string]bool{}
+		for i := 1; i < len(args); i++ {
+			arg := args[i]
+			name, _, hasValue := strings.Cut(arg, "=")
+			switch name {
+			case "--json":
+				if hasValue {
+					return opts, fmt.Errorf("flag %s does not take a value", name)
+				}
+				if seen[name] {
+					return opts, fmt.Errorf("flag %s specified more than once", name)
+				}
+				seen[name] = true
+				opts.json = true
+			case "--yes":
+				return opts, fmt.Errorf("flag --yes is not valid with worktrees list")
+			default:
+				if strings.HasPrefix(arg, "-") {
+					return opts, fmt.Errorf("unknown flag %q", arg)
+				}
+				return opts, fmt.Errorf("unexpected argument %q", arg)
+			}
+		}
+		return opts, nil
+	}
+
+	if len(args) < 2 {
+		return opts, errors.New("worktrees remove requires a name")
+	}
+	nameArg := args[1]
+	if strings.HasPrefix(nameArg, "-") {
+		return opts, errors.New("worktrees remove requires a name")
+	}
+	if !validWorktreeName(nameArg) {
+		return opts, fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", nameArg)
+	}
+	opts.name = nameArg
+
 	seen := map[string]bool{}
-	for i := 1; i < len(args); i++ {
+	for i := 2; i < len(args); i++ {
 		arg := args[i]
 		name, _, hasValue := strings.Cut(arg, "=")
 		switch name {
-		case "--json":
+		case "--json", "--yes":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)
 			}
@@ -130,7 +169,11 @@ func parseWorktreesArgs(args []string) (worktreesOptions, error) {
 				return opts, fmt.Errorf("flag %s specified more than once", name)
 			}
 			seen[name] = true
-			opts.json = true
+			if name == "--json" {
+				opts.json = true
+			} else {
+				opts.yes = true
+			}
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return opts, fmt.Errorf("unknown flag %q", arg)
