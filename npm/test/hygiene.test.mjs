@@ -169,7 +169,7 @@ test("ignores Git environment redirection and verifies the repository root", (t)
 });
 
 test("CI keeps read-only reproducible source and snapshot gates", () => {
-  for (const job of ["go-linux", "go-macos", "windows-readiness", "node-package", "release-snapshot"]) {
+  for (const job of ["go-linux", "go-macos", "windows-crossbuild", "go-crossbuild", "node-package", "release-snapshot"]) {
     assert.match(ciWorkflow, new RegExp(`^  ${job}:$`, "m"), `CI includes ${job}`);
   }
   assert.match(ciWorkflow, /^permissions:\n  contents: read$/m);
@@ -178,6 +178,11 @@ test("CI keeps read-only reproducible source and snapshot gates", () => {
   assert.match(ciWorkflow, /go test -race -count=1 \.\/\.\.\./);
   assert.match(ciWorkflow, /GOOS=windows GOARCH=amd64 go build \.\/\.\.\./);
   assert.match(ciWorkflow, /GOOS=windows GOARCH=amd64 go test -c/);
+  assert.doesNotMatch(ciWorkflow, /windows-readiness/i);
+  for (const goos of ["freebsd", "openbsd", "netbsd", "solaris", "plan9"]) {
+    assert.match(ciWorkflow, new RegExp(`goos: \\[[^\\n]*\\b${goos}\\b`), `go-crossbuild matrix includes ${goos}`);
+    assert.match(ciWorkflow, /GOOS=\$\{\{ matrix\.goos \}\} GOARCH=amd64 CGO_ENABLED=0 go build/, `go-crossbuild compiles ${goos}`);
+  }
   assert.match(ciWorkflow, /npm ci --ignore-scripts/);
   assert.match(ciWorkflow, /npm run verify/);
   assert.match(ciWorkflow, /go run \.\/tools\/release/);

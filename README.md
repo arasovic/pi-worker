@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Node.js-22.20%2B-339933?logo=nodedotjs&amp;logoColor=white" alt="Node.js 22.20+">
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&amp;logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&amp;logoColor=black" alt="Linux">
-  <img src="https://img.shields.io/badge/Windows-source-0078D4" alt="Windows source">
+  <img src="https://img.shields.io/badge/Windows-compile%20only-0078D4" alt="Windows compile only">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/MIT-green.svg" alt="MIT license"></a>
 </p>
 
@@ -48,9 +48,13 @@ skill for detected coding agents through pinned `skills@1.5.23`; it never
 overwrites an unrecognized existing skill.
 
 Native archives are available from
-[GitHub Releases](https://github.com/arasovic/pi-worker/releases). Windows users
-must build from source; Windows is compile-checked but not runtime-tested.
-Source builds are documented in [detailed usage](./docs/v0-usage.md). The Go
+[GitHub Releases](https://github.com/arasovic/pi-worker/releases). macOS and
+Linux are the distributed runtime targets; the npm package supports only those
+systems. Windows, FreeBSD, OpenBSD, NetBSD, Solaris, and Plan 9 are compile
+gates only: CI cross-compiles the Windows binary and its test packages and
+compile-checks the other targets' binaries, but none of these platforms is
+runtime-tested or a released platform, so Windows users must build
+from source. Source builds are documented in [detailed usage](./docs/v0-usage.md). The Go
 binary can also be installed directly without the bundled skill:
 
 ```sh

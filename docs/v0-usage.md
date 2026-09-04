@@ -22,9 +22,12 @@ or raw protocol output.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
   - Open Pi interactively and use Pi's own authentication flow.
 
-The npm package supports macOS and Linux on arm64 and x64. Windows requires a
-source build and is compile-checked, but it is not runtime-tested in the current
-release gates.
+The npm package supports macOS and Linux on arm64 and x64: those are the
+distributed runtime targets. Windows, FreeBSD, OpenBSD, NetBSD, Solaris, and
+Plan 9 are compile gates only — CI cross-compiles the Windows binary and its
+test packages and compile-checks the other targets' binaries, but none is
+runtime-tested in the current release gates or a released platform. Windows
+requires a source build.
 
 Install the public package normally, or keep installer diagnostics visible:
 
