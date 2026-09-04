@@ -471,7 +471,7 @@ a tracked path, against the empty side for an untracked one —
 while a legitimate net-zero restoration still subtracts: when the bytes
 are exactly the pre-run bytes again, the hash matches and the manifest
 is quiet because net change is zero. An untracked directory tree is
-the one deliberately unhashed shape: it cannot rewrite in place, so its
+one deliberately unhashed shape: it cannot rewrite in place, so its
 pre-run stat stamp alone is enough, and the subtraction stays exact for
 the files whose content it names. A collapsed nested-repository
 directory — an untracked directory carrying its own `.git` that git
@@ -489,6 +489,61 @@ coarse-granularity filesystem — FAT, exFAT, some NFS mounts, older
 ext3 — a same-tick restore of any path is invisible too,
 which is equally defensible because net change is zero; a hash still
 protects the paths whose content the stamp carries.
+
+The measurement trusts the path queries git itself runs, so a
+repository whose trust state could make those queries hide a write is
+never answered with a confident clean: the manifest is omitted with the
+`measurement failed` reason, and a declared-writes check skips, when
+the state was already unsafe before the run started or a trust input
+moved while the run was in flight. Five families of inputs are
+watched, captured from the repository itself before the first worker
+starts and re-read after the run ends:
+
+- Index visibility markers. A `skip-worktree` or `assume-unchanged`
+  entry makes git suppress the worktree comparison for that file, so a
+  rewrite of it is invisible to every diff the measurement runs: an
+  entry already marked before the run hides with no drift to detect,
+  and a marker that appears during the run is drift.
+- `core.trustctime`. Git trusts the stat cache without comparing
+  content when size and modification time match and ctime is not
+  trusted, so `core.trustctime=false` can make git itself report
+  nothing for a same-size rewrite with a restored modification time.
+  The effective value (false, true, or the true default) is recorded
+  before the run and compared after it: an unsafe pre-existing value
+  and a value that changed during the run are both unavailable.
+- `core.fileMode`. Git suppresses every tracked mode-only difference
+  when it is false, so a chmod the run made on an untouched file would
+  be invisible to every diff the measurement runs. The effective value
+  (false, true, or the true default) is recorded before the run and
+  compared after it: an unsafe pre-existing value and a value that
+  changed during the run are both unavailable.
+- Ignore-rule inputs beyond the tree. The untracked listing honours
+  `$GIT_DIR/info/exclude` and the effective `core.excludesFile` (the
+  configured file, or the XDG default when unset), so a rule appended
+  to either during the run can hide untracked paths the run wrote.
+  Each file is stamped without reading its contents, and the effective
+  value is recorded; a moved stamp or a moved value is drift.
+- In-tree `.gitignore` rule files. The untracked listing honours every
+  `.gitignore` rule file git consults in the tree, so a rule appended
+  to one during the run — or a new rule file created during the run,
+  including one whose own rules exclude it — can hide untracked paths
+  the run wrote. The rule files are enumerated with git's own listings
+  (the tracked ones, the visible untracked ones, and the ones git
+  itself ignores, each restricted to `.gitignore` names), never with a
+  filesystem walk and never by entering a nested repository, and their
+  set and local content identity are recorded: a rule file that
+  appears, disappears, or changes content during the run is drift.
+  Content identity means the bytes — for a symlink, its target string
+  — so a same-size rewrite with a restored modification time is still
+  drift, while a write that leaves the bytes identical is not. This is
+  a watch on the rule files git's own listings name, not a full audit
+  of every ignore source git could read.
+
+Any of these makes the measurement unavailable rather than clean — a
+wrong "clean" is worse than an admitted "unavailable". Ordinary worker
+activity never trips the watch: staging and committing change no trust
+input, and ignore rules that already existed when the run started
+applied equally to the pre-run and post-run passes.
 
 The manifest covers the paths `git` tracks or would track. Ignore rules
 exclude untracked paths only: an ignored path is outside both the manifest
