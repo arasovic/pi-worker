@@ -2098,22 +2098,21 @@ func TestControllerChangesNotGatedByGitTripwire(t *testing.T) {
 }
 
 func TestControllerChangesMeasuredOnExpiredContext(t *testing.T) {
-	// A run that timed out mid-edit is exactly the run whose changes a
-	// caller most needs: the manifest must still be measured, under a
-	// context independent of the expired parent, against the before
-	// state recorded while the parent was still alive. The deadline
-	// fires while the worker is still holding the workspace, the way a
-	// real run that consumed its whole budget mid-edit would.
+	// A run that finished its edit before the deadline is still the run
+	// whose changes a caller most needs: the manifest must be measured
+	// under a context independent of the expired parent, against the
+	// before state recorded while the parent was still live. The test
+	// synchronizes so the worker writes the file, closes the manual
+	// deadline channel, and only then lets the run observe the expired
+	// context.
 	dir := newGitRepo(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
+	done := make(chan struct{})
+	ctx := &manualDeadlineContext{Context: context.Background(), done: done}
 	worker := &changesMutatingWorker{mutate: func(dir string) error {
 		if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("left behind\n"), 0o644); err != nil {
 			return err
 		}
-		// Still mid-edit when the deadline fires: wait the parent out
-		// instead of returning, so the run reports timed-out.
-		<-ctx.Done()
+		close(done)
 		return nil
 	}}
 	req := validRequest("a")
