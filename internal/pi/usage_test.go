@@ -235,6 +235,56 @@ func TestUsageAccumulatorMeasuredToolRunSumsMessagesOnce(t *testing.T) {
 	}
 }
 
+func TestUsageAccumulatorPi085RepeatedNonzeroFramesCountOnce(t *testing.T) {
+	// Real Pi 0.85.0 tool trace: the tool message repeats the same nonzero
+	// cumulative usage on toolcall_start, toolcall_delta and toolcall_end
+	// (input 1283, output 152, cacheRead 0, cacheWrite 0, reasoning 0,
+	// totalTokens 1435), so the three frames must replace rather than sum.
+	// The following text message carries zero usage on text_start and
+	// text_delta, then input 158, output 142, cacheRead 1265, cacheWrite 0,
+	// totalTokens 1565 on text_end. The correct total is input 1441,
+	// output 294, cacheRead 1265, totalTokens 3000; reasoning was reported
+	// (0) so it stays present.
+	a := &usageAccumulator{}
+	toolUsage := `{"input":1283,"output":152,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":1435,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+	textUsage := `{"input":158,"output":142,"cacheRead":1265,"cacheWrite":0,"totalTokens":1565,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+	stream := []Event{
+		event("message_start"),
+		messageUpdate(toolUsage, "toolcall_start"),
+		messageUpdate(toolUsage, "toolcall_delta"),
+		messageUpdate(toolUsage, "toolcall_end"),
+		event("message_end"),
+		event("message_start"),
+		messageUpdate(zeroUsage, "text_start"),
+		messageUpdate(zeroUsage, "text_delta"),
+		messageUpdate(textUsage, "text_end"),
+		event("message_end"),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 1441, Output: 294, CacheRead: 1265, CacheWrite: 0, TotalTokens: 3000,
+		Reasoning: intPtr(0),
+		Cost:      UsageCost{},
+	}
+	if got == nil {
+		t.Fatalf("snapshot = nil, want Pi 0.85.0 repeated-frame total present")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want %#v: repeated nonzero frames within one message must replace, not sum", got, want)
+	}
+	if got.Reasoning == nil || *got.Reasoning != 0 {
+		t.Fatalf("reasoning = %v, want 0 present: Pi 0.85.0 tool message reported reasoning", got.Reasoning)
+	}
+	if got.CacheWrite1h != nil {
+		t.Fatalf("cacheWrite1h = %v, want absent", got.CacheWrite1h)
+	}
+}
+
 func TestUsageAccumulatorUnterminatedMessageStillCounts(t *testing.T) {
 	// A message whose end never arrives — a timed-out or cancelled run —
 	// still contributes what it reported. The commit happens on both

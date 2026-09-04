@@ -34,18 +34,21 @@ type UsageCost struct {
 
 // usageAccumulator is the worker's usage measurement. It implements
 // EventHandler, summing the usage of every assistant message. The
-// message_update subtypes observed on the wire against Pi 0.84.4 are
+// message_update subtypes observed on the wire against Pi 0.85.0 (and
+// earlier 0.84.4) are
 // thinking_start, thinking_delta, thinking_end, text_start, text_delta,
 // text_end, toolcall_start, toolcall_delta, and toolcall_end — that is
 // what has been observed, not a closed set — and no "done" or "error"
-// subtype is ever forwarded by the RPC transport. Numbers appear on the
-// end frame of each content block (thinking_end, toolcall_end, text_end),
-// and a message can carry more than one such frame; each carries the
-// message's cumulative usage so far, so the latest one reported is the
-// message's figure and summing the frames would double-count what was
-// already cumulative. The accumulator therefore names no subtype, so a
-// subtype not yet observed cannot break it. It remembers each message's
-// latest reported usage and commits it once, on the message_start and
+// subtype is ever forwarded by the RPC transport. Against Pi 0.85.0 usage
+// may repeat as the same cumulative message figure on start/delta/end
+// frames (for example toolcall_start, toolcall_delta and toolcall_end
+// each carrying the identical tool-message total, and text_start and
+// text_delta carrying zero before text_end carries the final figure), so
+// the latest frame replaces earlier frames rather than adding to them and
+// each message is committed once on the message_start/message_end
+// boundaries. The accumulator therefore names no subtype, so a subtype not
+// yet observed cannot break it. It remembers each message's latest
+// reported usage and commits it once, on the message_start and
 // message_end boundaries, so a message is counted exactly once whether
 // its end frame arrives or not. The client calls OnEvent from its single
 // driving goroutine, matching the client's single-flight contract, so the
