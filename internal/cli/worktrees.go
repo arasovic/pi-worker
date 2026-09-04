@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
+	"text/tabwriter"
 )
 
 // worktreesOptions carries one parsed `pi-worker worktrees` invocation.
@@ -14,6 +19,67 @@ import (
 type worktreesOptions struct {
 	command string
 	json    bool
+}
+
+const worktreesSchemaVersion = 1
+
+type worktreeListEntry struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	Dirty  bool   `json:"dirty"`
+	Merged bool   `json:"merged"`
+}
+
+func worktreesListCommand(parent context.Context, opts worktreesOptions, stdout, stderr io.Writer) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
+		return 9
+	}
+	worktrees, err := listManagedWorktrees(parent, cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: list worktrees: %v\n", err)
+		return 9
+	}
+	if worktrees == nil {
+		worktrees = []managedWorktree{}
+	}
+	if opts.json {
+		entries := make([]worktreeListEntry, 0, len(worktrees))
+		for _, w := range worktrees {
+			entries = append(entries, worktreeListEntry{Name: w.name, Path: w.path, Branch: w.branch, Dirty: w.dirty, Merged: w.merged})
+		}
+		output := struct {
+			SchemaVersion int                 `json:"schemaVersion"`
+			Worktrees     []worktreeListEntry `json:"worktrees"`
+		}{
+			SchemaVersion: worktreesSchemaVersion,
+			Worktrees:     entries,
+		}
+		data, err := json.Marshal(output)
+		if err != nil {
+			fmt.Fprintf(stderr, "pi-worker: encode worktrees: %v\n", err)
+			return 9
+		}
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
+	if len(worktrees) == 0 {
+		fmt.Fprintln(stdout, "no managed worktrees")
+		return 0
+	}
+	renderWorktreeTable(stdout, worktrees)
+	return 0
+}
+
+func renderWorktreeTable(w io.Writer, worktrees []managedWorktree) {
+	tab := tabwriter.NewWriter(w, 0, 4, 4, ' ', 0)
+	fmt.Fprintln(tab, "NAME\tPATH\tBRANCH\tDIRTY\tMERGED")
+	for _, wt := range worktrees {
+		fmt.Fprintf(tab, "%s\t%s\t%s\t%t\t%t\n", wt.name, wt.path, wt.branch, wt.dirty, wt.merged)
+	}
+	tab.Flush()
 }
 
 // parseWorktreesArgs parses the `pi-worker worktrees` argv. The only
