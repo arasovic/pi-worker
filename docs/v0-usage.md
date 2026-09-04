@@ -152,7 +152,11 @@ pi-worker doctor [--timeout <duration>] [--json] [--debug]
   an overall readiness line. For a completed inspection, `--json` writes exactly
   one `doctor.Result` document to stdout. A timed-out, cancelled, or internally
   aborted inspection writes no result to stdout; `--debug` and diagnostics write
-  only to stderr.
+  only to stderr. An unexpected internal failure (exit code `9`) prints the fixed
+  line ``pi-worker: the model catalog could not be inspected; run
+  `pi-worker models` for the detailed error`` when the model catalog is the
+  failed area: doctor never echoes the underlying error text, and `models` is
+  the command that reports it. stdout/JSON stays empty on that path.
 - Exit codes are `0` for ready or warning-only results, `3` for readiness
   failures, `7` for timeout, `8` for cancellation, and `9` for protocol or
   internal failures. Invalid flags return `2` before an inspection starts.

@@ -271,6 +271,14 @@ func TestRunClassifiesCatalogProtocolAsInternal(t *testing.T) {
 	if FailureKindOf(err) != FailureInternal {
 		t.Fatalf("FailureKindOf(%v) = %q", err, FailureKindOf(err))
 	}
+	if !IsModelCatalogFailure(err) {
+		t.Fatalf("IsModelCatalogFailure(%v) = false, want true", err)
+	}
+	// The error text is fixed: it never carries the underlying error's
+	// prose, so no seeded value can leak through it.
+	if strings.Contains(err.Error(), seededSecret) {
+		t.Fatalf("failure text echoes the underlying cause: %q", err.Error())
+	}
 }
 
 func TestRunCancellationAndTimeoutTakePrecedence(t *testing.T) {
