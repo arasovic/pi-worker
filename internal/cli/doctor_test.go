@@ -121,12 +121,55 @@ func TestDoctorExitClassification(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			installDoctorDependencies(t, test.deps())
-			code, stdout, _ := runCLIWithContext(t, test.ctx, []string{"doctor", "--json"}, "")
+			code, stdout, stderr := runCLIWithContext(t, test.ctx, []string{"doctor", "--json"}, "")
 			if code != test.want {
 				t.Fatalf("exit = %d, want %d", code, test.want)
 			}
 			if test.wantOutput != (stdout != "") {
 				t.Fatalf("stdout = %q, want output = %v", stdout, test.wantOutput)
+			}
+			if test.name == "internal" {
+				wantErr := "pi-worker: the model catalog could not be inspected; run `pi-worker models` for the detailed error"
+				if stderr != wantErr+"\n" {
+					t.Fatalf("stderr = %q, want %q", stderr, wantErr+"\n")
+				}
+			}
+		})
+	}
+}
+
+// TestDoctorInternalFailureUsesFixedWordingAndNeverEchoesTheCause pins the
+// issue-66 contract: an unexpected doctor failure keeps exit 9 and empty
+// stdout/JSON, and the stderr line is fixed wording naming the failed area
+// and the next command — the underlying protocol error's prose is never
+// echoed, in human mode or JSON mode.
+func TestDoctorInternalFailureUsesFixedWordingAndNeverEchoesTheCause(t *testing.T) {
+	const seeded = "seeded-internal-detail"
+	for _, format := range []struct {
+		name string
+		args []string
+	}{
+		{name: "human", args: []string{"doctor"}},
+		{name: "json", args: []string{"doctor", "--json"}},
+	} {
+		t.Run(format.name, func(t *testing.T) {
+			deps := readyDoctorDependencies()
+			deps.Catalog = &fakeCatalog{err: &pi.ProtocolError{Message: "bad " + seeded}}
+			installDoctorDependencies(t, deps)
+
+			code, stdout, stderr := runCLI(t, format.args, "")
+			if code != 9 {
+				t.Fatalf("exit = %d, want 9", code)
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty: an aborted inspection renders no result", stdout)
+			}
+			wantErr := "pi-worker: the model catalog could not be inspected; run `pi-worker models` for the detailed error\n"
+			if stderr != wantErr {
+				t.Fatalf("stderr = %q, want fixed wording %q", stderr, wantErr)
+			}
+			if strings.Contains(stderr, seeded) || strings.Contains(stderr, "protocol error") || strings.Contains(stderr, "encountered an internal error") {
+				t.Fatalf("stderr echoes the underlying cause: %q", stderr)
 			}
 		})
 	}

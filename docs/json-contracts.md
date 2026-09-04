@@ -65,7 +65,9 @@ makes `ready` false.
 
 A completed inspection emits the document even when readiness exit code 3 is
 returned. A timed-out, cancelled, or internally aborted inspection emits no
-partial document.
+partial document: stdout/JSON stays empty, including on the unexpected
+internal-failure path (exit code `9`) where stderr carries the fixed wording
+that names the failed area and the next command for the detailed error.
 
 ## `config show --json`
 

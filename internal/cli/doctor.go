@@ -132,7 +132,13 @@ func doctorExitCode(ctx context.Context, result doctor.Result, err error, stderr
 		fmt.Fprintln(stderr, "pi-worker: doctor cancelled")
 		return 8
 	case err != nil:
-		fmt.Fprintln(stderr, "pi-worker: doctor encountered an internal error")
+		// Fixed safe wording: names the failed area and the next
+		// command; the underlying error's prose is never echoed.
+		if doctor.IsModelCatalogFailure(err) {
+			fmt.Fprintln(stderr, "pi-worker: the model catalog could not be inspected; run `pi-worker models` for the detailed error")
+			return 9
+		}
+		fmt.Fprintln(stderr, "pi-worker: doctor could not complete its inspection")
 		return 9
 	case !result.Ready:
 		return 3

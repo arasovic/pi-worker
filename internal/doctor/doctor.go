@@ -41,7 +41,12 @@ const (
 	FailureCancellation FailureKind = "cancellation"
 )
 
-type failure struct{ kind FailureKind }
+// failure is the private error type of an aborted doctor inspection.
+// modelCatalog marks the failed area so the CLI can pick its fixed message.
+type failure struct {
+	kind         FailureKind
+	modelCatalog bool
+}
 
 func (f *failure) Error() string { return string(f.kind) }
 
@@ -51,6 +56,14 @@ func FailureKindOf(err error) FailureKind {
 		return failed.kind
 	}
 	return FailureInternal
+}
+
+// IsModelCatalogFailure reports whether err aborted the doctor inspection
+// because the model catalog could not be inspected. The CLI uses it to pick
+// the fixed message naming the failed area.
+func IsModelCatalogFailure(err error) bool {
+	var failed *failure
+	return errors.As(err, &failed) && failed.modelCatalog
 }
 
 type Dependencies struct {
@@ -180,7 +193,9 @@ func Run(ctx context.Context, deps Dependencies) (Result, error) {
 	if catalogErr != nil {
 		var readiness *pi.ReadinessError
 		if !errors.As(catalogErr, &readiness) {
-			return result, &failure{kind: FailureInternal}
+			// The catalog is the only step that can abort a completed
+			// inspection for an unexpected reason.
+			return result, &failure{kind: FailureInternal, modelCatalog: true}
 		}
 	}
 
