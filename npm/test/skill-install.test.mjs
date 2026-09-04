@@ -15,6 +15,16 @@ import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
 const realRulesPath = fileURLToPath(new URL("../generated/skills-rules.json", import.meta.url));
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const SAFE_RETRY = "npm install -g --foreground-scripts pi-worker";
+const OWNER_DEATH_GUARD_SNIPPET = `const ownerPid = process.ppid;
+const ownerCheck = setInterval(() => {
+  try {
+    if (process.ppid !== ownerPid) process.exit(0);
+    process.kill(ownerPid, 0);
+  } catch {
+    process.exit(0);
+  }
+}, 50);
+if (ownerCheck.unref) ownerCheck.unref();`;
 
 const rules = {
   schemaVersion: 3,
@@ -1040,7 +1050,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     writeFileSync(cli, `
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import process from "node:process";
-
+${OWNER_DEATH_GUARD_SNIPPET}
 process.on("SIGINT", () => {
   writeFileSync(${JSON.stringify(stopped)}, "SIGINT\\n");
   process.exit(130);
@@ -1172,6 +1182,132 @@ process.stdout.write("RESULT:" + result.outcome + "\\n");
     assert.equal(nextChild.calls.length, 0);
   });
 }
+
+test("detached installer terminates shortly after owner is hard-killed", { timeout: 10_000 }, async (t) => {
+  if (process.platform === "win32") return t.skip("process-group signals are not portable on windows");
+
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const childPidFile = join(f.root, "owner-killed-child.pid");
+  const cli = join(f.root, "owner-killed-installer.mjs");
+  const harness = join(f.root, "owner-killed-harness.mjs");
+  const installModule = fileURLToPath(new URL("../lib/skill-install.mjs", import.meta.url));
+  writeFileSync(cli, `
+import { cpSync, mkdirSync } from "node:fs";
+import process from "node:process";
+${OWNER_DEATH_GUARD_SNIPPET}
+mkdirSync(${JSON.stringify(join(canonical, ".."))}, { recursive: true });
+cpSync(${JSON.stringify(f.skill)}, ${JSON.stringify(canonical)}, { recursive: true });
+process.stdout.write("READY\\n");
+setInterval(() => {}, 1_000_000);
+`);
+  writeFileSync(harness, `
+import { writeFileSync } from "node:fs";
+import { spawn as realSpawn } from "node:child_process";
+import { installSkill } from ${JSON.stringify(installModule)};
+const childSpawn = (...args) => {
+  const child = realSpawn(...args);
+  writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+  child.stdout?.on("data", (chunk) => process.stdout.write(chunk));
+  child.stderr?.on("data", (chunk) => process.stderr.write(chunk));
+  return child;
+};
+const home = ${JSON.stringify(f.home)};
+await installSkill({
+  packageRoot: ${JSON.stringify(f.root)},
+  bundledSkill: ${JSON.stringify(f.skill)},
+  binary: "/native/pi-worker",
+  home,
+  env: { HOME: home },
+  receiptPathFromNative: async () => ${JSON.stringify(f.receipt)},
+  loadRules: () => (${JSON.stringify(rules)}),
+  resolveAllTargets: () => [${JSON.stringify(join(f.home, ".test", "skills"))}],
+  spawn: childSpawn,
+  cli: ${JSON.stringify(cli)},
+  timeoutMs: 10_000,
+});
+`);
+
+  const runner = childProcessSpawn(process.execPath, [harness], {
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+  let output = "";
+  runner.stdout.setEncoding("utf8");
+  runner.stderr.setEncoding("utf8");
+  runner.stdout.on("data", (chunk) => { output += chunk; });
+  runner.stderr.on("data", (chunk) => { output += chunk; });
+  runner.unref();
+  const harnessPid = runner.pid;
+  assert.ok(Number.isInteger(harnessPid) && harnessPid > 0);
+
+  const waitForRunnerClose = async (timeoutMs = 2000) => {
+    if (runner.exitCode !== null || runner.signalCode !== null) return;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        runner.off("close", onClose);
+        reject(new Error(`harness ${harnessPid} did not close within ${timeoutMs}ms; output=${output}`));
+      }, timeoutMs);
+      const onClose = () => { clearTimeout(timer); resolve(); };
+      runner.once("close", onClose);
+    });
+  };
+  const waitForChildExit = async (pid, deadlineMs = 2000) => {
+    const deadline = Date.now() + deadlineMs;
+    while (true) {
+      try { process.kill(pid, 0); } catch (error) { if (error?.code === "ESRCH") return; throw error; }
+      if (Date.now() >= deadline) throw new Error(`child ${pid} still alive after hard-kill of owner; output=${output}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  };
+
+  let childPid;
+  let readySettled = false;
+  let closeListener;
+  let errorListener;
+  t.after(async () => {
+    if (closeListener) runner.off("close", closeListener);
+    if (errorListener) runner.off("error", errorListener);
+    const pidToCheck = Number.isInteger(childPid) ? childPid : (() => { try { return Number(readFileSync(childPidFile, "utf8")); } catch { return undefined; } })();
+    if (runner.exitCode === null && runner.signalCode === null) {
+      try { process.kill(-harnessPid, "SIGKILL"); } catch {}
+    }
+    await waitForRunnerClose(2000);
+    if (Number.isInteger(pidToCheck) && pidToCheck > 0 && pidToCheck !== process.pid) {
+      try { process.kill(pidToCheck, "SIGKILL"); } catch {}
+      await waitForChildExit(pidToCheck, 2000);
+      assert.throws(() => process.kill(pidToCheck, 0), (e) => e.code === "ESRCH");
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    const onData = () => {
+      if (output.includes("READY\n")) {
+        readySettled = true;
+        runner.stdout.off("data", onData);
+        if (closeListener) runner.off("close", closeListener);
+        if (errorListener) runner.off("error", errorListener);
+        resolve();
+      }
+    };
+    errorListener = reject;
+    closeListener = (code, signal) => {
+      if (!readySettled) reject(new Error(`harness exited before READY: ${code}/${signal}; ${output}`));
+    };
+    runner.stdout.on("data", onData);
+    runner.once("error", errorListener);
+    runner.once("close", closeListener);
+    if (output.includes("READY\n")) onData();
+  });
+
+  childPid = Number(readFileSync(childPidFile, "utf8"));
+  assert.ok(Number.isInteger(childPid) && childPid > 0, `invalid child pid ${childPid} output=${output}`);
+  process.kill(-harnessPid, "SIGKILL");
+  await waitForRunnerClose(2000);
+  assert.equal(runner.signalCode, "SIGKILL", `expected harness hard-killed; output=${output}`);
+  await waitForChildExit(childPid, 2000);
+  assert.throws(() => process.kill(childPid, 0), (e) => e.code === "ESRCH");
+});
 
 for (const streamName of ["stdout", "stderr"]) {
   test(`bounds ${streamName}, escalates once, and waits for child close`, async (t) => {
