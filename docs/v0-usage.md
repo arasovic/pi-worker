@@ -422,6 +422,13 @@ Replace the provider/model placeholder with one exact selector printed by
 
 - `--verify <command>` may be given at most once and runs one check command
   in the workspace after the workers settle, once per run.
+- The workspace git state, the change manifest, and the `--writes` verdict
+  describe the delegated workers: they are captured after the workers settle
+  and before the verification command runs, so files the check creates,
+  changes, commits, or removes never appear in those evidence objects. The
+  verification result records only the command's own exit code and output.
+  A caller who needs a clean evidence report must either keep the check
+  read-only or inspect its artifacts separately.
 - No shell is involved: the value is split on whitespace into argv, so
   shell syntax cannot work. A value containing `|`, `&`, `;`, `<`, `>`,
   `$`, a backtick, a newline, a quote, or a backslash is rejected as a
@@ -457,7 +464,9 @@ Replace the provider/model placeholder with one exact selector printed by
 - When the current directory is inside a git work tree, `run` records
   the git state once before any worker starts and once after every
   worker settles: HEAD, the current branch, the dirty flag, and the
-  stash count. There is no flag for this; it happens on every run.
+  stash count. There is no flag for this; it happens on every run. The
+  after state is taken before the verification command runs, so a
+  check that moves git state is not part of the `git` object.
 - When the run moved HEAD, the branch, or the stash list, human mode
   prints one `pi-worker: warning: the run changed git state: ...` line
   on stderr naming what moved, and `--json` mode carries a `git` object

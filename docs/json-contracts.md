@@ -277,7 +277,14 @@ and `reasoning` are present only when some message reported them.
 
 Verification is additive and optional, so `schemaVersion` stays `1`. Root
 `verification` appears only when `--verify` ran on a completed run; a run
-without the flag, or one that did not complete, carries none:
+without the flag, or one that did not complete, carries none. The evidence
+objects describe the delegated workers after they settle: workspace git
+state, the change manifest, and the `--writes` verdict are captured before
+the verification command runs, so files the check creates, changes,
+commits, or removes never appear in them. The verification result records
+only the command's own exit code and output; a caller who needs a clean
+evidence report must keep the check read-only or inspect its artifacts
+separately.
 
 - `argv`: the check command split into argv (always present)
 - `exitCode`: the process exit code (always present); a passing check
@@ -302,7 +309,9 @@ Git state is additive and optional, so `schemaVersion` stays `1`. Root
 `git` appears only when a run moved the workspace's HEAD, its branch,
 or a stash entry appeared or disappeared between the start and the end
 of the run; a modified working tree alone (only `dirty` differing) does
-not produce it. When present it carries `before`, `after`, and
+not produce it. The after state is captured before the verification
+command runs, so a check that moves git state is not part of the `git`
+object. When present it carries `before`, `after`, and
 optional `stash`; `before` and `after` each with:
 
 - `head`: always present; the empty string when the branch is unborn
@@ -383,8 +392,10 @@ manifest unavailable rather than clean.
 
 The manifest is measured against the git state recorded before the first
 worker started, so a run that committed its own work still lists the files
-it changed. Because the measurement compares the workspace before the run
-against the workspace after it, it cannot tell the run's writes from
+it changed, and before the verification command runs, so a check that
+writes files is not part of the manifest. Because the measurement
+compares the workspace before the run against the workspace after it, it
+cannot tell the run's writes from
 anyone else's: a file an editor or a watcher saves while the run is in
 flight appears as a change the run made, and with `--writes` declared the
 check reports it undeclared and the run exits `4`. While a run is in

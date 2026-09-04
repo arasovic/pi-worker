@@ -34,7 +34,10 @@ comes back, and a pipe hands it to the downstream tool instead.
 Add `--verify <command>` when the finished workspace must be proven green
 (e.g. `go test ./...`). The check runs once after the workers settle and
 is split on whitespace into argv: no shell is involved, so shell syntax
-is rejected up front, not executed.
+is rejected up front, not executed. The result's `git`, `changes`, and
+`writes` describe the workers only: they are captured before the check
+runs, so keep the check read-only or inspect its artifacts separately
+when you need a clean evidence report.
 
 Parse the single JSON document. A run can end without producing a document;
 then the exit code is the signal. An exit of 2 always means the command was
