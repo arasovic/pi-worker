@@ -36,6 +36,7 @@ type QueueTicket struct {
 	cancelRequested bool
 	cancelled       bool
 	releasePending  *Lease
+	beforeTryGrant  func() // optional test hook; nil for production tickets
 }
 
 // Lease holds a granted admission ticket.
@@ -50,6 +51,10 @@ type Lease struct {
 // errQueueTicketCancelled is the package-private sentinel returned by Wait
 // when the ticket is cancelled before or during grant.
 var errQueueTicketCancelled = errors.New("admission wait: ticket cancelled")
+
+// errQueueTicketMissing is the package-private sentinel wrapped by tryGrant
+// when the ticket ID is absent after a locked state load and reaping.
+var errQueueTicketMissing = errors.New("admission: ticket missing after locked state load/reaping")
 
 // pollInterval is the time between polls while waiting for a queued ticket
 // to become grantable. It is a private test seam.
@@ -189,7 +194,7 @@ func (g *Gate) tryGrant(ctx context.Context, ticketID string, owner ownerIdentit
 		// Find our ticket.
 		idx := findTicketIndex(st.Tickets, ticketID)
 		if idx < 0 {
-			return false, fmt.Errorf("ticket %q not found: reaped while waiting", ticketID)
+			return false, fmt.Errorf("ticket %q not found: reaped while waiting: %w", ticketID, errQueueTicketMissing)
 		}
 		t := &st.Tickets[idx]
 
@@ -304,9 +309,19 @@ func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 		}
 		t.mu.Unlock()
 
+		if t.beforeTryGrant != nil {
+			t.beforeTryGrant()
+		}
+
 		lease, err := t.gate.tryGrant(ctx, t.ticketID, t.owner)
 		if err != nil {
+			t.mu.Lock()
+			cancelIntent := t.cancelRequested || t.cancelled
+			t.mu.Unlock()
 			cancelErr := t.Cancel()
+			if errors.Is(err, errQueueTicketMissing) && cancelIntent {
+				return nil, errors.Join(errQueueTicketCancelled, cancelErr)
+			}
 			return nil, errors.Join(fmt.Errorf("admission wait: %w", err), cancelErr)
 		}
 		if lease != nil {
