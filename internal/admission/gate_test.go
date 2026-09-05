@@ -1259,3 +1259,251 @@ func TestGateAcquireWorkerIDNotPositive(t *testing.T) {
 		}
 	}
 }
+
+func TestGateReleaseRetryAfterTransientFailure(t *testing.T) {
+	root := t.TempDir()
+	restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
+		5000: {exists: true, createTime: 5000000},
+	})
+	installSequentialTicketIDs(t, "RR-")
+
+	g, _ := openGateForTest(t, root, 1)
+
+	// 1. Acquire one lease.
+	lease, err := g.Acquire(context.Background(), Request{RunID: "retry-run", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("Acquire returned nil lease")
+	}
+
+	// 2. Save exact valid state.json bytes.
+	validBytes, err := os.ReadFile(filepath.Join(root, "state.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// 3. Replace state.json with malformed JSON so first Release fails.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(`{bad json`), 0o600); err != nil {
+		t.Fatalf("WriteFile corrupt: %v", err)
+	}
+	if err := lease.Release(); err == nil {
+		t.Fatal("Release on corrupt state = nil, want error")
+	}
+
+	// 4. Restore the exact valid bytes.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+
+	// 5. Second Release succeeds.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("second Release: %v", err)
+	}
+
+	// 6. Third Release is idempotent.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("third Release: %v", err)
+	}
+
+	// 7. Final state has no tickets and unchanged nextSequence.
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
+}
+
+func TestGateRemoveQueuedTicketExactCleanupAndStalePersistence(t *testing.T) {
+	root := t.TempDir()
+	owner := restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
+		5000: {exists: true, createTime: 5000000},
+	})
+	installSequentialTicketIDs(t, "RQ-")
+
+	// Preload: leased ticket (owner match), target queued ticket (owner match),
+	// stale unrelated ticket (different owner, absent PID).
+	leased := ticket{
+		ID: "leased-1", Sequence: 1, RunID: "leased-run",
+		WorkerID: 1, OwnerPID: owner.PID, OwnerCreateTime: owner.CreateTime,
+		State: ticketLeased,
+	}
+	target := ticket{
+		ID: "target-q", Sequence: 2, RunID: "target-run",
+		WorkerID: 2, OwnerPID: owner.PID, OwnerCreateTime: owner.CreateTime,
+		State: ticketQueued,
+	}
+	stale := ticket{
+		ID: "stale-1", Sequence: 3, RunID: "stale-run",
+		WorkerID: 3, OwnerPID: 9999, OwnerCreateTime: 9999000,
+		State: ticketQueued,
+	}
+	if err := saveState(root, state{
+		SchemaVersion: 1, NextSequence: 4,
+		Tickets: []ticket{leased, target, stale},
+	}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	g, err := Open(root, 2)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// Call removeQueuedTicket for the target queued ticket.
+	if err := g.removeQueuedTicket("target-q"); err != nil {
+		t.Fatalf("removeQueuedTicket(target-q): %v", err)
+	}
+
+	// Target queued and stale are gone; leased remains; nextSequence unchanged.
+	st := readStateForTest(t, root)
+	assertNextSequence(t, st, 4)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].ID != "leased-1" {
+		t.Errorf("remaining ticket ID = %q, want leased-1", st.Tickets[0].ID)
+	}
+	if st.Tickets[0].State != ticketLeased {
+		t.Errorf("remaining ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
+	}
+
+	// Calling removeQueuedTicket with the leased ticket ID must not remove it.
+	if err := g.removeQueuedTicket("leased-1"); err != nil {
+		t.Fatalf("removeQueuedTicket(leased-1): %v", err)
+	}
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].ID != "leased-1" {
+		t.Errorf("after remove leased: ID = %q, want leased-1", st.Tickets[0].ID)
+	}
+}
+
+func TestGateCanceledTryGrant(t *testing.T) {
+	root := t.TempDir()
+	owner := restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
+		5000: {exists: true, createTime: 5000000},
+	})
+	installSequentialTicketIDs(t, "CG-")
+
+	// Preload: one matching-owner queued ticket eligible under maxLive=1.
+	if err := saveState(root, state{
+		SchemaVersion: 1, NextSequence: 2,
+		Tickets: []ticket{{
+			ID: "q-ticket", Sequence: 1, RunID: "cancel-run",
+			WorkerID: 1, OwnerPID: owner.PID, OwnerCreateTime: owner.CreateTime,
+			State: ticketQueued,
+		}},
+	}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	g, err := Open(root, 1)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// Cancel context before calling tryGrant.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// tryGrant with canceled context: must return nil Lease and
+	// errors.Is(err, context.Canceled).
+	lease, err := g.tryGrant(ctx, "q-ticket", g.owner)
+	if lease != nil {
+		t.Fatal("tryGrant(canceled) returned non-nil lease")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("tryGrant(canceled) error = %v, want context.Canceled", err)
+	}
+
+	// Durable ticket remains queued (not leased).
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].ID != "q-ticket" {
+		t.Errorf("ticket ID = %q, want q-ticket", st.Tickets[0].ID)
+	}
+	if st.Tickets[0].State != ticketQueued {
+		t.Errorf("ticket state = %q, want %q (still queued)", st.Tickets[0].State, ticketQueued)
+	}
+
+	// removeQueuedTicket cleans it.
+	if err := g.removeQueuedTicket("q-ticket"); err != nil {
+		t.Fatalf("removeQueuedTicket: %v", err)
+	}
+	assertNoTickets(t, root)
+}
+
+func TestGateOneGrantPerTransition(t *testing.T) {
+	root := t.TempDir()
+	owner := restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
+		5000: {exists: true, createTime: 5000000},
+	})
+	installSequentialTicketIDs(t, "OG-")
+
+	// Preload three matching-owner queued tickets in sequence, maxLive=3.
+	if err := saveState(root, state{
+		SchemaVersion: 1, NextSequence: 4,
+		Tickets: []ticket{
+			{ID: "og-1", Sequence: 1, RunID: "run-1", WorkerID: 1,
+				OwnerPID: owner.PID, OwnerCreateTime: owner.CreateTime, State: ticketQueued},
+			{ID: "og-2", Sequence: 2, RunID: "run-2", WorkerID: 2,
+				OwnerPID: owner.PID, OwnerCreateTime: owner.CreateTime, State: ticketQueued},
+			{ID: "og-3", Sequence: 3, RunID: "run-3", WorkerID: 3,
+				OwnerPID: owner.PID, OwnerCreateTime: owner.CreateTime, State: ticketQueued},
+		},
+	}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	g, err := Open(root, 3)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// One direct tryGrant call for the first ticket returns its Lease.
+	lease, err := g.tryGrant(ctx, "og-1", g.owner)
+	if err != nil {
+		t.Fatalf("tryGrant(og-1): %v", err)
+	}
+	if lease == nil {
+		t.Fatal("tryGrant(og-1) returned nil lease")
+	}
+
+	// Inspect: exactly one ticket leased, two remain queued in order.
+	st := readStateForTest(t, root)
+	assertNextSequence(t, st, 4)
+	assertTicketCount(t, st, 3)
+
+	var leasedIDs, queuedIDs []string
+	for _, tk := range st.Tickets {
+		switch tk.State {
+		case ticketLeased:
+			leasedIDs = append(leasedIDs, tk.ID)
+		case ticketQueued:
+			queuedIDs = append(queuedIDs, tk.ID)
+		}
+	}
+	if len(leasedIDs) != 1 || leasedIDs[0] != "og-1" {
+		t.Fatalf("leased IDs = %v, want [og-1]", leasedIDs)
+	}
+	if len(queuedIDs) != 2 || queuedIDs[0] != "og-2" || queuedIDs[1] != "og-3" {
+		t.Fatalf("queued IDs = %v, want [og-2 og-3]", queuedIDs)
+	}
+
+	// Release the returned Lease.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertTicketCount(t, readStateForTest(t, root), 2)
+
+	// Clean the two queued tickets.
+	if err := g.removeQueuedTicket("og-2"); err != nil {
+		t.Fatalf("removeQueuedTicket(og-2): %v", err)
+	}
+	if err := g.removeQueuedTicket("og-3"); err != nil {
+		t.Fatalf("removeQueuedTicket(og-3): %v", err)
+	}
+	assertNoTickets(t, root)
+	assertNextSequence(t, readStateForTest(t, root), 4)
+}

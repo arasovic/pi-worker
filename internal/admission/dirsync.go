@@ -5,17 +5,8 @@ import (
 	"os"
 )
 
-type directorySyncHandle interface {
-	Sync() error
-	Close() error
-}
-
-var openDirectoryForSync = func(path string) (directorySyncHandle, error) {
-	return os.Open(path)
-}
-
 func syncParentDirectory(path string) error {
-	dir, err := openDirectoryForSync(path)
+	dir, err := os.Open(path)
 	if err != nil {
 		return err
 	}
