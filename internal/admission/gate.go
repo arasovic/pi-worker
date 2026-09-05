@@ -434,6 +434,19 @@ func (l *Lease) releaseUnderLock() error {
 	return nil
 }
 
+// Reconcile reaps stale entries under the lock and saves when any were
+// removed; a clean state is left untouched. It never enqueues, cancels,
+// grants, or fabricates a ticket. Errors are wrapped with "admission
+// reconcile:" while preserving underlying identities such as ErrUnsupported.
+func (g *Gate) Reconcile() error {
+	if err := g.updateState(func(_ *state) (bool, error) {
+		return false, nil
+	}); err != nil {
+		return fmt.Errorf("admission reconcile: %w", err)
+	}
+	return nil
+}
+
 // reapStale removes tickets whose owner status is ownerStale. ownerSame and
 // ownerUncertain tickets are retained. It reports whether any ticket was
 // removed so callers know when a save is required to persist the reaping.
