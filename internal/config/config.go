@@ -10,18 +10,19 @@ import (
 	"strings"
 )
 
-// schemaVersion is the only supported document version.
-const schemaVersion = 1
+// schemaVersion is the current supported document version.
+const schemaVersion = 2
 
 // Config is the personal configuration document for pi-worker.
 type Config struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	DefaultModel  string `json:"defaultModel"`
+	SchemaVersion   int    `json:"schemaVersion"`
+	DefaultModel    string `json:"defaultModel"`
+	MaxModelWorkers int    `json:"maxModelWorkers"`
 }
 
 // Empty returns a valid configuration with no default model.
 func Empty() Config {
-	return Config{SchemaVersion: schemaVersion}
+	return Config{SchemaVersion: schemaVersion, MaxModelWorkers: 3}
 }
 
 // UserDir returns the default configuration directory for pi-worker.
@@ -44,7 +45,7 @@ func UserPath() (string, error) {
 }
 
 // Validate reports whether cfg is a well-formed configuration document.
-// The schema version must be 1. DefaultModel may be empty; a non-empty
+// The schema version must be 2. DefaultModel may be empty; a non-empty
 // value must be an exact provider/model selector: it must split at its
 // first slash into a non-empty provider and a non-empty id. Nothing about
 // the id's contents is inspected: the catalog a default is chosen from is
@@ -52,10 +53,13 @@ func UserPath() (string, error) {
 // whether a name has a shape a name can have. The one asymmetry is the
 // provider half: a selector names the provider as everything before the
 // first slash, so a catalog entry whose provider itself contains a slash
-// can never be named by any selector.
+// can never be named by any selector. MaxModelWorkers must be positive.
 func Validate(cfg Config) error {
 	if cfg.SchemaVersion != schemaVersion {
 		return fmt.Errorf("unsupported schemaVersion %d: want %d", cfg.SchemaVersion, schemaVersion)
+	}
+	if cfg.MaxModelWorkers <= 0 {
+		return fmt.Errorf("maxModelWorkers must be positive, got %d", cfg.MaxModelWorkers)
 	}
 	if cfg.DefaultModel == "" {
 		return nil

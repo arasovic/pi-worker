@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,14 +79,23 @@ func openConfig(path string) (io.ReadCloser, error) {
 	return nil, err
 }
 
+// wireConfig is the JSON wire format for configuration documents.
+// MaxModelWorkers is json.RawMessage so that Load can distinguish omission
+// (schema 1) from an explicit JSON null, a number, or any other value.
+type wireConfig struct {
+	SchemaVersion   int             `json:"schemaVersion"`
+	DefaultModel    string          `json:"defaultModel"`
+	MaxModelWorkers json.RawMessage `json:"maxModelWorkers"`
+}
+
 // loadFile decodes and validates one configuration document from r. The
 // caller has already opened the file and reports its own open errors, so
 // decode and validation failures are the only errors that surface here.
 func loadFile(path string, r io.Reader) (Config, error) {
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
-	var cfg Config
-	if err := dec.Decode(&cfg); err != nil {
+	var wire wireConfig
+	if err := dec.Decode(&wire); err != nil {
 		return Config{}, fmt.Errorf("load config %s: %v", path, err)
 	}
 	var extra any
@@ -95,10 +105,62 @@ func loadFile(path string, r io.Reader) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("load config %s: %v", path, err)
 	}
+
+	var cfg Config
+	switch wire.SchemaVersion {
+	case 1:
+		// Schema 1 permits only schemaVersion and defaultModel.
+		if wire.MaxModelWorkers != nil {
+			return Config{}, fmt.Errorf("load config %s: maxModelWorkers is not valid in schema version 1", path)
+		}
+		cfg = Config{
+			SchemaVersion:   2,
+			DefaultModel:    wire.DefaultModel,
+			MaxModelWorkers: 3,
+		}
+	case 2:
+		if wire.MaxModelWorkers == nil {
+			return Config{}, fmt.Errorf("load config %s: maxModelWorkers is required in schema version 2", path)
+		}
+		if isJSONNull(wire.MaxModelWorkers) {
+			return Config{}, fmt.Errorf("load config %s: maxModelWorkers is required in schema version 2, got null", path)
+		}
+		mw, err := parsePositiveInt(wire.MaxModelWorkers)
+		if err != nil {
+			return Config{}, fmt.Errorf("load config %s: maxModelWorkers must be a positive integer: %v", path, err)
+		}
+		cfg = Config{
+			SchemaVersion:   2,
+			DefaultModel:    wire.DefaultModel,
+			MaxModelWorkers: mw,
+		}
+	default:
+		return Config{}, fmt.Errorf("load config %s: unsupported schemaVersion %d", path, wire.SchemaVersion)
+	}
+
 	if err := Validate(cfg); err != nil {
 		return Config{}, fmt.Errorf("load config %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// isJSONNull reports whether raw is a JSON null literal.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
+}
+
+// parsePositiveInt decodes raw as a JSON integer and returns it if it is
+// strictly positive. An error is returned for non-integer values, zero,
+// or negative numbers.
+func parsePositiveInt(raw json.RawMessage) (int, error) {
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return 0, fmt.Errorf("%s: not an integer", string(raw))
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("%d: not positive", v)
+	}
+	return v, nil
 }
 
 // Save writes cfg to path atomically. The document is validated before the
