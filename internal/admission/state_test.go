@@ -106,6 +106,11 @@ func TestValidateEmptyState(t *testing.T) {
 			state:   state{SchemaVersion: 1, NextSequence: -1, Tickets: []ticket{}},
 			wantErr: true,
 		},
+		{
+			name:    "nil tickets",
+			state:   state{SchemaVersion: 1, NextSequence: 1},
+			wantErr: true,
+		},
 	}
 
 	for _, test := range tests {
@@ -258,6 +263,57 @@ func TestValidateTicketsLeasedState(t *testing.T) {
 	if err := validateState(s); err != nil {
 		t.Fatalf("validateState() = %v, want nil for leased ticket", err)
 	}
+}
+
+func TestValidateNilTickets(t *testing.T) {
+	s := emptyState()
+	s.Tickets = nil
+	err := validateState(s)
+	if err == nil {
+		t.Fatal("validateState() = nil, want error for nil Tickets")
+	}
+	if !strings.Contains(err.Error(), "tickets") {
+		t.Fatalf("validateState() error = %v, want message mentioning tickets", err)
+	}
+}
+
+func TestLoadRejectsOmittedTickets(t *testing.T) {
+	dir := t.TempDir()
+	writeStateFile(t, dir, `{"schemaVersion":1,"nextSequence":1}`)
+	_, err := loadState(dir)
+	if err == nil {
+		t.Fatal("loadState() = nil, want error for omitted tickets")
+	}
+	// The file on disk must not be modified.
+	if got, _ := os.ReadFile(statePath(dir)); !strings.Contains(string(got), "nextSequence") {
+		t.Fatal("file was modified after loadState rejected omitted tickets")
+	}
+}
+
+func TestLoadRejectsNullTickets(t *testing.T) {
+	dir := t.TempDir()
+	content := `{"schemaVersion":1,"nextSequence":1,"tickets":null}`
+	writeStateFile(t, dir, content)
+	_, err := loadState(dir)
+	if err == nil {
+		t.Fatal("loadState() = nil, want error for tickets:null")
+	}
+	// The file on disk must not be modified.
+	if got, _ := os.ReadFile(statePath(dir)); string(got) != content {
+		t.Fatalf("file changed after failed load:\nbefore: %q\nafter:  %q", content, string(got))
+	}
+}
+
+func TestSaveRejectsNilTickets(t *testing.T) {
+	dir := t.TempDir()
+	bad := state{SchemaVersion: 1, NextSequence: 1, Tickets: nil}
+	if err := saveState(dir, bad); err == nil {
+		t.Fatal("saveState() = nil, want error for nil Tickets")
+	}
+	if _, err := os.Stat(statePath(dir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(state.json) = %v, want fs.ErrNotExist", err)
+	}
+	assertNoTempFiles(t, dir)
 }
 
 func TestLoadMissingFile(t *testing.T) {

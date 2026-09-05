@@ -36,7 +36,7 @@ func loadState(root string) (state, error) {
 		return state{}, fmt.Errorf("load admission state %s: refusing to read through a symbolic link", path)
 	}
 
-	f, err := os.Open(path)
+	f, err := openState(path)
 	if err != nil {
 		return state{}, fmt.Errorf("load admission state %s: %w", path, err)
 	}

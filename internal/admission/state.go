@@ -48,10 +48,10 @@ func emptyState() state {
 
 // validateState reports whether s is a well-formed admission state.
 // It rejects unsupported schema versions, non-positive nextSequence,
-// tickets not ordered by ascending sequence, duplicate ticket IDs or
-// sequences, nextSequence not strictly greater than every existing
-// sequence, and any ticket with zero or missing fields or an unknown
-// state string.
+// a nil tickets slice, tickets not ordered by ascending sequence,
+// duplicate ticket IDs or sequences, nextSequence not strictly greater
+// than every existing sequence, and any ticket with zero or missing
+// fields or an unknown state string.
 func validateState(s state) error {
 	if s.SchemaVersion != schemaVersion {
 		return fmt.Errorf("unsupported schemaVersion %d: want %d", s.SchemaVersion, schemaVersion)
@@ -60,7 +60,7 @@ func validateState(s state) error {
 		return fmt.Errorf("nextSequence must be positive, got %d", s.NextSequence)
 	}
 	if s.Tickets == nil {
-		s.Tickets = []ticket{}
+		return fmt.Errorf("tickets must not be nil")
 	}
 	seenIDs := make(map[string]bool, len(s.Tickets))
 	var lastSeq int
