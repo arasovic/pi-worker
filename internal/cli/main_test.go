@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
+	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/piversion"
@@ -2688,4 +2690,79 @@ func TestRunExitCodePrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunOpensForegroundAdmissionFromResolvedConfig(t *testing.T) {
+	t.Run("passes root and limit", func(t *testing.T) {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, "config.json")
+		if err := config.Save(configPath, config.Config{SchemaVersion: 2, MaxModelWorkers: 1}); err != nil {
+			t.Fatal(err)
+		}
+		installConfigPath(t, configPath)
+
+		var capturedRoot string
+		var capturedMax int
+		original := openAdmission
+		openAdmission = func(root string, maxLive int) (*admission.Gate, error) {
+			capturedRoot = root
+			capturedMax = maxLive
+			return admission.Open(t.TempDir(), maxLive)
+		}
+		t.Cleanup(func() { openAdmission = original })
+
+		installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+		code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work"}, "")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+		}
+		if got := capturedMax; got != 1 {
+			t.Fatalf("captured max = %d, want 1", got)
+		}
+		wantRoot := filepath.Join(filepath.Dir(configPath), "admission")
+		if got := capturedRoot; got != wantRoot {
+			t.Fatalf("captured root = %q, want %q", got, wantRoot)
+		}
+	})
+
+	t.Run("open failure starts nothing", func(t *testing.T) {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, "nonexistent.json")
+		installConfigPath(t, configPath)
+
+		var capturedRoot string
+		var capturedMax int
+		original := openAdmission
+		openAdmission = func(root string, maxLive int) (*admission.Gate, error) {
+			capturedRoot = root
+			capturedMax = maxLive
+			return nil, errors.New("admission unavailable")
+		}
+		t.Cleanup(func() { openAdmission = original })
+
+		fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--json", "--task", "work"}, "")
+		if code != 9 {
+			t.Fatalf("exit = %d, want 9; stderr = %q", code, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(stderr, "pi-worker: open foreground admission: admission unavailable") {
+			t.Fatalf("stderr = %q, want it to contain the admission error", stderr)
+		}
+		if strings.Contains(stderr, "usage:") {
+			t.Fatalf("stderr must not contain usage text: %q", stderr)
+		}
+		if fake.callCount() != 0 {
+			t.Fatalf("worker invoked %d times, want 0", fake.callCount())
+		}
+		if got := capturedMax; got != 3 {
+			t.Fatalf("captured max = %d, want 3", got)
+		}
+		wantRoot := filepath.Join(configDir, "admission")
+		if got := capturedRoot; got != wantRoot {
+			t.Fatalf("captured root = %q, want %q", got, wantRoot)
+		}
+	})
 }
