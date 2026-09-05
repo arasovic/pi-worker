@@ -1,6 +1,6 @@
-// Package config provides the foundational personal configuration document
-// for pi-worker: a versioned JSON file storing only the default model
-// selector. The schema is deliberately minimal and provider-neutral.
+// Package config provides the versioned personal configuration document
+// for pi-worker, storing the default model selector and machine-owned
+// model-worker limit while remaining provider-neutral.
 package config
 
 import (
