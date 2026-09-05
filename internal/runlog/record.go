@@ -112,6 +112,17 @@ type Recorder struct {
 	writeErr error
 }
 
+// RunID returns the shared identity of a run record before the record
+// exists: startedAt in UTC as 20060102T150405Z, a hyphen, and the
+// writer's process id. Start uses it for the record file's name and
+// every line's runId.
+func RunID(startedAt time.Time) string {
+	// The id embeds the process id so two runs starting in the same
+	// second cannot collide: the timestamp's finest unit is the second,
+	// and the process id separates the runs that share it.
+	return startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
+}
+
 // Start writes the start line of one run's record before the run
 // begins: the run's identity, workspace, and each task's projection —
 // model, thinking level, the prompt (capped), the write declaration,
@@ -137,10 +148,7 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	// The run id embeds the process id so two runs starting in the same
-	// second cannot collide: the timestamp's finest unit is the second,
-	// and the process id separates the runs that share it.
-	runID := startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
+	runID := RunID(startedAt)
 	// The creation-time lookup and the marshalling of the start line
 	// happen before the record file exists: everything that can fail
 	// or block — the process-table read, the JSON encoding — completes

@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
+	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/piversion"
@@ -62,11 +64,32 @@ func TestMain(m *testing.M) {
 	}
 	originalRunlogDir := runlogDir
 	runlogDir = func() (string, error) { return recordDir, nil }
+	// Point the userConfigPath seam at one temporary directory for the
+	// whole package test run too, so no test that reaches the run
+	// configuration reads the user's real config.json: the file is left
+	// absent here, so the loader reports the not-exist error and callers
+	// fall back to config.Empty() defaults, and any foreground admission
+	// state derived beside the config file stays under the system
+	// temporary directory with the fake-Pi and runlog resources. Tests
+	// that need a real on-disk config install their own path over this
+	// redirect. The seam is restored on the same path where the other
+	// temporary directories are removed below.
+	configDir, err := os.MkdirTemp("", "pi-worker-cli-config-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create config directory: %v\n", err)
+		os.RemoveAll(dir)
+		os.RemoveAll(recordDir)
+		os.Exit(1)
+	}
+	originalUserConfigPath := userConfigPath
+	userConfigPath = func() (string, error) { return filepath.Join(configDir, "config.json"), nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
 	runlogDir = originalRunlogDir
+	userConfigPath = originalUserConfigPath
 	os.RemoveAll(dir)
 	os.RemoveAll(recordDir)
+	os.RemoveAll(configDir)
 	os.Exit(code)
 }
 
@@ -1789,25 +1812,26 @@ func TestRunTimeoutFlag(t *testing.T) {
 	// the test about the deadline passed to the worker, rather than whether
 	// setup and a successful worker result happen to fit inside 250ms.
 	fake.runHook = func() { time.Sleep(300 * time.Millisecond) }
-	// Anchor the measurement before the run: the deadline is fixed at
-	// 250ms from when the run created it, so measuring against this
-	// anchor does not decay while the run completes the way
-	// time.Until(deadline) measured afterwards would.
-	start := time.Now()
+	// Record when the admitted worker is actually invoked, so we can
+	// measure the full execution budget from that point.
+	var workerStarted time.Time
+	fake.onRequest = func(pi.WorkerRequest) { workerStarted = time.Now() }
 	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--timeout", "250ms"}, "")
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
+	}
+	if workerStarted.IsZero() {
+		t.Fatalf("worker was never invoked")
 	}
 	deadline, ok := fake.deadlineForWorker(1)
 	if !ok {
 		t.Fatalf("worker had no deadline")
 	}
-	// Distance from the pre-run anchor, not from now: the deadline was
-	// created during the run, so it is always at least 250ms past the
-	// anchor and at most ~250ms of run-setup overhead past it.
-	fromStart := deadline.Sub(start)
-	if fromStart < 250*time.Millisecond || fromStart > 500*time.Millisecond {
-		t.Fatalf("deadline is %v from run start, want about 250ms", fromStart)
+	// The full 250ms execution budget starts when the admitted worker
+	// is invoked, not when the CLI process begins.
+	delta := deadline.Sub(workerStarted)
+	if delta < 225*time.Millisecond || delta > 275*time.Millisecond {
+		t.Fatalf("deadline is %v after worker start, want about 250ms", delta)
 	}
 }
 
@@ -1879,24 +1903,20 @@ func TestRunTimedOutContextHumanPrintsOutcomeLineLast(t *testing.T) {
 }
 
 func TestRunTimedOutHumanPrintsPartialTextOnStdout(t *testing.T) {
-	// A run killed mid-answer: the worker result carries the salvaged
-	// text, the error line still goes to stderr exactly as before, and
-	// the salvaged text is printed on stdout in full, marked
-	// (incomplete) so it cannot read as a finished answer. The context
-	// is already expired and the fake worker ignores it, so the
-	// controller reports a real timed-out run while the scripted result
-	// — the only way PartialExplanation can reach the renderer —
-	// survives.
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	fake := installFakeWorker(t, pi.WorkerResult{
+	// A timed-out worker that salvaged partial text: the result carries
+	// the salvaged explanation, the error line still goes to stderr
+	// exactly as before, and the salvaged text is printed on stdout in
+	// full, marked (incomplete) so it cannot read as a finished answer.
+	f := installFakeWorker(t, pi.WorkerResult{
 		Model:              "acme/m-1",
 		Status:             pi.StatusTimedOut,
 		Error:              "timed out",
 		PartialExplanation: "partial text from the interrupted run",
 	})
-	fake.ignoreContext = true
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if f.callCount() != 1 {
+		t.Fatalf("worker calls = %d, want 1", f.callCount())
+	}
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
@@ -1910,11 +1930,11 @@ func TestRunTimedOutHumanPrintsNothingExtraWhenPartialTextEmpty(t *testing.T) {
 	// A timed-out worker with no salvaged text prints nothing extra:
 	// stdout stays exactly the change-manifest line followed by the
 	// final outcome line, and the error line still names the timeout.
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"})
-	fake.ignoreContext = true
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	f := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if f.callCount() != 1 {
+		t.Fatalf("worker calls = %d, want 1", f.callCount())
+	}
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
@@ -2669,5 +2689,212 @@ func TestRunExitCodePrecedence(t *testing.T) {
 				t.Fatalf("outcome = %q, want %q", gotOutcome, test.wantOutcome)
 			}
 		})
+	}
+}
+
+func TestRunOpensForegroundAdmissionFromResolvedConfig(t *testing.T) {
+	t.Run("passes root and limit", func(t *testing.T) {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, "config.json")
+		if err := config.Save(configPath, config.Config{SchemaVersion: 2, MaxModelWorkers: 1}); err != nil {
+			t.Fatal(err)
+		}
+		installConfigPath(t, configPath)
+
+		var capturedRoot string
+		var capturedMax int
+		original := openAdmission
+		openAdmission = func(root string, maxLive int) (*admission.Gate, error) {
+			capturedRoot = root
+			capturedMax = maxLive
+			return admission.Open(t.TempDir(), maxLive)
+		}
+		t.Cleanup(func() { openAdmission = original })
+
+		installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+		code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work"}, "")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+		}
+		if got := capturedMax; got != 1 {
+			t.Fatalf("captured max = %d, want 1", got)
+		}
+		wantRoot := filepath.Join(filepath.Dir(configPath), "admission")
+		if got := capturedRoot; got != wantRoot {
+			t.Fatalf("captured root = %q, want %q", got, wantRoot)
+		}
+	})
+
+	t.Run("open failure starts nothing", func(t *testing.T) {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, "nonexistent.json")
+		installConfigPath(t, configPath)
+
+		var capturedRoot string
+		var capturedMax int
+		original := openAdmission
+		openAdmission = func(root string, maxLive int) (*admission.Gate, error) {
+			capturedRoot = root
+			capturedMax = maxLive
+			return nil, errors.New("admission unavailable")
+		}
+		t.Cleanup(func() { openAdmission = original })
+
+		fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--json", "--task", "work"}, "")
+		if code != 9 {
+			t.Fatalf("exit = %d, want 9; stderr = %q", code, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("stdout = %q, want empty", stdout)
+		}
+		if !strings.Contains(stderr, "pi-worker: open foreground admission: admission unavailable") {
+			t.Fatalf("stderr = %q, want it to contain the admission error", stderr)
+		}
+		if strings.Contains(stderr, "usage:") {
+			t.Fatalf("stderr must not contain usage text: %q", stderr)
+		}
+		if fake.callCount() != 0 {
+			t.Fatalf("worker invoked %d times, want 0", fake.callCount())
+		}
+		if got := capturedMax; got != 3 {
+			t.Fatalf("captured max = %d, want 3", got)
+		}
+		wantRoot := filepath.Join(configDir, "admission")
+		if got := capturedRoot; got != wantRoot {
+			t.Fatalf("captured root = %q, want %q", got, wantRoot)
+		}
+	})
+}
+
+func TestRunConfiguredMaxModelWorkersSerializesForegroundTasks(t *testing.T) {
+	// Save schema-2 config with MaxModelWorkers 1 and install it so the
+	// admission gate derived beside the config file is test-scoped.
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.json")
+	if err := config.Save(configPath, config.Config{SchemaVersion: 2, MaxModelWorkers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, configPath)
+
+	// Use the real default openAdmission: the config path makes its derived
+	// admission root test-scoped.
+
+	// Install a completed fake worker with per-worker release channels and
+	// an onRequest hook that records which worker IDs start.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	started := make(chan int, 2)
+	fake.onRequest = func(req pi.WorkerRequest) { started <- req.WorkerID }
+	fake.releaseByWorker = map[int]chan struct{}{
+		1: make(chan struct{}),
+		2: make(chan struct{}),
+	}
+
+	// Cancellable parent context and bounded cleanup. If an assertion
+	// fails while a worker is still held, cleanup cancels the parent so
+	// the CLI goroutine's context selects unblock; runDone then proves
+	// the goroutine actually exited and cannot outlive the test.
+	runDone := make(chan struct{})
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		parentCancel()
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Error("CLI goroutine did not exit within 5s of parent cancellation")
+		}
+	})
+
+	type cliResult struct {
+		code   int
+		stdout string
+		stderr string
+	}
+	resultCh := make(chan cliResult, 1)
+	go func() {
+		defer close(runDone)
+		code, stdout, stderr := runCLIWithContext(t, parentCtx, []string{"run", "--model", "acme/m-1", "--task", "first", "--task", "second"}, "")
+		resultCh <- cliResult{code, stdout, stderr}
+	}()
+
+	// Receive first started ID: must be worker 1.
+	select {
+	case id := <-started:
+		if id != 1 {
+			t.Fatalf("first started worker = %d, want 1", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first worker to start")
+	}
+
+	// While release channel 1 is still open, assert no second worker has
+	// started and concurrency is exactly 1.
+	select {
+	case id := <-started:
+		t.Fatalf("second worker %d started while first still held, want serialization", id)
+	default:
+	}
+	if got := fake.maxConcurrency(); got != 1 {
+		t.Fatalf("max concurrency = %d while holding worker 1, want 1", got)
+	}
+
+	// Close release channel 1. Receive next started ID: must be worker 2.
+	close(fake.releaseByWorker[1])
+	select {
+	case id := <-started:
+		if id != 2 {
+			t.Fatalf("second started worker = %d, want 2", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second worker to start")
+	}
+
+	// Worker 2 is now running and worker 1 has finished: with serialized
+	// foreground tasks the concurrency high-water mark must still be 1.
+	if got := fake.maxConcurrency(); got != 1 {
+		t.Fatalf("max concurrency = %d while running worker 2, want 1", got)
+	}
+	close(fake.releaseByWorker[2])
+
+	// Receive CLI result.
+	var result cliResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for CLI result")
+	}
+
+	if result.code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", result.code, result.stderr)
+	}
+	if fake.maxConcurrency() != 1 {
+		t.Fatalf("max concurrency = %d, want 1", fake.maxConcurrency())
+	}
+	if !strings.Contains(result.stdout, "worker 1: one done") {
+		t.Fatalf("stdout missing worker 1 output: %q", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "worker 2: two done") {
+		t.Fatalf("stdout missing worker 2 output: %q", result.stdout)
+	}
+	// Both outputs must appear in input order.
+	idx1 := strings.Index(result.stdout, "worker 1: one done")
+	idx2 := strings.Index(result.stdout, "worker 2: two done")
+	if idx1 >= idx2 {
+		t.Fatalf("worker 1 output (idx=%d) not before worker 2 output (idx=%d): %q", idx1, idx2, result.stdout)
+	}
+	// The existing shared-workspace warning on stderr is allowed; reject
+	// worker or internal error lines.
+	for _, line := range strings.Split(result.stderr, "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "share the writable current workspace") {
+			continue
+		}
+		t.Fatalf("unexpected stderr line: %q", line)
 	}
 }

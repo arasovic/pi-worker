@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -28,6 +29,8 @@ const defaultRunTimeout = 30 * time.Minute
 // newWorker is a private dependency-injection seam. Tests replace it with a
 // scripted fake so CLI tests never launch the user's real Pi profile.
 var newWorker = func() pi.Worker { return pi.New("pi") }
+
+var openAdmission = admission.Open
 
 const runVersionProbeTimeout = 5 * time.Second
 
@@ -184,26 +187,45 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 }
 
-// resolveRunInput parses the run flags and resolves the task list. It runs
-// before any signal interception: reading the task from stdin must keep the
-// default interrupt behavior.
+// resolveRunInput parses the run flags, resolves the settings and the
+// task list, and resolves the task records. It runs before any signal
+// interception: reading the task from stdin must keep the default
+// interrupt behavior. A run that will need the run-level model resolves
+// the configured default before the prompt read, so a missing or empty
+// default rejects without reading stdin; a run that cannot need it reads
+// the prompt first and reaches the configuration only after that read
+// returns.
 func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, error) {
 	opts, err := parseRunArgs(args)
 	if err != nil {
 		return opts, nil, err
 	}
-	// The run-level model falls back to the configured default, and only
-	// when some task will need it: a task carrying --model of its own
-	// never consults the run-level value. The flag-introduced task list
-	// is known here; a prompt on stdin can never carry a per-task --model
-	// — a --model before it is the run-level value, not its own — so a
-	// stdin run always needs the run-level model.
+	var settings runSettings
+	settingsLoaded := false
+	// A run that will need the run-level model resolves the configured
+	// default before the task list is read: a bare stdin run with no
+	// --model and a missing or empty configured default must reject
+	// before the prompt read blocks with the default SIGINT behavior,
+	// and only a run that cannot need the default — every
+	// flag-introduced task carries --model — reads stdin first.
 	if !opts.modelSpecified && runNeedsModel(opts) {
-		opts.model, err = configuredRunModel()
+		settings, err = configuredRunSettings()
 		if err != nil {
 			return opts, nil, err
 		}
+		settingsLoaded = true
+		opts.maxModelWorkers = settings.maxModelWorkers
+		opts.admissionRoot = settings.admissionRoot
+		opts.model = settings.defaultModel
+		if opts.model == "" {
+			return opts, nil, errors.New("missing required flag --model and no configured default model")
+		}
 	}
+	// The task list is resolved after the model decision above and
+	// before any remaining configuration is consulted: a run that could
+	// not need the configured default reads a bare stdin prompt with the
+	// default SIGINT behavior, and the config is reached only after that
+	// read returns.
 	tasks, err := resolveTasks(opts, stdin)
 	if err != nil {
 		return opts, nil, err
@@ -259,6 +281,22 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 		for len(opts.data) < len(tasks) {
 			opts.data = append(opts.data, run.DataDeclaration{})
 		}
+	}
+	// The persisted configuration is loaded at most once: a run that
+	// needed the default model loaded it above, before the prompt, and
+	// every other run loads it here, after the task list was resolved
+	// and still before any worker starts. Every syntactically valid run
+	// that reaches resolved tasks obtains the admission gate's machine
+	// concurrency limit, even when every task carries an explicit
+	// --model. No default model is resolved in this second load: the
+	// run-level fallback resolved above when some task needed it.
+	if !settingsLoaded {
+		settings, err = configuredRunSettings()
+		if err != nil {
+			return opts, nil, err
+		}
+		opts.maxModelWorkers = settings.maxModelWorkers
+		opts.admissionRoot = settings.admissionRoot
 	}
 	// The pairing stops here: each declaration is bound into the task
 	// record it belongs to, and nothing past this point indexes a task
@@ -323,7 +361,7 @@ func runNeedsModel(opts runOptions) bool {
 
 func reportRunInputError(err error, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-	var configErr *configuredModelError
+	var configErr *configuredRunConfigError
 	if errors.As(err, &configErr) {
 		return 9
 	}
@@ -394,6 +432,14 @@ type runOptions struct {
 	// back to the configured default.
 	model          string
 	modelSpecified bool
+	// maxModelWorkers is the machine concurrency limit resolved from the
+	// persisted configuration file. It is stored here so that the
+	// controller can apply it without re-reading the file.
+	maxModelWorkers int
+	// admissionRoot is the directory beside the configuration file that
+	// will hold admission-gate state. It is resolved from the config
+	// path, not from the current working directory.
+	admissionRoot string
 	// thinking is the run-level value: a --thinking that appeared before
 	// any --task or --task-file. The empty level means unset; off is an
 	// explicit level, never conflated with it.
@@ -439,20 +485,17 @@ type runOptions struct {
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
-// task list. The run timeout is a single shared deadline on the caller's
-// context covering every worker: Ctrl-C (or any parent cancellation)
-// cancels the run immediately, and the timeout bounds it when no signal
-// arrives. With --verify, a completed run's workspace is checked once
-// before returning.
+// task list. Foreground tasks are admitted through the machine-wide queue
+// and each receives its requested execution timeout once its lease is
+// granted; Ctrl-C (or any parent cancellation) still cancels the whole
+// run, and with --verify a completed run's workspace is checked once
+// before returning with its own timeout budget.
 func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
 	workspace, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
 		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
-
-	ctx, cancel := context.WithTimeout(parent, opts.timeout)
-	defer cancel()
 
 	// With --worktree the run works in a checkout of its own instead of
 	// the caller's current directory: a linked working directory of
@@ -467,7 +510,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// refuses to create — exits 2; nothing is ever removed on any path.
 	var runWorktree *run.Worktree
 	if opts.worktree != "" {
-		path, branch, err := prepareWorktree(ctx, workspace, opts.worktree)
+		path, branch, err := prepareWorktree(parent, workspace, opts.worktree)
 		if err != nil {
 			// A refusal the caller must fix — a taken name or branch,
 			// or a checkout git itself refused to create — exits 2
@@ -499,10 +542,16 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		debug = pi.NewDebugSink(stderr)
 	}
 
-	preflightPiVersion(ctx, stderr)
+	preflightPiVersion(parent, stderr)
 
 	if len(tasks) > 1 && !allWritesDeclared(tasks) {
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
+	}
+
+	gate, err := openAdmission(opts.admissionRoot, opts.maxModelWorkers)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: open foreground admission: %v\n", err)
+		return 9
 	}
 
 	// The run record is written while the run is in flight: the start
@@ -515,6 +564,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// continues with no recorder, on which Finish and WorkerProcess are
 	// no-ops.
 	startedAt := time.Now()
+	runID := runlog.RunID(startedAt)
 	var recorder *runlog.Recorder
 	dir, err := runlogDir()
 	if err == nil {
@@ -548,11 +598,11 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// for this feature.
 	var controller *run.Controller
 	if len(opts.verify) > 0 {
-		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()))
+		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()), run.WithForegroundAdmission(gate, runID, startedAt, opts.timeout))
 	} else {
-		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()))
+		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()), run.WithForegroundAdmission(gate, runID, startedAt, opts.timeout))
 	}
-	result, err := controller.Run(ctx, run.Request{
+	result, err := controller.Run(parent, run.Request{
 		Tasks:     tasks,
 		Workspace: workspace,
 		Verify:    opts.verify,

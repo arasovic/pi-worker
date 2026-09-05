@@ -85,6 +85,8 @@ is optional and may be an empty string; otherwise it must be one exact
 `provider/model` selector. `maxModelWorkers` is required and must be a positive
 integer. Loading rejects unknown fields, trailing data, invalid selectors,
 unsupported schema versions, and zero or negative `maxModelWorkers`.
+`maxModelWorkers` is the machine-wide foreground admission capacity (default 3,
+config-only; no run or environment variable override).
 
 **Schema 1 (accepted, migrated in memory).** A schema-1 document is accepted
 only when it carries its historical fields (`schemaVersion` and `defaultModel`)
@@ -240,6 +242,12 @@ Required root fields are `schemaVersion`, `status`, `outcome`, and non-null
 `workers`. Root status is `completed`, `partial`, `failed`, `timed-out`, or
 `cancelled`. Workers remain in request order even when concurrent completion
 order differs.
+
+Queue timeout introduces no new JSON field. Each timed-out ticket uses the
+existing per-worker `timed-out` status. Root `outcome` is `partial` when at
+least one task completed and a sibling timed out while queued (completed
+sibling results are retained), and `timeout` when every queued task timed out
+with no completed sibling.
 
 `outcome` is a new required field, and the run document is safe on
 both versioning skews — it never persists and its readers ignore

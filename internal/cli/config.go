@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,17 +21,18 @@ const defaultConfigTimeout = 30 * time.Second
 
 var userConfigPath = configpkg.UserPath
 
-// configuredModelError marks a failure while resolving the configured
-// default model. It is distinct from the ordinary input-resolution errors:
-// a missing or empty default is a usage error, but an invalid on-disk config
-// is an internal failure, just like config show reports it.
-type configuredModelError struct {
+// configuredRunConfigError marks a failure while loading run configuration
+// (the default model and machine concurrency limit) from the persisted
+// configuration file. It is distinct from the ordinary input-resolution
+// errors: a missing or empty default is a usage error, but an invalid
+// on-disk config is an internal failure, just like config show reports it.
+type configuredRunConfigError struct {
 	err error
 }
 
-func (e *configuredModelError) Error() string { return e.err.Error() }
+func (e *configuredRunConfigError) Error() string { return e.err.Error() }
 
-func (e *configuredModelError) Unwrap() error { return e.err }
+func (e *configuredRunConfigError) Unwrap() error { return e.err }
 
 type configOptions struct {
 	command    string
@@ -219,20 +221,34 @@ func catalogContains(models []pi.ModelProjection, selector string) bool {
 	return false
 }
 
-func configuredRunModel() (string, error) {
+// runSettings holds the foreground-run settings resolved from the
+// persisted configuration file exactly once per syntactically valid
+// run, whether or not every task carries an explicit --model.
+type runSettings struct {
+	defaultModel    string
+	maxModelWorkers int
+	admissionRoot   string
+}
+
+// configuredRunSettings resolves the configuration file once and returns
+// the full set of run settings. A missing file yields configpkg.Empty();
+// path-resolution, load, or validation failures are internal run-input
+// errors mapped to exit 9 by reportRunInputError.
+func configuredRunSettings() (runSettings, error) {
 	path, err := userConfigPath()
 	if err != nil {
-		return "", &configuredModelError{err: fmt.Errorf("determine config path: %w", err)}
+		return runSettings{}, &configuredRunConfigError{err: fmt.Errorf("determine config path: %w", err)}
 	}
 	cfg, err := configpkg.Load(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", errors.New("missing required flag --model and no configured default model")
+		cfg = configpkg.Empty()
+	} else if err != nil {
+		return runSettings{}, &configuredRunConfigError{err: fmt.Errorf("load config: %w", err)}
 	}
-	if err != nil {
-		return "", &configuredModelError{err: fmt.Errorf("load configured default: %w", err)}
-	}
-	if cfg.DefaultModel == "" {
-		return "", errors.New("missing required flag --model and no configured default model")
-	}
-	return cfg.DefaultModel, nil
+	admissionRoot := filepath.Join(filepath.Dir(path), "admission")
+	return runSettings{
+		defaultModel:    cfg.DefaultModel,
+		maxModelWorkers: cfg.MaxModelWorkers,
+		admissionRoot:   admissionRoot,
+	}, nil
 }

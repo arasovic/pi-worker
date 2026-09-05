@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -67,7 +66,7 @@ func decodeLine(t *testing.T, line string) map[string]any {
 func TestStartDoesNotCreateRecordFileBeforeCreateTimeLookup(t *testing.T) {
 	dir := t.TempDir()
 	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
-	recordPath := filepath.Join(dir, startedAt.UTC().Format("20060102T150405Z")+"-"+strconv.Itoa(os.Getpid())+".jsonl")
+	recordPath := filepath.Join(dir, RunID(startedAt)+".jsonl")
 	var sawFileDuringLookup bool
 	oldPidCreateTime := pidCreateTime
 	pidCreateTime = func(pid int) (int64, error) {

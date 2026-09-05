@@ -22,6 +22,12 @@ Pi Worker is a small CLI and coding-agent skill. Your primary agent remains the
 orchestrator; Pi Worker starts one to three workers in parallel, keeps results
 in request order, and returns each worker's status and final explanation.
 
+Foreground tasks are admitted through a file-backed machine-wide FIFO that
+enforces `maxModelWorkers` (effective default 3) across all Pi Worker processes
+on the same host. Admitted tasks may run concurrently up to `maxModelWorkers`;
+queue time is bounded at 15 minutes and does not consume the `--timeout`
+budget.
+
 ## Why does it exist?
 
 Using the primary agent for every subtask can consume an expensive or limited

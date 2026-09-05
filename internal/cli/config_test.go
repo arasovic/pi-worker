@@ -345,10 +345,11 @@ func TestConfigSetDebugStaysOnStderrAndCallsCatalogOnce(t *testing.T) {
 	}
 }
 
-func TestMalformedConfigKeepsRunInputErrorsDistinctAndExplicitModelsDoNotReadIt(t *testing.T) {
+func TestMalformedConfigRejectsEveryValidRunBeforeWorkerStarts(t *testing.T) {
 	// A malformed durable document is an internal failure, not an argv
-	// mistake. The explicit-model cases also pin the precedence rule: the
-	// config path is not even resolved when every task already has a model.
+	// mistake. The config is loaded for every syntactically valid run—even
+	// with explicit models—because the machine concurrency limit must be
+	// read before any worker starts.
 	malformed := []byte(`{"schemaVersion":1,"unknown":true}`)
 	empty := []byte(`{"schemaVersion":1}`)
 	for _, test := range []struct {
@@ -357,7 +358,6 @@ func TestMalformedConfigKeepsRunInputErrorsDistinctAndExplicitModelsDoNotReadIt(
 		configData []byte
 		wantCode   int
 		wantUsage  bool
-		wantJSON   bool
 		wantConfig int
 	}{
 		{name: "config show", args: []string{"config", "show"}, configData: malformed, wantCode: 9, wantConfig: 1},
@@ -365,8 +365,8 @@ func TestMalformedConfigKeepsRunInputErrorsDistinctAndExplicitModelsDoNotReadIt(
 		{name: "run malformed default", args: []string{"run", "--task", "work"}, configData: malformed, wantCode: 9, wantConfig: 1},
 		{name: "run malformed default json", args: []string{"run", "--task", "work", "--json"}, configData: malformed, wantCode: 9, wantConfig: 1},
 		{name: "run missing default", args: []string{"run", "--task", "work"}, configData: empty, wantCode: 2, wantUsage: true, wantConfig: 1},
-		{name: "run explicit", args: []string{"run", "--model", "acme/explicit", "--task", "work"}, configData: malformed, wantCode: 0, wantConfig: 0},
-		{name: "run explicit json", args: []string{"run", "--model", "acme/explicit", "--task", "work", "--json"}, configData: malformed, wantCode: 0, wantJSON: true, wantConfig: 0},
+		{name: "run explicit", args: []string{"run", "--model", "acme/explicit", "--task", "work"}, configData: malformed, wantCode: 9, wantConfig: 1},
+		{name: "run explicit json", args: []string{"run", "--model", "acme/explicit", "--task", "work", "--json"}, configData: malformed, wantCode: 9, wantConfig: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
@@ -391,6 +391,9 @@ func TestMalformedConfigKeepsRunInputErrorsDistinctAndExplicitModelsDoNotReadIt(
 			if configCalls != test.wantConfig {
 				t.Fatalf("config path resolved %d times, want %d", configCalls, test.wantConfig)
 			}
+			if fake.callCount() != 0 {
+				t.Fatalf("no worker should start for run error case %q, but worker was called %d times", test.name, fake.callCount())
+			}
 			if test.wantCode == 9 {
 				if stdout != "" || strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "unknown field") {
 					t.Fatalf("malformed config = (%q, %q), want no stdout, no usage, and the config error", stdout, stderr)
@@ -403,37 +406,7 @@ func TestMalformedConfigKeepsRunInputErrorsDistinctAndExplicitModelsDoNotReadIt(
 				}
 				return
 			}
-			if stderr != "" || fake.callCount() != 1 {
-				t.Fatalf("explicit model = (%d, %q, %q), worker calls=%d", code, stdout, stderr, fake.callCount())
-			}
-			if test.wantJSON {
-				_ = decodeJSONObject(t, stdout)
-			} else if !strings.Contains(stdout, "worker 1: done") {
-				t.Fatalf("explicit human stdout = %q", stdout)
-			}
 		})
-	}
-}
-
-func TestRunModelExplicitNeverReadsMalformedConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.json")
-	before := []byte(`{"schemaVersion":1,"unknown":true}`)
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	installConfigPath(t, path)
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
-
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/explicit", "--task", "work"}, "")
-	if code != 0 || stderr != "" {
-		t.Fatalf("run explicit = (%d, %q)", code, stderr)
-	}
-	if req, ok := fake.requestForWorker(1); !ok || req.Model != "acme/explicit" {
-		t.Fatalf("worker request = %#v, present=%v", req, ok)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatalf("config rewritten: %q, %v", after, err)
 	}
 }
 
@@ -851,5 +824,75 @@ func TestConfigSetMaxModelWorkersRejectsBadSyntax(t *testing.T) {
 				t.Fatalf("config file should not exist, err = %v", err)
 			}
 		})
+	}
+}
+
+func TestResolveRunInputAbsentConfigWithExplicitModelAndTask(t *testing.T) {
+	// Absent config: configuredRunSettings returns configpkg.Empty()
+	// defaults (MaxModelWorkers 3) and an admission root beside the config
+	// path. An explicit --model bypasses the default-model resolution, so
+	// the empty default is not an error.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	configCalls := 0
+	original := userConfigPath
+	userConfigPath = func() (string, error) {
+		configCalls++
+		return path, nil
+	}
+	t.Cleanup(func() { userConfigPath = original })
+
+	opts, tasks, err := resolveRunInput([]string{"--model", "acme/explicit", "--task", "work"}, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("resolveRunInput: %v", err)
+	}
+	if configCalls != 1 {
+		t.Fatalf("config path resolved %d times, want 1", configCalls)
+	}
+	if opts.maxModelWorkers != 3 {
+		t.Fatalf("maxModelWorkers = %d, want 3", opts.maxModelWorkers)
+	}
+	wantRoot := filepath.Join(dir, "admission")
+	if opts.admissionRoot != wantRoot {
+		t.Fatalf("admissionRoot = %q, want %q", opts.admissionRoot, wantRoot)
+	}
+	if len(tasks) != 1 || tasks[0].Model != "acme/explicit" {
+		t.Fatalf("tasks = %#v, want one task with model acme/explicit", tasks)
+	}
+}
+
+func TestResolveRunInputSavedConfigDefaultModelAndMaxModelWorkers(t *testing.T) {
+	// A saved config with defaultModel "acme/default" and MaxModelWorkers 5
+	// flows into the run options: the default model applies to the task and
+	// the machine limit is available.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/default", MaxModelWorkers: 5}); err != nil {
+		t.Fatal(err)
+	}
+	configCalls := 0
+	original := userConfigPath
+	userConfigPath = func() (string, error) {
+		configCalls++
+		return path, nil
+	}
+	t.Cleanup(func() { userConfigPath = original })
+
+	opts, tasks, err := resolveRunInput([]string{"--task", "work"}, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("resolveRunInput: %v", err)
+	}
+	if configCalls != 1 {
+		t.Fatalf("config path resolved %d times, want 1", configCalls)
+	}
+	if opts.maxModelWorkers != 5 {
+		t.Fatalf("maxModelWorkers = %d, want 5", opts.maxModelWorkers)
+	}
+	wantRoot := filepath.Join(dir, "admission")
+	if opts.admissionRoot != wantRoot {
+		t.Fatalf("admissionRoot = %q, want %q", opts.admissionRoot, wantRoot)
+	}
+	if len(tasks) != 1 || tasks[0].Model != "acme/default" {
+		t.Fatalf("tasks = %#v, want one task with model acme/default", tasks)
 	}
 }

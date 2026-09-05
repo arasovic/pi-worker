@@ -53,6 +53,36 @@ checkout is a working-directory boundary, not containment: workers retain the
 user's host permissions and can reach outside it. Pi Worker provides lifecycle
 management, not a sandbox.
 
+### Foreground admission
+
+Every foreground task joins one file-backed machine-wide FIFO before any Pi
+process starts. The gate is rooted beside the configuration file (in the
+`admission` subdirectory) and is shared across all Pi Worker processes on the
+same host.
+
+All task tickets for one run are durably enqueued in request order before any
+task waits for a grant, so a multi-task run cannot jump an older ticket.
+`maxModelWorkers` (effective default 3, overridable through config only)
+controls the maximum number of concurrent leased tasks. There is no daemon, no
+foreground priority, no preemption, no run-level flag, and no environment
+variable to bypass admission.
+
+Each task's queue budget is fixed at 15 minutes from the time the run is
+accepted. Queue time is measured independently of `--timeout` and does not
+consume the execution budget. `--timeout` is the per-task execution budget
+starting after that task receives an admission lease. Verification, when
+configured on a completed admitted run, gets its own same-sized budget starting
+when verification begins.
+
+Parent cancellation removes every queued ticket and cancels running workers.
+Leases are held through settled-output attribution and released on terminal
+paths. Stale ownership is detected by PID plus creation-time fail-safe: a
+ticket whose owner process is absent from the process table or whose
+creation time no longer matches is reaped automatically. When the owner
+process is present and the creation time matches, liveness is confirmed.
+When the owner's process-table row cannot be read or the creation time
+is unreadable, the ticket is retained and continues to occupy capacity.
+
 ## Validation Boundary
 
 Model and thinking values may originate in an LLM-generated command, so Pi
