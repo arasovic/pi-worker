@@ -485,11 +485,11 @@ type runOptions struct {
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
-// task list. The run timeout is a single shared deadline on the caller's
-// context covering every worker: Ctrl-C (or any parent cancellation)
-// cancels the run immediately, and the timeout bounds it when no signal
-// arrives. With --verify, a completed run's workspace is checked once
-// before returning.
+// task list. Foreground tasks are admitted through the machine-wide queue
+// and each receives its requested execution timeout once its lease is
+// granted; Ctrl-C (or any parent cancellation) still cancels the whole
+// run, and with --verify a completed run's workspace is checked once
+// before returning with its own timeout budget.
 func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
 	workspace, err := os.Getwd()
 	if err != nil {
