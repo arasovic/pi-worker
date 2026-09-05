@@ -391,21 +391,40 @@ func TestGateAcquireAndRelease(t *testing.T) {
 
 func TestGateMaxLive1SecondAcquireQueued(t *testing.T) {
 	root := t.TempDir()
-	g, _ := openGateForTest(t, root, 1)
-	installSequentialTicketIDs(t, "Q-")
+	g, err := Open(root, 1)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	lease1, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
 
-	acq2Done := make(chan error, 1)
+	type acqResult struct {
+		lease *Lease
+		err   error
+	}
+	acq2Done := make(chan acqResult, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var secondLease *Lease
+	t.Cleanup(func() {
+		cancel()
+		if lease1 != nil {
+			_ = lease1.Release()
+		}
+		wg.Wait()
+		if secondLease != nil {
+			_ = secondLease.Release()
+		}
+	})
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
-		acq2Done <- e
+		defer wg.Done()
+		l, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
+		acq2Done <- acqResult{l, e}
 	}()
 
 	st := waitForCount(t, root, 2)
@@ -420,25 +439,189 @@ func TestGateMaxLive1SecondAcquireQueued(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 
+	var r2 acqResult
 	select {
-	case e := <-acq2Done:
-		if e != nil {
-			t.Fatalf("second Acquire error: %v", e)
-		}
+	case r2 = <-acq2Done:
 	case <-time.After(time.Second):
 		t.Fatal("second Acquire did not complete after release")
 	}
+	if r2.err != nil {
+		t.Fatalf("second Acquire error: %v", r2.err)
+	}
+	if r2.lease == nil {
+		t.Fatal("second Acquire returned nil lease")
+	}
+	secondLease = r2.lease
+	if err := r2.lease.Release(); err != nil {
+		t.Fatalf("Release second: %v", err)
+	}
+	secondLease = nil
 }
 
 func TestGateFIFOStrictOrdering(t *testing.T) {
 	root := t.TempDir()
-	g, _ := openGateForTest(t, root, 1)
-	installSequentialTicketIDs(t, "F-")
+	g, err := Open(root, 1)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	lease0, err := g.Acquire(ctx, Request{RunID: "r0", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+
+	type result struct {
+		name  string
+		lease *Lease
+		err   error
+	}
+	results := make(chan result, 2)
+
+	var wg sync.WaitGroup
+	var rA, rB result
+	wg.Add(2)
+	t.Cleanup(func() {
+		cancel()
+		if lease0 != nil {
+			_ = lease0.Release()
+		}
+		wg.Wait()
+		if rA.lease != nil {
+			_ = rA.lease.Release()
+		}
+		if rB.lease != nil {
+			_ = rB.lease.Release()
+		}
+	})
+
+	// Start A only, then poll until durably queued before starting B.
+	go func() {
+		defer wg.Done()
+		l, e := g.Acquire(ctx, Request{RunID: "rA", WorkerID: 10})
+		results <- result{"A", l, e}
+	}()
+	// Poll until rA is queued.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st := readStateForTest(t, root)
+		for _, tk := range st.Tickets {
+			if tk.RunID == "rA" && tk.State == ticketQueued {
+				goto aQueued
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rA did not become queued within timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+aQueued:
+
+	// Start B now.
+	go func() {
+		defer wg.Done()
+		l, e := g.Acquire(ctx, Request{RunID: "rB", WorkerID: 20})
+		results <- result{"B", l, e}
+	}()
+
+	// Poll until rB is queued and capture sequences.
+	seqMismatch := false
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		st := readStateForTest(t, root)
+		aSeq, bSeq := -1, -1
+		for _, tk := range st.Tickets {
+			if tk.RunID == "rA" && tk.State == ticketQueued {
+				aSeq = tk.Sequence
+			}
+			if tk.RunID == "rB" && tk.State == ticketQueued {
+				bSeq = tk.Sequence
+			}
+		}
+		if aSeq >= 0 && bSeq >= 0 {
+			if aSeq >= bSeq {
+				seqMismatch = true
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("rA or rB did not become queued within timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Release held lease → earlier queued (A) must be granted first.
+	if err := lease0.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+
+	// Collect both results with bounded timeout, releasing each lease immediately
+	// so maxLive=1 can grant the second.
+	order := make([]string, 0, 2)
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for len(order) < 2 {
+		select {
+		case r := <-results:
+			order = append(order, r.name)
+			switch r.name {
+			case "A":
+				rA = r
+			case "B":
+				rB = r
+			}
+			if r.lease != nil {
+				_ = r.lease.Release()
+			}
+		case <-timer.C:
+			cancel()
+			if lease0 != nil {
+				_ = lease0.Release()
+			}
+			wg.Wait()
+			if rA.lease != nil {
+				_ = rA.lease.Release()
+			}
+			if rB.lease != nil {
+				_ = rB.lease.Release()
+			}
+			t.Fatal("timed out waiting for both Acquire results")
+		}
+	}
+
+	// Both goroutines have returned; assert ordering.
+	if seqMismatch {
+		t.Fatalf("A sequence must be < B sequence")
+	}
+	if rA.err != nil {
+		t.Fatalf("A Acquire error: %v", rA.err)
+	}
+	if rB.err != nil {
+		t.Fatalf("B Acquire error: %v", rB.err)
+	}
+	if rA.lease == nil {
+		t.Fatal("A Acquire returned nil lease")
+	}
+	if rB.lease == nil {
+		t.Fatal("B Acquire returned nil lease")
+	}
+	if len(order) != 2 || order[0] != "A" || order[1] != "B" {
+		t.Fatalf("unexpected arrival order: %v, want [A B]", order)
+	}
+}
+
+func TestGateCancelQueuedAcquire(t *testing.T) {
+	root := t.TempDir()
+	g, err := Open(root, 1)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	lease1, err := g.Acquire(ctx, Request{RunID: "r0", WorkerID: 1})
+	r1Lease, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
@@ -447,99 +630,10 @@ func TestGateFIFOStrictOrdering(t *testing.T) {
 		lease *Lease
 		err   error
 	}
-	aDone := make(chan acqResult, 1)
 	bDone := make(chan acqResult, 1)
-
-	// Serialize starts: A must enqueue first to get lower sequence.
-	aStarted := make(chan struct{})
 	go func() {
-		close(aStarted) // signal that we're about to call Acquire
-		l, e := g.Acquire(ctx, Request{RunID: "rA", WorkerID: 10})
-		aDone <- acqResult{l, e}
-	}()
-	<-aStarted // A's goroutine has launched
-	go func() {
-		l, e := g.Acquire(ctx, Request{RunID: "rB", WorkerID: 20})
+		l, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
 		bDone <- acqResult{l, e}
-	}()
-
-	// Wait until both are queued: 1 leased + 2 queued = 3 tickets.
-	waitForCount(t, root, 3)
-
-	// Verify ordering: A must have lower sequence.
-	st := readStateForTest(t, root)
-	aSeq, bSeq := -1, -1
-	for _, tk := range st.Tickets {
-		if tk.RunID == "rA" {
-			aSeq = tk.Sequence
-		}
-		if tk.RunID == "rB" {
-			bSeq = tk.Sequence
-		}
-	}
-	if aSeq >= bSeq {
-		t.Fatalf("A sequence %d must be < B sequence %d", aSeq, bSeq)
-	}
-
-	// Release held lease → earlier queued (A) must be granted first.
-	if err := lease1.Release(); err != nil {
-		t.Fatalf("Release: %v", err)
-	}
-
-	select {
-	case r := <-aDone:
-		if r.err != nil {
-			t.Fatalf("a Acquire error: %v", r.err)
-		}
-		// a got the lease; b must still be queued.
-		st = readStateForTest(t, root)
-		aLeased, bQueued := false, false
-		for _, tk := range st.Tickets {
-			if tk.RunID == "rA" && tk.State == ticketLeased {
-				aLeased = true
-			}
-			if tk.RunID == "rB" && tk.State == ticketQueued {
-				bQueued = true
-			}
-		}
-		if !aLeased {
-			t.Error("request A not leased after first release")
-		}
-		if !bQueued {
-			t.Error("request B not queued after first release")
-		}
-		// Release A's lease → B should be granted.
-		if err := r.lease.Release(); err != nil {
-			t.Fatalf("Release A: %v", err)
-		}
-		r2 := <-bDone
-		if r2.err != nil {
-			t.Fatalf("b Acquire error: %v", r2.err)
-		}
-	case r := <-bDone:
-		t.Fatalf("request B (later sequence %d) was granted before A (sequence %d); err=%v", bSeq, aSeq, r.err)
-	case <-time.After(time.Second):
-		t.Fatal("neither Acquire completed after release")
-	}
-}
-
-func TestGateCancelQueuedAcquire(t *testing.T) {
-	root := t.TempDir()
-	g, _ := openGateForTest(t, root, 1)
-	installSequentialTicketIDs(t, "C-")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	lease1, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
-	if err != nil {
-		t.Fatalf("first Acquire: %v", err)
-	}
-
-	bDone := make(chan error, 1)
-	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
-		bDone <- e
 	}()
 
 	st := waitForCount(t, root, 2)
@@ -551,13 +645,17 @@ func TestGateCancelQueuedAcquire(t *testing.T) {
 	// Cancel the queued Acquire.
 	cancel()
 
+	var r2 acqResult
 	select {
-	case e := <-bDone:
-		if e == nil {
-			t.Fatal("cancelled Acquire returned nil error")
-		}
+	case r2 = <-bDone:
 	case <-time.After(time.Second):
 		t.Fatal("cancelled Acquire did not return after 1s")
+	}
+	if r2.lease != nil {
+		t.Fatal("cancelled Acquire returned non-nil lease")
+	}
+	if !errors.Is(r2.err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", r2.err)
 	}
 
 	// Only the queued ticket was removed; live lease remains.
@@ -571,7 +669,7 @@ func TestGateCancelQueuedAcquire(t *testing.T) {
 		t.Errorf("live ticket RunID = %q, want r1", st.Tickets[0].RunID)
 	}
 
-	if err := lease1.Release(); err != nil {
+	if err := r1Lease.Release(); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 }
