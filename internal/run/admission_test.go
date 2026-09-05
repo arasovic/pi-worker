@@ -4,7 +4,10 @@ package run
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -613,5 +616,59 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 	}
 	if err := probeLease.Release(); err != nil {
 		t.Fatalf("release probe lease: %v", err)
+	}
+}
+
+// TestControllerForegroundAdmissionSurfacesReleaseFailure verifies that a
+// failure releasing a task's lease after its worker has already completed
+// is surfaced honestly: the result still reports the worker's completed
+// outcome, proving the worker ran before the release failed, while the
+// separately returned error carries the internal cleanup failure. The
+// worker replaces the gate's state.json with malformed JSON during
+// execution, so the deferred lease Release — which reloads the gate state
+// — fails after the worker has settled. The root is test-scoped, so the
+// intentionally corrupt ticket state is removed by t.TempDir cleanup.
+func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
+	// A real gate rooted at a test-scoped temp dir, with capacity one.
+	root := t.TempDir()
+	gate, err := admission.Open(root, 1)
+	if err != nil {
+		t.Fatalf("open gate: %v", err)
+	}
+
+	// The worker corrupts the gate's durable state file while it runs:
+	// the deferred Release then reloads the state, hits the malformed
+	// JSON, and fails — after this worker already completed.
+	worker := &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(root, "state.json"), []byte("{definitely not valid json"), 0o600)
+	}}
+	acceptedAt := time.Now()
+	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+
+	result, runErr := controller.Run(context.Background(), validRequest("task-1"))
+
+	// The worker ran and completed before the release failed, so the
+	// result must still carry its completed outcome.
+	if len(result.Workers) != 1 {
+		t.Fatalf("workers = %d, want 1", len(result.Workers))
+	}
+	if result.Workers[0].Status != pi.StatusCompleted {
+		t.Fatalf("worker status = %q, want %q", result.Workers[0].Status, pi.StatusCompleted)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("status = %q, want %q", result.Status, contracts.RunCompleted)
+	}
+
+	// The returned error honestly carries the internal cleanup failure:
+	// it names the failed release of task 1 and the state-load/JSON
+	// failure produced by reloading the corrupt state.
+	if runErr == nil {
+		t.Fatal("Run returned nil error; the release failure must be surfaced")
+	}
+	if !strings.Contains(runErr.Error(), "admission release task 1") {
+		t.Fatalf("Run error = %q, want it to name the failed task 1 release", runErr.Error())
+	}
+	if !strings.Contains(runErr.Error(), "load admission state") {
+		t.Fatalf("Run error = %q, want the state-load/JSON failure from reloading the corrupt state", runErr.Error())
 	}
 }
