@@ -168,6 +168,7 @@ type Controller struct {
 	acceptedAt          time.Time
 	executionTimeout    time.Duration
 	executionContext    func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	queueContext        func(context.Context, time.Time) (context.Context, context.CancelFunc)
 }
 
 // Option configures a Controller.
@@ -206,6 +207,7 @@ func New(worker pi.Worker, opts ...Option) *Controller {
 	c := &Controller{
 		worker:           worker,
 		executionContext: context.WithTimeout,
+		queueContext:     context.WithDeadline,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -401,7 +403,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			// Admission path: wait for the queue ticket, then run under
 			// an execution-timeout context that outlives the lease so the
 			// lease is always released after the worker settles.
-			queueCtx, queueCancel := context.WithDeadline(ctx, c.acceptedAt.Add(foregroundQueueTimeout))
+			queueCtx, queueCancel := c.queueContext(ctx, c.acceptedAt.Add(foregroundQueueTimeout))
 			lease, waitErr := tickets[index].Wait(queueCtx)
 			queueCancel()
 			if waitErr != nil {
