@@ -62,11 +62,32 @@ func TestMain(m *testing.M) {
 	}
 	originalRunlogDir := runlogDir
 	runlogDir = func() (string, error) { return recordDir, nil }
+	// Point the userConfigPath seam at one temporary directory for the
+	// whole package test run too, so no test that reaches the run
+	// configuration reads the user's real config.json: the file is left
+	// absent here, so the loader reports the not-exist error and callers
+	// fall back to config.Empty() defaults, and any foreground admission
+	// state derived beside the config file stays under the system
+	// temporary directory with the fake-Pi and runlog resources. Tests
+	// that need a real on-disk config install their own path over this
+	// redirect. The seam is restored on the same path where the other
+	// temporary directories are removed below.
+	configDir, err := os.MkdirTemp("", "pi-worker-cli-config-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create config directory: %v\n", err)
+		os.RemoveAll(dir)
+		os.RemoveAll(recordDir)
+		os.Exit(1)
+	}
+	originalUserConfigPath := userConfigPath
+	userConfigPath = func() (string, error) { return filepath.Join(configDir, "config.json"), nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
 	runlogDir = originalRunlogDir
+	userConfigPath = originalUserConfigPath
 	os.RemoveAll(dir)
 	os.RemoveAll(recordDir)
+	os.RemoveAll(configDir)
 	os.Exit(code)
 }
 
