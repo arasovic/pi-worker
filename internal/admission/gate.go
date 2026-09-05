@@ -24,15 +24,17 @@ type Gate struct {
 	owner   ownerIdentity
 }
 
-// QueueTicket represents a durably enqueued ticket that has not yet been
-// granted as a Lease. It provides access to the ticket ID for later polling.
+// QueueTicket is the handle for one durably enqueued ticket that has not
+// yet been granted as a Lease. It supports Wait for polling and Cancel
+// for early removal.
 type QueueTicket struct {
-	mu        sync.Mutex
-	gate      *Gate
-	ticketID  string
-	owner     ownerIdentity
-	waited    bool
-	cancelled bool
+	mu              sync.Mutex
+	gate            *Gate
+	ticketID        string
+	owner           ownerIdentity
+	waited          bool
+	cancelRequested bool
+	cancelled       bool
 }
 
 // Lease holds a granted admission ticket.
@@ -43,6 +45,10 @@ type Lease struct {
 	owner    ownerIdentity
 	released bool
 }
+
+// errQueueTicketCancelled is the package-private sentinel returned by Wait
+// when the ticket is cancelled before or during grant.
+var errQueueTicketCancelled = errors.New("admission wait: ticket cancelled")
 
 // pollInterval is the time between polls while waiting for a queued ticket
 // to become grantable. It is a private test seam.
@@ -271,9 +277,10 @@ func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 		t.mu.Unlock()
 		return nil, errors.New("admission wait: already waited")
 	}
-	if t.cancelled {
+	if t.cancelRequested || t.cancelled {
 		t.mu.Unlock()
-		return nil, errors.New("admission wait: ticket cancelled")
+		cancelErr := t.Cancel()
+		return nil, errors.Join(errQueueTicketCancelled, cancelErr)
 	}
 	t.waited = true
 	t.mu.Unlock()
@@ -284,20 +291,32 @@ func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 		return nil, errors.Join(fmt.Errorf("admission wait: %w", err), cancelErr)
 	}
 
-	// Poll for grant, exactly as old Acquire did.
+	// Poll for grant.
 	for {
+		// Check cancelRequested before each poll.
+		t.mu.Lock()
+		if t.cancelRequested || t.cancelled {
+			t.mu.Unlock()
+			cancelErr := t.Cancel()
+			return nil, errors.Join(errQueueTicketCancelled, cancelErr)
+		}
+		t.mu.Unlock()
+
 		lease, err := t.gate.tryGrant(ctx, t.ticketID, t.owner)
 		if err != nil {
 			cancelErr := t.Cancel()
 			return nil, errors.Join(fmt.Errorf("admission wait: %w", err), cancelErr)
 		}
 		if lease != nil {
-			// Check context as the return linearization point.
-			if err := ctx.Err(); err != nil {
+			// Check cancelRequested/cancelled as the return linearization point.
+			t.mu.Lock()
+			if t.cancelRequested || t.cancelled {
+				t.mu.Unlock()
 				releaseErr := lease.Release()
 				cancelErr := t.Cancel()
-				return nil, errors.Join(err, releaseErr, cancelErr)
+				return nil, errors.Join(errQueueTicketCancelled, releaseErr, cancelErr)
 			}
+			t.mu.Unlock()
 			return lease, nil
 		}
 		// Wait for the next poll interval.
@@ -313,7 +332,8 @@ func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 // Cancel removes the queued ticket from the gate. It can be called before
 // Wait for batch rollback or while Wait is blocked. Cancel never removes
 // a lease. On success Cancel is idempotent; on error the caller may retry
-// because the ticket remains in its previous state.
+// because the ticket remains in its previous state (cancelRequested is
+// still true and cancelled is still false).
 func (t *QueueTicket) Cancel() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -321,6 +341,8 @@ func (t *QueueTicket) Cancel() error {
 	if t.cancelled {
 		return nil
 	}
+
+	t.cancelRequested = true
 
 	err := t.gate.removeQueuedTicket(t.ticketID)
 	if err != nil {

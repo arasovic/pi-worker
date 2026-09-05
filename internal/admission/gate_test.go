@@ -236,6 +236,198 @@ func withExtraPIDLookup(extra map[int]pidResp) func(*testGateOpts) {
 
 // --- tests ---
 
+func TestQueueTicketConcurrentCancelWhileWaitIsQueued(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "CC-")
+
+	// Hold one lease under maxLive=1.
+	lease, err := enqueueAndWait(context.Background(), g, Request{RunID: "hold", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("first Wait: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("first Wait returned nil lease")
+	}
+
+	// Enqueue a second ticket; start its Wait in a goroutine.
+	qt, err := g.Enqueue(Request{RunID: "waiter", WorkerID: 2})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Prove it is durably queued.
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 2)
+	if st.Tickets[1].State != ticketQueued {
+		t.Fatalf("second ticket state = %q, want %q", st.Tickets[1].State, ticketQueued)
+	}
+
+	waitDone := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		l, e := qt.Wait(context.Background())
+		if l != nil {
+			_ = l.Release()
+		}
+		waitDone <- e
+	}()
+
+	// Cancel the queued ticket; Wait must return within one second with
+	// nil Lease and an error matching errQueueTicketCancelled.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	select {
+	case e := <-waitDone:
+		if e == nil {
+			t.Fatal("Wait returned nil error after Cancel")
+		}
+		if !errors.Is(e, errQueueTicketCancelled) {
+			t.Fatalf("Wait error = %v, want errQueueTicketCancelled", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return within 1s after Cancel")
+	}
+
+	// Only the held lease remains.
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].State != ticketLeased {
+		t.Errorf("remaining ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
+	}
+
+	// Release and confirm cleanup.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	wg.Wait()
+	assertNoTickets(t, root)
+}
+
+func TestQueueTicketCancelRetryAfterTransientCleanupFailure(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "CRT-")
+
+	// Enqueue one ticket and save exact valid state bytes.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	validBytes, rerr := os.ReadFile(filepath.Join(root, "state.json"))
+	if rerr != nil {
+		t.Fatalf("ReadFile: %v", rerr)
+	}
+
+	// Corrupt state.json so first Cancel fails.
+	writeRawState(t, root, `{bad json`)
+	if err := qt.Cancel(); err == nil {
+		t.Fatal("Cancel(corrupt) = nil, want error")
+	}
+
+	// Assert cancelRequested true and cancelled false under t.mu.
+	qt.mu.Lock()
+	if !qt.cancelRequested {
+		t.Fatal("cancelRequested = false after failed Cancel")
+	}
+	if qt.cancelled {
+		t.Fatal("cancelled = true after failed Cancel")
+	}
+	qt.mu.Unlock()
+
+	// Restore exact valid bytes; second Cancel succeeds.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+
+	// Third Cancel is idempotent.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("third Cancel: %v", err)
+	}
+
+	// Wait now returns the cancelled sentinel before durable change.
+	lease, werr := qt.Wait(context.Background())
+	if lease != nil {
+		t.Fatal("Wait after Cancel returned non-nil lease")
+	}
+	if werr == nil {
+		t.Fatal("Wait after Cancel = nil, want error")
+	}
+	if !errors.Is(werr, errQueueTicketCancelled) {
+		t.Fatalf("Wait after Cancel error = %v, want errQueueTicketCancelled", werr)
+	}
+
+	// Final state empty with NextSequence unchanged.
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
+}
+
+func TestQueueTicketWaitCleanupFailureRecoverableThroughCancel(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "WCR-")
+
+	// Enqueue one ticket, preserve bytes.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	validBytes, rerr := os.ReadFile(filepath.Join(root, "state.json"))
+	if rerr != nil {
+		t.Fatalf("ReadFile: %v", rerr)
+	}
+
+	// Corrupt state.json so Wait cleanup fails.
+	writeRawState(t, root, `{bad json`)
+
+	// Call Wait with an already-cancelled context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lease, werr := qt.Wait(ctx)
+
+	// Require context.Canceled plus cleanup error and nil Lease.
+	if lease != nil {
+		t.Fatal("Wait(cancelled+corrupt) returned non-nil lease")
+	}
+	if werr == nil {
+		t.Fatal("Wait(cancelled+corrupt) = nil, want error")
+	}
+	if !errors.Is(werr, context.Canceled) {
+		t.Fatalf("want context.Canceled in error, got %v", werr)
+	}
+	// The joined error should also contain a cleanup error.
+	if werr.Error() == context.Canceled.Error() {
+		t.Fatalf("error should contain cleanup failure, got %v", werr)
+	}
+
+	// Restore exact bytes; subsequent Cancel succeeds and removes queued ticket.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel after restore: %v", err)
+	}
+	assertNoTickets(t, root)
+
+	// Second Wait is rejected by the one-Wait rule; no state leak.
+	lease2, err2 := qt.Wait(context.Background())
+	if lease2 != nil {
+		t.Fatal("second Wait returned non-nil lease")
+	}
+	if err2 == nil {
+		t.Fatal("second Wait = nil, want error")
+	}
+	assertNoTickets(t, root)
+}
+
 func TestGateOpenRejectsEmptyRoot(t *testing.T) {
 	restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
 		5000: {exists: true, createTime: 5000000},
