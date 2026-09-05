@@ -59,7 +59,7 @@ const toolStartCap = debugLineBudget / 8
 // ever used as a map key, never logged.
 const toolCallIDMaxBytes = 128
 
-// Client drives the seven documented outbound RPC request types over a Pi
+// Client drives the nine documented outbound RPC request types over a Pi
 // JSONL stream. Requests carry generated IDs; responses are correlated by ID
 // while events interleave. The client is single-flight: one request at a
 // time, matching the worker's linear prompt lifecycle. There is no arbitrary
@@ -576,6 +576,23 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 					}
 					continue
 				}
+				// Prefer a frame that became ready with this control.
+				select {
+				case result := <-c.frameResults:
+					if result.err != nil {
+						c.awaitingSettled = false
+						return c.frameError(result.err)
+					}
+					if err := c.processControlFrame(result.frame, &pending); err != nil {
+						c.awaitingSettled = false
+						return err
+					}
+					if c.settled {
+						c.awaitingSettled = false
+						return nil
+					}
+				default:
+				}
 				if err := validateResult(ctrl.Result); err != nil {
 					c.awaitingSettled = false
 					return err
@@ -615,9 +632,7 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 			}
 			if err := c.processControlFrame(result.frame, &pending); err != nil {
 				c.awaitingSettled = false
-				if pending != nil {
-					sendControlResult(pending.result, err)
-				}
+				sendControlResult(pending.result, err)
 				return err
 			}
 			if pending == nil && c.settled {
