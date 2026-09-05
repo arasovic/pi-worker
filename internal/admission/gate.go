@@ -35,6 +35,7 @@ type QueueTicket struct {
 	waited          bool
 	cancelRequested bool
 	cancelled       bool
+	releasePending  *Lease
 }
 
 // Lease holds a granted admission ticket.
@@ -268,9 +269,10 @@ func (g *Gate) removeQueuedTicket(ticketID string) error {
 //
 // If the context is already done or ends while queued, Wait cancels the
 // ticket and returns a joined error. Any tryGrant error cancels the ticket
-// and returns a joined error. After a Lease is granted, the context is
-// checked as the return linearization point; if done, the lease is released
-// and a joined error is returned.
+// and returns a joined error. After a Lease is granted, the context and
+// cancel intent are checked as the return linearization point; if either
+// is true the lease is stored in releasePending and Cancel performs
+// cleanup, returning a joined error.
 func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 	t.mu.Lock()
 	if t.waited {
@@ -308,13 +310,24 @@ func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 			return nil, errors.Join(fmt.Errorf("admission wait: %w", err), cancelErr)
 		}
 		if lease != nil {
-			// Check cancelRequested/cancelled as the return linearization point.
+			// Post-grant check: if the context is done or a cancel was
+			// requested while we held the lock, attach the lease to
+			// releasePending so Cancel can clean it up.
 			t.mu.Lock()
-			if t.cancelRequested || t.cancelled {
+			done := ctx.Err() != nil
+			cancelIntent := t.cancelRequested || t.cancelled
+			if done || cancelIntent {
+				t.cancelRequested = true
+				t.releasePending = lease
 				t.mu.Unlock()
-				releaseErr := lease.Release()
 				cancelErr := t.Cancel()
-				return nil, errors.Join(errQueueTicketCancelled, releaseErr, cancelErr)
+				var joinErr error
+				if done {
+					joinErr = errors.Join(ctx.Err(), cancelErr)
+				} else {
+					joinErr = errors.Join(errQueueTicketCancelled, cancelErr)
+				}
+				return nil, joinErr
 			}
 			t.mu.Unlock()
 			return lease, nil
@@ -329,20 +342,31 @@ func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
 	}
 }
 
-// Cancel removes the queued ticket from the gate. It can be called before
-// Wait for batch rollback or while Wait is blocked. Cancel never removes
-// a lease. On success Cancel is idempotent; on error the caller may retry
-// because the ticket remains in its previous state (cancelRequested is
-// still true and cancelled is still false).
+// Cancel removes the queued ticket from the gate. It retries a pending
+// lease release before performing queued cleanup. Cancel can be called
+// before Wait for batch rollback or while Wait is blocked. On success
+// Cancel is idempotent; on error the caller may retry because the ticket
+// remains in its previous state (cancelRequested is still true and
+// cancelled is still false).
 func (t *QueueTicket) Cancel() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	t.cancelRequested = true
+
+	// Retry a pending lease release attached by Wait.
+	if t.releasePending != nil {
+		releaseErr := t.releasePending.Release()
+		if releaseErr != nil {
+			return releaseErr
+		}
+		t.releasePending = nil
+	}
+
+	// If already cleaned up, nothing more to do.
 	if t.cancelled {
 		return nil
 	}
-
-	t.cancelRequested = true
 
 	err := t.gate.removeQueuedTicket(t.ticketID)
 	if err != nil {

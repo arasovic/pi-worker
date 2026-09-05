@@ -86,6 +86,53 @@ func padInt(n, width int) string {
 	return string(s)
 }
 
+// stagedContext is a test-only context whose Err() returns nil for the
+// first threshold calls, then returns context.Canceled and runs an
+// optional once-only callback. Deadline returns none, Done returns nil
+// before transition (tests grant immediately so Done is never selected)
+// and a closed channel after. Value returns nil. Counters and callback
+// are race-safe.
+type stagedContext struct {
+	mu        sync.Mutex
+	threshold int
+	n         int
+	done      chan struct{}
+	doneSet   bool
+	fn        func() // optional once-only callback on first transition
+}
+
+func (c *stagedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *stagedContext) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.doneSet {
+		return c.done
+	}
+	return nil
+}
+
+func (c *stagedContext) Value(key any) any { return nil }
+
+func (c *stagedContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.doneSet {
+		return context.Canceled
+	}
+	c.n++
+	if c.n >= c.threshold {
+		c.doneSet = true
+		c.done = make(chan struct{})
+		close(c.done)
+		if c.fn != nil {
+			c.fn()
+		}
+		return context.Canceled
+	}
+	return nil
+}
+
 // enqueueAndWait is a test convenience that calls Enqueue then Wait.
 // Production code must use Enqueue and Wait as separate two-phase calls.
 func enqueueAndWait(ctx context.Context, g *Gate, req Request) (*Lease, error) {
@@ -1925,4 +1972,126 @@ func TestQueueTicketWaitGrantNeverAllocatesSecondTicket(t *testing.T) {
 		t.Fatalf("Release: %v", err)
 	}
 	assertNoTickets(t, root)
+}
+
+func TestPostGrantContextCancellationReleasesBeforeReturn(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "PG-")
+
+	// Enqueue one ticket on an empty maxLive=1 gate.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Staged context: Err returns nil for the first 2 calls, then
+	// returns context.Canceled on the 3rd call (inside tryGrant after
+	// state is saved with leased ticket). No callback needed.
+	sc := &stagedContext{threshold: 3}
+
+	// Wait must return nil Lease and errors.Is(context.Canceled).
+	lease, werr := qt.Wait(sc)
+	if lease != nil {
+		t.Fatal("Wait returned non-nil lease")
+	}
+	if !errors.Is(werr, context.Canceled) {
+		t.Fatalf("Wait error = %v, want context.Canceled", werr)
+	}
+
+	// Durable state has no tickets and NextSequence remains 2.
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
+
+	// QueueTicket has no releasePending.
+	qt.mu.Lock()
+	if qt.releasePending != nil {
+		t.Fatal("releasePending should be nil after post-grant cancellation")
+	}
+	qt.mu.Unlock()
+}
+
+func TestFailedPostGrantReleaseRetryableThroughCancel(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "FPGR-")
+
+	// Enqueue one ticket.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Save valid state for later restoration.
+	validBytes, rerr := os.ReadFile(filepath.Join(root, "state.json"))
+	if rerr != nil {
+		t.Fatalf("ReadFile: %v", rerr)
+	}
+
+	// Staged context with a transition callback that reads and preserves
+	// the valid just-leased state.json bytes, then replaces state.json
+	// with malformed JSON before Wait's cleanup Release.
+	sc := &stagedContext{
+		threshold: 3,
+		fn: func() {
+			// Read valid leased state bytes (ticket already leased at this point).
+			validBytes, _ = os.ReadFile(filepath.Join(root, "state.json"))
+			// Corrupt state.json so Release fails during cleanup.
+			os.WriteFile(filepath.Join(root, "state.json"), []byte("{bad json"), 0o600)
+		},
+	}
+
+	// Wait returns nil Lease, context.Canceled, and a cleanup/release error.
+	lease, werr := qt.Wait(sc)
+	if lease != nil {
+		t.Fatal("Wait returned non-nil lease")
+	}
+	if !errors.Is(werr, context.Canceled) {
+		t.Fatalf("Wait error = %v, want context.Canceled", werr)
+	}
+	if werr.Error() == context.Canceled.Error() {
+		t.Fatalf("error should contain cleanup/release error, got %v", werr)
+	}
+
+	// Under t.mu, releasePending is non-nil and cancelRequested is true.
+	qt.mu.Lock()
+	if qt.releasePending == nil {
+		t.Fatal("releasePending should be non-nil after failed release")
+	}
+	if !qt.cancelRequested {
+		t.Fatal("cancelRequested should be true after failed release")
+	}
+	qt.mu.Unlock()
+
+	// Restore the exact valid leased bytes.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+
+	// Call ticket.Cancel: it retries releasePending Release successfully,
+	// clears releasePending, and marks cleanup complete.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Second Cancel is idempotent.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+
+	// Verify releasePending cleared and cleanup complete.
+	qt.mu.Lock()
+	if qt.releasePending != nil {
+		t.Fatal("releasePending should be nil after successful Cancel")
+	}
+	if !qt.cancelled {
+		t.Fatal("cancelled should be true after successful Cancel")
+	}
+	qt.mu.Unlock()
+
+	// Final state: no tickets (leased ticket was released by Cancel).
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
 }
