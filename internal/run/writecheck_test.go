@@ -45,6 +45,33 @@ func declaredPaths(paths ...string) WriteDeclaration {
 	return WriteDeclaration{Declared: true, Paths: paths}
 }
 
+// workerByIDMutatingWorker is a test-only worker that dispatches its
+// mutate callback based on the request's WorkerID, so concurrent
+// workers each write only their own assigned files.
+type workerByIDMutatingWorker struct {
+	mutate func(workerID int, dir string) error
+}
+
+func (w *workerByIDMutatingWorker) Run(_ context.Context, req pi.WorkerRequest) pi.WorkerResult {
+	if err := w.mutate(req.WorkerID, req.Workspace); err != nil {
+		return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+	}
+	return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"}
+}
+
+// workerByTaskWrites returns a worker whose Run callback dispatches on
+// WorkerID: each concurrent worker writes only the files assigned to
+// the task it owns. perWorker maps WorkerID (1-based) to a callback;
+// a nil entry means the worker writes nothing.
+func workerByTaskWrites(perWorker map[int]func(dir string) error) *workerByIDMutatingWorker {
+	return &workerByIDMutatingWorker{mutate: func(workerID int, dir string) error {
+		if fn := perWorker[workerID]; fn != nil {
+			return fn(dir)
+		}
+		return nil
+	}}
+}
+
 // writeCheckDocument marshals check and returns the decoded document,
 // so tests can assert the exact serialized key set.
 func writeCheckDocument(t *testing.T, check *WriteCheck) map[string]any {
@@ -241,15 +268,18 @@ func TestControllerWritesOneTaskDeclaresOneDeclaresWritesNothing(t *testing.T) {
 	// pooled declaration are undeclared. The writes-nothing task's
 	// emptiness is a statement, not a gap in the declaration.
 	dir := newGitRepo(t)
-	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
-		if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("stray\n"), 0o644)
-	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths()})
+	result := runWithWrites(t, workerByTaskWrites(map[int]func(dir string) error{
+		1: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("stray\n"), 0o644)
+		},
+		2: nil, // declares writes-nothing, writes nothing
+	}), dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths()})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict: the writes-nothing task declared, so the check runs", writes)
@@ -1146,18 +1176,20 @@ func TestControllerWritesTwoTasksPoolDeclaredPathsClean(t *testing.T) {
 	// declaration, come back clean because the pooled set covers every
 	// changed path.
 	dir := newGitRepo(t)
-	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
-		if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Join(dir, "src", "b"), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644)
-	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")})
+	result := runWithWrites(t, workerByTaskWrites(map[int]func(dir string) error{
+		1: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644)
+		},
+		2: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "src", "b"), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644)
+		},
+	}), dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
@@ -1172,21 +1204,23 @@ func TestControllerWritesTwoTasksPoolReportsStrayPathOnce(t *testing.T) {
 	// task: the undeclared set belongs to the run, and pooling is the
 	// code that makes that true.
 	dir := newGitRepo(t)
-	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
-		if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Join(dir, "src", "b"), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, "src", "stray.txt"), []byte("stray\n"), 0o644)
-	}}, dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")})
+	result := runWithWrites(t, workerByTaskWrites(map[int]func(dir string) error{
+		1: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "src", "a"), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "src", "a", "a.txt"), []byte("a\n"), 0o644)
+		},
+		2: func(dir string) error {
+			if err := os.MkdirAll(filepath.Join(dir, "src", "b"), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dir, "src", "b", "b.txt"), []byte("b\n"), 0o644); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "src", "stray.txt"), []byte("stray\n"), 0o644)
+		},
+	}), dir, []string{"a", "b"}, []WriteDeclaration{declaredPaths("src/a"), declaredPaths("src/b")})
 	writes := result.Writes
 	if writes == nil || writes.Skipped != "" {
 		t.Fatalf("writes = %#v, want a verdict", writes)
