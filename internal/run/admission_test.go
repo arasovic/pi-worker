@@ -377,3 +377,111 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 		t.Fatalf("release probe lease: %v", err)
 	}
 }
+
+func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
+	boundedProbe := func(t *testing.T, gate *admission.Gate) {
+		t.Helper()
+		tk, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
+		if err != nil {
+			t.Fatalf("enqueue probe: %v", err)
+		}
+		pctx, pcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer pcancel()
+		pl, err := tk.Wait(pctx)
+		if err != nil {
+			t.Fatalf("probe wait: %v", err)
+		}
+		if err := pl.Release(); err != nil {
+			t.Fatalf("release probe: %v", err)
+		}
+	}
+
+	expiredCtx := func(parent context.Context, _ int, _ time.Time) (context.Context, context.CancelFunc) {
+		return context.WithDeadline(parent, time.Now().Add(-time.Second))
+	}
+
+	t.Run("all timed out", func(t *testing.T) {
+		gate, err := admission.Open(t.TempDir(), 1)
+		if err != nil {
+			t.Fatalf("open gate: %v", err)
+		}
+
+		worker := newScriptedWorker()
+		acceptedAt := time.Now()
+		controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+		controller.queueContext = expiredCtx
+
+		result, runErr := controller.Run(context.Background(), validRequest("task-1", "task-2"))
+
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v", runErr)
+		}
+		if result.Status != contracts.RunTimedOut {
+			t.Fatalf("status = %q, want %q", result.Status, contracts.RunTimedOut)
+		}
+		if worker.callCount() != 0 {
+			t.Fatalf("worker call count = %d, want 0", worker.callCount())
+		}
+		if len(result.Workers) != 2 {
+			t.Fatalf("workers = %d, want 2", len(result.Workers))
+		}
+		for i, w := range result.Workers {
+			if w.Status != pi.StatusTimedOut {
+				t.Fatalf("worker %d status = %q, want %q", i+1, w.Status, pi.StatusTimedOut)
+			}
+			if w.Model != "acme/m-1" {
+				t.Fatalf("worker %d model = %q, want %q", i+1, w.Model, "acme/m-1")
+			}
+		}
+
+		boundedProbe(t, gate)
+	})
+
+	t.Run("completed and timed out is partial", func(t *testing.T) {
+		gate, err := admission.Open(t.TempDir(), 1)
+		if err != nil {
+			t.Fatalf("open gate: %v", err)
+		}
+
+		worker := newScriptedWorker()
+		acceptedAt := time.Now()
+		controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+		controller.queueContext = func(parent context.Context, workerID int, _ time.Time) (context.Context, context.CancelFunc) {
+			if workerID == 1 {
+				return context.WithCancel(parent)
+			}
+			return context.WithDeadline(parent, time.Now().Add(-time.Second))
+		}
+
+		result, runErr := controller.Run(context.Background(), validRequest("task-1", "task-2"))
+
+		if runErr != nil {
+			t.Fatalf("Run returned error: %v", runErr)
+		}
+		if result.Status != contracts.RunPartial {
+			t.Fatalf("status = %q, want %q", result.Status, contracts.RunPartial)
+		}
+		if worker.callCount() != 1 {
+			t.Fatalf("worker call count = %d, want 1", worker.callCount())
+		}
+		if len(result.Workers) != 2 {
+			t.Fatalf("workers = %d, want 2", len(result.Workers))
+		}
+		// Worker 1 completed.
+		if result.Workers[0].Status != pi.StatusCompleted {
+			t.Fatalf("worker 1 status = %q, want %q", result.Workers[0].Status, pi.StatusCompleted)
+		}
+		if result.Workers[0].Explanation != "done:task-1" {
+			t.Fatalf("worker 1 explanation = %q, want %q", result.Workers[0].Explanation, "done:task-1")
+		}
+		// Worker 2 timed out.
+		if result.Workers[1].Status != pi.StatusTimedOut {
+			t.Fatalf("worker 2 status = %q, want %q", result.Workers[1].Status, pi.StatusTimedOut)
+		}
+		if result.Workers[1].Model != "acme/m-1" {
+			t.Fatalf("worker 2 model = %q, want %q", result.Workers[1].Model, "acme/m-1")
+		}
+
+		boundedProbe(t, gate)
+	})
+}
