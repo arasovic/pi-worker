@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,11 +33,13 @@ func (e *configuredModelError) Error() string { return e.err.Error() }
 func (e *configuredModelError) Unwrap() error { return e.err }
 
 type configOptions struct {
-	command string
-	json    bool
-	model   string
-	timeout time.Duration
-	debug   bool
+	command    string
+	setter     string // "default-model" or "max-model-workers"
+	json       bool
+	model      string
+	maxWorkers int
+	timeout    time.Duration
+	debug      bool
 }
 
 func configCommand(parent context.Context, args []string, stdout, stderr io.Writer) int {
@@ -69,6 +72,26 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 			return 0
 		}
 		fmt.Fprintf(stdout, "default-model: %s\n", cfg.DefaultModel)
+		fmt.Fprintf(stdout, "max-model-workers: %d\n", cfg.MaxModelWorkers)
+		return 0
+	}
+
+	// Load config once for setters
+	cfg, err := configpkg.Load(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		cfg = configpkg.Empty()
+	} else if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: load config: %v\n", err)
+		return 9
+	}
+
+	if opts.setter == "max-model-workers" {
+		cfg.MaxModelWorkers = opts.maxWorkers
+		if err := configpkg.Save(path, cfg); err != nil {
+			fmt.Fprintf(stderr, "pi-worker: save config: %v\n", err)
+			return 9
+		}
+		fmt.Fprintf(stdout, "max-model-workers: %d\n", cfg.MaxModelWorkers)
 		return 0
 	}
 
@@ -97,7 +120,8 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 	if err := ctx.Err(); err != nil {
 		return modelsErrorCode(ctx, err, stderr)
 	}
-	if err := configpkg.Save(path, configpkg.Config{SchemaVersion: 1, DefaultModel: opts.model}); err != nil {
+	cfg.DefaultModel = opts.model
+	if err := configpkg.Save(path, cfg); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: save config: %v\n", err)
 		return 9
 	}
@@ -123,43 +147,59 @@ func parseConfigArgs(args []string) (configOptions, error) {
 		return opts, fmt.Errorf("invalid config show syntax")
 	case "set":
 		opts.command = "set"
-		if len(args) < 3 || args[1] != "default-model" {
+		if len(args) < 3 {
 			return opts, fmt.Errorf("invalid config set syntax")
 		}
-		opts.model = args[2]
-		if err := validateModel(opts.model); err != nil {
-			return opts, err
-		}
-		seen := make(map[string]bool)
-		for i := 3; i < len(args); i++ {
-			name, value, hasValue := strings.Cut(args[i], "=")
-			switch name {
-			case "--debug":
-				if hasValue || seen[name] {
-					return opts, fmt.Errorf("invalid flag %s", name)
-				}
-				seen[name] = true
-				opts.debug = true
-			case "--timeout":
-				if !hasValue {
-					if i+1 >= len(args) {
-						return opts, fmt.Errorf("flag %s requires a value", name)
-					}
-					i++
-					value = args[i]
-				}
-				if seen[name] {
-					return opts, fmt.Errorf("flag %s specified more than once", name)
-				}
-				seen[name] = true
-				duration, err := time.ParseDuration(value)
-				if err != nil || duration <= 0 {
-					return opts, fmt.Errorf("invalid timeout %q", value)
-				}
-				opts.timeout = duration
-			default:
-				return opts, fmt.Errorf("unknown flag %q", args[i])
+		switch args[1] {
+		case "default-model":
+			opts.setter = "default-model"
+			opts.model = args[2]
+			if err := validateModel(opts.model); err != nil {
+				return opts, err
 			}
+			seen := make(map[string]bool)
+			for i := 3; i < len(args); i++ {
+				name, value, hasValue := strings.Cut(args[i], "=")
+				switch name {
+				case "--debug":
+					if hasValue || seen[name] {
+						return opts, fmt.Errorf("invalid flag %s", name)
+					}
+					seen[name] = true
+					opts.debug = true
+				case "--timeout":
+					if !hasValue {
+						if i+1 >= len(args) {
+							return opts, fmt.Errorf("flag %s requires a value", name)
+						}
+						i++
+						value = args[i]
+					}
+					if seen[name] {
+						return opts, fmt.Errorf("flag %s specified more than once", name)
+					}
+					seen[name] = true
+					duration, err := time.ParseDuration(value)
+					if err != nil || duration <= 0 {
+						return opts, fmt.Errorf("invalid timeout %q", value)
+					}
+					opts.timeout = duration
+				default:
+					return opts, fmt.Errorf("unknown flag %q", args[i])
+				}
+			}
+		case "max-model-workers":
+			opts.setter = "max-model-workers"
+			n, err := strconv.Atoi(args[2])
+			if err != nil || n <= 0 {
+				return opts, fmt.Errorf("invalid max-model-workers %q: must be a positive integer", args[2])
+			}
+			opts.maxWorkers = n
+			if len(args) > 3 {
+				return opts, fmt.Errorf("invalid config set syntax")
+			}
+		default:
+			return opts, fmt.Errorf("invalid config set syntax")
 		}
 		return opts, nil
 	default:

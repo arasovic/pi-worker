@@ -65,20 +65,20 @@ func runCLIReader(t *testing.T, args []string, stdin io.Reader) (int, string, st
 
 func TestConfigShowHumanOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/model"}); err != nil {
+	if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/model", MaxModelWorkers: 3}); err != nil {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
 
 	code, stdout, stderr := runCLI(t, []string{"config", "show"}, "")
-	if code != 0 || stdout != "default-model: acme/model\n" || stderr != "" {
+	if code != 0 || stdout != "default-model: acme/model\nmax-model-workers: 3\n" || stderr != "" {
 		t.Fatalf("config show = (%d, %q, %q)", code, stdout, stderr)
 	}
 }
 
 func TestConfigShowJSONIsSingleDocument(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(path, config.Config{SchemaVersion: 1}); err != nil {
+	if err := config.Save(path, config.Config{SchemaVersion: 2, MaxModelWorkers: 3}); err != nil {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
@@ -91,7 +91,7 @@ func TestConfigShowJSONIsSingleDocument(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("decode JSON: %v", err)
 	}
-	if got != (config.Config{SchemaVersion: 1}) || !bytes.HasSuffix([]byte(stdout), []byte("\n")) {
+	if got != (config.Config{SchemaVersion: 2, MaxModelWorkers: 3}) || !bytes.HasSuffix([]byte(stdout), []byte("\n")) {
 		t.Fatalf("JSON = %q, decoded %#v", stdout, got)
 	}
 }
@@ -102,12 +102,12 @@ func TestConfigShowReportsMissingMalformedAndDanglingLinkConfig(t *testing.T) {
 		installConfigPath(t, path)
 
 		code, stdout, stderr := runCLI(t, []string{"config", "show"}, "")
-		if code != 0 || stdout != "default-model: \n" || stderr != "" {
+		if code != 0 || stdout != "default-model: \nmax-model-workers: 3\n" || stderr != "" {
 			t.Fatalf("config show missing = (%d, %q, %q)", code, stdout, stderr)
 		}
 
 		code, stdout, stderr = runCLI(t, []string{"config", "show", "--json"}, "")
-		if code != 0 || stdout != "{\"schemaVersion\":1,\"defaultModel\":\"\"}\n" || stderr != "" {
+		if code != 0 || stdout != "{\"schemaVersion\":2,\"defaultModel\":\"\",\"maxModelWorkers\":3}\n" || stderr != "" {
 			t.Fatalf("config show missing JSON = (%d, %q, %q)", code, stdout, stderr)
 		}
 	})
@@ -173,7 +173,7 @@ func TestConfigShowReadsThroughSymlinkedConfigPath(t *testing.T) {
 	installConfigPath(t, path)
 
 	code, stdout, stderr := runCLI(t, []string{"config", "show"}, "")
-	if code != 0 || stdout != "default-model: acme/linked\n" || stderr != "" {
+	if code != 0 || stdout != "default-model: acme/linked\nmax-model-workers: 3\n" || stderr != "" {
 		t.Fatalf("config show through a symlink = (%d, %q, %q)", code, stdout, stderr)
 	}
 }
@@ -230,7 +230,7 @@ func TestConfigSetValidatesExactSyntaxAndLiveCatalog(t *testing.T) {
 		t.Fatalf("catalog calls = %d, want 1", catalog.calls)
 	}
 	got, err := config.Load(path)
-	if err != nil || got.DefaultModel != "acme/model" {
+	if err != nil || got != (config.Config{SchemaVersion: 2, DefaultModel: "acme/model", MaxModelWorkers: 3}) {
 		t.Fatalf("saved config = %#v, %v", got, err)
 	}
 }
@@ -249,7 +249,7 @@ func TestConfigSetRejectsInvalidSyntaxBeforeCatalog(t *testing.T) {
 
 func TestConfigSetUnavailableDoesNotChangeConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 3}
 	if err := config.Save(path, before); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestConfigSetCatalogOfferedColonIdIsSaved(t *testing.T) {
 		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
 	}
 	got, err := config.Load(path)
-	if err != nil || got.DefaultModel != "acme/model:free" {
+	if err != nil || got != (config.Config{SchemaVersion: 2, DefaultModel: "acme/model:free", MaxModelWorkers: 3}) {
 		t.Fatalf("saved config = %#v, %v", got, err)
 	}
 }
@@ -291,7 +291,7 @@ func TestConfigSetInventedColonNameFailsCatalogMembership(t *testing.T) {
 	// not-in-the-available-catalog answer (exit 3), never a name-format
 	// answer (exit 2).
 	path := filepath.Join(t.TempDir(), "config.json")
-	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 3}
 	if err := config.Save(path, before); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestConfigSetInventedColonNameFailsCatalogMembership(t *testing.T) {
 
 func TestConfigSetCancellationAfterCatalogDoesNotChangeConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 3}
 	if err := config.Save(path, before); err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func TestRunModelExplicitNeverReadsMalformedConfig(t *testing.T) {
 
 func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+	if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/default", MaxModelWorkers: 3}); err != nil {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
@@ -494,7 +494,7 @@ func TestRunModelDefaultAppliesToEveryTaskWithoutItsOwn(t *testing.T) {
 	// With neither a task nor a run --model, the configured defaultModel
 	// applies to every task on a multi-task run, not only to the first.
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+	if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/default", MaxModelWorkers: 3}); err != nil {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
@@ -513,7 +513,7 @@ func TestRunModelDefaultAppliesToEveryTaskWithoutItsOwn(t *testing.T) {
 
 func TestRunThinkingUsesSavedModelWithoutPersistingEffort(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+	if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/default", MaxModelWorkers: 3}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(path)
@@ -547,7 +547,7 @@ func TestRunModelExplicitEmptySelectorNeverFallsBack(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
-			if err := config.Save(path, config.Config{SchemaVersion: 1, DefaultModel: "acme/default"}); err != nil {
+			if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/default", MaxModelWorkers: 3}); err != nil {
 				t.Fatal(err)
 			}
 			calls := 0
@@ -588,7 +588,7 @@ func TestRunModelAbsentOrEmptyDefaultFailsBeforeReadingStdin(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.json")
 			if test.write {
-				if err := config.Save(path, config.Config{SchemaVersion: 1}); err != nil {
+				if err := config.Save(path, config.Config{SchemaVersion: 2, MaxModelWorkers: 3}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -628,7 +628,7 @@ func TestConfigSyntaxRejectsInvalidForms(t *testing.T) {
 
 func TestConfigSetCatalogFailurePreservesConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 3}
 	if err := config.Save(path, before); err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +647,7 @@ func TestConfigSetMissingExecutableExits3WithoutWritingConfig(t *testing.T) {
 	// This catches treating catalog startup as an internal error or writing a
 	// new default model after the read-only availability check failed.
 	path := filepath.Join(t.TempDir(), "config.json")
-	before := config.Config{SchemaVersion: 1, DefaultModel: "acme/old"}
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 3}
 	if err := config.Save(path, before); err != nil {
 		t.Fatal(err)
 	}
@@ -661,5 +661,195 @@ func TestConfigSetMissingExecutableExits3WithoutWritingConfig(t *testing.T) {
 	got, err := config.Load(path)
 	if err != nil || got != before {
 		t.Fatalf("config after failed set = %#v, %v", got, err)
+	}
+}
+
+// --- issue #167: max-model-workers CLI tests ---
+
+func TestConfigSetMaxModelWorkersPreservesDefaultModelNoCatalog(t *testing.T) {
+	// Setting max-model-workers on an existing schema-2 config updates only
+	// that field and never touches the catalog.
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/keep", MaxModelWorkers: 3}
+	if err := config.Save(path, before); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	catalog := &countingCatalog{}
+	installFakeCatalog(t, catalog)
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "max-model-workers", "7"}, "")
+	if code != 0 || stdout != "max-model-workers: 7\n" || stderr != "" {
+		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if catalog.calls != 0 {
+		t.Fatalf("catalog called %d times, want 0", catalog.calls)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != (config.Config{SchemaVersion: 2, DefaultModel: "acme/keep", MaxModelWorkers: 7}) {
+		t.Fatalf("saved config = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetMaxModelWorkersMissingConfig(t *testing.T) {
+	// Setting max-model-workers when no config file exists creates a schema-2
+	// document with an empty DefaultModel and the requested positive value.
+	path := filepath.Join(t.TempDir(), "config.json")
+	installConfigPath(t, path)
+	installFakeCatalog(t, &countingCatalog{})
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "max-model-workers", "7"}, "")
+	if code != 0 || stdout != "max-model-workers: 7\n" || stderr != "" {
+		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != (config.Config{SchemaVersion: 2, MaxModelWorkers: 7}) {
+		t.Fatalf("saved config = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetMaxModelWorkersSchema1PreservesDefaultModel(t *testing.T) {
+	// Setting max-model-workers on raw schema-1 JSON reads the defaultModel,
+	// saves a schema-2 document, and preserves that value.
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := []byte(`{"schemaVersion":1,"defaultModel":"acme/saved"}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	installFakeCatalog(t, &countingCatalog{})
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "max-model-workers", "7"}, "")
+	if code != 0 || stdout != "max-model-workers: 7\n" || stderr != "" {
+		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != (config.Config{SchemaVersion: 2, DefaultModel: "acme/saved", MaxModelWorkers: 7}) {
+		t.Fatalf("saved config = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetDefaultModelPreservesMaxModelWorkers(t *testing.T) {
+	// Setting default-model on a schema-2 config with MaxModelWorkers=7
+	// preserves that value after catalog validation.
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 7}
+	if err := config.Save(path, before); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	catalog := &countingCatalog{models: []pi.ModelProjection{{Provider: "acme", ID: "new"}}}
+	installFakeCatalog(t, catalog)
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/new"}, "")
+	if code != 0 || stdout != "default-model: acme/new\n" || stderr != "" {
+		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != (config.Config{SchemaVersion: 2, DefaultModel: "acme/new", MaxModelWorkers: 7}) {
+		t.Fatalf("saved config = %#v, %v", got, err)
+	}
+}
+
+func TestConfigSetInvalidExistingConfigFailsBeforeCatalog(t *testing.T) {
+	// A malformed on-disk config is rejected before the catalog is accessed,
+	// and the bytes on disk are left unchanged.
+	before := []byte(`{"schemaVersion":1,"unknown":true}`)
+	for _, setter := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default-model", args: []string{"config", "set", "default-model", "acme/model"}},
+		{name: "max-model-workers", args: []string{"config", "set", "max-model-workers", "7"}},
+	} {
+		t.Run(setter.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			installConfigPath(t, path)
+			catalog := &countingCatalog{}
+			installFakeCatalog(t, catalog)
+
+			code, stdout, stderr := runCLI(t, setter.args, "")
+			if code != 9 || stdout != "" || stderr == "" || catalog.calls != 0 {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q, catalog calls = %d", code, stdout, stderr, catalog.calls)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("bytes changed: %q, %v", after, err)
+			}
+		})
+	}
+}
+
+func TestConfigShowSchema1EffectiveDocumentWithoutRewrite(t *testing.T) {
+	// Raw schema-1 config show exposes the effective schema-2 document
+	// without rewriting the source bytes.
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := []byte(`{"schemaVersion":1,"defaultModel":"acme/v1"}`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+
+	code, stdout, stderr := runCLI(t, []string{"config", "show"}, "")
+	if code != 0 || stdout != "default-model: acme/v1\nmax-model-workers: 3\n" || stderr != "" {
+		t.Fatalf("config show = (%d, %q, %q)", code, stdout, stderr)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(raw, after) {
+		t.Fatalf("source bytes changed: %q, %v", after, err)
+	}
+
+	code, stdout, stderr = runCLI(t, []string{"config", "show", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("config show --json = (%d, %q, %q)", code, stdout, stderr)
+	}
+	var got config.Config
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode JSON: %v", err)
+	}
+	want := config.Config{SchemaVersion: 2, DefaultModel: "acme/v1", MaxModelWorkers: 3}
+	if got != want {
+		t.Fatalf("JSON decoded = %#v, want %#v", got, want)
+	}
+	after, err = os.ReadFile(path)
+	if err != nil || !bytes.Equal(raw, after) {
+		t.Fatalf("source bytes changed after JSON show: %q, %v", after, err)
+	}
+}
+
+func TestConfigSetMaxModelWorkersRejectsBadSyntax(t *testing.T) {
+	// All bad max-model-workers forms are rejected as usage errors before
+	// the catalog is accessed and before any file write.
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "missing value", args: []string{"config", "set", "max-model-workers"}},
+		{name: "zero", args: []string{"config", "set", "max-model-workers", "0"}},
+		{name: "negative", args: []string{"config", "set", "max-model-workers", "-1"}},
+		{name: "non-integer", args: []string{"config", "set", "max-model-workers", "abc"}},
+		{name: "overflow", args: []string{"config", "set", "max-model-workers", "99999999999999999999"}},
+		{name: "extra positional", args: []string{"config", "set", "max-model-workers", "7", "extra"}},
+		{name: "--debug", args: []string{"config", "set", "max-model-workers", "7", "--debug"}},
+		{name: "--timeout", args: []string{"config", "set", "max-model-workers", "7", "--timeout"}},
+		{name: "--timeout=value", args: []string{"config", "set", "max-model-workers", "7", "--timeout=1s"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			installConfigPath(t, path)
+			catalog := &countingCatalog{}
+			installFakeCatalog(t, catalog)
+
+			code, stdout, stderr := runCLI(t, tt.args, "")
+			if code != 2 || stdout != "" || stderr == "" || catalog.calls != 0 {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q, catalog calls = %d", code, stdout, stderr, catalog.calls)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("config file should not exist, err = %v", err)
+			}
+		})
 	}
 }
