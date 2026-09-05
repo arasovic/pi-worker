@@ -512,6 +512,31 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 			return err
 		}
 		if pending == nil {
+			// Drain one already-buffered frame before the blocking select
+			// so that a frame pumped between Prompt returning and
+			// WaitSettledControlled starting is consumed immediately
+			// instead of racing with a later control write.
+			if !c.settled {
+				select {
+				case result := <-c.frameResults:
+					if result.err != nil {
+						c.awaitingSettled = false
+						return c.frameError(result.err)
+					}
+					if err := c.processControlFrame(result.frame, &pending); err != nil {
+						c.awaitingSettled = false
+						if pending != nil {
+							sendControlResult(pending.result, err)
+						}
+						return err
+					}
+					if pending == nil && c.settled {
+						c.awaitingSettled = false
+						return nil
+					}
+				default:
+				}
+			}
 			select {
 			case <-c.stop:
 				c.awaitingSettled = false

@@ -1598,3 +1598,282 @@ func TestClientWaitSettledControlledClosesReaderReturnsTransportError(t *testing
 		t.Fatalf("WaitSettledControlled did not return within 1s after Close")
 	}
 }
+
+// TestClientWaitSettledControlledRejectsInvalidResultChannels proves that
+// controls whose Result channels violate the non-nil/buffered/empty
+// invariant are rejected before any frame is written: the wait returns
+// the stable *TaskError message and the peer never sees a control frame.
+func TestClientWaitSettledControlledRejectsInvalidResultChannels(t *testing.T) {
+	tests := []struct {
+		name  string
+		build func() chan<- error
+		msg   string
+	}{
+		{name: "nil channel",
+			build: func() chan<- error { return nil },
+			msg:   "WorkerControl.Result channel is nil"},
+		{name: "unbuffered channel",
+			build: func() chan<- error { return make(chan error) },
+			msg:   "WorkerControl.Result channel is not buffered"},
+		{name: "pre-filled channel",
+			build: func() chan<- error {
+				ch := make(chan error, 1)
+				ch <- nil
+				return ch
+			},
+			msg: "WorkerControl.Result channel is not empty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, reader, writer, serverConn := newControlledPeer(t, nil)
+			runPromptRoundTrip(t, client, reader, writer, "hello")
+
+			ctrlResult := tc.build()
+			controls := make(chan WorkerControl, 1)
+			controls <- WorkerControl{Kind: WorkerControlSteer, Message: "change direction", Result: ctrlResult}
+
+			waitDone := make(chan error, 1)
+			go func() {
+				waitDone <- client.WaitSettledControlled(context.Background(), controls)
+			}()
+
+			var err error
+			select {
+			case err = <-waitDone:
+			case <-time.After(time.Second):
+				t.Fatal("WaitSettledControlled did not return within 1s")
+			}
+			var taskErr *TaskError
+			if !errors.As(err, &taskErr) {
+				t.Fatalf("error = %T %v, want *TaskError", err, err)
+			}
+			if taskErr.Message != tc.msg {
+				t.Fatalf("TaskError.Message = %q, want %q", taskErr.Message, tc.msg)
+			}
+
+			// No control frame may have been written to the peer.
+			if err := serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+				t.Fatalf("set read deadline: %v", err)
+			}
+			if frame, err := reader.ReadFrame(); err == nil {
+				t.Fatalf("peer received unexpected frame: %s", frame)
+			} else if !isReadTimeout(err) {
+				t.Fatalf("peer read after rejection: %v", err)
+			}
+		})
+	}
+}
+
+// TestClientWaitSettledControlledNilAndClosedControlsChannels proves that
+// both a nil controls channel and an already-closed controls channel
+// behave identically: the wait keeps draining frames until agent_settled
+// arrives and returns nil.
+func TestClientWaitSettledControlledNilAndClosedControlsChannels(t *testing.T) {
+	tests := []struct {
+		name     string
+		controls func() <-chan WorkerControl
+	}{
+		{name: "nil channel", controls: func() <-chan WorkerControl { return nil }},
+		{name: "closed channel", controls: func() <-chan WorkerControl {
+			ch := make(chan WorkerControl, 1)
+			close(ch)
+			return ch
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client, reader, writer, _ := newControlledPeer(t, nil)
+			runPromptRoundTrip(t, client, reader, writer, "hello")
+
+			controls := tc.controls()
+
+			writeAgentSettled(t, writer)
+
+			waitDone := make(chan error, 1)
+			go func() {
+				waitDone <- client.WaitSettledControlled(context.Background(), controls)
+			}()
+
+			select {
+			case err := <-waitDone:
+				if err != nil {
+					t.Fatalf("WaitSettledControlled = %v, want nil", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("WaitSettledControlled did not return within 1s")
+			}
+		})
+	}
+}
+
+// TestClientWaitSettledControlledContextCancellationDeliversSameError
+// proves that cancelling the caller context while a valid steer is
+// pending delivers context.Canceled to both the control's Result and
+// the wait itself.
+func TestClientWaitSettledControlledContextCancellationDeliversSameError(t *testing.T) {
+	client, reader, writer, _ := newControlledPeer(t, nil)
+	runPromptRoundTrip(t, client, reader, writer, "hello")
+
+	controls := make(chan WorkerControl, 1)
+	ctrlResult := make(chan error, 1)
+	controls <- WorkerControl{Kind: WorkerControlSteer, Message: "change direction", Result: ctrlResult}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- client.WaitSettledControlled(ctx, controls)
+	}()
+
+	// Read the control request to prove the valid steer was accepted and is pending.
+	readControlRequest(t, reader, WorkerControlSteer, "change direction")
+
+	// Cancel — the pending control and the wait must both observe context.Canceled.
+	cancel()
+
+	var ctrlErr error
+	select {
+	case ctrlErr = <-ctrlResult:
+	case <-time.After(time.Second):
+		t.Fatal("control result did not arrive within 1s")
+	}
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("WaitSettledControlled did not return within 1s")
+	}
+
+	if !errors.Is(ctrlErr, context.Canceled) {
+		t.Fatalf("control result = %v, want context.Canceled", ctrlErr)
+	}
+	if !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("WaitSettledControlled = %v, want context.Canceled", waitErr)
+	}
+}
+
+// TestClientWaitSettledControlledUnknownResponseIdDeliversSameError
+// proves that an unknown response id while a valid steer is pending
+// delivers the same *ProtocolError to both the control Result and the
+// wait itself.
+func TestClientWaitSettledControlledUnknownResponseIdDeliversSameError(t *testing.T) {
+	client, reader, writer, _ := newControlledPeer(t, nil)
+	runPromptRoundTrip(t, client, reader, writer, "hello")
+
+	controls := make(chan WorkerControl, 1)
+	ctrlResult := make(chan error, 1)
+	controls <- WorkerControl{Kind: WorkerControlSteer, Message: "change direction", Result: ctrlResult}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- client.WaitSettledControlled(context.Background(), controls)
+	}()
+
+	// Consume the outbound steer request from the pipe so the server-side
+	// script advances to expecting the response, while we deliberately
+	// reply with a wrong request id to force a *ProtocolError on both
+	// the control Result and the wait itself.
+	_ = readControlRequest(t, reader, WorkerControlSteer, "change direction")
+
+	// Respond with the correct command but a wrong request id so the
+	// pending control cannot correlate → *ProtocolError.
+	if err := writer.WriteFrame(map[string]any{
+		"type":    "response",
+		"id":      "wrong-id",
+		"command": requestSteer,
+		"success": true,
+	}); err != nil {
+		t.Fatalf("write mismatch-id response: %v", err)
+	}
+
+	var ctrlErr error
+	select {
+	case ctrlErr = <-ctrlResult:
+	case <-time.After(time.Second):
+		t.Fatal("control result did not arrive within 1s")
+	}
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("WaitSettledControlled did not return within 1s")
+	}
+
+	var ctrlProtoErr *ProtocolError
+	if !errors.As(ctrlErr, &ctrlProtoErr) {
+		t.Fatalf("control result = %T %v, want *ProtocolError", ctrlErr, ctrlErr)
+	}
+	if !strings.Contains(ctrlProtoErr.Error(), "unknown request id") {
+		t.Fatalf("control result error = %q, want 'unknown request id'", ctrlProtoErr.Error())
+	}
+
+	var waitProtoErr *ProtocolError
+	if !errors.As(waitErr, &waitProtoErr) {
+		t.Fatalf("WaitSettledControlled = %T %v, want *ProtocolError", waitErr, waitErr)
+	}
+	if ctrlProtoErr.Error() != waitProtoErr.Error() {
+		t.Fatalf("errors differ: control=%q, wait=%q", ctrlProtoErr.Error(), waitProtoErr.Error())
+	}
+}
+
+// TestClientWaitSettledControlledBufferedSettlementDrainsBeforeControl
+// proves the queued-settlement priority fix: when agent_settled is
+// already buffered in c.frameResults before WaitSettledControlled starts,
+// a concurrent control on the controls channel is NOT honoured — the
+// wait drains the buffered settlement, returns nil, and no control frame
+// is written to the peer.
+func TestClientWaitSettledControlledBufferedSettlementDrainsBeforeControl(t *testing.T) {
+	client, reader, writer, serverConn := newControlledPeer(t, nil)
+	runPromptRoundTrip(t, client, reader, writer, "hello")
+
+	// Flush agent_settled onto the wire so pumpFrames buffers it in
+	// c.frameResults before the controlled wait begins.
+	writeAgentSettled(t, writer)
+
+	// Wait until pumpFrames has buffered the settlement in frameResults.
+	deadline := time.Now().Add(time.Second)
+	for len(client.frameResults) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("pumpFrames did not buffer agent_settled within 1s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// A valid control sits on the channel alongside the buffered event.
+	// The drain must prefer the buffered agent_settled over this control.
+	controls := make(chan WorkerControl, 1)
+	ctrlResult := make(chan error, 1)
+	controls <- WorkerControl{Kind: WorkerControlSteer, Message: "change direction", Result: ctrlResult}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- client.WaitSettledControlled(context.Background(), controls)
+	}()
+
+	// Wait returns nil (buffered agent_settled consumed; settled=true).
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("WaitSettledControlled = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitSettledControlled did not return within 1s")
+	}
+
+	// Result channel must remain empty — no control was ever started.
+	select {
+	case v := <-ctrlResult:
+		t.Fatalf("control Result = %v, want empty (no control was sent)", v)
+	default:
+	}
+
+	// No control frame was written to the peer.
+	if err := serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	if frame, err := reader.ReadFrame(); err == nil {
+		t.Fatalf("peer received unexpected frame despite early settlement: %s", frame)
+	} else if !isReadTimeout(err) {
+		t.Fatalf("peer read after early settlement: %v", err)
+	}
+}
