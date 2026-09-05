@@ -466,9 +466,10 @@ Replace the provider/model placeholder with one exact selector printed by
 - `config set max-model-workers <n>` accepts a positive integer, updates only
   `maxModelWorkers`, and preserves `defaultModel`. It never queries the model
   catalog and never contacts Pi. The setter is a local-only write.
-- `maxModelWorkers` is machine-owned stored configuration with no run-level
-  override. This config slice does not yet add shared cross-run admission;
-  the current per-invocation task cap remains 3.
+- `maxModelWorkers` is enforced machine-wide across foreground processes through a
+  file-backed admission gate. The effective default is 3, overridable only through
+  `pi-worker config set max-model-workers <n>`. There is no run-level override,
+  no daemon, no environment variable, and no foreground priority mechanism.
 - Configuration writes use a same-directory temporary file, file sync, atomic
   replacement, and owner-only permissions where supported.
 - When the configuration path itself is a symbolic link, `config set` refuses
@@ -493,6 +494,45 @@ Replace the provider/model placeholder with one exact selector printed by
   (exit `2`). When no model resolves, stdin is not read.
 
 ## Behavior
+
+### Foreground admission
+
+Every foreground task joins one file-backed machine-wide FIFO before Pi starts.
+There is no daemon, no foreground priority, no preemption, no run-level flag,
+and no environment variable to bypass admission.
+
+All task tickets for one run are durably enqueued in request order before any
+task waits for a lease, so a multi-task run cannot jump an older ticket. The
+`runId` recorded in each admission ticket is the same identifier written to the
+run record.
+
+Each task's queue budget is fixed at 15 minutes from the time the run is
+accepted. Queue time is measured independently of `--timeout` and does not
+consume any execution budget.
+
+`--timeout` (default 30m) is the per-task execution budget starting after that
+task receives an admission lease. An admitted successful run's optional
+verification command gets its own same-sized budget when verification starts.
+Worktree setup and the version preflight are outside this execution clock but
+remain parent-cancellable.
+
+Parent cancellation removes every queued ticket and cancels running workers.
+Leases are held through settled-output attribution and released on terminal
+paths. Stale ownership is detected by PID plus creation-time fail-safe: a
+ticket whose owner process is absent from the process table or whose creation
+time no longer matches is reaped automatically.
+
+If at least one task completes and a sibling times out while still
+queued, the run outcome is `partial` and the completed sibling results
+are retained. If no task completes and every task times out in the
+queue, the run outcome is `timeout`. Each timed-out ticket is removed
+from the gate.
+
+`maxModelWorkers` (effective default 3, overridable through config only) limits
+the number of concurrent leased tasks across all foreground processes on the
+same machine. The admission gate lives inside Pi Worker's user configuration
+directory and is shared across all processes that resolve the same config root;
+two runs from distinct configuration files do not share a gate.
 
 ### Model selection
 
@@ -752,7 +792,7 @@ Replace the provider/model placeholder with one exact selector printed by
   - `--task-file` repeated 1..3 times, or
   - no task flags: one task read from stdin.
 - Mixing `--task` and `--task-file` is rejected.
-- Default timeout is `30m` and applies to the whole foreground run (all workers share one deadline).
+- Default timeout is `30m` per task. Each task's execution budget starts independently after that task receives an admission lease; queue time does not consume it.
 
 ### Workspace and worker sharing
 
