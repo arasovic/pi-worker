@@ -297,10 +297,48 @@ func TestQueueTicketConcurrentCancelWhileWaitIsQueued(t *testing.T) {
 		t.Fatal("first Wait returned nil lease")
 	}
 
-	// Enqueue a second ticket; start its Wait in a goroutine.
+	// Enqueue a second ticket and install a beforeTryGrant barrier hook.
 	qt, err := g.Enqueue(Request{RunID: "waiter", WorkerID: 2})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
+	}
+
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	var hookOnce sync.Once
+	var resumeOnce sync.Once
+	resumeFn := func() { resumeOnce.Do(func() { close(resume) }) }
+	qt.beforeTryGrant = func() {
+		hookOnce.Do(func() { close(entered) })
+		<-resume
+	}
+
+	// Goroutine cleanup: always unblock the hook and wait for the goroutine.
+	waitDone := make(chan error, 1)
+	goroutineDone := make(chan struct{})
+	t.Cleanup(func() {
+		_ = lease.Release()
+		resumeFn()
+		select {
+		case <-goroutineDone:
+		case <-time.After(5 * time.Second):
+			t.Error("Wait goroutine did not exit within 5s")
+		}
+	})
+	go func() {
+		defer close(goroutineDone)
+		l, e := qt.Wait(context.Background())
+		if l != nil {
+			_ = l.Release()
+		}
+		waitDone <- e
+	}()
+
+	// Block until Wait enters its poll loop.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait goroutine did not enter its poll loop within 5s")
 	}
 
 	// Prove it is durably queued.
@@ -310,23 +348,21 @@ func TestQueueTicketConcurrentCancelWhileWaitIsQueued(t *testing.T) {
 		t.Fatalf("second ticket state = %q, want %q", st.Tickets[1].State, ticketQueued)
 	}
 
-	waitDone := make(chan error, 1)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		l, e := qt.Wait(context.Background())
-		if l != nil {
-			_ = l.Release()
-		}
-		waitDone <- e
-	}()
-
-	// Cancel the queued ticket; Wait must return within one second with
-	// nil Lease and an error matching errQueueTicketCancelled.
+	// Cancel the queued ticket while the goroutine is blocked in the hook.
 	if err := qt.Cancel(); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
+
+	// Ticket is durably removed from state.
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].State != ticketLeased {
+		t.Errorf("remaining ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
+	}
+
+	// Release the barrier: Wait proceeds, tryGrant finds missing ticket,
+	// returns errQueueTicketMissing with cancelIntent → errQueueTicketCancelled.
+	resumeFn()
 
 	select {
 	case e := <-waitDone:
@@ -336,23 +372,54 @@ func TestQueueTicketConcurrentCancelWhileWaitIsQueued(t *testing.T) {
 		if !errors.Is(e, errQueueTicketCancelled) {
 			t.Fatalf("Wait error = %v, want errQueueTicketCancelled", e)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Wait did not return within 1s after Cancel")
+		if errors.Is(e, errQueueTicketMissing) {
+			t.Fatalf("Wait error should not expose errQueueTicketMissing, got %v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return within 5s")
 	}
 
-	// Only the held lease remains.
-	st = readStateForTest(t, root)
-	assertTicketCount(t, st, 1)
-	if st.Tickets[0].State != ticketLeased {
-		t.Errorf("remaining ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
-	}
-
-	// Release and confirm cleanup.
+	// Release the held lease and confirm zero tickets.
 	if err := lease.Release(); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	wg.Wait()
 	assertNoTickets(t, root)
+}
+
+func TestQueueTicketExternalMissingNotCancelled(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "EM-")
+
+	// Enqueue one ticket without calling Cancel.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Remove through the package-private gate helper, simulating external
+	// reconcile/removal. The ticket was not Cancel()-ed by the caller.
+	if err := g.removeQueuedTicket(qt.ticketID); err != nil {
+		t.Fatalf("removeQueuedTicket: %v", err)
+	}
+	assertNoTickets(t, root)
+
+	// Wait discovers the missing ticket and returns errQueueTicketMissing.
+	// Because cancelIntent is false (Cancel was never called), the error
+	// must not be normalized to errQueueTicketCancelled.
+	lease, werr := qt.Wait(context.Background())
+	if lease != nil {
+		t.Fatal("Wait returned non-nil lease")
+	}
+	if werr == nil {
+		t.Fatal("Wait = nil, want error")
+	}
+	if !errors.Is(werr, errQueueTicketMissing) {
+		t.Fatalf("Wait error = %v, want errQueueTicketMissing", werr)
+	}
+	if errors.Is(werr, errQueueTicketCancelled) {
+		t.Fatalf("Wait error should not match errQueueTicketCancelled, got %v", werr)
+	}
 }
 
 func TestQueueTicketCancelRetryAfterTransientCleanupFailure(t *testing.T) {
