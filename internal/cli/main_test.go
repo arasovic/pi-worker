@@ -2766,3 +2766,135 @@ func TestRunOpensForegroundAdmissionFromResolvedConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestRunConfiguredMaxModelWorkersSerializesForegroundTasks(t *testing.T) {
+	// Save schema-2 config with MaxModelWorkers 1 and install it so the
+	// admission gate derived beside the config file is test-scoped.
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.json")
+	if err := config.Save(configPath, config.Config{SchemaVersion: 2, MaxModelWorkers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, configPath)
+
+	// Use the real default openAdmission: the config path makes its derived
+	// admission root test-scoped.
+
+	// Install a completed fake worker with per-worker release channels and
+	// an onRequest hook that records which worker IDs start.
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	fake.resultsByWorker = map[int]pi.WorkerResult{
+		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
+		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	}
+	started := make(chan int, 2)
+	fake.onRequest = func(req pi.WorkerRequest) { started <- req.WorkerID }
+	fake.releaseByWorker = map[int]chan struct{}{
+		1: make(chan struct{}),
+		2: make(chan struct{}),
+	}
+
+	// Cancellable parent context and bounded cleanup. If an assertion
+	// fails while a worker is still held, cleanup cancels the parent so
+	// the CLI goroutine's context selects unblock; runDone then proves
+	// the goroutine actually exited and cannot outlive the test.
+	runDone := make(chan struct{})
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		parentCancel()
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Error("CLI goroutine did not exit within 5s of parent cancellation")
+		}
+	})
+
+	type cliResult struct {
+		code   int
+		stdout string
+		stderr string
+	}
+	resultCh := make(chan cliResult, 1)
+	go func() {
+		defer close(runDone)
+		code, stdout, stderr := runCLIWithContext(t, parentCtx, []string{"run", "--model", "acme/m-1", "--task", "first", "--task", "second"}, "")
+		resultCh <- cliResult{code, stdout, stderr}
+	}()
+
+	// Receive first started ID: must be worker 1.
+	select {
+	case id := <-started:
+		if id != 1 {
+			t.Fatalf("first started worker = %d, want 1", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first worker to start")
+	}
+
+	// While release channel 1 is still open, assert no second worker has
+	// started and concurrency is exactly 1.
+	select {
+	case id := <-started:
+		t.Fatalf("second worker %d started while first still held, want serialization", id)
+	default:
+	}
+	if got := fake.maxConcurrency(); got != 1 {
+		t.Fatalf("max concurrency = %d while holding worker 1, want 1", got)
+	}
+
+	// Close release channel 1. Receive next started ID: must be worker 2.
+	close(fake.releaseByWorker[1])
+	select {
+	case id := <-started:
+		if id != 2 {
+			t.Fatalf("second started worker = %d, want 2", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second worker to start")
+	}
+
+	// Worker 2 is now running and worker 1 has finished: with serialized
+	// foreground tasks the concurrency high-water mark must still be 1.
+	if got := fake.maxConcurrency(); got != 1 {
+		t.Fatalf("max concurrency = %d while running worker 2, want 1", got)
+	}
+	close(fake.releaseByWorker[2])
+
+	// Receive CLI result.
+	var result cliResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for CLI result")
+	}
+
+	if result.code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", result.code, result.stderr)
+	}
+	if fake.maxConcurrency() != 1 {
+		t.Fatalf("max concurrency = %d, want 1", fake.maxConcurrency())
+	}
+	if !strings.Contains(result.stdout, "worker 1: one done") {
+		t.Fatalf("stdout missing worker 1 output: %q", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "worker 2: two done") {
+		t.Fatalf("stdout missing worker 2 output: %q", result.stdout)
+	}
+	// Both outputs must appear in input order.
+	idx1 := strings.Index(result.stdout, "worker 1: one done")
+	idx2 := strings.Index(result.stdout, "worker 2: two done")
+	if idx1 >= idx2 {
+		t.Fatalf("worker 1 output (idx=%d) not before worker 2 output (idx=%d): %q", idx1, idx2, result.stdout)
+	}
+	// The existing shared-workspace warning on stderr is allowed; reject
+	// worker or internal error lines.
+	for _, line := range strings.Split(result.stderr, "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "share the writable current workspace") {
+			continue
+		}
+		t.Fatalf("unexpected stderr line: %q", line)
+	}
+}
