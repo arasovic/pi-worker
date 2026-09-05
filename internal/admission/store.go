@@ -63,7 +63,7 @@ func loadState(root string) (state, error) {
 	return s, nil
 }
 
-// Save writes state to root/state.json atomically. The document is validated
+// saveState writes state to root/state.json atomically. The document is validated
 // before the existing file is touched. The final state path must not be a
 // symbolic link. The root directory is created and tightened to owner-only
 // permissions where supported. The new content is written to a temporary file
