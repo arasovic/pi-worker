@@ -143,18 +143,39 @@ func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
 // the whole package test run. The expectation is derived from
 // os.TempDir(), not from a copy of whatever path TestMain built, so
 // this test fails if that redirect is ever removed and the seam falls
-// back to the production directory.
+// back to the production directory. Calling the seam twice proves each
+// invocation produces a fresh directory — the isolation fix for
+// run-ID collisions in the same process and second.
 func TestRunlogDirStaysUnderSystemTemp(t *testing.T) {
-	dir, err := runlogDir()
+	dir1, err := runlogDir()
 	if err != nil {
-		t.Fatalf("runlogDir: %v", err)
+		t.Fatalf("runlogDir (1st call): %v", err)
 	}
-	if !filepath.IsAbs(dir) {
-		t.Fatalf("runlogDir() = %q, want an absolute path under the system temporary directory %q", dir, os.TempDir())
+	dir2, err := runlogDir()
+	if err != nil {
+		t.Fatalf("runlogDir (2nd call): %v", err)
 	}
 	temp := filepath.Clean(os.TempDir())
-	if dir != temp && !strings.HasPrefix(dir, temp+string(filepath.Separator)) {
-		t.Fatalf("runlogDir() = %q, want a path under the system temporary directory %q", dir, os.TempDir())
+	assertUnderTemp := func(dir string) {
+		t.Helper()
+		if !filepath.IsAbs(dir) {
+			t.Fatalf("runlogDir() = %q, want an absolute path under the system temporary directory %q", dir, os.TempDir())
+		}
+		if dir != temp && !strings.HasPrefix(dir, temp+string(filepath.Separator)) {
+			t.Fatalf("runlogDir() = %q, want a path under the system temporary directory %q", dir, os.TempDir())
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("runlogDir() = %q: stat: %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("runlogDir() = %q, want an existing directory", dir)
+		}
+	}
+	assertUnderTemp(dir1)
+	assertUnderTemp(dir2)
+	if dir1 == dir2 {
+		t.Fatalf("runlogDir() returned the same path %q on two calls; want distinct directories", dir1)
 	}
 }
 

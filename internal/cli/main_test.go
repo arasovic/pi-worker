@@ -52,18 +52,24 @@ func TestMain(m *testing.M) {
 	}
 	originalRunVersionProbe := runVersionProbe
 	runVersionProbe = func(context.Context) (string, error) { return piversion.VerifiedVersion, nil }
-	// Point the runlogDir seam at one temporary directory for the whole
-	// package test run, so no test that reaches the recorder writes into
-	// the user's real records directory. The redirect is restored on the
-	// same path where the fakepi build directory is removed below.
-	recordDir, err := os.MkdirTemp("", "pi-worker-cli-runlog-*")
+	// Point the runlogDir seam at a parent temporary directory so no test
+	// that reaches the recorder writes into the user's real records
+	// directory. Each invocation of the seam now creates and returns a
+	// fresh child inside that parent, preventing run-ID collisions
+	// between test invocations in the same process and second. Tests that
+	// intentionally need shared history already override the seam
+	// themselves. The redirect is restored on the same path where the
+	// fakepi build directory is removed below.
+	runlogParent, err := os.MkdirTemp("", "pi-worker-cli-runlog-parent-*")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create runlog directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "create runlog parent directory: %v\n", err)
 		os.RemoveAll(dir)
 		os.Exit(1)
 	}
 	originalRunlogDir := runlogDir
-	runlogDir = func() (string, error) { return recordDir, nil }
+	runlogDir = func() (string, error) {
+		return os.MkdirTemp(runlogParent, "pi-worker-cli-runlog-*")
+	}
 	// Point the userConfigPath seam at one temporary directory for the
 	// whole package test run too, so no test that reaches the run
 	// configuration reads the user's real config.json: the file is left
@@ -78,7 +84,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create config directory: %v\n", err)
 		os.RemoveAll(dir)
-		os.RemoveAll(recordDir)
+		os.RemoveAll(runlogParent)
 		os.Exit(1)
 	}
 	originalUserConfigPath := userConfigPath
@@ -88,7 +94,7 @@ func TestMain(m *testing.M) {
 	runlogDir = originalRunlogDir
 	userConfigPath = originalUserConfigPath
 	os.RemoveAll(dir)
-	os.RemoveAll(recordDir)
+	os.RemoveAll(runlogParent)
 	os.RemoveAll(configDir)
 	os.Exit(code)
 }
