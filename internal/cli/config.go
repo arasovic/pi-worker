@@ -76,7 +76,6 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 		return 0
 	}
 
-	// Load config once for setters
 	cfg, err := configpkg.Load(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		cfg = configpkg.Empty()

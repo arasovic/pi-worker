@@ -6,7 +6,9 @@ contract for agents and other machine consumers.
 ## Shared rules
 
 - Every complete document is one JSON object followed by one LF byte.
-- `schemaVersion` is required and is the integer `1`.
+- `schemaVersion` is required and is the integer `1`, unless a section states
+  another version. The `config` document is the only exception; its current
+  version is described below.
 - Required arrays are always arrays, including when empty; they are never
   `null` or omitted.
 - An unsupported `schemaVersion` must be rejected.
@@ -71,18 +73,33 @@ that names the failed area and the next command for the detailed error.
 
 ## `config show --json`
 
-The config document is both public output and durable input:
+The config document is both public output and durable input. The current
+version is schema 2:
 
 ```json
-{"schemaVersion":1,"defaultModel":"provider/model"}
+{"schemaVersion":2,"defaultModel":"provider/model","maxModelWorkers":3}
 ```
 
-On input, `schemaVersion` is required and `defaultModel` is optional; a
-missing `defaultModel` key means the same thing as an empty string. On
-output both keys always appear. `defaultModel` may be an empty string;
-otherwise it must be one exact provider/model selector. Loading rejects
-unknown fields, trailing data, invalid selectors, and unsupported schema
-versions.
+**Schema 2 (current).** `schemaVersion` must be the integer `2`. `defaultModel`
+is optional and may be an empty string; otherwise it must be one exact
+`provider/model` selector. `maxModelWorkers` is required and must be a positive
+integer. Loading rejects unknown fields, trailing data, invalid selectors,
+unsupported schema versions, and zero or negative `maxModelWorkers`.
+
+**Schema 1 (accepted, migrated in memory).** A schema-1 document is accepted
+only when it carries its historical fields (`schemaVersion` and `defaultModel`)
+and does not contain `maxModelWorkers`. On load it is returned as a schema-2
+`Config` with `maxModelWorkers` set to `3`; the original on-disk content is
+not rewritten. A schema-1 document that contains `maxModelWorkers` is rejected.
+
+On output both `defaultModel` and `maxModelWorkers` always appear, and
+`schemaVersion` is always `2` — even when the on-disk file was schema 1.
+
+**Config setters.** `config set default-model` queries the model catalog,
+updates only `defaultModel`, and preserves `maxModelWorkers`.
+`config set max-model-workers` never queries the model catalog, updates only
+`maxModelWorkers`, and preserves `defaultModel`. Both setters persist the
+result as schema 2.
 
 Loading also distinguishes an absent file from a dangling link: a missing
 `config.json` is a valid empty configuration (exit `0` for `config show`,

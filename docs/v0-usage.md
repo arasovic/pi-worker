@@ -90,6 +90,7 @@ one plain diagnostic line.
 - `pi-worker doctor [--timeout <duration>] [--json] [--debug]`
 - `pi-worker config show [--json]`
 - `pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]`
+- `pi-worker config set max-model-workers <n>`
 - `pi-worker skill status [--json]`
 - `pi-worker skill receipt-path [--json]`
 - `pi-worker runs list [--json]`
@@ -426,17 +427,23 @@ pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model
 
 ## Personal default model
 
-`pi-worker` stores a two-field, versioned JSON configuration document in the
-operating system's user configuration directory. It contains only
-`schemaVersion` and `defaultModel`; the empty default is provider-neutral.
+`pi-worker` stores a versioned JSON configuration document in the operating
+system's user configuration directory. Schema 2 (the current schema) carries
+three keys: `schemaVersion` (integer `2`), `defaultModel` (an optional
+provider/model selector, empty string when unset), and `maxModelWorkers`
+(positive integer, effective default `3`). Schema-1 files containing only
+their historical fields (`schemaVersion` and `defaultModel`) are accepted and
+migrated in memory to schema 2 with `maxModelWorkers: 3`; Load does not
+rewrite them on disk.
 
 ```text
 pi-worker config show [--json]
 pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]
+pi-worker config set max-model-workers <n>
 ```
 
 Replace the provider/model placeholder with one exact selector printed by
-`pi-worker models` before running `config set`.
+`pi-worker models` before running `config set default-model`.
 
 - `config show` reads the local document only. It never launches Pi. A missing
   configuration is an empty default and exits `0`; an invalid configuration
@@ -450,11 +457,18 @@ Replace the provider/model placeholder with one exact selector printed by
   a broken link is never read as an empty configuration. The link itself is
   left untouched, and reads through a link whose target exists keep resolving
   as before.
-- `config set` requires an exact `provider/model` selector, queries Pi's model
-  catalog once, and writes the default only when that exact selector is
-  available. A missing or unavailable Pi executable is a readiness failure
-  (exit code `3`); protocol/internal failures use exit code `9`. There is no
-  fallback.
+- `config set default-model` requires an exact `provider/model` selector,
+  queries Pi's model catalog once, and writes the default only when that
+  exact selector is available. It updates only `defaultModel` and preserves
+  the current `maxModelWorkers`. A missing or unavailable Pi executable is a
+  readiness failure (exit code `3`); protocol/internal failures use exit
+  code `9`. There is no fallback.
+- `config set max-model-workers <n>` accepts a positive integer, updates only
+  `maxModelWorkers`, and preserves `defaultModel`. It never queries the model
+  catalog and never contacts Pi. The setter is a local-only write.
+- `maxModelWorkers` is machine-owned stored configuration with no run-level
+  override. This config slice does not yet add shared cross-run admission;
+  the current per-invocation task cap remains 3.
 - Configuration writes use a same-directory temporary file, file sync, atomic
   replacement, and owner-only permissions where supported.
 - When the configuration path itself is a symbolic link, `config set` refuses
