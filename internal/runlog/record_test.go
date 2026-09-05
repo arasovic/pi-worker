@@ -813,8 +813,22 @@ func TestStartWithIDRejectsExistingDirectorySymlinkPipe(t *testing.T) {
 		if err := mkfifo(pipe); err != nil {
 			t.Skipf("cannot create named pipe: %v", err)
 		}
-		if _, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}}); err == nil {
-			t.Fatal("StartWithID succeeded over named pipe, want error")
+		type result struct {
+			rec *Recorder
+			err error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			rec, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+			ch <- result{rec, err}
+		}()
+		select {
+		case r := <-ch:
+			if r.err == nil {
+				t.Fatal("StartWithID succeeded over named pipe, want error")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("StartWithID blocked: did not return within 2s on named pipe")
 		}
 		info, err := os.Stat(pipe)
 		if err != nil {
