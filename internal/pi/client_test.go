@@ -1816,6 +1816,156 @@ func TestClientWaitSettledControlledUnknownResponseIdDeliversSameError(t *testin
 	}
 }
 
+func TestClientWaitSettledControlledSerialTwoExactResponsesAndLateDuplicate(t *testing.T) {
+	t.Run("two exact responses stay serial", func(t *testing.T) {
+		handler := &recordingHandler{}
+		client, reader, writer, serverConn := newControlledPeer(t, handler)
+		runPromptRoundTrip(t, client, reader, writer, "hello")
+
+		controls := make(chan WorkerControl, 2)
+		ctrl1Result := make(chan error, 1)
+		ctrl2Result := make(chan error, 1)
+		controls <- WorkerControl{Kind: WorkerControlSteer, Message: "first", Result: ctrl1Result}
+		controls <- WorkerControl{Kind: WorkerControlSteer, Message: "second", Result: ctrl2Result}
+
+		waitDone := make(chan error, 1)
+		go func() {
+			waitDone <- client.WaitSettledControlled(context.Background(), controls)
+		}()
+
+		req1 := readControlRequest(t, reader, WorkerControlSteer, "first")
+		if err := serverConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
+		}
+		if frame, err := reader.ReadFrame(); err == nil {
+			t.Fatalf("second request arrived before first response: %s", frame)
+		} else if !isReadTimeout(err) {
+			t.Fatalf("expected no-frame timeout, got: %v", err)
+		}
+		serverConn.SetReadDeadline(time.Time{})
+
+		if err := writer.WriteFrame(json.RawMessage(`{"type":"message_update"}`)); err != nil {
+			t.Fatalf("write message_update: %v", err)
+		}
+		writeSuccessResponse(t, writer, req1.ID, requestSteer)
+
+		select {
+		case err := <-ctrl1Result:
+			if err != nil {
+				t.Fatalf("ctrl1 result = %v, want nil", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("ctrl1 result did not arrive within 1s")
+		}
+
+		req2 := readControlRequest(t, reader, WorkerControlSteer, "second")
+		if req2.ID == req1.ID {
+			t.Fatalf("second request ID %q matches first %q, want different", req2.ID, req1.ID)
+		}
+
+		if err := writer.WriteFrame(json.RawMessage(`{"type":"tool_execution_end","toolName":"bash"}`)); err != nil {
+			t.Fatalf("write tool_execution_end: %v", err)
+		}
+		writeSuccessResponse(t, writer, req2.ID, requestSteer)
+
+		select {
+		case err := <-ctrl2Result:
+			if err != nil {
+				t.Fatalf("ctrl2 result = %v, want nil", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("ctrl2 result did not arrive within 1s")
+		}
+
+		writeAgentSettled(t, writer)
+
+		select {
+		case err := <-waitDone:
+			if err != nil {
+				t.Fatalf("WaitSettledControlled = %v, want nil", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("WaitSettledControlled did not return within 1s")
+		}
+
+		wantEvents := []string{"message_update", "tool_execution_end", "agent_settled"}
+		if !slices.Equal(handler.types(), wantEvents) {
+			t.Fatalf("handler events = %v, want %v", handler.types(), wantEvents)
+		}
+	})
+
+	t.Run("late first response cannot satisfy second", func(t *testing.T) {
+		client, reader, writer, _ := newControlledPeer(t, &recordingHandler{})
+		runPromptRoundTrip(t, client, reader, writer, "hello")
+
+		controls := make(chan WorkerControl, 2)
+		ctrl1Result := make(chan error, 1)
+		ctrl2Result := make(chan error, 1)
+		controls <- WorkerControl{Kind: WorkerControlSteer, Message: "first", Result: ctrl1Result}
+		controls <- WorkerControl{Kind: WorkerControlSteer, Message: "second", Result: ctrl2Result}
+
+		waitDone := make(chan error, 1)
+		go func() {
+			waitDone <- client.WaitSettledControlled(context.Background(), controls)
+		}()
+
+		req1 := readControlRequest(t, reader, WorkerControlSteer, "first")
+		writeSuccessResponse(t, writer, req1.ID, requestSteer)
+
+		select {
+		case err := <-ctrl1Result:
+			if err != nil {
+				t.Fatalf("ctrl1 result = %v, want nil", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("ctrl1 result did not arrive within 1s")
+		}
+
+		req2 := readControlRequest(t, reader, WorkerControlSteer, "second")
+		if req2.ID == req1.ID {
+			t.Fatalf("second request ID %q matches first %q, want different", req2.ID, req1.ID)
+		}
+
+		if err := writer.WriteFrame(map[string]any{
+			"type":    "response",
+			"id":      req1.ID,
+			"command": requestSteer,
+			"success": true,
+		}); err != nil {
+			t.Fatalf("write late duplicate response: %v", err)
+		}
+
+		var ctrl2Err error
+		select {
+		case ctrl2Err = <-ctrl2Result:
+		case <-time.After(time.Second):
+			t.Fatalf("ctrl2 result did not arrive within 1s")
+		}
+		var waitErr error
+		select {
+		case waitErr = <-waitDone:
+		case <-time.After(time.Second):
+			t.Fatalf("WaitSettledControlled did not return within 1s")
+		}
+
+		var ctrl2Proto *ProtocolError
+		if !errors.As(ctrl2Err, &ctrl2Proto) {
+			t.Fatalf("ctrl2 result = %T %v, want *ProtocolError", ctrl2Err, ctrl2Err)
+		}
+		if !strings.Contains(ctrl2Proto.Error(), "unknown request id") {
+			t.Fatalf("ctrl2 error = %q, want unknown-request-id detail", ctrl2Proto.Error())
+		}
+
+		var waitProto *ProtocolError
+		if !errors.As(waitErr, &waitProto) {
+			t.Fatalf("WaitSettledControlled = %T %v, want *ProtocolError", waitErr, waitErr)
+		}
+		if ctrl2Proto.Error() != waitProto.Error() {
+			t.Fatalf("ctrl2 and wait errors differ: ctrl2=%q wait=%q", ctrl2Proto.Error(), waitProto.Error())
+		}
+	})
+}
+
 // TestClientWaitSettledControlledBufferedSettlementDrainsBeforeControl
 // proves the queued-settlement priority fix: when agent_settled is
 // already buffered in c.frameResults before WaitSettledControlled starts,
