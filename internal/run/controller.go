@@ -358,6 +358,14 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	}
 	var admissionErrs []error // mutex-protected: only written by worker goroutines
 	var admissionErrMu sync.Mutex
+	recordAdmissionErr := func(err error) {
+		if err == nil {
+			return
+		}
+		admissionErrMu.Lock()
+		admissionErrs = append(admissionErrs, err)
+		admissionErrMu.Unlock()
+	}
 	executeTask := func(workerCtx context.Context, index int, task Task) {
 		prompt, dataFiles := composeTaskPrompt(task, token)
 		result := c.worker.Run(workerCtx, pi.WorkerRequest{
@@ -412,9 +420,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 				// Ticket cancelled or expired: retry cleanup.
 				retryErr := tickets[index].Cancel()
 				if retryErr != nil {
-					admissionErrMu.Lock()
-					admissionErrs = append(admissionErrs, fmt.Errorf("admission cancel retry task %d: %w", index+1, retryErr))
-					admissionErrMu.Unlock()
+					recordAdmissionErr(fmt.Errorf("admission cancel retry task %d: %w", index+1, retryErr))
 				}
 				status := pi.StatusError
 				if errors.Is(waitErr, context.DeadlineExceeded) {
@@ -423,9 +429,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 					status = pi.StatusCancelled
 				}
 				if status == pi.StatusError {
-					admissionErrMu.Lock()
-					admissionErrs = append(admissionErrs, fmt.Errorf("admission wait task %d: %w", index+1, waitErr))
-					admissionErrMu.Unlock()
+					recordAdmissionErr(fmt.Errorf("admission wait task %d: %w", index+1, waitErr))
 				}
 				results[index] = pi.WorkerResult{
 					Model:                  task.Model,
@@ -440,9 +444,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			defer func() {
 				releaseErr := lease.Release()
 				if releaseErr != nil {
-					admissionErrMu.Lock()
-					admissionErrs = append(admissionErrs, fmt.Errorf("admission release task %d: %w", index+1, releaseErr))
-					admissionErrMu.Unlock()
+					recordAdmissionErr(fmt.Errorf("admission release task %d: %w", index+1, releaseErr))
 				}
 			}()
 			defer wCancel()
