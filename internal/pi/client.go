@@ -9,6 +9,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/piversion"
@@ -63,6 +64,11 @@ const toolCallIDMaxBytes = 128
 // while events interleave. The client is single-flight: one request at a
 // time, matching the worker's linear prompt lifecycle. There is no arbitrary
 // caller JSON API and no direct RPC bash surface.
+type frameReadResult struct {
+	frame []byte
+	err   error
+}
+
 type Client struct {
 	in      *FrameReader
 	out     *FrameWriter
@@ -82,15 +88,30 @@ type Client struct {
 	// as this map key, never logged. Only the single driving goroutine
 	// touches it.
 	toolStarts map[string]time.Duration
+
+	frameResults chan frameReadResult
+	stop         chan struct{}
+	done         chan struct{}
+	closer       io.Closer
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *WorkerScope) *Client {
-	return &Client{
-		in:      NewFrameReader(stdout, MaxFrameBytes),
-		out:     NewFrameWriter(stdin),
-		handler: handler,
-		debug:   debug,
+	client := &Client{
+		in:           NewFrameReader(stdout, MaxFrameBytes),
+		out:          NewFrameWriter(stdin),
+		handler:      handler,
+		debug:        debug,
+		frameResults: make(chan frameReadResult, 1),
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
+	if closer, ok := stdout.(io.Closer); ok {
+		client.closer = closer
+	}
+	go client.pumpFrames()
+	return client
 }
 
 func (c *Client) nextRequestID() string {
@@ -366,9 +387,12 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 			c.awaitingSettled = false
 			return err
 		}
-		frame, err := c.in.ReadFrame()
+		frame, err := c.nextFrame(ctx)
 		if err != nil {
 			c.awaitingSettled = false
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			return c.frameError(err)
 		}
 		isResponse, _, err := c.handleFrame(frame)
@@ -407,8 +431,11 @@ func (c *Client) roundTrip(ctx context.Context, req request) (*wireResponse, err
 		if err := ctx.Err(); err != nil {
 			return nil, c.failRPC(req.Type, started, err)
 		}
-		frame, err := c.in.ReadFrame()
+		frame, err := c.nextFrame(ctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, c.failRPC(req.Type, started, err)
+			}
 			return nil, c.failRPC(req.Type, started, c.frameError(err))
 		}
 		isResponse, resp, err := c.handleFrame(frame)
@@ -440,6 +467,50 @@ func (c *Client) roundTrip(ctx context.Context, req request) (*wireResponse, err
 func (c *Client) failRPC(kind string, started time.Duration, err error) error {
 	c.debug.Log("rpc="+kind, debugFailed, "duration="+(c.debug.Elapsed()-started).Round(time.Millisecond).String())
 	return err
+}
+
+func (c *Client) nextFrame(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-c.frameResults:
+		if result.err != nil {
+			return nil, result.err
+		}
+		return result.frame, nil
+	}
+}
+
+func (c *Client) pumpFrames() {
+	defer close(c.done)
+	for {
+		frame, err := c.in.ReadFrame()
+		result := frameReadResult{frame: frame, err: err}
+		select {
+		case <-c.stop:
+			return
+		case c.frameResults <- result:
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// Close stops the frame pump and, when possible, closes the underlying
+// reader so the pump can exit deterministically.
+func (c *Client) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		close(c.stop)
+		if c.closer != nil {
+			c.closeErr = c.closer.Close()
+		}
+		<-c.done
+	})
+	return c.closeErr
 }
 
 // handleFrame routes one frame: responses are validated structurally, every

@@ -7,7 +7,9 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/piversion"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
@@ -35,6 +37,64 @@ type closedPipeWriter struct{}
 
 func (closedPipeWriter) Write(_ []byte) (int, error) {
 	return 0, io.ErrClosedPipe
+}
+
+type pumpBlockingReader struct {
+	started   chan struct{}
+	unblock   chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newPumpBlockingReader() *pumpBlockingReader {
+	return &pumpBlockingReader{
+		started: make(chan struct{}),
+		unblock: make(chan struct{}),
+	}
+}
+
+func (r *pumpBlockingReader) Read(_ []byte) (int, error) {
+	r.startOnce.Do(func() {
+		close(r.started)
+	})
+	<-r.unblock
+	return 0, io.ErrClosedPipe
+}
+
+func (r *pumpBlockingReader) Close() error {
+	r.closeOnce.Do(func() {
+		close(r.unblock)
+	})
+	return nil
+}
+
+func TestClientCloseStopsFramePump(t *testing.T) {
+	reader := newPumpBlockingReader()
+	client := NewClient(io.Discard, reader, nil, nil)
+
+	select {
+	case <-reader.started:
+	case <-time.After(time.Second):
+		t.Fatalf("frame pump did not start within 1s")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Close()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first client.Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("first client.Close did not return within 1s")
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("second client.Close: %v", err)
+	}
 }
 
 func TestClientCorrelatesInterleavedResponsesAndEvents(t *testing.T) {

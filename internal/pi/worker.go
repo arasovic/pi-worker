@@ -238,6 +238,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 
 		thinking = attemptThinking
 		attemptStop()
+		_ = client.Close()
 		_ = proc.Close()
 		if retryable && attempt < 3 {
 			lastRetryableFailureClass = failure.Status
@@ -249,6 +250,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: "startup attempts exhausted"})
 	}
 	defer successProc.Close()
+	defer client.Close()
 
 	thinking = successThinking
 	if startupWarning != "" {
