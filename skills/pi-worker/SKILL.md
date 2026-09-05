@@ -39,6 +39,8 @@ is rejected up front, not executed. The result's `git`, `changes`, and
 runs, so keep the check read-only or inspect its artifacts separately
 when you need a clean evidence report.
 
+Scheduling: every task joins the same machine-wide FIFO; the concurrency limit defaults to 3 and foreground runs do not preempt older work. Queue wait is budgeted at 15 minutes from acceptance; `--timeout` starts when the task is admitted, and `--verify` receives its own separate budget when it begins. Admission limits workers but does not isolate file writes—use separate worktrees or serialize overlapping cross-run workspaces. See <https://github.com/arasovic/pi-worker/blob/main/docs/v0-usage.md> for the full contract.
+
 Parse the single JSON document. A run can end without producing a document;
 then the exit code is the signal. An exit of 2 always means the command was
 rejected — fix your argv and re-run; an exit of 9 is an internal failure; an
