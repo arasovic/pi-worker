@@ -507,7 +507,7 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 		if err := ctx.Err(); err != nil {
 			c.awaitingSettled = false
 			if pending != nil {
-				trySendControlResult(pending.result, err)
+				sendControlResult(pending.result, err)
 			}
 			return err
 		}
@@ -525,14 +525,14 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 					c.awaitingSettled = false
 					fr := c.frameError(result.err)
 					if pending != nil {
-						trySendControlResult(pending.result, fr)
+						sendControlResult(pending.result, fr)
 					}
 					return fr
 				}
 				if err := c.processControlFrame(result.frame, &pending); err != nil {
 					c.awaitingSettled = false
 					if pending != nil {
-						trySendControlResult(pending.result, err)
+						sendControlResult(pending.result, err)
 					}
 					return err
 				}
@@ -551,11 +551,15 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 					}
 					continue
 				}
+				if err := validateResult(ctrl.Result); err != nil {
+					c.awaitingSettled = false
+					return err
+				}
 				if err := c.startControl(ctrl, &pending); err != nil {
 					// Rejected before any frame was written. The supervisor
 					// must receive exactly one outcome per control; the
 					// wait continues because no request was opened.
-					trySendControlResult(ctrl.Result, err)
+					sendControlResult(ctrl.Result, err)
 					if c.settled {
 						c.awaitingSettled = false
 						return nil
@@ -571,23 +575,23 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 		case <-c.stop:
 			c.awaitingSettled = false
 			fr := c.frameError(io.ErrClosedPipe)
-			trySendControlResult(pending.result, fr)
+			sendControlResult(pending.result, fr)
 			return fr
 		case <-ctx.Done():
 			c.awaitingSettled = false
-			trySendControlResult(pending.result, ctx.Err())
+			sendControlResult(pending.result, ctx.Err())
 			return ctx.Err()
 		case result := <-c.frameResults:
 			if result.err != nil {
 				c.awaitingSettled = false
 				fr := c.frameError(result.err)
-				trySendControlResult(pending.result, fr)
+				sendControlResult(pending.result, fr)
 				return fr
 			}
 			if err := c.processControlFrame(result.frame, &pending); err != nil {
 				c.awaitingSettled = false
 				if pending != nil {
-					trySendControlResult(pending.result, err)
+					sendControlResult(pending.result, err)
 				}
 				return err
 			}
@@ -675,27 +679,35 @@ func (c *Client) processControlFrame(frame []byte, pending **pendingControl) err
 	duration := "duration=" + (c.debug.Elapsed() - p.started).Round(time.Millisecond).String()
 	if !*resp.Success {
 		c.debug.Log("rpc="+p.requestType, debugFailed, duration)
-		trySendControlResult(p.result, typedRequestRejection(p.requestType, resp))
+		sendControlResult(p.result, typedRequestRejection(p.requestType, resp))
 	} else {
 		c.debug.Log("rpc="+p.requestType, debugCompleted, duration)
-		trySendControlResult(p.result, nil)
+		sendControlResult(p.result, nil)
 	}
 	*pending = nil
 	return nil
 }
 
-// trySendControlResult delivers exactly one outcome on result without
-// blocking. The supervisor is required to supply a buffered channel
-// (capacity >= 1); this default branch is the safety net for an
-// abandoned waiter so the driving goroutine cannot stall.
-func trySendControlResult(result chan<- error, err error) {
+// validateResult checks that result is a valid delivery channel: non-nil,
+// buffered, and empty. A nil, unbuffered, or non-empty channel is a
+// programming error that must not be silently accepted.
+func validateResult(result chan<- error) *TaskError {
 	if result == nil {
-		return
+		return &TaskError{Message: "WorkerControl.Result channel is nil"}
 	}
-	select {
-	case result <- err:
-	default:
+	if cap(result) == 0 {
+		return &TaskError{Message: "WorkerControl.Result channel is not buffered"}
 	}
+	if len(result) != 0 {
+		return &TaskError{Message: "WorkerControl.Result channel is not empty"}
+	}
+	return nil
+}
+
+// sendControlResult delivers exactly one outcome on result via a blocking
+// send. It is called only after the channel has passed validateResult.
+func sendControlResult(result chan<- error, err error) {
+	result <- err
 }
 
 // roundTrip sends one request and waits for its correlated response,

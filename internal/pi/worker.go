@@ -67,14 +67,13 @@ const (
 // is the steer payload (ignored for abort), and Result receives one
 // deterministic error outcome for this control only — nil on success or
 // a typed *TaskError on a correlated rejection, or one of context /
-// transport / protocol errors when the wait ends. The supervisor MUST
-// supply a buffered Result channel (capacity at least 1) so the worker
-// can deliver the outcome without blocking on an abandoned waiter; the
-// worker sends non-blocking and drops the outcome if no reader is present.
+// transport / protocol errors when the wait ends. A valid Result channel
+// is non-nil, buffered, and empty when submitted; the worker owns the
+// single send and delivers the outcome via a blocking send.
 type WorkerControl struct {
 	Kind    WorkerControlKind
 	Message string
-	Result  chan error
+	Result  chan<- error
 }
 
 // DataFile reports one file carried into a worker's prompt as material:
