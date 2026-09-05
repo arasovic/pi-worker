@@ -51,9 +51,14 @@ func TestHelperSubprocess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	lease, err := g.Acquire(ctx, Request{RunID: runID, WorkerID: workerID})
+	ticket, err := g.Enqueue(Request{RunID: runID, WorkerID: workerID})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "acquire: %v\n", err)
+		fmt.Fprintf(os.Stderr, "enqueue: %v\n", err)
+		os.Exit(1)
+	}
+	lease, err := ticket.Wait(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wait: %v\n", err)
 		os.Exit(1)
 	}
 
