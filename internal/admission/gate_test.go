@@ -86,6 +86,63 @@ func padInt(n, width int) string {
 	return string(s)
 }
 
+// stagedContext is a test-only context whose Err() returns nil for the
+// first threshold calls, then returns context.Canceled and runs an
+// optional once-only callback. Deadline returns none, Done returns nil
+// before transition (tests grant immediately so Done is never selected)
+// and a closed channel after. Value returns nil. Counters and callback
+// are race-safe.
+type stagedContext struct {
+	mu        sync.Mutex
+	threshold int
+	n         int
+	done      chan struct{}
+	doneSet   bool
+	fn        func() // optional once-only callback on first transition
+}
+
+func (c *stagedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+func (c *stagedContext) Done() <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.doneSet {
+		return c.done
+	}
+	return nil
+}
+
+func (c *stagedContext) Value(key any) any { return nil }
+
+func (c *stagedContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.doneSet {
+		return context.Canceled
+	}
+	c.n++
+	if c.n >= c.threshold {
+		c.doneSet = true
+		c.done = make(chan struct{})
+		close(c.done)
+		if c.fn != nil {
+			c.fn()
+		}
+		return context.Canceled
+	}
+	return nil
+}
+
+// enqueueAndWait is a test convenience that calls Enqueue then Wait.
+// Production code must use Enqueue and Wait as separate two-phase calls.
+func enqueueAndWait(ctx context.Context, g *Gate, req Request) (*Lease, error) {
+	ticket, err := g.Enqueue(req)
+	if err != nil {
+		return nil, err
+	}
+	return ticket.Wait(ctx)
+}
+
 func readStateForTest(t *testing.T, root string) state {
 	t.Helper()
 	st, err := loadState(root)
@@ -226,6 +283,198 @@ func withExtraPIDLookup(extra map[int]pidResp) func(*testGateOpts) {
 
 // --- tests ---
 
+func TestQueueTicketConcurrentCancelWhileWaitIsQueued(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "CC-")
+
+	// Hold one lease under maxLive=1.
+	lease, err := enqueueAndWait(context.Background(), g, Request{RunID: "hold", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("first Wait: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("first Wait returned nil lease")
+	}
+
+	// Enqueue a second ticket; start its Wait in a goroutine.
+	qt, err := g.Enqueue(Request{RunID: "waiter", WorkerID: 2})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Prove it is durably queued.
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 2)
+	if st.Tickets[1].State != ticketQueued {
+		t.Fatalf("second ticket state = %q, want %q", st.Tickets[1].State, ticketQueued)
+	}
+
+	waitDone := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		l, e := qt.Wait(context.Background())
+		if l != nil {
+			_ = l.Release()
+		}
+		waitDone <- e
+	}()
+
+	// Cancel the queued ticket; Wait must return within one second with
+	// nil Lease and an error matching errQueueTicketCancelled.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	select {
+	case e := <-waitDone:
+		if e == nil {
+			t.Fatal("Wait returned nil error after Cancel")
+		}
+		if !errors.Is(e, errQueueTicketCancelled) {
+			t.Fatalf("Wait error = %v, want errQueueTicketCancelled", e)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return within 1s after Cancel")
+	}
+
+	// Only the held lease remains.
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].State != ticketLeased {
+		t.Errorf("remaining ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
+	}
+
+	// Release and confirm cleanup.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	wg.Wait()
+	assertNoTickets(t, root)
+}
+
+func TestQueueTicketCancelRetryAfterTransientCleanupFailure(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "CRT-")
+
+	// Enqueue one ticket and save exact valid state bytes.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	validBytes, rerr := os.ReadFile(filepath.Join(root, "state.json"))
+	if rerr != nil {
+		t.Fatalf("ReadFile: %v", rerr)
+	}
+
+	// Corrupt state.json so first Cancel fails.
+	writeRawState(t, root, `{bad json`)
+	if err := qt.Cancel(); err == nil {
+		t.Fatal("Cancel(corrupt) = nil, want error")
+	}
+
+	// Assert cancelRequested true and cancelled false under t.mu.
+	qt.mu.Lock()
+	if !qt.cancelRequested {
+		t.Fatal("cancelRequested = false after failed Cancel")
+	}
+	if qt.cancelled {
+		t.Fatal("cancelled = true after failed Cancel")
+	}
+	qt.mu.Unlock()
+
+	// Restore exact valid bytes; second Cancel succeeds.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+
+	// Third Cancel is idempotent.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("third Cancel: %v", err)
+	}
+
+	// Wait now returns the cancelled sentinel before durable change.
+	lease, werr := qt.Wait(context.Background())
+	if lease != nil {
+		t.Fatal("Wait after Cancel returned non-nil lease")
+	}
+	if werr == nil {
+		t.Fatal("Wait after Cancel = nil, want error")
+	}
+	if !errors.Is(werr, errQueueTicketCancelled) {
+		t.Fatalf("Wait after Cancel error = %v, want errQueueTicketCancelled", werr)
+	}
+
+	// Final state empty with NextSequence unchanged.
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
+}
+
+func TestQueueTicketWaitCleanupFailureRecoverableThroughCancel(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "WCR-")
+
+	// Enqueue one ticket, preserve bytes.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	validBytes, rerr := os.ReadFile(filepath.Join(root, "state.json"))
+	if rerr != nil {
+		t.Fatalf("ReadFile: %v", rerr)
+	}
+
+	// Corrupt state.json so Wait cleanup fails.
+	writeRawState(t, root, `{bad json`)
+
+	// Call Wait with an already-cancelled context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lease, werr := qt.Wait(ctx)
+
+	// Require context.Canceled plus cleanup error and nil Lease.
+	if lease != nil {
+		t.Fatal("Wait(cancelled+corrupt) returned non-nil lease")
+	}
+	if werr == nil {
+		t.Fatal("Wait(cancelled+corrupt) = nil, want error")
+	}
+	if !errors.Is(werr, context.Canceled) {
+		t.Fatalf("want context.Canceled in error, got %v", werr)
+	}
+	// The joined error should also contain a cleanup error.
+	if werr.Error() == context.Canceled.Error() {
+		t.Fatalf("error should contain cleanup failure, got %v", werr)
+	}
+
+	// Restore exact bytes; subsequent Cancel succeeds and removes queued ticket.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel after restore: %v", err)
+	}
+	assertNoTickets(t, root)
+
+	// Second Wait is rejected by the one-Wait rule; no state leak.
+	lease2, err2 := qt.Wait(context.Background())
+	if lease2 != nil {
+		t.Fatal("second Wait returned non-nil lease")
+	}
+	if err2 == nil {
+		t.Fatal("second Wait = nil, want error")
+	}
+	assertNoTickets(t, root)
+}
+
 func TestGateOpenRejectsEmptyRoot(t *testing.T) {
 	restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
 		5000: {exists: true, createTime: 5000000},
@@ -306,28 +555,41 @@ func TestGateOpenCapturesPositiveOwner(t *testing.T) {
 	}
 }
 
-func TestGateAcquireAlreadyCancelled(t *testing.T) {
+func TestQueueTicketWaitAlreadyCancelled(t *testing.T) {
 	root := t.TempDir()
 	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "QW-")
+
+	// Phase 1: Enqueue creates a durably queued ticket.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	assertNextSequence(t, st, 2)
+	if st.Tickets[0].State != ticketQueued {
+		t.Fatalf("initial state = %q, want %q", st.Tickets[0].State, ticketQueued)
+	}
+
+	// Phase 2: Wait with already-cancelled context returns nil Lease
+	// and context.Canceled; the queued ticket is removed by Cancel
+	// inside Wait, but NextSequence never rolls back.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	before := readStateForTest(t, root)
-
-	_, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
-	if err == nil {
-		t.Fatal("Acquire(cancelled) = nil, want error")
+	lease, err := qt.Wait(ctx)
+	if lease != nil {
+		t.Fatal("Wait(cancelled) returned non-nil lease")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
-	after := readStateForTest(t, root)
-	if len(after.Tickets) != len(before.Tickets) {
-		t.Fatalf("state changed: before=%d tickets, after=%d", len(before.Tickets), len(after.Tickets))
-	}
-	if after.NextSequence != before.NextSequence {
-		t.Fatalf("NextSequence changed: %d → %d", before.NextSequence, after.NextSequence)
-	}
+
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 0)
+	assertNextSequence(t, st, 2)
 }
 
 func TestGateAcquireAndRelease(t *testing.T) {
@@ -338,7 +600,7 @@ func TestGateAcquireAndRelease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	lease, err := g.Acquire(ctx, Request{RunID: "run-42", WorkerID: 7})
+	lease, err := enqueueAndWait(ctx, g, Request{RunID: "run-42", WorkerID: 7})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -398,7 +660,7 @@ func TestGateMaxLive1SecondAcquireQueued(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	lease1, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
+	lease1, err := enqueueAndWait(ctx, g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
@@ -423,7 +685,7 @@ func TestGateMaxLive1SecondAcquireQueued(t *testing.T) {
 	})
 	go func() {
 		defer wg.Done()
-		l, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
+		l, e := enqueueAndWait(ctx, g, Request{RunID: "r2", WorkerID: 2})
 		acq2Done <- acqResult{l, e}
 	}()
 
@@ -460,18 +722,54 @@ func TestGateMaxLive1SecondAcquireQueued(t *testing.T) {
 
 func TestGateFIFOStrictOrdering(t *testing.T) {
 	root := t.TempDir()
-	g, err := Open(root, 1)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "FO-")
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	lease0, err := g.Acquire(ctx, Request{RunID: "r0", WorkerID: 1})
+	// Phase 1: Enqueue r0, then Wait to acquire a lease (hold maxLive=1).
+	qt0, err := g.Enqueue(Request{RunID: "r0", WorkerID: 1})
 	if err != nil {
-		t.Fatalf("first Acquire: %v", err)
+		t.Fatalf("Enqueue r0: %v", err)
+	}
+	lease0, err := qt0.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait r0: %v", err)
+	}
+	if lease0 == nil {
+		t.Fatal("Wait r0 returned nil lease")
 	}
 
+	// Phase 1: Synchronously enqueue rA then rB before starting any Wait.
+	qtA, err := g.Enqueue(Request{RunID: "rA", WorkerID: 10})
+	if err != nil {
+		t.Fatalf("Enqueue rA: %v", err)
+	}
+	qtB, err := g.Enqueue(Request{RunID: "rB", WorkerID: 20})
+	if err != nil {
+		t.Fatalf("Enqueue rB: %v", err)
+	}
+
+	// Inspect durable state before Wait starts: r0 leased, rA/rB queued,
+	// A sequence < B, NextSequence=4.
+	st := readStateForTest(t, root)
+	assertNextSequence(t, st, 4)
+	assertTicketCount(t, st, 3)
+	if st.Tickets[0].RunID != "r0" || st.Tickets[0].State != ticketLeased {
+		t.Fatalf("r0: RunID=%q State=%q, want r0/%s", st.Tickets[0].RunID, st.Tickets[0].State, ticketLeased)
+	}
+	if st.Tickets[1].RunID != "rA" || st.Tickets[1].State != ticketQueued {
+		t.Fatalf("rA: RunID=%q State=%q, want rA/%s", st.Tickets[1].RunID, st.Tickets[1].State, ticketQueued)
+	}
+	if st.Tickets[2].RunID != "rB" || st.Tickets[2].State != ticketQueued {
+		t.Fatalf("rB: RunID=%q State=%q, want rB/%s", st.Tickets[2].RunID, st.Tickets[2].State, ticketQueued)
+	}
+	if st.Tickets[1].Sequence >= st.Tickets[2].Sequence {
+		t.Fatalf("rA sequence %d must be < rB sequence %d", st.Tickets[1].Sequence, st.Tickets[2].Sequence)
+	}
+
+	// Phase 2: Start A/B Wait goroutines concurrently.
 	type result struct {
 		name  string
 		lease *Lease
@@ -496,64 +794,20 @@ func TestGateFIFOStrictOrdering(t *testing.T) {
 		}
 	})
 
-	// Start A only, then poll until durably queued before starting B.
 	go func() {
 		defer wg.Done()
-		l, e := g.Acquire(ctx, Request{RunID: "rA", WorkerID: 10})
+		l, e := qtA.Wait(ctx)
 		results <- result{"A", l, e}
 	}()
-	// Poll until rA is queued.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		st := readStateForTest(t, root)
-		for _, tk := range st.Tickets {
-			if tk.RunID == "rA" && tk.State == ticketQueued {
-				goto aQueued
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("rA did not become queued within timeout")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-aQueued:
-
-	// Start B now.
 	go func() {
 		defer wg.Done()
-		l, e := g.Acquire(ctx, Request{RunID: "rB", WorkerID: 20})
+		l, e := qtB.Wait(ctx)
 		results <- result{"B", l, e}
 	}()
 
-	// Poll until rB is queued and capture sequences.
-	seqMismatch := false
-	deadline = time.Now().Add(2 * time.Second)
-	for {
-		st := readStateForTest(t, root)
-		aSeq, bSeq := -1, -1
-		for _, tk := range st.Tickets {
-			if tk.RunID == "rA" && tk.State == ticketQueued {
-				aSeq = tk.Sequence
-			}
-			if tk.RunID == "rB" && tk.State == ticketQueued {
-				bSeq = tk.Sequence
-			}
-		}
-		if aSeq >= 0 && bSeq >= 0 {
-			if aSeq >= bSeq {
-				seqMismatch = true
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("rA or rB did not become queued within timeout")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
 	// Release held lease → earlier queued (A) must be granted first.
 	if err := lease0.Release(); err != nil {
-		t.Fatalf("Release: %v", err)
+		t.Fatalf("Release r0: %v", err)
 	}
 
 	// Collect both results with bounded timeout, releasing each lease immediately
@@ -586,29 +840,31 @@ aQueued:
 			if rB.lease != nil {
 				_ = rB.lease.Release()
 			}
-			t.Fatal("timed out waiting for both Acquire results")
+			t.Fatal("timed out waiting for both Wait results")
 		}
 	}
 
 	// Both goroutines have returned; assert ordering.
-	if seqMismatch {
-		t.Fatalf("A sequence must be < B sequence")
-	}
 	if rA.err != nil {
-		t.Fatalf("A Acquire error: %v", rA.err)
+		t.Fatalf("A Wait error: %v", rA.err)
 	}
 	if rB.err != nil {
-		t.Fatalf("B Acquire error: %v", rB.err)
+		t.Fatalf("B Wait error: %v", rB.err)
 	}
 	if rA.lease == nil {
-		t.Fatal("A Acquire returned nil lease")
+		t.Fatal("A Wait returned nil lease")
 	}
 	if rB.lease == nil {
-		t.Fatal("B Acquire returned nil lease")
+		t.Fatal("B Wait returned nil lease")
 	}
 	if len(order) != 2 || order[0] != "A" || order[1] != "B" {
 		t.Fatalf("unexpected arrival order: %v, want [A B]", order)
 	}
+
+	// After all releases, state has no tickets and NextSequence remains 4.
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 0)
+	assertNextSequence(t, st, 4)
 }
 
 func TestGateCancelQueuedAcquire(t *testing.T) {
@@ -621,7 +877,7 @@ func TestGateCancelQueuedAcquire(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	r1Lease, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
+	r1Lease, err := enqueueAndWait(ctx, g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
@@ -632,7 +888,7 @@ func TestGateCancelQueuedAcquire(t *testing.T) {
 	}
 	bDone := make(chan acqResult, 1)
 	go func() {
-		l, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
+		l, e := enqueueAndWait(ctx, g, Request{RunID: "r2", WorkerID: 2})
 		bDone <- acqResult{l, e}
 	}()
 
@@ -691,7 +947,7 @@ func TestGateReapStaleAbsentPID(t *testing.T) {
 		t.Fatalf("saveState: %v", err)
 	}
 
-	lease, err := g.Acquire(context.Background(), Request{RunID: "new-run", WorkerID: 2})
+	lease, err := enqueueAndWait(context.Background(), g, Request{RunID: "new-run", WorkerID: 2})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -726,7 +982,7 @@ func TestGateReapStalePIDReuse(t *testing.T) {
 		t.Fatalf("saveState: %v", err)
 	}
 
-	lease, err := g.Acquire(context.Background(), Request{RunID: "new-run", WorkerID: 2})
+	lease, err := enqueueAndWait(context.Background(), g, Request{RunID: "new-run", WorkerID: 2})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -772,7 +1028,7 @@ func TestGateUncertainOwnerRemainsInState(t *testing.T) {
 
 	bDone := make(chan error, 1)
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "new-run", WorkerID: 2})
+		_, e := enqueueAndWait(ctx, g, Request{RunID: "new-run", WorkerID: 2})
 		bDone <- e
 	}()
 
@@ -840,7 +1096,7 @@ func TestGateUncertainLookupErrorNotReaped(t *testing.T) {
 
 	bDone := make(chan error, 1)
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "run-new", WorkerID: 2})
+		_, e := enqueueAndWait(ctx, g, Request{RunID: "run-new", WorkerID: 2})
 		bDone <- e
 	}()
 
@@ -902,7 +1158,7 @@ func TestGateUncertainInvalidCreateTimeNotReaped(t *testing.T) {
 
 	bDone := make(chan error, 1)
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "run-new", WorkerID: 2})
+		_, e := enqueueAndWait(ctx, g, Request{RunID: "run-new", WorkerID: 2})
 		bDone <- e
 	}()
 
@@ -933,7 +1189,7 @@ func TestGateCorruptStateDuringAcquire(t *testing.T) {
 
 	writeRawState(t, root, `{bad json`)
 
-	_, err := g.Acquire(context.Background(), Request{RunID: "r1", WorkerID: 1})
+	_, err := enqueueAndWait(context.Background(), g, Request{RunID: "r1", WorkerID: 1})
 	if err == nil {
 		t.Fatal("Acquire(corrupt) = nil, want error")
 	}
@@ -952,7 +1208,7 @@ func TestGateCorruptStateDuringRelease(t *testing.T) {
 	installSequentialTicketIDs(t, "Y-")
 
 	ctx := context.Background()
-	lease, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
+	lease, err := enqueueAndWait(ctx, g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -995,17 +1251,17 @@ func TestGateDuplicateTicketIDFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	lease, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
+	lease, err := enqueueAndWait(ctx, g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("first Acquire: %v", err)
 	}
 	_ = lease
 
-	// Second Acquire fails: state.json already has "dup-id" → duplicate
+	// Second Enqueue fails: state.json already has "dup-id" → duplicate
 	// ID rejected by saveState via validateState.
-	_, err = g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
+	_, err = g.Enqueue(Request{RunID: "r2", WorkerID: 2})
 	if err == nil {
-		t.Fatal("second Acquire(dup) = nil, want error")
+		t.Fatal("second Enqueue(dup) = nil, want error")
 	}
 
 	st := readStateForTest(t, root)
@@ -1035,9 +1291,9 @@ func TestGateSequenceExhaustion(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 
-	_, err = g.Acquire(context.Background(), Request{RunID: "r1", WorkerID: 1})
+	_, err = g.Enqueue(Request{RunID: "r1", WorkerID: 1})
 	if err == nil {
-		t.Fatal("Acquire(exhausted) = nil, want error")
+		t.Fatal("Enqueue(exhausted) = nil, want error")
 	}
 
 	st := readStateForTest(t, root)
@@ -1072,14 +1328,14 @@ func TestGateAcquireThenCancelThenReleaseLiveLease(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	lease, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
+	lease, err := enqueueAndWait(ctx, g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
 	bDone := make(chan error, 1)
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
+		_, e := enqueueAndWait(ctx, g, Request{RunID: "r2", WorkerID: 2})
 		bDone <- e
 	}()
 	waitForCount(t, root, 2)
@@ -1132,11 +1388,11 @@ func TestGateUncertainOwnerBlocksBothAcquires(t *testing.T) {
 	aDone := make(chan error, 1)
 	bDone := make(chan error, 1)
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "rA", WorkerID: 10})
+		_, e := enqueueAndWait(ctx, g, Request{RunID: "rA", WorkerID: 10})
 		aDone <- e
 	}()
 	go func() {
-		_, e := g.Acquire(ctx, Request{RunID: "rB", WorkerID: 20})
+		_, e := enqueueAndWait(ctx, g, Request{RunID: "rB", WorkerID: 20})
 		bDone <- e
 	}()
 
@@ -1181,11 +1437,11 @@ func TestGateAcquireAndReleaseTwoLeases(t *testing.T) {
 	nIDs := installSequentialTicketIDs(t, "L-")
 
 	ctx := context.Background()
-	l1, err := g.Acquire(ctx, Request{RunID: "r1", WorkerID: 1})
+	l1, err := enqueueAndWait(ctx, g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("Acquire 1: %v", err)
 	}
-	l2, err := g.Acquire(ctx, Request{RunID: "r2", WorkerID: 2})
+	l2, err := enqueueAndWait(ctx, g, Request{RunID: "r2", WorkerID: 2})
 	if err != nil {
 		t.Fatalf("Acquire 2: %v", err)
 	}
@@ -1222,7 +1478,7 @@ func TestGateLeaseIdempotentThenRelease(t *testing.T) {
 	g, _ := openGateForTest(t, root, 1)
 	installSequentialTicketIDs(t, "I-")
 
-	lease, err := g.Acquire(context.Background(), Request{RunID: "r1", WorkerID: 1})
+	lease, err := enqueueAndWait(context.Background(), g, Request{RunID: "r1", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -1238,24 +1494,24 @@ func TestGateLeaseIdempotentThenRelease(t *testing.T) {
 	assertNoTickets(t, root)
 }
 
-func TestGateAcquireRunIDEmpty(t *testing.T) {
+func TestGateEnqueueRunIDEmpty(t *testing.T) {
 	root := t.TempDir()
 	g, _ := openGateForTest(t, root, 1)
 
-	_, err := g.Acquire(context.Background(), Request{RunID: "", WorkerID: 1})
+	_, err := g.Enqueue(Request{RunID: "", WorkerID: 1})
 	if err == nil {
-		t.Fatal("Acquire(empty RunID) = nil, want error")
+		t.Fatal("Enqueue(empty RunID) = nil, want error")
 	}
 }
 
-func TestGateAcquireWorkerIDNotPositive(t *testing.T) {
+func TestGateEnqueueWorkerIDNotPositive(t *testing.T) {
 	root := t.TempDir()
 	g, _ := openGateForTest(t, root, 1)
 
 	for _, wid := range []int{0, -1} {
-		_, err := g.Acquire(context.Background(), Request{RunID: "r1", WorkerID: wid})
+		_, err := g.Enqueue(Request{RunID: "r1", WorkerID: wid})
 		if err == nil {
-			t.Errorf("Acquire(WorkerID=%d) = nil, want error", wid)
+			t.Errorf("Enqueue(WorkerID=%d) = nil, want error", wid)
 		}
 	}
 }
@@ -1270,7 +1526,7 @@ func TestGateReleaseRetryAfterTransientFailure(t *testing.T) {
 	g, _ := openGateForTest(t, root, 1)
 
 	// 1. Acquire one lease.
-	lease, err := g.Acquire(context.Background(), Request{RunID: "retry-run", WorkerID: 1})
+	lease, err := enqueueAndWait(context.Background(), g, Request{RunID: "retry-run", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -1506,4 +1762,336 @@ func TestGateOneGrantPerTransition(t *testing.T) {
 	}
 	assertNoTickets(t, root)
 	assertNextSequence(t, readStateForTest(t, root), 4)
+}
+
+func TestQueueTicketSequentialEnqueueAndCancel(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 3)
+	installSequentialTicketIDs(t, "SE-")
+
+	// Enqueue three requests before any Wait; all are queued.
+	qt1, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue r1: %v", err)
+	}
+	qt2, err := g.Enqueue(Request{RunID: "r2", WorkerID: 2})
+	if err != nil {
+		t.Fatalf("Enqueue r2: %v", err)
+	}
+	qt3, err := g.Enqueue(Request{RunID: "r3", WorkerID: 3})
+	if err != nil {
+		t.Fatalf("Enqueue r3: %v", err)
+	}
+
+	// Assert durable worker/run order and sequences 1/2/3.
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 3)
+	assertNextSequence(t, st, 4)
+	type entry struct {
+		runID    string
+		workerID int
+		seq      int
+	}
+	var got []entry
+	for _, tk := range st.Tickets {
+		got = append(got, entry{tk.RunID, tk.WorkerID, tk.Sequence})
+	}
+	want := []entry{
+		{"r1", 1, 1},
+		{"r2", 2, 2},
+		{"r3", 3, 3},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ticket count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ticket[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	// Cancel all in reverse order.
+	if err := qt3.Cancel(); err != nil {
+		t.Fatalf("Cancel r3: %v", err)
+	}
+	if err := qt2.Cancel(); err != nil {
+		t.Fatalf("Cancel r2: %v", err)
+	}
+	if err := qt1.Cancel(); err != nil {
+		t.Fatalf("Cancel r1: %v", err)
+	}
+
+	// Final empty with NextSequence=4.
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 0)
+	assertNextSequence(t, st, 4)
+}
+
+func TestQueueTicketCancelIdempotent(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "CI-")
+
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// First Cancel removes the queued ticket.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	assertNoTickets(t, root)
+
+	// Second Cancel is idempotent: no state change.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+	assertNoTickets(t, root)
+
+	// Wait after successful Cancel returns deterministic canceled error
+	// without any state change.
+	lease, err := qt.Wait(context.Background())
+	if lease != nil {
+		t.Fatal("Wait after Cancel returned non-nil lease")
+	}
+	if err == nil {
+		t.Fatal("Wait after Cancel = nil, want error")
+	}
+	if got := err.Error(); got != "admission wait: ticket cancelled" {
+		t.Fatalf("Wait after Cancel error = %q, want %q", got, "admission wait: ticket cancelled")
+	}
+	assertNoTickets(t, root)
+}
+
+func TestQueueTicketCancelAfterLeaseDoesNotRemoveRecord(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "CL-")
+
+	// Enqueue and Wait to get a Lease.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	lease, err := qt.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("Wait returned nil lease")
+	}
+
+	// Cancel after Lease is granted does not remove the leased record.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].State != ticketLeased {
+		t.Fatalf("leased ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
+	}
+
+	// Release still succeeds.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertNoTickets(t, root)
+}
+
+func TestQueueTicketSecondWaitRejected(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "SW-")
+
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// First Wait grants a Lease.
+	lease, err := qt.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("first Wait: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("first Wait returned nil lease")
+	}
+
+	// Second Wait is rejected before any durable state changes.
+	lease2, err := qt.Wait(context.Background())
+	if lease2 != nil {
+		t.Fatal("second Wait returned non-nil lease")
+	}
+	if err == nil {
+		t.Fatal("second Wait = nil, want error")
+	}
+
+	// First Wait/Lease remains valid: ticket still leased.
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	if st.Tickets[0].State != ticketLeased {
+		t.Fatalf("ticket state = %q, want %q", st.Tickets[0].State, ticketLeased)
+	}
+
+	// Release cleans up.
+	if err := lease.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertNoTickets(t, root)
+}
+
+func TestQueueTicketWaitGrantNeverAllocatesSecondTicket(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 2)
+	installSequentialTicketIDs(t, "WG-")
+
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	st := readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	seqBefore := st.NextSequence
+
+	// Wait and grant never allocates a second ticket or changes NextSequence.
+	lease, err := qt.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("Wait returned nil lease")
+	}
+
+	st = readStateForTest(t, root)
+	assertTicketCount(t, st, 1)
+	assertNextSequence(t, st, seqBefore)
+
+	if err := lease.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertNoTickets(t, root)
+}
+
+func TestPostGrantContextCancellationReleasesBeforeReturn(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "PG-")
+
+	// Enqueue one ticket on an empty maxLive=1 gate.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Staged context: Err returns nil for the first 2 calls, then
+	// returns context.Canceled on the 3rd call (inside tryGrant after
+	// state is saved with leased ticket). No callback needed.
+	sc := &stagedContext{threshold: 3}
+
+	// Wait must return nil Lease and errors.Is(context.Canceled).
+	lease, werr := qt.Wait(sc)
+	if lease != nil {
+		t.Fatal("Wait returned non-nil lease")
+	}
+	if !errors.Is(werr, context.Canceled) {
+		t.Fatalf("Wait error = %v, want context.Canceled", werr)
+	}
+
+	// Durable state has no tickets and NextSequence remains 2.
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
+
+	// QueueTicket has no releasePending.
+	qt.mu.Lock()
+	if qt.releasePending != nil {
+		t.Fatal("releasePending should be nil after post-grant cancellation")
+	}
+	qt.mu.Unlock()
+}
+
+func TestFailedPostGrantReleaseRetryableThroughCancel(t *testing.T) {
+	root := t.TempDir()
+	g, _ := openGateForTest(t, root, 1)
+	installSequentialTicketIDs(t, "FPGR-")
+
+	// Enqueue one ticket.
+	qt, err := g.Enqueue(Request{RunID: "r1", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// Save valid state for later restoration.
+	validBytes, rerr := os.ReadFile(filepath.Join(root, "state.json"))
+	if rerr != nil {
+		t.Fatalf("ReadFile: %v", rerr)
+	}
+
+	// Staged context with a transition callback that reads and preserves
+	// the valid just-leased state.json bytes, then replaces state.json
+	// with malformed JSON before Wait's cleanup Release.
+	sc := &stagedContext{
+		threshold: 3,
+		fn: func() {
+			// Read valid leased state bytes (ticket already leased at this point).
+			validBytes, _ = os.ReadFile(filepath.Join(root, "state.json"))
+			// Corrupt state.json so Release fails during cleanup.
+			os.WriteFile(filepath.Join(root, "state.json"), []byte("{bad json"), 0o600)
+		},
+	}
+
+	// Wait returns nil Lease, context.Canceled, and a cleanup/release error.
+	lease, werr := qt.Wait(sc)
+	if lease != nil {
+		t.Fatal("Wait returned non-nil lease")
+	}
+	if !errors.Is(werr, context.Canceled) {
+		t.Fatalf("Wait error = %v, want context.Canceled", werr)
+	}
+	if werr.Error() == context.Canceled.Error() {
+		t.Fatalf("error should contain cleanup/release error, got %v", werr)
+	}
+
+	// Under t.mu, releasePending is non-nil and cancelRequested is true.
+	qt.mu.Lock()
+	if qt.releasePending == nil {
+		t.Fatal("releasePending should be non-nil after failed release")
+	}
+	if !qt.cancelRequested {
+		t.Fatal("cancelRequested should be true after failed release")
+	}
+	qt.mu.Unlock()
+
+	// Restore the exact valid leased bytes.
+	if err := os.WriteFile(filepath.Join(root, "state.json"), validBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile restore: %v", err)
+	}
+
+	// Call ticket.Cancel: it retries releasePending Release successfully,
+	// clears releasePending, and marks cleanup complete.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// Second Cancel is idempotent.
+	if err := qt.Cancel(); err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+
+	// Verify releasePending cleared and cleanup complete.
+	qt.mu.Lock()
+	if qt.releasePending != nil {
+		t.Fatal("releasePending should be nil after successful Cancel")
+	}
+	if !qt.cancelled {
+		t.Fatal("cancelled should be true after successful Cancel")
+	}
+	qt.mu.Unlock()
+
+	// Final state: no tickets (leased ticket was released by Cancel).
+	st := readStateForTest(t, root)
+	assertNoTickets(t, root)
+	assertNextSequence(t, st, 2)
 }

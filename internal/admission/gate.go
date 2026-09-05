@@ -24,6 +24,20 @@ type Gate struct {
 	owner   ownerIdentity
 }
 
+// QueueTicket is the handle for one durably enqueued ticket that has not
+// yet been granted as a Lease. It supports Wait for polling and Cancel
+// for early removal.
+type QueueTicket struct {
+	mu              sync.Mutex
+	gate            *Gate
+	ticketID        string
+	owner           ownerIdentity
+	waited          bool
+	cancelRequested bool
+	cancelled       bool
+	releasePending  *Lease
+}
+
 // Lease holds a granted admission ticket.
 type Lease struct {
 	mu       sync.Mutex // protects Lease release idempotency
@@ -32,6 +46,10 @@ type Lease struct {
 	owner    ownerIdentity
 	released bool
 }
+
+// errQueueTicketCancelled is the package-private sentinel returned by Wait
+// when the ticket is cancelled before or during grant.
+var errQueueTicketCancelled = errors.New("admission wait: ticket cancelled")
 
 // pollInterval is the time between polls while waiting for a queued ticket
 // to become grantable. It is a private test seam.
@@ -120,29 +138,21 @@ func (g *Gate) updateState(update func(*state) (changed bool, err error)) error 
 	return actionErr
 }
 
-// Acquire enqueues a ticket for req and blocks until the ticket is granted
-// as a Lease or the context is cancelled. It validates non-empty RunID and
-// positive WorkerID, generates one random ticket ID, and enqueues exactly
-// one queued ticket under a single lock transition. While waiting outside
-// the lock, it polls with a bounded interval respecting caller context.
-// If context ends while the ticket is still queued, Acquire reacquires the
-// lock, removes only that exact queued ticket, and returns an error matching
-// ctx.Err().
-func (g *Gate) Acquire(ctx context.Context, req Request) (*Lease, error) {
+// Enqueue writes exactly one durable queued ticket and never waits for
+// capacity. It validates non-empty RunID and positive WorkerID, generates
+// one random ticket ID, and persists a single queued ticket under one lock
+// transition. The returned QueueTicket can later be used to poll for grant.
+func (g *Gate) Enqueue(req Request) (*QueueTicket, error) {
 	if req.RunID == "" {
-		return nil, errors.New("admission acquire: runId must not be empty")
+		return nil, errors.New("admission enqueue: runId must not be empty")
 	}
 	if req.WorkerID <= 0 {
-		return nil, fmt.Errorf("admission acquire: workerId must be positive, got %d", req.WorkerID)
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("admission enqueue: workerId must be positive, got %d", req.WorkerID)
 	}
 
 	ticketID, err := newTicketID()
 	if err != nil {
-		return nil, fmt.Errorf("admission acquire: %w", err)
+		return nil, fmt.Errorf("admission enqueue: %w", err)
 	}
 
 	// Enqueue the ticket under one lock transition.
@@ -163,35 +173,10 @@ func (g *Gate) Acquire(ctx context.Context, req Request) (*Lease, error) {
 		})
 		return true, nil
 	}); err != nil {
-		return nil, fmt.Errorf("admission acquire: %w", err)
+		return nil, fmt.Errorf("admission enqueue: %w", err)
 	}
 
-	// Poll outside the lock until our ticket is grantable or context ends.
-	for {
-		if ctx.Err() != nil {
-			return nil, g.removeTicketAndReturnCtxErr(ctx, ticketID)
-		}
-
-		grantable, err := g.tryGrant(ctx, ticketID, g.owner)
-		if err != nil {
-			cleanupErr := g.removeQueuedTicket(ticketID)
-			return nil, errors.Join(fmt.Errorf("admission acquire: %w", err), cleanupErr)
-		}
-		if grantable != nil {
-			// Return linearization point: check context once more.
-			if ctx.Err() != nil {
-				releaseErr := grantable.Release()
-				return nil, errors.Join(ctx.Err(), releaseErr)
-			}
-			return grantable, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, g.removeTicketAndReturnCtxErr(ctx, ticketID)
-		case <-time.After(pollInterval):
-		}
-	}
+	return &QueueTicket{gate: g, ticketID: ticketID, owner: g.owner}, nil
 }
 
 // tryGrant reacquires the lock, reaps stale tickets, checks whether ticketID
@@ -277,16 +262,119 @@ func (g *Gate) removeQueuedTicket(ticketID string) error {
 	return nil
 }
 
-// removeTicketAndReturnCtxErr reacquires the lock and removes only the exact
-// queued ticket identified by ticketID before returning an error that matches
-// ctx.Err(). If cleanup also fails, both errors are preserved. Leased tickets
-// are never removed on this path.
-func (g *Gate) removeTicketAndReturnCtxErr(ctx context.Context, ticketID string) error {
-	cleanupErr := g.removeQueuedTicket(ticketID)
-	if cleanupErr != nil {
-		return errors.Join(ctx.Err(), cleanupErr)
+// Wait blocks until the queued ticket is granted as a Lease, the context
+// is cancelled, or the ticket is reaped. Wait must be called at most once
+// per QueueTicket; a second call returns a deterministic error before
+// touching durable state. It never calls Enqueue or changes NextSequence.
+//
+// If the context is already done or ends while queued, Wait cancels the
+// ticket and returns a joined error. Any tryGrant error cancels the ticket
+// and returns a joined error. After a Lease is granted, the context and
+// cancel intent are checked as the return linearization point; if either
+// is true the lease is stored in releasePending and Cancel performs
+// cleanup, returning a joined error.
+func (t *QueueTicket) Wait(ctx context.Context) (*Lease, error) {
+	t.mu.Lock()
+	if t.waited {
+		t.mu.Unlock()
+		return nil, errors.New("admission wait: already waited")
 	}
-	return ctx.Err()
+	if t.cancelRequested || t.cancelled {
+		t.mu.Unlock()
+		cancelErr := t.Cancel()
+		return nil, errors.Join(errQueueTicketCancelled, cancelErr)
+	}
+	t.waited = true
+	t.mu.Unlock()
+
+	// Reject if context is already done before any file/poll wait.
+	if err := ctx.Err(); err != nil {
+		cancelErr := t.Cancel()
+		return nil, errors.Join(fmt.Errorf("admission wait: %w", err), cancelErr)
+	}
+
+	// Poll for grant.
+	for {
+		// Check cancelRequested before each poll.
+		t.mu.Lock()
+		if t.cancelRequested || t.cancelled {
+			t.mu.Unlock()
+			cancelErr := t.Cancel()
+			return nil, errors.Join(errQueueTicketCancelled, cancelErr)
+		}
+		t.mu.Unlock()
+
+		lease, err := t.gate.tryGrant(ctx, t.ticketID, t.owner)
+		if err != nil {
+			cancelErr := t.Cancel()
+			return nil, errors.Join(fmt.Errorf("admission wait: %w", err), cancelErr)
+		}
+		if lease != nil {
+			// Post-grant check: if the context is done or a cancel was
+			// requested while we held the lock, attach the lease to
+			// releasePending so Cancel can clean it up.
+			t.mu.Lock()
+			done := ctx.Err() != nil
+			cancelIntent := t.cancelRequested || t.cancelled
+			if done || cancelIntent {
+				t.cancelRequested = true
+				t.releasePending = lease
+				t.mu.Unlock()
+				cancelErr := t.Cancel()
+				var joinErr error
+				if done {
+					joinErr = errors.Join(ctx.Err(), cancelErr)
+				} else {
+					joinErr = errors.Join(errQueueTicketCancelled, cancelErr)
+				}
+				return nil, joinErr
+			}
+			t.mu.Unlock()
+			return lease, nil
+		}
+		// Wait for the next poll interval.
+		select {
+		case <-ctx.Done():
+			cancelErr := t.Cancel()
+			return nil, errors.Join(ctx.Err(), cancelErr)
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// Cancel removes the queued ticket from the gate. It retries a pending
+// lease release before performing queued cleanup. Cancel can be called
+// before Wait for batch rollback or while Wait is blocked. On success
+// Cancel is idempotent; on error the caller may retry because the ticket
+// remains in its previous state (cancelRequested is still true and
+// cancelled is still false).
+func (t *QueueTicket) Cancel() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.cancelRequested = true
+
+	// Retry a pending lease release attached by Wait.
+	if t.releasePending != nil {
+		releaseErr := t.releasePending.Release()
+		if releaseErr != nil {
+			return releaseErr
+		}
+		t.releasePending = nil
+	}
+
+	// If already cleaned up, nothing more to do.
+	if t.cancelled {
+		return nil
+	}
+
+	err := t.gate.removeQueuedTicket(t.ticketID)
+	if err != nil {
+		return err
+	}
+
+	t.cancelled = true
+	return nil
 }
 
 // Release removes the leased ticket under the lock and returns. Release is
