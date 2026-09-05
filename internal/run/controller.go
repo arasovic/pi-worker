@@ -16,9 +16,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 )
+
+// foregroundQueueTimeout is the fixed per-task queue budget.
+const foregroundQueueTimeout = 15 * time.Minute
 
 // MaxTasks is the absolute cap on accepted tasks per run.
 const MaxTasks = 3
@@ -153,6 +157,17 @@ type Controller struct {
 	verifier           Verifier
 	gitInspector       GitInspector
 	afterWorkerSettled func(index int)
+
+	// Foreground admission fields. When foregroundAdmission is true,
+	// every task enqueues a ticket in the shared gate before execution
+	// and releases the lease after execution. Passing nil gate via
+	// WithForegroundAdmission is rejected at Run time.
+	foregroundAdmission bool
+	gate                *admission.Gate
+	runID               string
+	acceptedAt          time.Time
+	executionTimeout    time.Duration
+	executionContext    func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 
 // Option configures a Controller.
@@ -170,11 +185,28 @@ func WithGitInspector(g GitInspector) Option {
 	return func(c *Controller) { c.gitInspector = g }
 }
 
+// WithForegroundAdmission configures admission gating: every task
+// enqueues a ticket in gate before execution and releases the lease
+// after. gate must not be nil. Passing nil silently disables admission,
+// so an explicit bool prevents accidental misconfiguration.
+func WithForegroundAdmission(gate *admission.Gate, runID string, acceptedAt time.Time, executionTimeout time.Duration) Option {
+	return func(c *Controller) {
+		c.foregroundAdmission = true
+		c.gate = gate
+		c.runID = runID
+		c.acceptedAt = acceptedAt
+		c.executionTimeout = executionTimeout
+	}
+}
+
 // New returns a controller that runs accepted tasks through worker.
 // Options configure the optional verifier and the optional git-state
 // inspector; without them, Run behaves exactly as before.
 func New(worker pi.Worker, opts ...Option) *Controller {
-	c := &Controller{worker: worker}
+	c := &Controller{
+		worker:           worker,
+		executionContext: context.WithTimeout,
+	}
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -196,6 +228,22 @@ func New(worker pi.Worker, opts ...Option) *Controller {
 func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
+	}
+	// Validate admission configuration when set. The explicit bool
+	// prevents nil gate from silently disabling admission.
+	if c.foregroundAdmission {
+		if c.gate == nil {
+			return Result{}, fmt.Errorf("foreground admission: gate must not be nil")
+		}
+		if c.runID == "" {
+			return Result{}, fmt.Errorf("foreground admission: runId must not be empty")
+		}
+		if c.acceptedAt.IsZero() {
+			return Result{}, fmt.Errorf("foreground admission: acceptedAt must be set")
+		}
+		if c.executionTimeout <= 0 {
+			return Result{}, fmt.Errorf("foreground admission: executionTimeout must be positive")
+		}
 	}
 	// The before state is recorded after validation and before the first
 	// worker starts. Git state reporting is diagnostic, not a gate: a
@@ -278,6 +326,34 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("generate material frame token: %v", err)
 	}
+	// When admission is configured, synchronously enqueue one ticket per
+	// task in index order before starting any goroutine. On enqueue
+	// failure, cancel each earlier ticket, join every rollback error with
+	// the enqueue error, and return before worker start.
+	var tickets []*admission.QueueTicket
+	if c.foregroundAdmission {
+		tickets = make([]*admission.QueueTicket, len(req.Tasks))
+		var enqueueErr error
+		for i := range req.Tasks {
+			ticket, ticketErr := c.gate.Enqueue(admission.Request{RunID: c.runID, WorkerID: i + 1})
+			if ticketErr != nil {
+				enqueueErr = fmt.Errorf("enqueue task %d: %w", i+1, ticketErr)
+				break
+			}
+			tickets[i] = ticket
+		}
+		if enqueueErr != nil {
+			var rollback error
+			for _, t := range tickets {
+				if t != nil {
+					rollback = errors.Join(rollback, t.Cancel())
+				}
+			}
+			return Result{}, errors.Join(enqueueErr, rollback)
+		}
+	}
+	var admissionErrs []error // mutex-protected: only written by worker goroutines
+	var admissionErrMu sync.Mutex
 	executeTask := func(workerCtx context.Context, index int, task Task) {
 		prompt, dataFiles := composeTaskPrompt(task, token)
 		result := c.worker.Run(workerCtx, pi.WorkerRequest{
@@ -318,12 +394,67 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		wg.Add(1)
 		go func(index int, task Task) {
 			defer wg.Done()
-			executeTask(ctx, index, task)
+			if !c.foregroundAdmission {
+				executeTask(ctx, index, task)
+				return
+			}
+			// Admission path: wait for the queue ticket, then run under
+			// an execution-timeout context that outlives the lease so the
+			// lease is always released after the worker settles.
+			queueCtx, queueCancel := context.WithDeadline(ctx, c.acceptedAt.Add(foregroundQueueTimeout))
+			lease, waitErr := tickets[index].Wait(queueCtx)
+			queueCancel()
+			if waitErr != nil {
+				// Ticket cancelled or expired: retry cleanup.
+				retryErr := tickets[index].Cancel()
+				if retryErr != nil {
+					admissionErrMu.Lock()
+					admissionErrs = append(admissionErrs, fmt.Errorf("admission cancel retry task %d: %w", index+1, retryErr))
+					admissionErrMu.Unlock()
+				}
+				status := pi.StatusError
+				if errors.Is(waitErr, context.DeadlineExceeded) {
+					status = pi.StatusTimedOut
+				} else if errors.Is(waitErr, context.Canceled) {
+					status = pi.StatusCancelled
+				}
+				if status == pi.StatusError {
+					admissionErrMu.Lock()
+					admissionErrs = append(admissionErrs, fmt.Errorf("admission wait task %d: %w", index+1, waitErr))
+					admissionErrMu.Unlock()
+				}
+				results[index] = pi.WorkerResult{
+					Model:                  task.Model,
+					RequestedThinkingLevel: task.ThinkingLevel,
+					Status:                 status,
+					Error:                  fmt.Sprintf("admission wait: %v", waitErr),
+				}
+				return
+			}
+			// Lease granted: run under an execution-timeout context.
+			wCtx, wCancel := c.executionContext(ctx, c.executionTimeout)
+			defer func() {
+				releaseErr := lease.Release()
+				if releaseErr != nil {
+					admissionErrMu.Lock()
+					admissionErrs = append(admissionErrs, fmt.Errorf("admission release task %d: %w", index+1, releaseErr))
+					admissionErrMu.Unlock()
+				}
+			}()
+			defer wCancel()
+			executeTask(wCtx, index, task)
 		}(i, task)
 	}
 	wg.Wait()
+	// Join any admission/release errors collected by worker goroutines.
+	var internalErr error
+	admissionErrMu.Lock()
+	for _, e := range admissionErrs {
+		internalErr = errors.Join(internalErr, e)
+	}
+	admissionErrMu.Unlock()
 	if monitoringEnabled && settlementErr != nil {
-		return Result{}, settlementErr
+		return Result{}, errors.Join(settlementErr, internalErr)
 	}
 	var extraUndeclared []string
 	if monitoringEnabled {
@@ -417,13 +548,23 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// or failed run leaves the workspace half-written, and a cancelled or
 	// timed-out context would fail the command for an unrelated reason.
 	if c.verifier != nil && len(req.Verify) > 0 && result.Status == contracts.RunCompleted && ctx.Err() == nil {
-		verification, err := c.verifier.Verify(ctx, req.Workspace, req.Verify)
+		var verifyCtx context.Context
+		if c.foregroundAdmission {
+			// For admitted runs, use a fresh execution-timeout context
+			// starting when verification begins.
+			var verifyCancel context.CancelFunc
+			verifyCtx, verifyCancel = c.executionContext(ctx, c.executionTimeout)
+			defer verifyCancel()
+		} else {
+			verifyCtx = ctx
+		}
+		verification, err := c.verifier.Verify(verifyCtx, req.Workspace, req.Verify)
 		if err != nil {
 			return result, fmt.Errorf("verification: %w", err)
 		}
 		result.Verification = &verification
 	}
-	return result, nil
+	return result, internalErr
 }
 
 // runFrameToken returns the per-run random token carried by every
@@ -630,7 +771,8 @@ func gitMoved(before, after *GitState, stash *GitStashChange) bool {
 // aggregateStatus maps the run outcome onto the documented precedence
 // order, using the parent context state after all workers have returned:
 // an expired deadline is a timeout, a cancelled parent is a cancellation,
-// then every-completed, at-least-one-completed, and otherwise failed.
+// then every-completed, at-least-one-completed, all-timed-out, and
+// otherwise failed.
 func aggregateStatus(ctx context.Context, workers []pi.WorkerResult) contracts.RunStatus {
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -639,9 +781,13 @@ func aggregateStatus(ctx context.Context, workers []pi.WorkerResult) contracts.R
 		return contracts.RunCancelled
 	}
 	completed := 0
+	allTimedOut := true
 	for _, worker := range workers {
 		if worker.Status == pi.StatusCompleted {
 			completed++
+		}
+		if worker.Status != pi.StatusTimedOut {
+			allTimedOut = false
 		}
 	}
 	switch {
@@ -649,6 +795,8 @@ func aggregateStatus(ctx context.Context, workers []pi.WorkerResult) contracts.R
 		return contracts.RunCompleted
 	case completed > 0:
 		return contracts.RunPartial
+	case len(workers) > 0 && allTimedOut:
+		return contracts.RunTimedOut
 	default:
 		return contracts.RunFailed
 	}
