@@ -24,6 +24,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -121,6 +123,37 @@ func RunID(startedAt time.Time) string {
 	// second cannot collide: the timestamp's finest unit is the second,
 	// and the process id separates the runs that share it.
 	return startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
+}
+
+// validateRunID checks that runID has the exact shape RunID produces:
+// a 16-byte UTC timestamp, one hyphen, and a positive canonical
+// decimal pid. It does not parse beyond these two segments.
+func validateRunID(runID string, startedAt time.Time) error {
+	const prefixLen = len("20060102T150405Z") // 16
+
+	// The entire id is prefix + hyphen + suffix (min 18 bytes).
+	if len(runID) < prefixLen+2 {
+		return errors.New("runId: too short")
+	}
+	want := startedAt.UTC().Format("20060102T150405Z")
+	if runID[:prefixLen] != want {
+		return fmt.Errorf("runId: prefix %q does not match startedAt %q", runID[:prefixLen], want)
+	}
+	if runID[prefixLen] != '-' {
+		return fmt.Errorf("runId: expected hyphen at position %d, got %q", prefixLen, runID[prefixLen])
+	}
+	suffix := runID[prefixLen+1:]
+	pid, err := strconv.Atoi(suffix)
+	if err != nil {
+		return fmt.Errorf("runId: pid %q is not a valid integer: %v", suffix, err)
+	}
+	if pid <= 0 {
+		return fmt.Errorf("runId: pid %d is not positive", pid)
+	}
+	if strconv.Itoa(pid) != suffix {
+		return fmt.Errorf("runId: pid %q does not round-trip", suffix)
+	}
+	return nil
 }
 
 // Start writes the start line of one run's record before the run

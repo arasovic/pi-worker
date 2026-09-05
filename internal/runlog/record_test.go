@@ -581,3 +581,50 @@ func TestFinishNilRecorderIsNoOp(t *testing.T) {
 		t.Fatalf("Finish on nil recorder = %v, want nil", err)
 	}
 }
+
+// TestValidateRunID covers the shape contract: valid ids are accepted,
+// and every category of malformed id is rejected. The test checks only
+// whether validateRunID returns an error; it does not inspect error content.
+func TestValidateRunID(t *testing.T) {
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	ts := startedAt.UTC().Format("20060102T150405Z")
+
+	tests := []struct {
+		name   string
+		runID  string
+		at     time.Time
+		wantOK bool
+	}{
+		{"valid", ts + "-12345", startedAt, true},
+		{"UTC conversion", ts + "-1", time.Date(2026, 8, 30, 7, 15, 30, 0, time.FixedZone("UTC+3", 3*60*60)), true},
+		{"large pid", ts + "-999999", startedAt, true},
+
+		{"empty", "", startedAt, false},
+		{"too short", "20260830T04153", startedAt, false},
+		{"wrong timestamp", "20260830T041529Z-12345", startedAt, false},
+		{"missing hyphen", ts + ".12345", startedAt, false},
+		{"extra hyphen", ts + "--12345", startedAt, false},
+		{"empty suffix", ts + "-", startedAt, false},
+		{"trailing garbage", ts + "-12345abc", startedAt, false},
+		{"slash in pid", ts + "-12/345", startedAt, false},
+		{"zero pid", ts + "-0", startedAt, false},
+		{"leading zero", ts + "-01234", startedAt, false},
+		{"sign char", ts + "+12345", startedAt, false},
+		{"space in pid", ts + "- 123", startedAt, false},
+		{"dot in pid", ts + "-12.34", startedAt, false},
+		{"overflow", ts + "-9999999999999999999999999999", startedAt, false},
+		{"wrong startedAt", ts + "-12345", time.Date(2026, 8, 30, 4, 15, 31, 0, time.UTC), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRunID(tt.runID, tt.at)
+			if tt.wantOK && err != nil {
+				t.Fatalf("validateRunID(%q) = %v, want nil", tt.runID, err)
+			}
+			if !tt.wantOK && err == nil {
+				t.Fatalf("validateRunID(%q) = nil, want error", tt.runID)
+			}
+		})
+	}
+}
