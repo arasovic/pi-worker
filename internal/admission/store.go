@@ -11,46 +11,56 @@ import (
 	"runtime"
 )
 
-// StatePath returns root/state.json for the given root directory.
-func StatePath(root string) string {
+// statePath returns root/state.json for the given root directory.
+func statePath(root string) string {
 	return filepath.Join(root, "state.json")
 }
 
-// Load reads and validates the admission state document at root/state.json.
-// A missing file is treated as a valid empty state. The load rejects
-// unknown JSON fields, trailing data, malformed or corrupt documents,
-// and invalid state — all without modifying the file on disk.
-func Load(root string) (State, error) {
-	path := StatePath(root)
-	f, err := os.Open(path)
+// loadState reads and validates the admission state document at root/state.json.
+// A missing file is treated as a valid empty state. A symbolic link at the
+// final path is rejected outright — whether its target exists or is dangling.
+// The load rejects unknown JSON fields, trailing data, malformed or corrupt
+// documents, and invalid state — all without modifying the file on disk.
+func loadState(root string) (state, error) {
+	path := statePath(root)
+
+	// Reject any symbolic link before following it.
+	fi, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return EmptyState(), nil
+			return emptyState(), nil
 		}
-		return State{}, fmt.Errorf("load admission state %s: %w", path, err)
+		return state{}, fmt.Errorf("load admission state %s: %w", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return state{}, fmt.Errorf("load admission state %s: refusing to read through a symbolic link", path)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return state{}, fmt.Errorf("load admission state %s: %w", path, err)
 	}
 	defer f.Close()
 
 	dec := json.NewDecoder(f)
 	dec.DisallowUnknownFields()
-	var wire wireState
-	if err := dec.Decode(&wire); err != nil {
-		return State{}, fmt.Errorf("load admission state %s: %v", path, err)
+	var s state
+	if err := dec.Decode(&s); err != nil {
+		return state{}, fmt.Errorf("load admission state %s: %v", path, err)
 	}
 	// Reject trailing data after the JSON document.
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return State{}, fmt.Errorf("load admission state %s: trailing data after document", path)
+			return state{}, fmt.Errorf("load admission state %s: trailing data after document", path)
 		}
-		return State{}, fmt.Errorf("load admission state %s: %v", path, err)
+		return state{}, fmt.Errorf("load admission state %s: %v", path, err)
 	}
 
-	state := coerceWireState(wire)
-	if err := Validate(state); err != nil {
-		return State{}, fmt.Errorf("load admission state %s: %w", path, err)
+	if err := validateState(s); err != nil {
+		return state{}, fmt.Errorf("load admission state %s: %w", path, err)
 	}
-	return state, nil
+	return s, nil
 }
 
 // Save writes state to root/state.json atomically. The document is validated
@@ -61,11 +71,11 @@ func Load(root string) (State, error) {
 // renamed over the destination; finally the parent directory is synced where
 // the platform supports it. A save failure leaves the previous state intact
 // and removes any temporary file.
-func Save(root string, state State) error {
-	if err := Validate(state); err != nil {
+func saveState(root string, s state) error {
+	if err := validateState(s); err != nil {
 		return err
 	}
-	path := StatePath(root)
+	path := statePath(root)
 
 	// The destination itself must never be a symbolic link.
 	info, err := os.Lstat(path)
@@ -87,7 +97,7 @@ func Save(root string, state State) error {
 		}
 	}
 
-	data, err := json.Marshal(state)
+	data, err := json.Marshal(s)
 	if err != nil {
 		return fmt.Errorf("save admission state %s: encode: %w", path, err)
 	}
