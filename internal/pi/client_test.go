@@ -459,7 +459,7 @@ func TestClientStartupReadFailureIsReadinessError(t *testing.T) {
 }
 
 func TestClientStartupWriteFailureIsReadinessError(t *testing.T) {
-	client := NewClient(closedPipeWriter{}, strings.NewReader(""), nil, nil)
+	client := NewClient(closedPipeWriter{}, io.NopCloser(strings.NewReader("")), nil, nil)
 
 	_, err := client.GetAvailableModels(context.Background())
 	var readinessErr *ReadinessError
@@ -1532,4 +1532,69 @@ func TestClientWaitSettledControlledFailuresPropagateToControlResult(t *testing.
 			t.Fatalf("control result = %q, want same transport error as wait %q", ctrlTransportErr.Error(), waitTransportErr.Error())
 		}
 	})
+}
+
+// TestClientWaitSettledClosesReaderReturnsTransportError proves that
+// Close drives a transport-error exit on a blocking WaitSettled.
+func TestClientWaitSettledClosesReaderReturnsTransportError(t *testing.T) {
+	reader := newPumpBlockingReader()
+	client := NewClient(io.Discard, reader, nil, nil)
+
+	select {
+	case <-reader.started:
+	case <-time.After(time.Second):
+		t.Fatalf("frame pump did not start within 1s")
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- client.WaitSettled(context.Background())
+	}()
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case err := <-waitDone:
+		var transportErr *transportError
+		if !errors.As(err, &transportErr) {
+			t.Fatalf("WaitSettled returned %T %v, want *transportError", err, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("WaitSettled did not return within 1s after Close")
+	}
+}
+
+// TestClientWaitSettledControlledClosesReaderReturnsTransportError
+// proves that Close drives a transport-error exit on a blocking
+// WaitSettledControlled when no controls are ever sent (nil channel).
+func TestClientWaitSettledControlledClosesReaderReturnsTransportError(t *testing.T) {
+	reader := newPumpBlockingReader()
+	client := NewClient(io.Discard, reader, nil, nil)
+
+	select {
+	case <-reader.started:
+	case <-time.After(time.Second):
+		t.Fatalf("frame pump did not start within 1s")
+	}
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- client.WaitSettledControlled(context.Background(), nil)
+	}()
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case err := <-waitDone:
+		var transportErr *transportError
+		if !errors.As(err, &transportErr) {
+			t.Fatalf("WaitSettledControlled returned %T %v, want *transportError", err, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("WaitSettledControlled did not return within 1s after Close")
+	}
 }

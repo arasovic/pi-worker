@@ -92,12 +92,12 @@ type Client struct {
 	frameResults chan frameReadResult
 	stop         chan struct{}
 	done         chan struct{}
-	closer       io.Closer
+	reader       io.ReadCloser
 	closeOnce    sync.Once
 	closeErr     error
 }
 
-func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *WorkerScope) *Client {
+func NewClient(stdin io.Writer, stdout io.ReadCloser, handler EventHandler, debug *WorkerScope) *Client {
 	client := &Client{
 		in:           NewFrameReader(stdout, MaxFrameBytes),
 		out:          NewFrameWriter(stdin),
@@ -106,9 +106,7 @@ func NewClient(stdin io.Writer, stdout io.Reader, handler EventHandler, debug *W
 		frameResults: make(chan frameReadResult, 1),
 		stop:         make(chan struct{}),
 		done:         make(chan struct{}),
-	}
-	if closer, ok := stdout.(io.Closer); ok {
-		client.closer = closer
+		reader:       stdout,
 	}
 	go client.pumpFrames()
 	return client
@@ -515,6 +513,10 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 		}
 		if pending == nil {
 			select {
+			case <-c.stop:
+				c.awaitingSettled = false
+				fr := c.frameError(io.ErrClosedPipe)
+				return fr
 			case <-ctx.Done():
 				c.awaitingSettled = false
 				return ctx.Err()
@@ -566,6 +568,11 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 		// channel is not selected here so a queued control cannot be opened
 		// before its predecessor's response is consumed.
 		select {
+		case <-c.stop:
+			c.awaitingSettled = false
+			fr := c.frameError(io.ErrClosedPipe)
+			trySendControlResult(pending.result, fr)
+			return fr
 		case <-ctx.Done():
 			c.awaitingSettled = false
 			trySendControlResult(pending.result, ctx.Err())
@@ -751,6 +758,8 @@ func (c *Client) failRPC(kind string, started time.Duration, err error) error {
 
 func (c *Client) nextFrame(ctx context.Context) ([]byte, error) {
 	select {
+	case <-c.stop:
+		return nil, io.ErrClosedPipe
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case result := <-c.frameResults:
@@ -785,9 +794,7 @@ func (c *Client) Close() error {
 	}
 	c.closeOnce.Do(func() {
 		close(c.stop)
-		if c.closer != nil {
-			c.closeErr = c.closer.Close()
-		}
+		c.closeErr = c.reader.Close()
 		<-c.done
 	})
 	return c.closeErr
