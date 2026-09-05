@@ -348,7 +348,7 @@ func (c *Client) Steer(ctx context.Context, message string) error {
 		return err
 	}
 	if !*resp.Success {
-		return &TaskError{Message: "steer: " + responseDetail(resp)}
+		return typedRequestRejection(req.Type, resp)
 	}
 	return nil
 }
@@ -366,9 +366,17 @@ func (c *Client) Abort(ctx context.Context) error {
 		return err
 	}
 	if !*resp.Success {
-		return &TaskError{Message: "abort: " + responseDetail(resp)}
+		return typedRequestRejection(req.Type, resp)
 	}
 	return nil
+}
+
+// typedRequestRejection builds the stable typed task failure for one
+// correlated, well-formed rejection of a typed outbound request. The
+// prefix is the wire command so Steer, Abort, and WaitSettledControlled
+// all produce the same "<command>: <pi detail>" message.
+func typedRequestRejection(reqType string, resp *wireResponse) error {
+	return &TaskError{Message: reqType + ": " + responseDetail(resp)}
 }
 
 // GetLastAssistantText returns the final assistant text, or "" when Pi
@@ -449,6 +457,237 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 			c.awaitingSettled = false
 			return nil
 		}
+	}
+}
+
+// pendingControl is one in-flight typed control request awaiting its
+// correlated response. Only the single driving goroutine in
+// WaitSettledControlled touches it. startControl populates it; the
+// correlated response consumed by processControlFrame clears it.
+type pendingControl struct {
+	requestType string
+	requestID   string
+	result      chan<- error
+	started     time.Duration
+}
+
+// WaitSettledControlled blocks until the agent_settled event, servicing
+// one typed control from controls at a time between events. It is the
+// sole FrameReader consumer during the model turn: when no control is
+// pending it selects between caller context, the next pumped frame, or
+// one control from controls; when a control is pending it selects
+// between caller context and the next pumped frame only, so the
+// correlated response for that single control is consumed before any
+// next control is read. Controls are serialized: one request written,
+// its correlated response consumed, then the next control is read.
+//
+// Termination rules:
+//   - agent_settled is terminal. If it arrives while a control response
+//     is pending, the pending response is still consumed before the
+//     wait returns so the in-flight control always receives exactly one
+//     outcome. After settled, no further control receives are accepted.
+//   - A closed controls channel disables further control receives; the
+//     wait keeps draining frames until settled or until caller context,
+//     EOF, or a protocol failure ends it.
+//   - Caller context end, frame transport EOF, a protocol violation, or
+//     Client.Close ends the wait with one deterministic error. A
+//     pending control receives that single error on its Result channel
+//     before the wait returns; rejected-at-start controls receive their
+//     typed error and the wait continues.
+//
+// agent_settled arriving before any control is retained and ends the
+// wait successfully. Unknown control kind or an empty steer message is
+// rejected before any frame is written. Control rejections are mapped
+// onto the same typed *TaskError as Client.Steer and Client.Abort.
+func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan WorkerControl) error {
+	if c.settled {
+		c.awaitingSettled = false
+		return nil
+	}
+	var pending *pendingControl
+	for {
+		if err := ctx.Err(); err != nil {
+			c.awaitingSettled = false
+			if pending != nil {
+				trySendControlResult(pending.result, err)
+			}
+			return err
+		}
+		if pending == nil {
+			select {
+			case <-ctx.Done():
+				c.awaitingSettled = false
+				return ctx.Err()
+			case result := <-c.frameResults:
+				if result.err != nil {
+					c.awaitingSettled = false
+					fr := c.frameError(result.err)
+					if pending != nil {
+						trySendControlResult(pending.result, fr)
+					}
+					return fr
+				}
+				if err := c.processControlFrame(result.frame, &pending); err != nil {
+					c.awaitingSettled = false
+					if pending != nil {
+						trySendControlResult(pending.result, err)
+					}
+					return err
+				}
+				if pending == nil && c.settled {
+					c.awaitingSettled = false
+					return nil
+				}
+			case ctrl, ok := <-controls:
+				if !ok {
+					// closed controls: disable further control receives so
+					// only context and the pumped frame stream remain.
+					controls = nil
+					if c.settled {
+						c.awaitingSettled = false
+						return nil
+					}
+					continue
+				}
+				if err := c.startControl(ctrl, &pending); err != nil {
+					// Rejected before any frame was written. The supervisor
+					// must receive exactly one outcome per control; the
+					// wait continues because no request was opened.
+					trySendControlResult(ctrl.Result, err)
+					if c.settled {
+						c.awaitingSettled = false
+						return nil
+					}
+				}
+			}
+			continue
+		}
+		// pending != nil: wait only for the correlated response. The control
+		// channel is not selected here so a queued control cannot be opened
+		// before its predecessor's response is consumed.
+		select {
+		case <-ctx.Done():
+			c.awaitingSettled = false
+			trySendControlResult(pending.result, ctx.Err())
+			return ctx.Err()
+		case result := <-c.frameResults:
+			if result.err != nil {
+				c.awaitingSettled = false
+				fr := c.frameError(result.err)
+				trySendControlResult(pending.result, fr)
+				return fr
+			}
+			if err := c.processControlFrame(result.frame, &pending); err != nil {
+				c.awaitingSettled = false
+				if pending != nil {
+					trySendControlResult(pending.result, err)
+				}
+				return err
+			}
+			if pending == nil && c.settled {
+				c.awaitingSettled = false
+				return nil
+			}
+		}
+	}
+}
+
+// startControl validates one typed control and, when valid, writes the
+// request and transitions the wait into the "pending" state. An empty
+// steer message and an unknown control kind are rejected before any
+// frame is written; the typed error returned is what Client.Steer and
+// Client.Abort already produce for the same conditions. On a wire
+// write failure the transport error is logged through failRPC and
+// returned to the caller, which delivers it to the supervisor; the
+// wait does not transition to pending in that case.
+func (c *Client) startControl(ctrl WorkerControl, pending **pendingControl) error {
+	var req request
+	switch ctrl.Kind {
+	case WorkerControlSteer:
+		if ctrl.Message == "" {
+			return &TaskError{Message: "steer message must be non-empty"}
+		}
+		r, err := newRequest(requestSteer)
+		if err != nil {
+			return err
+		}
+		r.Message = ctrl.Message
+		req = r
+	case WorkerControlAbort:
+		r, err := newRequest(requestAbort)
+		if err != nil {
+			return err
+		}
+		req = r
+	default:
+		return &TaskError{Message: fmt.Sprintf("unknown worker control kind %q", ctrl.Kind)}
+	}
+	if req.ID == "" {
+		req.ID = c.nextRequestID()
+	}
+	started := c.debug.Elapsed()
+	c.debug.Log("rpc="+req.Type, debugStarted)
+	if err := c.out.WriteFrame(req); err != nil {
+		return c.failRPC(req.Type, started, newTransportError(err))
+	}
+	*pending = &pendingControl{
+		requestType: req.Type,
+		requestID:   req.ID,
+		result:      ctrl.Result,
+		started:     started,
+	}
+	return nil
+}
+
+// processControlFrame dispatches one inbound frame while controls may
+// be pending. Event frames are routed through handleFrame unchanged so
+// the registered handler still observes them in wire order and so the
+// agent_settled event is retained via c.settled. A response frame is
+// correlated against the pending control: matching id and command clear
+// the pending state and deliver exactly one outcome to the supervisor;
+// mismatched id or command is a protocol violation that ends the wait.
+// processControlFrame clears *pending only on a matching response.
+func (c *Client) processControlFrame(frame []byte, pending **pendingControl) error {
+	isResponse, resp, err := c.handleFrame(frame)
+	if err != nil {
+		return err
+	}
+	if !isResponse {
+		return nil
+	}
+	p := *pending
+	if p == nil {
+		return newProtocolError("unexpected response while waiting for agent_settled")
+	}
+	if resp.ID != p.requestID {
+		return newProtocolError("response for unknown request id %q (expected %q)", resp.ID, p.requestID)
+	}
+	if resp.Command != p.requestType {
+		return newProtocolError("response command %q does not match request type %q", resp.Command, p.requestType)
+	}
+	duration := "duration=" + (c.debug.Elapsed() - p.started).Round(time.Millisecond).String()
+	if !*resp.Success {
+		c.debug.Log("rpc="+p.requestType, debugFailed, duration)
+		trySendControlResult(p.result, typedRequestRejection(p.requestType, resp))
+	} else {
+		c.debug.Log("rpc="+p.requestType, debugCompleted, duration)
+		trySendControlResult(p.result, nil)
+	}
+	*pending = nil
+	return nil
+}
+
+// trySendControlResult delivers exactly one outcome on result without
+// blocking. The supervisor is required to supply a buffered channel
+// (capacity >= 1); this default branch is the safety net for an
+// abandoned waiter so the driving goroutine cannot stall.
+func trySendControlResult(result chan<- error, err error) {
+	if result == nil {
+		return
+	}
+	select {
+	case result <- err:
+	default:
 	}
 }
 
