@@ -88,7 +88,7 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 
 	t.Run("config show", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.json")
-		if err := config.Save(path, config.Config{SchemaVersion: 1}); err != nil {
+		if err := config.Save(path, config.Config{SchemaVersion: 2, MaxModelWorkers: 3}); err != nil {
 			t.Fatal(err)
 		}
 		installConfigPath(t, path)
@@ -96,7 +96,7 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("config show = (%d, %q, %q)", code, stdout, stderr)
 		}
-		assertExactJSONKeys(t, decodeJSONObject(t, stdout), "schemaVersion", "defaultModel")
+		assertExactJSONKeys(t, decodeJSONObject(t, stdout), "schemaVersion", "defaultModel", "maxModelWorkers")
 	})
 
 	t.Run("skill receipt path", func(t *testing.T) {

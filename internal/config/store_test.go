@@ -43,26 +43,31 @@ func TestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "zero value", cfg: Config{}, wantErr: true},
-		{name: "empty model", cfg: Config{SchemaVersion: 1}, wantErr: false},
-		{name: "empty model string", cfg: Config{SchemaVersion: 1, DefaultModel: ""}, wantErr: false},
-		{name: "valid selector", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/model"}, wantErr: false},
-		{name: "valid selector with dashes", cfg: Config{SchemaVersion: 1, DefaultModel: "openai/gpt-4o-mini"}, wantErr: false},
-		{name: "schema zero", cfg: Config{SchemaVersion: 0, DefaultModel: "provider/model"}, wantErr: true},
-		{name: "schema negative", cfg: Config{SchemaVersion: -1}, wantErr: true},
-		{name: "schema two", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model"}, wantErr: true},
-		{name: "no slash", cfg: Config{SchemaVersion: 1, DefaultModel: "model"}, wantErr: true},
-		{name: "colon without slash", cfg: Config{SchemaVersion: 1, DefaultModel: "provider:model"}, wantErr: true},
-		{name: "empty provider", cfg: Config{SchemaVersion: 1, DefaultModel: "/model"}, wantErr: true},
-		{name: "empty id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/"}, wantErr: true},
-		{name: "routing prefix in id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/upstream/model"}, wantErr: false},
-		{name: "colon in id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/model:thinking"}, wantErr: false},
-		{name: "space in id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/mo del"}, wantErr: false},
-		{name: "space in provider", cfg: Config{SchemaVersion: 1, DefaultModel: "my provider/model"}, wantErr: false},
-		{name: "tab in id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/mo\tdel"}, wantErr: false},
-		{name: "newline in id", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/mo\ndel"}, wantErr: false},
-		{name: "leading space", cfg: Config{SchemaVersion: 1, DefaultModel: " provider/model"}, wantErr: false},
-		{name: "trailing space", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/model "}, wantErr: false},
-		{name: "provider with slash", cfg: Config{SchemaVersion: 1, DefaultModel: "my/provider/model"}, wantErr: false},
+		{name: "empty model", cfg: Config{SchemaVersion: 2, MaxModelWorkers: 3}, wantErr: false},
+		{name: "empty model string", cfg: Config{SchemaVersion: 2, DefaultModel: "", MaxModelWorkers: 3}, wantErr: false},
+		{name: "valid selector", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: false},
+		{name: "valid selector with dashes", cfg: Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3}, wantErr: false},
+		{name: "schema zero", cfg: Config{SchemaVersion: 0, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: true},
+		{name: "schema negative", cfg: Config{SchemaVersion: -1, MaxModelWorkers: 3}, wantErr: true},
+		{name: "schema one", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: true},
+		{name: "schema three", cfg: Config{SchemaVersion: 3, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: true},
+		{name: "no slash", cfg: Config{SchemaVersion: 2, DefaultModel: "model", MaxModelWorkers: 3}, wantErr: true},
+		{name: "colon without slash", cfg: Config{SchemaVersion: 2, DefaultModel: "provider:model", MaxModelWorkers: 3}, wantErr: true},
+		{name: "empty provider", cfg: Config{SchemaVersion: 2, DefaultModel: "/model", MaxModelWorkers: 3}, wantErr: true},
+		{name: "empty id", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/", MaxModelWorkers: 3}, wantErr: true},
+		{name: "routing prefix in id", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/upstream/model", MaxModelWorkers: 3}, wantErr: false},
+		{name: "colon in id", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model:thinking", MaxModelWorkers: 3}, wantErr: false},
+		{name: "space in id", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/mo del", MaxModelWorkers: 3}, wantErr: false},
+		{name: "space in provider", cfg: Config{SchemaVersion: 2, DefaultModel: "my provider/model", MaxModelWorkers: 3}, wantErr: false},
+		{name: "tab in id", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/mo\tdel", MaxModelWorkers: 3}, wantErr: false},
+		{name: "newline in id", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/mo\ndel", MaxModelWorkers: 3}, wantErr: false},
+		{name: "leading space", cfg: Config{SchemaVersion: 2, DefaultModel: " provider/model", MaxModelWorkers: 3}, wantErr: false},
+		{name: "trailing space", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model ", MaxModelWorkers: 3}, wantErr: false},
+		{name: "provider with slash", cfg: Config{SchemaVersion: 2, DefaultModel: "my/provider/model", MaxModelWorkers: 3}, wantErr: false},
+		{name: "zero max model workers", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 0}, wantErr: true},
+		{name: "negative max model workers", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: -1}, wantErr: true},
+		{name: "positive max model workers", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 5}, wantErr: false},
+		{name: "max model workers one", cfg: Config{SchemaVersion: 2, MaxModelWorkers: 1}, wantErr: false},
 	}
 
 	for _, test := range tests {
@@ -85,69 +90,131 @@ func TestLoad(t *testing.T) {
 		want    Config
 		wantErr bool
 	}{
+		// Schema 1 migration: accepted and returned as schema 2 with MaxModelWorkers 3.
 		{
-			name:    "minimal",
+			name:    "v1 minimal",
 			content: `{"schemaVersion":1}`,
-			want:    Config{SchemaVersion: 1},
+			want:    Config{SchemaVersion: 2, MaxModelWorkers: 3},
 		},
 		{
-			name:    "full",
+			name:    "v1 full",
 			content: `{"schemaVersion":1,"defaultModel":"openai/gpt-4o-mini"}`,
-			want:    Config{SchemaVersion: 1, DefaultModel: "openai/gpt-4o-mini"},
+			want:    Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3},
 		},
 		{
-			name:    "trailing newline",
+			name:    "v1 trailing newline",
 			content: "{\"schemaVersion\":1}\n",
-			want:    Config{SchemaVersion: 1},
+			want:    Config{SchemaVersion: 2, MaxModelWorkers: 3},
 		},
+		// Schema 2 accepted.
+		{
+			name:    "v2 minimal",
+			content: `{"schemaVersion":2,"maxModelWorkers":3}`,
+			want:    Config{SchemaVersion: 2, MaxModelWorkers: 3},
+		},
+		{
+			name:    "v2 full",
+			content: `{"schemaVersion":2,"defaultModel":"openai/gpt-4o-mini","maxModelWorkers":5}`,
+			want:    Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 5},
+		},
+		// Schema 2 round trip.
+		{
+			name:    "v2 round trip",
+			content: `{"schemaVersion":2,"defaultModel":"provider/model","maxModelWorkers":10}`,
+			want:    Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 10},
+		},
+		// Rejection: unknown fields.
 		{
 			name:    "unknown field",
-			content: `{"schemaVersion":1,"defaultModel":"","policy":{}}`,
+			content: `{"schemaVersion":2,"defaultModel":"","maxModelWorkers":3,"policy":{}}`,
 			wantErr: true,
 		},
 		{
 			name:    "unknown field without value",
-			content: `{"schemaVersion":1,"defaultModel":""}` + `,"apiKey":"secret"}`,
+			content: `{"schemaVersion":2,"defaultModel":"","maxModelWorkers":3}` + `,"apiKey":"secret"}`,
 			wantErr: true,
 		},
+		// Rejection: trailing data.
 		{
 			name:    "trailing json",
-			content: `{"schemaVersion":1}{"a":1}`,
+			content: `{"schemaVersion":2,"maxModelWorkers":3}{"a":1}`,
 			wantErr: true,
 		},
 		{
 			name:    "trailing garbage",
-			content: `{"schemaVersion":1}xyz`,
+			content: `{"schemaVersion":2,"maxModelWorkers":3}xyz`,
 			wantErr: true,
 		},
-		{
-			name:    "unknown schema",
-			content: `{"schemaVersion":2,"defaultModel":""}`,
-			wantErr: true,
-		},
+		// Rejection: missing schema.
 		{
 			name:    "missing schema",
-			content: `{"defaultModel":""}`,
+			content: `{"defaultModel":"","maxModelWorkers":3}`,
 			wantErr: true,
 		},
+		// Rejection: string schema.
 		{
 			name:    "string schema",
-			content: `{"schemaVersion":"1"}`,
+			content: `{"schemaVersion":"2","maxModelWorkers":3}`,
 			wantErr: true,
 		},
+		// Rejection: invalid selector.
 		{
 			name:    "invalid selector",
-			content: `{"schemaVersion":1,"defaultModel":"not-a-selector"}`,
+			content: `{"schemaVersion":2,"defaultModel":"not-a-selector","maxModelWorkers":3}`,
 			wantErr: true,
 		},
+		// Rejection: malformed json.
 		{
 			name:    "malformed json",
 			content: `{"schemaVersion":`,
 			wantErr: true,
 		},
+		// Rejection: empty file.
 		{
 			name:    "empty file",
 			content: ``,
+			wantErr: true,
+		},
+		// Rejection: unsupported version.
+		{
+			name:    "unsupported version",
+			content: `{"schemaVersion":3,"maxModelWorkers":3}`,
+			wantErr: true,
+		},
+		// Rejection: v1 with maxModelWorkers.
+		{
+			name:    "v1 with maxModelWorkers",
+			content: `{"schemaVersion":1,"maxModelWorkers":3}`,
+			wantErr: true,
+		},
+		// Rejection: v2 missing maxModelWorkers.
+		{
+			name:    "v2 missing maxModelWorkers",
+			content: `{"schemaVersion":2}`,
+			wantErr: true,
+		},
+		// Rejection: v2 zero maxModelWorkers.
+		{
+			name:    "v2 zero maxModelWorkers",
+			content: `{"schemaVersion":2,"maxModelWorkers":0}`,
+			wantErr: true,
+		},
+		// Rejection: v2 negative maxModelWorkers.
+		{
+			name:    "v2 negative maxModelWorkers",
+			content: `{"schemaVersion":2,"maxModelWorkers":-1}`,
+			wantErr: true,
+		},
+		// Rejection: v1 with maxModelWorkers null.
+		{
+			name:    "v1 null maxModelWorkers",
+			content: `{"schemaVersion":1,"maxModelWorkers":null}`,
+			wantErr: true,
+		},
+		// Rejection: v2 with maxModelWorkers null.
+		{
+			name:    "v2 null maxModelWorkers",
+			content: `{"schemaVersion":2,"maxModelWorkers":null}`,
 			wantErr: true,
 		},
 	}
@@ -224,10 +291,35 @@ func TestLoadRefusesDanglingSymlinkedConfigPath(t *testing.T) {
 	}
 }
 
+func TestLoadV1BytesUntouched(t *testing.T) {
+	// Write exact schema-1 bytes. Load returns the effective schema-2/default
+	// configuration, but the file on disk must not be rewritten.
+	want := `{"schemaVersion":1,"defaultModel":"openai/gpt-4o-mini"}`
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "config.json", want)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q) error: %v", path, err)
+	}
+	if cfg != (Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3}) {
+		t.Fatalf("Load(%q) = %+v, want schema 2, default maxModelWorkers 3", path, cfg)
+	}
+
+	// The file bytes must be exactly unchanged.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error: %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("file bytes = %q, want %q", got, want)
+	}
+}
+
 func TestSaveRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	want := Config{SchemaVersion: 1, DefaultModel: "provider/model"}
+	want := Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
@@ -244,7 +336,7 @@ func TestSaveRoundTrip(t *testing.T) {
 func TestSaveCreatesMissingParents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deep", "nested", "dirs", "config.json")
-	want := Config{SchemaVersion: 1, DefaultModel: "openai/gpt-4o-mini"}
+	want := Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3}
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
@@ -261,7 +353,7 @@ func TestSaveCreatesMissingParents(t *testing.T) {
 func TestSaveRejectsInvalidBeforeTouchingExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	good := Config{SchemaVersion: 1, DefaultModel: "provider/model"}
+	good := Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}
 	if err := Save(path, good); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
@@ -269,7 +361,7 @@ func TestSaveRejectsInvalidBeforeTouchingExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %q: %v", path, err)
 	}
-	bad := Config{SchemaVersion: 1, DefaultModel: "not-a-selector"}
+	bad := Config{SchemaVersion: 2, DefaultModel: "not-a-selector", MaxModelWorkers: 3}
 	if err := Save(path, bad); err == nil {
 		t.Fatalf("Save(%q, %+v) = nil error, want validation error", path, bad)
 	}
@@ -293,7 +385,7 @@ func TestSaveRejectsInvalidBeforeTouchingExistingFile(t *testing.T) {
 func TestSaveRejectsInvalidWithoutCreatingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	bad := Config{SchemaVersion: 9, DefaultModel: ""}
+	bad := Config{SchemaVersion: 9, DefaultModel: "", MaxModelWorkers: 3}
 	if err := Save(path, bad); err == nil {
 		t.Fatalf("Save(%q, %+v) = nil error, want validation error", path, bad)
 	}
@@ -306,11 +398,11 @@ func TestSaveRejectsInvalidWithoutCreatingFile(t *testing.T) {
 func TestSaveReplacesExistingAtomically(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	first := Config{SchemaVersion: 1, DefaultModel: "alpha/one"}
+	first := Config{SchemaVersion: 2, DefaultModel: "alpha/one", MaxModelWorkers: 3}
 	if err := Save(path, first); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
-	second := Config{SchemaVersion: 1, DefaultModel: "beta/two"}
+	second := Config{SchemaVersion: 2, DefaultModel: "beta/two", MaxModelWorkers: 3}
 	if err := Save(path, second); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
@@ -330,7 +422,7 @@ func TestSaveFailureCleansUpTempFile(t *testing.T) {
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatalf("mkdir %q: %v", path, err)
 	}
-	cfg := Config{SchemaVersion: 1, DefaultModel: "provider/model"}
+	cfg := Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}
 	if err := Save(path, cfg); err == nil {
 		t.Fatalf("Save(%q) over a directory = nil error, want error", path)
 	}
@@ -349,7 +441,7 @@ func TestSaveReturnsWrappedInspectPathErrorBeforeMutation(t *testing.T) {
 	}
 	path := filepath.Join(blocker, "config.json")
 
-	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"})
+	err := Save(path, Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3})
 	if err == nil {
 		t.Fatalf("Save(%q) = nil error, want inspect-path failure", path)
 	}
@@ -388,7 +480,7 @@ func TestSaveRefusesSymlinkedDestinationWithExistingTarget(t *testing.T) {
 		t.Fatalf("Stat(%q): %v", target, err)
 	}
 
-	err = Save(path, Config{SchemaVersion: 1, DefaultModel: "beta/new"})
+	err = Save(path, Config{SchemaVersion: 2, DefaultModel: "beta/new", MaxModelWorkers: 3})
 	if err == nil {
 		t.Fatalf("Save(%q) over a symlink = nil error, want refusal", path)
 	}
@@ -428,7 +520,7 @@ func TestSaveRefusesDanglingSymlinkedDestination(t *testing.T) {
 		t.Fatalf("Symlink(%q -> %q): %v", path, missingTarget, err)
 	}
 
-	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "beta/new"})
+	err := Save(path, Config{SchemaVersion: 2, DefaultModel: "beta/new", MaxModelWorkers: 3})
 	if err == nil {
 		t.Fatalf("Save(%q) over a dangling symlink = nil error, want refusal", path)
 	}
@@ -473,7 +565,7 @@ func TestSaveRefusalLeavesLinkAndTargetUntouched(t *testing.T) {
 		t.Fatalf("Stat(%q): %v", target, err)
 	}
 
-	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "beta/new"}); err == nil {
+	if err := Save(path, Config{SchemaVersion: 2, DefaultModel: "beta/new", MaxModelWorkers: 3}); err == nil {
 		t.Fatalf("Save(%q) over a symlink = nil error, want refusal", path)
 	}
 
@@ -523,11 +615,11 @@ func TestSaveThroughSymlinkedParentDirectory(t *testing.T) {
 	}
 	path := filepath.Join(linkDir, "config.json")
 
-	first := Config{SchemaVersion: 1, DefaultModel: "alpha/one"}
+	first := Config{SchemaVersion: 2, DefaultModel: "alpha/one", MaxModelWorkers: 3}
 	if err := Save(path, first); err != nil {
 		t.Fatalf("Save(%q) through a symlinked parent error: %v", path, err)
 	}
-	second := Config{SchemaVersion: 1, DefaultModel: "beta/two"}
+	second := Config{SchemaVersion: 2, DefaultModel: "beta/two", MaxModelWorkers: 3}
 	if err := Save(path, second); err != nil {
 		t.Fatalf("Save(%q) replace through a symlinked parent error: %v", path, err)
 	}
@@ -562,7 +654,7 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 	}
 	dir := filepath.Join(t.TempDir(), "pi-worker")
 	path := filepath.Join(dir, "config.json")
-	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
+	if err := Save(path, Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}
 	info, err := os.Stat(path)
@@ -617,7 +709,7 @@ func TestSaveTightensExistingPiWorkerDirectory(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("Mkdir(%q): %v", dir, err)
 	}
-	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
+	if err := Save(path, Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}); err != nil {
 		t.Fatalf("Save(%q): %v", path, err)
 	}
 	info, err := os.Stat(dir)
@@ -643,7 +735,7 @@ func TestSaveDoesNotTightenUnrelatedPiWorkerDirectory(t *testing.T) {
 		t.Fatalf("Stat(%q): %v", dir, err)
 	}
 	path := filepath.Join(dir, "config.json")
-	if err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/model"}); err != nil {
+	if err := Save(path, Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}); err != nil {
 		t.Fatalf("Save(%q): %v", path, err)
 	}
 	after, err := os.Stat(dir)
@@ -676,7 +768,7 @@ func TestSaveAbortsBeforeReplacingConfigWhenDirectoryChmodFails(t *testing.T) {
 	chmodConfigDirectory = func(string, os.FileMode) error { return want }
 	t.Cleanup(func() { chmodConfigDirectory = original })
 
-	err := Save(path, Config{SchemaVersion: 1, DefaultModel: "provider/new"})
+	err := Save(path, Config{SchemaVersion: 2, DefaultModel: "provider/new", MaxModelWorkers: 3})
 	if !errors.Is(err, want) {
 		t.Fatalf("Save() error = %v, want wrapped %v", err, want)
 	}
@@ -722,7 +814,7 @@ func TestSaveReturnsDirectorySyncIOErrors(t *testing.T) {
 			}
 			t.Cleanup(func() { openDirectoryForSync = original })
 
-			err := Save(filepath.Join(t.TempDir(), "config.json"), Config{SchemaVersion: 1})
+			err := Save(filepath.Join(t.TempDir(), "config.json"), Empty())
 			want := test.openErr
 			if want == nil {
 				want = test.syncErr
@@ -747,7 +839,7 @@ func TestSaveToleratesOnlyUnsupportedDirectorySync(t *testing.T) {
 	}
 	t.Cleanup(func() { openDirectoryForSync = original })
 
-	if err := Save(filepath.Join(t.TempDir(), "config.json"), Config{SchemaVersion: 1}); err != nil {
+	if err := Save(filepath.Join(t.TempDir(), "config.json"), Empty()); err != nil {
 		t.Fatalf("Save() unsupported directory sync error: %v", err)
 	}
 }
@@ -774,7 +866,7 @@ func TestSaveReturnsUnsupportedCodesOutsideDirectorySync(t *testing.T) {
 			}
 			t.Cleanup(func() { openDirectoryForSync = original })
 
-			err := Save(filepath.Join(t.TempDir(), "config.json"), Config{SchemaVersion: 1})
+			err := Save(filepath.Join(t.TempDir(), "config.json"), Empty())
 			want := test.openErr
 			if want == nil {
 				want = test.closeErr

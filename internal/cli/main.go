@@ -337,6 +337,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker doctor [--timeout <duration>] [--json] [--debug]")
 	fmt.Fprintln(w, "       pi-worker config show [--json]")
 	fmt.Fprintln(w, "       pi-worker config set default-model <provider/model> [--debug] [--timeout <duration>]")
+	fmt.Fprintln(w, "       pi-worker config set max-model-workers <n>")
 	fmt.Fprintln(w, "       pi-worker skill status [--json]")
 	fmt.Fprintln(w, "       pi-worker skill receipt-path [--json]")
 	fmt.Fprintln(w, "       pi-worker runs list [--json]")

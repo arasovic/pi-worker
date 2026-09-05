@@ -85,6 +85,13 @@ pi-worker config set default-model provider/model
 pi-worker run --thinking high --task "Review this module and explain the main risks"
 ```
 
+The configuration file is schema-versioned. Schema 2 carries `schemaVersion`,
+`defaultModel`, and `maxModelWorkers` (positive integer, effective default 3).
+Schema-1 files containing only their historical fields (`schemaVersion` and
+`defaultModel`) are accepted and migrated in memory to schema 2 with
+`maxModelWorkers: 3` without being rewritten on disk. The stored machine
+setting can be changed with `pi-worker config set max-model-workers <n>`.
+
 Doctor is read-only. Its six checks, in order, are `pi-executable`,
 `pi-version`, `config`, `model-catalog`, `default-model`, and `workspace`.
 A `workspace` warning is advisory and never blocks a run: it means the

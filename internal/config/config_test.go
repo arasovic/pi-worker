@@ -8,8 +8,16 @@ import (
 	"testing"
 )
 
+func TestEmpty(t *testing.T) {
+	got := Empty()
+	want := Config{SchemaVersion: 2, MaxModelWorkers: 3}
+	if got != want {
+		t.Fatalf("Empty() = %+v, want %+v", got, want)
+	}
+}
+
 func TestConfigEmptyDefaultIsProviderNeutral(t *testing.T) {
-	cfg := Config{SchemaVersion: 1}
+	cfg := Config{SchemaVersion: 2, MaxModelWorkers: 3}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("Validate(%+v) error: %v", cfg, err)
 	}
