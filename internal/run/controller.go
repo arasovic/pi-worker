@@ -278,44 +278,47 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("generate material frame token: %v", err)
 	}
+	executeTask := func(workerCtx context.Context, index int, task Task) {
+		prompt, dataFiles := composeTaskPrompt(task, token)
+		result := c.worker.Run(workerCtx, pi.WorkerRequest{
+			Model:          task.Model,
+			ThinkingLevel:  task.ThinkingLevel,
+			Prompt:         prompt,
+			Workspace:      req.Workspace,
+			WorkerID:       index + 1,
+			Debug:          req.Debug,
+			OnProcessStart: req.OnProcessStart,
+		})
+		// The carried-file report is the run layer's own record of
+		// what it composed: the worker receives only the composed
+		// prompt and never sees the files, so its result cannot
+		// know them.
+		result.DataFiles = dataFiles
+		results[index] = result
+		if monitoringEnabled {
+			// Use the manifest budget: same dirty-stamp work as measureChanges.
+			snapCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
+			stamps, snapErr := snapshotDirtyStamps(snapCtx, req.Workspace)
+			cancel()
+			var captured bool
+			settlementMu.Lock()
+			if snapErr != nil && settlementErr == nil {
+				settlementErr = fmt.Errorf("controller: settlement snapshot task %d: %w", index+1, snapErr)
+			} else if snapErr == nil {
+				settledProjections[index] = projectedTaskStamps(stamps, task, repoRootVal, req.Workspace)
+				captured = true
+			}
+			settlementMu.Unlock()
+			if captured && c.afterWorkerSettled != nil {
+				c.afterWorkerSettled(index)
+			}
+		}
+	}
 	for i, task := range req.Tasks {
 		wg.Add(1)
 		go func(index int, task Task) {
 			defer wg.Done()
-			prompt, dataFiles := composeTaskPrompt(task, token)
-			result := c.worker.Run(ctx, pi.WorkerRequest{
-				Model:          task.Model,
-				ThinkingLevel:  task.ThinkingLevel,
-				Prompt:         prompt,
-				Workspace:      req.Workspace,
-				WorkerID:       index + 1,
-				Debug:          req.Debug,
-				OnProcessStart: req.OnProcessStart,
-			})
-			// The carried-file report is the run layer's own record of
-			// what it composed: the worker receives only the composed
-			// prompt and never sees the files, so its result cannot
-			// know them.
-			result.DataFiles = dataFiles
-			results[index] = result
-			if monitoringEnabled {
-				// Use the manifest budget: same dirty-stamp work as measureChanges.
-				snapCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
-				stamps, snapErr := snapshotDirtyStamps(snapCtx, req.Workspace)
-				cancel()
-				var captured bool
-				settlementMu.Lock()
-				if snapErr != nil && settlementErr == nil {
-					settlementErr = fmt.Errorf("controller: settlement snapshot task %d: %w", index+1, snapErr)
-				} else if snapErr == nil {
-					settledProjections[index] = projectedTaskStamps(stamps, task, repoRootVal, req.Workspace)
-					captured = true
-				}
-				settlementMu.Unlock()
-				if captured && c.afterWorkerSettled != nil {
-					c.afterWorkerSettled(index)
-				}
-			}
+			executeTask(ctx, index, task)
 		}(i, task)
 	}
 	wg.Wait()
