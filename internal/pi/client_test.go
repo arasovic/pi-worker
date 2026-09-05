@@ -943,3 +943,165 @@ func TestClientLastAssistantTextMissingTextFieldIsEmpty(t *testing.T) {
 		t.Fatalf("text = %q, want empty", text)
 	}
 }
+
+func TestClientSteerSendsTypedRequestAndReportsSuccess(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"steer": {{Response: &script.Response{Success: true}}},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	if err := client.Steer(context.Background(), "change direction"); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+}
+
+func TestClientSteerRejectsCorrelatedFailureAsTypedTaskError(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"steer": {{Response: &script.Response{Success: false, Error: "boom"}}},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	err := client.Steer(context.Background(), "change direction")
+	if err == nil {
+		t.Fatalf("Steer returned nil, want typed failure")
+	}
+	var taskErr *TaskError
+	if !errors.As(err, &taskErr) {
+		t.Fatalf("err = %T %v, want *TaskError", err, err)
+	}
+	if !strings.HasPrefix(taskErr.Message, "steer: ") {
+		t.Fatalf("TaskError.Message = %q, want stable \"steer: \" prefix", taskErr.Message)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %q, want pi detail preserved", err)
+	}
+}
+
+func TestClientSteerRejectsEmptyMessageBeforeWrite(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"steer": {{Response: &script.Response{Success: true}}},
+	}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	err = client.Steer(context.Background(), "")
+	var taskErr *TaskError
+	if !errors.As(err, &taskErr) {
+		t.Fatalf("err = %T %v, want *TaskError", err, err)
+	}
+	if !strings.HasPrefix(taskErr.Message, "steer message must be non-empty") {
+		t.Fatalf("TaskError.Message = %q, want stable empty-message prefix", taskErr.Message)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(readRequestLog(logPath)) > 0 {
+			t.Fatalf("steer wrote a frame despite empty message; log = %v", readRequestLog(logPath))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestClientSteerContextDoneBeforeWriteReturnsContextError(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"steer": {{Response: &script.Response{Success: true}}},
+	}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = client.Steer(ctx, "change direction")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Steer err = %v, want context.Canceled", err)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(readRequestLog(logPath)) > 0 {
+			t.Fatalf("Steer wrote a frame after context cancellation; log = %v", readRequestLog(logPath))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestClientAbortSendsTypedRequestAndReportsSuccess(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"abort": {{Response: &script.Response{Success: true}}},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	if err := client.Abort(context.Background()); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+}
+
+func TestClientAbortRejectsCorrelatedFailureAsTypedTaskError(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"abort": {{Response: &script.Response{Success: false, Error: "boom"}}},
+	}}
+	proc := startScriptedPi(t, scriptConfig)
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	err := client.Abort(context.Background())
+	if err == nil {
+		t.Fatalf("Abort returned nil, want typed failure")
+	}
+	var taskErr *TaskError
+	if !errors.As(err, &taskErr) {
+		t.Fatalf("err = %T %v, want *TaskError", err, err)
+	}
+	if !strings.HasPrefix(taskErr.Message, "abort: ") {
+		t.Fatalf("TaskError.Message = %q, want stable \"abort: \" prefix", taskErr.Message)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("error = %q, want pi detail preserved", err)
+	}
+}
+
+func TestClientAbortContextDoneBeforeWriteReturnsContextError(t *testing.T) {
+	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
+		"abort": {{Response: &script.Response{Success: true}}},
+	}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+	proc, err := NewProcess(fakePiBin, t.TempDir())
+	if err != nil {
+		t.Fatalf("new process: %v", err)
+	}
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = proc.Close() })
+	client := NewClient(proc.Stdin(), proc.Stdout(), nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = client.Abort(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Abort err = %v, want context.Canceled", err)
+	}
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(readRequestLog(logPath)) > 0 {
+			t.Fatalf("Abort wrote a frame after context cancellation; log = %v", readRequestLog(logPath))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

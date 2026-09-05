@@ -87,7 +87,7 @@ type TaskError struct {
 
 func (e *TaskError) Error() string { return "task failed: " + e.Message }
 
-// Outbound RPC request types. Pi-worker emits exactly these seven request
+// Outbound RPC request types. Pi-worker emits exactly these nine request
 // shapes and rejects every other RPC type, in particular direct RPC bash.
 const (
 	requestGetAvailableModels         = "get_available_models"
@@ -96,6 +96,8 @@ const (
 	requestSetThinkingLevel           = "set_thinking_level"
 	requestGetState                   = "get_state"
 	requestPrompt                     = "prompt"
+	requestSteer                      = "steer"
+	requestAbort                      = "abort"
 	requestGetLastAssistantText       = "get_last_assistant_text"
 )
 
@@ -106,10 +108,12 @@ var allowedRequestTypes = map[string]bool{
 	requestSetThinkingLevel:           true,
 	requestGetState:                   true,
 	requestPrompt:                     true,
+	requestSteer:                      true,
+	requestAbort:                      true,
 	requestGetLastAssistantText:       true,
 }
 
-// request is the closed outbound envelope. Only the seven documented request
+// request is the closed outbound envelope. Only the nine documented request
 // types may be constructed; callers never supply raw RPC JSON.
 type request struct {
 	ID       string        `json:"id,omitempty"`
@@ -120,7 +124,7 @@ type request struct {
 	Message  string        `json:"message,omitempty"`
 }
 
-// newRequest constructs a request of one of the seven documented types and
+// newRequest constructs a request of one of the nine documented types and
 // rejects every other RPC type, keeping the outbound surface closed.
 func newRequest(kind string) (request, error) {
 	if !allowedRequestTypes[kind] {

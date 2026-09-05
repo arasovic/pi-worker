@@ -32,7 +32,7 @@ func TestParseThinkingLevelAcceptsOnlyDocumentedValues(t *testing.T) {
 	}
 }
 
-func TestNewRequestAcceptsOnlyTheSevenDocumentedTypes(t *testing.T) {
+func TestNewRequestAcceptsOnlyTheNineDocumentedTypes(t *testing.T) {
 	documented := []string{
 		"get_available_models",
 		"set_model",
@@ -40,6 +40,8 @@ func TestNewRequestAcceptsOnlyTheSevenDocumentedTypes(t *testing.T) {
 		"set_thinking_level",
 		"get_state",
 		"prompt",
+		"steer",
+		"abort",
 		"get_last_assistant_text",
 	}
 	for _, kind := range documented {
@@ -51,7 +53,7 @@ func TestNewRequestAcceptsOnlyTheSevenDocumentedTypes(t *testing.T) {
 			t.Fatalf("newRequest(%q).Type = %q", kind, req.Type)
 		}
 	}
-	disallowed := []string{"bash", "response", "event", "get_prompt_templates", "cycle_thinking_level", "abort", ""}
+	disallowed := []string{"bash", "clear_queue", "follow_up", "response", "event", "get_prompt_templates", "cycle_thinking_level", ""}
 	for _, kind := range disallowed {
 		if _, err := newRequest(kind); err == nil {
 			t.Fatalf("newRequest(%q) succeeded, want rejection", kind)

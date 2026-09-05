@@ -330,6 +330,47 @@ func (c *Client) Prompt(ctx context.Context, message string) error {
 	return nil
 }
 
+// Steer submits one typed steering message. An empty message is rejected
+// before any frame is written. The correlated response must match the
+// steered request id and command; a correlated rejection is returned as a
+// stable typed task failure prefixed with "steer".
+func (c *Client) Steer(ctx context.Context, message string) error {
+	if message == "" {
+		return &TaskError{Message: "steer message must be non-empty"}
+	}
+	req, err := newRequest(requestSteer)
+	if err != nil {
+		return err
+	}
+	req.Message = message
+	resp, err := c.roundTrip(ctx, req)
+	if err != nil {
+		return err
+	}
+	if !*resp.Success {
+		return &TaskError{Message: "steer: " + responseDetail(resp)}
+	}
+	return nil
+}
+
+// Abort issues one abort request with no payload. The correlated response
+// must match the abort request id and command; a correlated rejection is
+// returned as a stable typed task failure prefixed with "abort".
+func (c *Client) Abort(ctx context.Context) error {
+	req, err := newRequest(requestAbort)
+	if err != nil {
+		return err
+	}
+	resp, err := c.roundTrip(ctx, req)
+	if err != nil {
+		return err
+	}
+	if !*resp.Success {
+		return &TaskError{Message: "abort: " + responseDetail(resp)}
+	}
+	return nil
+}
+
 // GetLastAssistantText returns the final assistant text, or "" when Pi
 // explicitly reports text:null. Pi serializes the undefined "no
 // assistant text" value as an omitted text key (data:{}), so a missing
