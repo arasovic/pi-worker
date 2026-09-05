@@ -485,3 +485,133 @@ func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
 		boundedProbe(t, gate)
 	})
 }
+
+// TestControllerForegroundAdmissionParentCancelCleansQueuedTickets verifies
+// that cancelling the parent context while controller tasks are still queued
+// behind a held blocker lease cancels every queued ticket out of the gate:
+// the controller returns RunCancelled with cancelled worker results, the
+// worker is never called, and a bounded probe afterwards proves both queued
+// tickets were removed.
+func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing.T) {
+	parentCtx, parentCancel := context.WithCancel(context.Background())
+
+	// Step 1: gate with capacity 1.
+	gate, err := admission.Open(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("open gate: %v", err)
+	}
+
+	// Step 2: acquire a blocker lease so controller tickets queue behind it.
+	blocker, err := gate.Enqueue(admission.Request{RunID: "blocker", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("enqueue blocker: %v", err)
+	}
+	blockerLease, err := blocker.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("wait blocker: %v", err)
+	}
+
+	// Step 3: admitted controller with two tasks.
+	worker := newScriptedWorker()
+	controller := New(worker, WithForegroundAdmission(gate, "run-1", time.Now(), 5*time.Minute))
+
+	// Step 4: override queueContext to send each worker ID then return a
+	// cancellable context derived from the parent.
+	queuedWorkers := make(chan int, 2)
+	controller.queueContext = func(parent context.Context, workerID int, _ time.Time) (context.Context, context.CancelFunc) {
+		queuedWorkers <- workerID
+		return context.WithCancel(parent)
+	}
+
+	// Step 5: start Run in a goroutine with the cancellable parent.
+	runDone := make(chan struct{})
+	var result Result
+	var runErr error
+	runStarted := false
+	t.Cleanup(func() {
+		parentCancel()
+		if blockerLease != nil {
+			blockerLease.Release()
+		}
+		if runStarted {
+			select {
+			case <-runDone:
+			case <-time.After(5 * time.Second):
+			}
+		}
+	})
+	go func() {
+		defer close(runDone)
+		result, runErr = controller.Run(parentCtx, validRequest("task-1", "task-2"))
+	}()
+	runStarted = true
+
+	// Step 6: receive both worker IDs, proving both task waits are queued.
+	// The two goroutines race to their queueContext override, so the IDs
+	// may arrive in either order; only the set matters.
+	seen := make(map[int]bool, 2)
+	for len(seen) < 2 {
+		select {
+		case got := <-queuedWorkers:
+			if got != 1 && got != 2 {
+				t.Fatalf("queued worker id = %d, want 1 or 2", got)
+			}
+			seen[got] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for queued worker")
+		}
+	}
+
+	// No worker may have been called while both tasks are still queued.
+	if worker.callCount() != 0 {
+		t.Fatalf("worker call count = %d, want 0 while queued", worker.callCount())
+	}
+
+	// Step 7: cancel the parent; queued waits end and tickets are removed.
+	parentCancel()
+
+	// Step 8: wait for Run with a guard.
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after parent cancel")
+	}
+	if runErr != nil {
+		t.Fatalf("Run returned error: %v", runErr)
+	}
+	if result.Status != contracts.RunCancelled {
+		t.Fatalf("status = %q, want %q", result.Status, contracts.RunCancelled)
+	}
+	if worker.callCount() != 0 {
+		t.Fatalf("worker call count = %d, want 0", worker.callCount())
+	}
+	if len(result.Workers) != 2 {
+		t.Fatalf("workers = %d, want 2", len(result.Workers))
+	}
+	for i, w := range result.Workers {
+		if w.Model != "acme/m-1" {
+			t.Fatalf("worker %d model = %q, want %q", i+1, w.Model, "acme/m-1")
+		}
+		if w.Status != pi.StatusCancelled {
+			t.Fatalf("worker %d status = %q, want %q", i+1, w.Status, pi.StatusCancelled)
+		}
+	}
+
+	// Step 9: release blocker; probe proves both queued tickets were removed.
+	if err := blockerLease.Release(); err != nil {
+		t.Fatalf("release blocker lease: %v", err)
+	}
+	probe, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
+	if err != nil {
+		t.Fatalf("enqueue probe: %v", err)
+	}
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer probeCancel()
+	probeLease, err := probe.Wait(probeCtx)
+	if err != nil {
+		t.Fatalf("probe wait: %v", err)
+	}
+	if err := probeLease.Release(); err != nil {
+		t.Fatalf("release probe lease: %v", err)
+	}
+}
