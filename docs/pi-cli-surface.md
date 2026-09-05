@@ -84,6 +84,11 @@ usage on `text_start` and `text_delta`, then the final figure on `text_end`
 for a correct run total of input 1441, output 294, cacheRead 1265,
 totalTokens 3000; repeated frames within one message must replace, not sum,
 and pi-worker's latest-frame-per-message rule remains correct.
+A later promptless/no-inference direct RPC probe against the same 0.85.0
+binary confirmed idle `steer` success (response returned immediately with no
+model inference), `queue_update` and `clear_queue` (which returned the probe
+message), `abort` success, and clean exit. `clear_queue` remains outside
+Pi Worker's outbound allowlist.
 
 ## Compatibility gate
 
@@ -204,9 +209,9 @@ example. The v0 consumer projection follows this section.
 {"id":"bad-1","type":"response","command":"set_model","success":false,"error":"..."}
 ```
 
-The `abort` frames above are observed upstream commands but are not emitted by
-v0. Pi-worker constructs `get_state` only for exact model/thinking
-confirmation; it never forwards caller-supplied request shapes.
+The `steer` and `abort` shapes above are upstream observations now used only by
+Pi Worker's typed internal control methods during a supervised model turn;
+caller-supplied raw request shapes are never forwarded.
 
 `set_model` requires an exact `provider` plus `modelId` that exists in the
 current available-model snapshot; otherwise it returns `success: false`.
@@ -290,12 +295,11 @@ response correlation, it emits only these request shapes:
 | `get_available_thinking_levels` | `type` |
 | `set_thinking_level` | `type`, `level: ThinkingLevel` |
 | `prompt` | `type`, `message: string` |
+| `steer` | `type`, `message: string` (non-empty) |
+| `abort` | `type` |
 | `get_last_assistant_text` | `type` |
 
-The observed upstream RPC `abort` command is not on this allowlist. Pi-worker
-must reject and must not emit it.
-
-Pi-worker must reject and must not emit every other RPC type. In particular,
+Pi-worker must reject every other RPC type. In particular,
 it must reject direct RPC `bash`: Pi 0.85.0 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 

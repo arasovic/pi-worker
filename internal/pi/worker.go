@@ -42,6 +42,38 @@ type WorkerRequest struct {
 	// starts. It is separate from Debug: the record must be written on
 	// every run, while debug output is off unless requested.
 	OnProcessStart ProcessObserver
+	// Controls, when non-nil, is a serial channel of typed worker controls
+	// serviced while the model turn is in flight, between Prompt and the
+	// terminal agent_settled event. The owning run drains exactly one
+	// in-flight control at a time: a steer or abort request is written,
+	// its correlated response is consumed, then the next control is read.
+	// nil preserves the exact WaitSettled behavior. The worker reads
+	// exactly one control at a time and never pipelines them.
+	Controls <-chan WorkerControl
+}
+
+// WorkerControlKind names one typed control the worker can service during
+// the in-flight wait. The values are exact wire commands: WorkerControlSteer
+// carries a steering message and WorkerControlAbort carries no payload.
+type WorkerControlKind string
+
+const (
+	WorkerControlSteer WorkerControlKind = "steer"
+	WorkerControlAbort WorkerControlKind = "abort"
+)
+
+// WorkerControl is one typed control request serviced by the worker while
+// the model turn is in flight. The Kind selects the wire command, Message
+// is the steer payload (ignored for abort), and Result receives one
+// deterministic error outcome for this control only — nil on success or
+// a typed *TaskError on a correlated rejection, or one of context /
+// transport / protocol errors when the wait ends. A valid Result channel
+// is non-nil, buffered, and empty when submitted; the worker owns the
+// single send and delivers the outcome via a blocking send.
+type WorkerControl struct {
+	Kind    WorkerControlKind
+	Message string
+	Result  chan<- error
 }
 
 // DataFile reports one file carried into a worker's prompt as material:
@@ -238,6 +270,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 
 		thinking = attemptThinking
 		attemptStop()
+		_ = client.Close()
 		_ = proc.Close()
 		if retryable && attempt < 3 {
 			lastRetryableFailureClass = failure.Status
@@ -249,6 +282,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: "startup attempts exhausted"})
 	}
 	defer successProc.Close()
+	defer client.Close()
 
 	thinking = successThinking
 	if startupWarning != "" {
@@ -266,8 +300,20 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	if err := client.Prompt(ctx, req.Prompt); err != nil {
 		return withThinking(w.classify(req.Model, ctx, err))
 	}
-	if err := client.WaitSettled(ctx); err != nil {
-		return withThinking(w.classify(req.Model, ctx, err))
+	// The wait between Prompt and the terminal agent_settled event is the
+	// single owned FrameReader consumer window: when Controls is nil the
+	// existing WaitSettled path runs unchanged; when Controls is non-nil
+	// WaitSettledControlled selects between pumped frames and one typed
+	// control at a time, keeping the same sole-consumer invariant during
+	// the model turn.
+	if req.Controls == nil {
+		if err := client.WaitSettled(ctx); err != nil {
+			return withThinking(w.classify(req.Model, ctx, err))
+		}
+	} else {
+		if err := client.WaitSettledControlled(ctx, req.Controls); err != nil {
+			return withThinking(w.classify(req.Model, ctx, err))
+		}
 	}
 	text, err := client.GetLastAssistantText(ctx)
 	if err != nil {

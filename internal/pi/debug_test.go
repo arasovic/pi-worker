@@ -522,7 +522,7 @@ func TestClientDebugRepeatedModelUpdatesDoNotCreateHeartbeat(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	update := json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"delta"}}`)
 	streaming := func() int {
@@ -577,7 +577,7 @@ func TestClientDebugMessageUpdateUsesFixedPhases(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	updates := []json.RawMessage{
 		json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start"}}`),
@@ -618,7 +618,7 @@ func TestClientDebugMessageUpdateHasNoDuplicatePhaseHeartbeat(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	thinking := json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta"}}`)
 	output := json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta"}}`)
@@ -666,7 +666,7 @@ func TestClientDebugBashFailureCauseUsesOnlyFinalStatusText(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 			var buf bytes.Buffer
-			client := NewClient(io.Discard, strings.NewReader(""), nil, newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1))
+			client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1))
 			frame := json.RawMessage(fmt.Sprintf(`{"type":"tool_execution_end","toolName":%q,"isError":true,"result":%s}`, tc.tool, tc.result))
 			client.debugEvent("tool_execution_end", frame)
 			bodies := debugBodies(t, buf.String())
@@ -680,7 +680,7 @@ func TestClientDebugBashFailureCauseUsesOnlyFinalStatusText(t *testing.T) {
 	}
 
 	var success bytes.Buffer
-	client := NewClient(io.Discard, strings.NewReader(""), nil, NewDebugSink(&success).Worker(1))
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, NewDebugSink(&success).Worker(1))
 	client.debugEvent("tool_execution_end", json.RawMessage(`{"type":"tool_execution_end","toolName":"bash","isError":false,"result":{"content":[{"type":"text","text":"Command exited with code 7"}]}}`))
 	if strings.Contains(success.String(), "cause=") || strings.Contains(success.String(), "exit-code=") {
 		t.Fatalf("successful tool included failure fields: %s", success.String())
@@ -691,7 +691,7 @@ func TestClientDebugToolLinesReportSafeNameStatusAndDuration(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	const (
 		callID     = "call-secret-1a2b"
@@ -749,7 +749,7 @@ func TestClientDebugToolStartCapBoundsUnmatchedUniqueFlood(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	const flood = toolStartCap + 40
 	for i := 0; i < flood; i++ {
@@ -800,7 +800,7 @@ func TestClientDebugEmptyToolCallIDIsNotTracked(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	start := func(callID string) {
 		client.debugEvent("tool_execution_start", json.RawMessage(fmt.Sprintf(
@@ -857,7 +857,7 @@ func TestClientDebugOversizedToolCallIDIsNotRetained(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	start := func(callID string) {
 		client.debugEvent("tool_execution_start", json.RawMessage(fmt.Sprintf(
@@ -908,7 +908,7 @@ func TestClientDebugToolStartDuplicateAtCapRefreshesTimestamp(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	start := func(callID string) {
 		client.debugEvent("tool_execution_start", json.RawMessage(fmt.Sprintf(
@@ -978,7 +978,7 @@ func TestClientDebugToolCorrelationCleansUpAfterCompletion(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	start := func(callID string) {
 		client.debugEvent("tool_execution_start", json.RawMessage(fmt.Sprintf(
@@ -1036,7 +1036,7 @@ func TestClientDebugSuppressesNoisyAndUnknownEvents(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	var buf bytes.Buffer
 	scope := newDebugSinkWithClock(&buf, clock.t, clock.now).Worker(1)
-	client := NewClient(io.Discard, strings.NewReader(""), nil, scope)
+	client := NewClient(io.Discard, io.NopCloser(strings.NewReader("")), nil, scope)
 
 	noisy := []string{
 		`{"type":"agent_start"}`,

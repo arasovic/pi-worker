@@ -53,6 +53,7 @@ func (c *catalog) List(ctx context.Context, req CatalogRequest) ([]ModelProjecti
 	// A catalog query is a single process with no worker id of its own, so
 	// its debug lines carry the direct-caller label.
 	client := NewClient(proc.Stdin(), proc.Stdout(), nil, req.Debug.Worker(1))
+	defer client.Close()
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
 		// The kill callback can close the stream before Client observes the

@@ -313,7 +313,7 @@ func (p *Process) Stdin() io.WriteCloser {
 }
 
 // Stdout returns the child stdout reader.
-func (p *Process) Stdout() io.Reader {
+func (p *Process) Stdout() io.ReadCloser {
 	return p.stdout
 }
 
