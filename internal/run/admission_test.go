@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -670,5 +671,132 @@ func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
 	}
 	if !strings.Contains(runErr.Error(), "load admission state") {
 		t.Fatalf("Run error = %q, want the state-load/JSON failure from reloading the corrupt state", runErr.Error())
+	}
+}
+
+// TestControllerForegroundAdmissionStartsFreshVerificationClock verifies
+// that an admitted controller gives verification its own fresh
+// execution-timeout context instead of reusing the context it handed the
+// worker. With one admitted task the executionContext factory must be
+// called exactly twice — once when the task's lease grants execution,
+// and once more after every worker has settled, for verification — and
+// both calls must receive the exact configured execution timeout and the
+// same parent context passed to Run. The context the verifier observes
+// must be the second factory-produced fresh child context, never the
+// worker's execution context: reusing the worker context or skipping a
+// fresh verification budget collapses the factory to one call or hands
+// the verifier the wrong context.
+func TestControllerForegroundAdmissionStartsFreshVerificationClock(t *testing.T) {
+	// Real gate with capacity one, one scripted worker and verifier, and
+	// a controller admitted with a distinctive execution timeout.
+	gate, err := admission.Open(t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("open gate: %v", err)
+	}
+	worker := newScriptedWorker()
+	verifier := &scriptedVerifier{result: Verification{Argv: []string{"go", "test", "./..."}, ExitCode: 0}}
+	executionTimeout := 7 * time.Minute
+	controller := New(worker,
+		WithForegroundAdmission(gate, "run-1", time.Now(), executionTimeout),
+		WithVerifier(verifier))
+
+	// Override executionContext with a mutex-protected recorder: every
+	// call appends the parent context and duration it was given, plus
+	// the fresh child context it created, before returning that child.
+	var mu sync.Mutex
+	var parents []context.Context
+	var durations []time.Duration
+	var children []context.Context
+	controller.executionContext = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		child, cancel := context.WithCancel(parent)
+		mu.Lock()
+		parents = append(parents, parent)
+		durations = append(durations, d)
+		children = append(children, child)
+		mu.Unlock()
+		return child, cancel
+	}
+
+	// One task plus a non-empty Verify argv, run synchronously under a
+	// named parent context.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	req := validRequest("task-1")
+	req.Verify = []string{"go", "test", "./..."}
+
+	result, runErr := controller.Run(runCtx, req)
+	if runErr != nil {
+		t.Fatalf("Run returned error: %v", runErr)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("status = %q, want %q", result.Status, contracts.RunCompleted)
+	}
+	if len(result.Workers) != 1 {
+		t.Fatalf("workers = %d, want 1", len(result.Workers))
+	}
+	if result.Workers[0].Status != pi.StatusCompleted {
+		t.Fatalf("worker status = %q, want %q", result.Workers[0].Status, pi.StatusCompleted)
+	}
+	if worker.callCount() != 1 {
+		t.Fatalf("worker call count = %d, want 1", worker.callCount())
+	}
+	if verifier.callCount() != 1 {
+		t.Fatalf("verifier call count = %d, want 1", verifier.callCount())
+	}
+	if result.Verification == nil {
+		t.Fatal("verification result missing after a completed run with a verifier and Verify argv")
+	}
+
+	// The factory must have been called exactly twice: once for the
+	// admitted worker execution, then again after workers settled, for
+	// verification.
+	mu.Lock()
+	if len(parents) != 2 {
+		mu.Unlock()
+		t.Fatalf("executionContext calls = %d, want 2 (worker execution, then verification)", len(parents))
+	}
+	if len(durations) != 2 || len(children) != 2 {
+		mu.Unlock()
+		t.Fatalf("executionContext recorder lengths: parents=%d durations=%d children=%d, want 2 each",
+			len(parents), len(durations), len(children))
+	}
+	parentsCopy := append([]context.Context(nil), parents...)
+	durationsCopy := append([]time.Duration(nil), durations...)
+	childrenCopy := append([]context.Context(nil), children...)
+	mu.Unlock()
+
+	// Both calls must carry the exact configured duration and the same
+	// parent context passed to Run.
+	for i := range durationsCopy {
+		if durationsCopy[i] != executionTimeout {
+			t.Fatalf("executionContext call %d duration = %v, want %v", i+1, durationsCopy[i], executionTimeout)
+		}
+		if parentsCopy[i] != runCtx {
+			t.Fatalf("executionContext call %d parent is not the Run parent context", i+1)
+		}
+	}
+
+	// The worker ran under the first fresh child context.
+	workerCtxs := worker.contextsSeen()
+	if len(workerCtxs) != 1 {
+		t.Fatalf("worker contexts = %d, want 1", len(workerCtxs))
+	}
+	if workerCtxs[0] != childrenCopy[0] {
+		t.Fatal("worker did not run under the first executionContext child")
+	}
+
+	// The verifier ran under the second fresh child context, not the
+	// worker's context.
+	verifier.mu.Lock()
+	verifierCtxs := append([]context.Context(nil), verifier.ctxs...)
+	verifier.mu.Unlock()
+	if len(verifierCtxs) != 1 {
+		t.Fatalf("verifier contexts = %d, want 1", len(verifierCtxs))
+	}
+	if verifierCtxs[0] != childrenCopy[1] {
+		t.Fatal("verifier did not run under the second fresh executionContext child")
+	}
+	if verifierCtxs[0] == workerCtxs[0] {
+		t.Fatal("verifier ran under the worker execution context; verification must get its own fresh context")
 	}
 }
