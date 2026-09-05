@@ -63,7 +63,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 
 	// Steps 4-5: intercept the deadline/duration sent by the admission goroutines.
 	queueDeadlineCh := make(chan time.Time, 1)
-	controller.queueContext = func(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	controller.queueContext = func(parent context.Context, _ int, deadline time.Time) (context.Context, context.CancelFunc) {
 		queueDeadlineCh <- deadline
 		return context.WithCancel(parent)
 	}
@@ -239,7 +239,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 
 	// Step 4: override queueContext to send a marker then return a cancellable context.
 	queueEntered := make(chan struct{}, 1)
-	controller.queueContext = func(parent context.Context, _ time.Time) (context.Context, context.CancelFunc) {
+	controller.queueContext = func(parent context.Context, _ int, _ time.Time) (context.Context, context.CancelFunc) {
 		queueEntered <- struct{}{}
 		return context.WithCancel(parent)
 	}
