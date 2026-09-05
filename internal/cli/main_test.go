@@ -1810,25 +1810,26 @@ func TestRunTimeoutFlag(t *testing.T) {
 	// the test about the deadline passed to the worker, rather than whether
 	// setup and a successful worker result happen to fit inside 250ms.
 	fake.runHook = func() { time.Sleep(300 * time.Millisecond) }
-	// Anchor the measurement before the run: the deadline is fixed at
-	// 250ms from when the run created it, so measuring against this
-	// anchor does not decay while the run completes the way
-	// time.Until(deadline) measured afterwards would.
-	start := time.Now()
+	// Record when the admitted worker is actually invoked, so we can
+	// measure the full execution budget from that point.
+	var workerStarted time.Time
+	fake.onRequest = func(pi.WorkerRequest) { workerStarted = time.Now() }
 	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--timeout", "250ms"}, "")
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
+	}
+	if workerStarted.IsZero() {
+		t.Fatalf("worker was never invoked")
 	}
 	deadline, ok := fake.deadlineForWorker(1)
 	if !ok {
 		t.Fatalf("worker had no deadline")
 	}
-	// Distance from the pre-run anchor, not from now: the deadline was
-	// created during the run, so it is always at least 250ms past the
-	// anchor and at most ~250ms of run-setup overhead past it.
-	fromStart := deadline.Sub(start)
-	if fromStart < 250*time.Millisecond || fromStart > 500*time.Millisecond {
-		t.Fatalf("deadline is %v from run start, want about 250ms", fromStart)
+	// The full 250ms execution budget starts when the admitted worker
+	// is invoked, not when the CLI process begins.
+	delta := deadline.Sub(workerStarted)
+	if delta < 225*time.Millisecond || delta > 275*time.Millisecond {
+		t.Fatalf("deadline is %v after worker start, want about 250ms", delta)
 	}
 }
 
@@ -1900,24 +1901,20 @@ func TestRunTimedOutContextHumanPrintsOutcomeLineLast(t *testing.T) {
 }
 
 func TestRunTimedOutHumanPrintsPartialTextOnStdout(t *testing.T) {
-	// A run killed mid-answer: the worker result carries the salvaged
-	// text, the error line still goes to stderr exactly as before, and
-	// the salvaged text is printed on stdout in full, marked
-	// (incomplete) so it cannot read as a finished answer. The context
-	// is already expired and the fake worker ignores it, so the
-	// controller reports a real timed-out run while the scripted result
-	// — the only way PartialExplanation can reach the renderer —
-	// survives.
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	fake := installFakeWorker(t, pi.WorkerResult{
+	// A timed-out worker that salvaged partial text: the result carries
+	// the salvaged explanation, the error line still goes to stderr
+	// exactly as before, and the salvaged text is printed on stdout in
+	// full, marked (incomplete) so it cannot read as a finished answer.
+	f := installFakeWorker(t, pi.WorkerResult{
 		Model:              "acme/m-1",
 		Status:             pi.StatusTimedOut,
 		Error:              "timed out",
 		PartialExplanation: "partial text from the interrupted run",
 	})
-	fake.ignoreContext = true
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if f.callCount() != 1 {
+		t.Fatalf("worker calls = %d, want 1", f.callCount())
+	}
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
@@ -1931,11 +1928,11 @@ func TestRunTimedOutHumanPrintsNothingExtraWhenPartialTextEmpty(t *testing.T) {
 	// A timed-out worker with no salvaged text prints nothing extra:
 	// stdout stays exactly the change-manifest line followed by the
 	// final outcome line, and the error line still names the timeout.
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"})
-	fake.ignoreContext = true
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	f := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+	if f.callCount() != 1 {
+		t.Fatalf("worker calls = %d, want 1", f.callCount())
+	}
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}

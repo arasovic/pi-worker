@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -28,6 +29,8 @@ const defaultRunTimeout = 30 * time.Minute
 // newWorker is a private dependency-injection seam. Tests replace it with a
 // scripted fake so CLI tests never launch the user's real Pi profile.
 var newWorker = func() pi.Worker { return pi.New("pi") }
+
+var openAdmission = admission.Open
 
 const runVersionProbeTimeout = 5 * time.Second
 
@@ -494,9 +497,6 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
 
-	ctx, cancel := context.WithTimeout(parent, opts.timeout)
-	defer cancel()
-
 	// With --worktree the run works in a checkout of its own instead of
 	// the caller's current directory: a linked working directory of
 	// HEAD on branch run/<name> under <root>/.pi-worker/worktrees/<name>
@@ -510,7 +510,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// refuses to create — exits 2; nothing is ever removed on any path.
 	var runWorktree *run.Worktree
 	if opts.worktree != "" {
-		path, branch, err := prepareWorktree(ctx, workspace, opts.worktree)
+		path, branch, err := prepareWorktree(parent, workspace, opts.worktree)
 		if err != nil {
 			// A refusal the caller must fix — a taken name or branch,
 			// or a checkout git itself refused to create — exits 2
@@ -542,10 +542,16 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		debug = pi.NewDebugSink(stderr)
 	}
 
-	preflightPiVersion(ctx, stderr)
+	preflightPiVersion(parent, stderr)
 
 	if len(tasks) > 1 && !allWritesDeclared(tasks) {
 		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
+	}
+
+	gate, err := openAdmission(opts.admissionRoot, opts.maxModelWorkers)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: open foreground admission: %v\n", err)
+		return 9
 	}
 
 	// The run record is written while the run is in flight: the start
@@ -558,6 +564,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// continues with no recorder, on which Finish and WorkerProcess are
 	// no-ops.
 	startedAt := time.Now()
+	runID := runlog.RunID(startedAt)
 	var recorder *runlog.Recorder
 	dir, err := runlogDir()
 	if err == nil {
@@ -591,11 +598,11 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// for this feature.
 	var controller *run.Controller
 	if len(opts.verify) > 0 {
-		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()))
+		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()), run.WithForegroundAdmission(gate, runID, startedAt, opts.timeout))
 	} else {
-		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()))
+		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()), run.WithForegroundAdmission(gate, runID, startedAt, opts.timeout))
 	}
-	result, err := controller.Run(ctx, run.Request{
+	result, err := controller.Run(parent, run.Request{
 		Tasks:     tasks,
 		Workspace: workspace,
 		Verify:    opts.verify,
