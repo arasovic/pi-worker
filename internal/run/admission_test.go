@@ -4,6 +4,7 @@ package run
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -11,6 +12,31 @@ import (
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 )
+
+// admissionOrderWorker is a minimal scripted worker for admission-order
+// tests: it reports when each worker starts, blocks until the test
+// releases that worker or its context ends, and records the outcome as
+// completed with a done-<workerID> explanation on release, or as
+// timed-out/cancelled using the existing Pi statuses when the context
+// ends first.
+type admissionOrderWorker struct {
+	started  chan int
+	releases map[int]<-chan struct{}
+}
+
+func (w *admissionOrderWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+	w.started <- req.WorkerID
+	workerID := strconv.Itoa(req.WorkerID)
+	select {
+	case <-w.releases[req.WorkerID]:
+		return pi.WorkerResult{Model: req.Model, Status: pi.StatusCompleted, Explanation: "done-" + workerID}
+	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			return pi.WorkerResult{Model: req.Model, Status: pi.StatusTimedOut}
+		}
+		return pi.WorkerResult{Model: req.Model, Status: pi.StatusCancelled}
+	}
+}
 
 func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.T) {
 	gate, err := admission.Open(t.TempDir(), 1)
