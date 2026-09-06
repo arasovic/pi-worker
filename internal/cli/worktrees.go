@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/arasovic/pi-worker/internal/worktree"
 )
 
 // worktreesOptions carries one parsed `pi-worker worktrees` invocation.
@@ -59,15 +61,15 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
 		return 9
 	}
-	worktrees, err := listManagedWorktrees(parent, cwd)
+	entries, err := worktreeList(parent, cwd)
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: list worktrees: %v\n", err)
 		return 9
 	}
-	var selected *managedWorktree
-	for i := range worktrees {
-		if worktrees[i].name == opts.name {
-			v := worktrees[i]
+	var selected *worktree.Entry
+	for i := range entries {
+		if entries[i].Name == opts.name {
+			v := entries[i]
 			selected = &v
 			break
 		}
@@ -76,13 +78,13 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 		fmt.Fprintf(stderr, "pi-worker: worktree %q not found\n", opts.name)
 		return 2
 	}
-	if err := validateRemoveEligibility(*selected); err != nil {
+	if err := worktree.ValidateRemove(*selected); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
 		return 2
 	}
 	if !opts.yes {
-		renderWorktreeTable(stderr, []managedWorktree{*selected})
-		fmt.Fprintf(stderr, "remove worktree %q on branch %q at %q? [y/N] ", selected.name, selected.branch, selected.path)
+		renderWorktreeTable(stderr, []worktree.Entry{*selected})
+		fmt.Fprintf(stderr, "remove worktree %q on branch %q at %q? [y/N] ", selected.Name, selected.Branch, selected.Path)
 		answerCh := make(chan string, 1)
 		go func() {
 			line, err := bufio.NewReader(stdin).ReadString('\n')
@@ -114,7 +116,7 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 		fmt.Fprintln(stderr, "pi-worker: worktrees remove cancelled")
 		return 9
 	}
-	if err := removeManagedWorktree(parent, cwd, *selected); err != nil {
+	if err := worktree.Remove(parent, cwd, *selected); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
 		return 9
 	}
@@ -129,9 +131,9 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 		}{
 			SchemaVersion: worktreesSchemaVersion,
 		}
-		output.Removed.Name = selected.name
-		output.Removed.Path = selected.path
-		output.Removed.Branch = selected.branch
+		output.Removed.Name = selected.Name
+		output.Removed.Path = selected.Path
+		output.Removed.Branch = selected.Branch
 		data, err := json.Marshal(output)
 		if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: encode worktrees: %v\n", err)
@@ -140,7 +142,7 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 		fmt.Fprintln(stdout, string(data))
 		return 0
 	}
-	fmt.Fprintf(stdout, "removed worktree %q on branch %q\n", selected.name, selected.branch)
+	fmt.Fprintf(stdout, "removed worktree %q on branch %q\n", selected.Name, selected.Branch)
 	return 0
 }
 
@@ -150,25 +152,25 @@ func worktreesListCommand(parent context.Context, opts worktreesOptions, stdout,
 		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
 		return 9
 	}
-	worktrees, err := listManagedWorktrees(parent, cwd)
+	entries, err := worktreeList(parent, cwd)
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: list worktrees: %v\n", err)
 		return 9
 	}
-	if worktrees == nil {
-		worktrees = []managedWorktree{}
+	if entries == nil {
+		entries = []worktree.Entry{}
 	}
 	if opts.json {
-		entries := make([]worktreeListEntry, 0, len(worktrees))
-		for _, w := range worktrees {
-			entries = append(entries, worktreeListEntry{Name: w.name, Path: w.path, Branch: w.branch, Dirty: w.dirty, Merged: w.merged})
+		listEntries := make([]worktreeListEntry, 0, len(entries))
+		for _, e := range entries {
+			listEntries = append(listEntries, worktreeListEntry{Name: e.Name, Path: e.Path, Branch: e.Branch, Dirty: e.Dirty, Merged: e.Merged})
 		}
 		output := struct {
 			SchemaVersion int                 `json:"schemaVersion"`
 			Worktrees     []worktreeListEntry `json:"worktrees"`
 		}{
 			SchemaVersion: worktreesSchemaVersion,
-			Worktrees:     entries,
+			Worktrees:     listEntries,
 		}
 		data, err := json.Marshal(output)
 		if err != nil {
@@ -178,26 +180,26 @@ func worktreesListCommand(parent context.Context, opts worktreesOptions, stdout,
 		fmt.Fprintln(stdout, string(data))
 		return 0
 	}
-	if len(worktrees) == 0 {
+	if len(entries) == 0 {
 		fmt.Fprintln(stdout, "no managed worktrees")
 		return 0
 	}
-	renderWorktreeTable(stdout, worktrees)
+	renderWorktreeTable(stdout, entries)
 	return 0
 }
 
-func renderWorktreeTable(w io.Writer, worktrees []managedWorktree) {
+func renderWorktreeTable(w io.Writer, entries []worktree.Entry) {
 	tab := tabwriter.NewWriter(w, 0, 4, 4, ' ', 0)
 	fmt.Fprintln(tab, "NAME\tPATH\tBRANCH\tDIRTY\tMERGED")
-	for _, wt := range worktrees {
-		fmt.Fprintf(tab, "%s\t%s\t%s\t%t\t%t\n", wt.name, wt.path, wt.branch, wt.dirty, wt.merged)
+	for _, e := range entries {
+		fmt.Fprintf(tab, "%s\t%s\t%s\t%t\t%t\n", e.Name, e.Path, e.Branch, e.Dirty, e.Merged)
 	}
 	tab.Flush()
 }
 
 // parseWorktreesArgs parses the `pi-worker worktrees` argv. Accepted
 // forms are `list [--json]` and `remove <name> [--yes] [--json]` where
-// the name is validated with validWorktreeName and the two value-less
+// the name is validated with worktree.ValidName and the two value-less
 // flags may appear in either order after the name. Every refusal is an
 // ordinary descriptive error: the top-level exit handling and usage
 // printing belong to the command wiring.
@@ -249,8 +251,8 @@ func parseWorktreesArgs(args []string) (worktreesOptions, error) {
 	if strings.HasPrefix(nameArg, "-") {
 		return opts, errors.New("worktrees remove requires a name")
 	}
-	if !validWorktreeName(nameArg) {
-		return opts, fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", nameArg)
+	if !worktree.ValidName(nameArg) {
+		return opts, invalidWorktreeNameError(nameArg)
 	}
 	opts.name = nameArg
 

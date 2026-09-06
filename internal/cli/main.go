@@ -20,6 +20,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/piversion"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/runlog"
+	"github.com/arasovic/pi-worker/internal/worktree"
 	"golang.org/x/term"
 )
 
@@ -38,6 +39,11 @@ const runVersionProbeTimeout = 5 * time.Second
 // Tests replace it with a deterministic result; the production probe never
 // exposes child output or stderr to callers.
 var runVersionProbe = defaultRunVersionProbe
+
+// worktreeList is the private dependency-injection seam for the read-only
+// worktree list command. Tests replace it with a scripted failure; the
+// production value reads the worktree inventory from the repository.
+var worktreeList = worktree.List
 
 func defaultRunVersionProbe(parent context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, runVersionProbeTimeout)
@@ -510,31 +516,23 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	// refuses to create — exits 2; nothing is ever removed on any path.
 	var runWorktree *run.Worktree
 	if opts.worktree != "" {
-		path, branch, err := prepareWorktree(parent, workspace, opts.worktree)
+		prepared, err := worktree.Prepare(parent, workspace, opts.worktree)
 		if err != nil {
-			// A refusal the caller must fix — a taken name or branch,
-			// or a checkout git itself refused to create — exits 2
-			// with the message alone. An expired or cancelled run
-			// context is not a checkout refusal: the run itself ended,
-			// and it exits like any other timed-out or cancelled run,
-			// deadline first and cancellation second, exactly like the
-			// controller branch below. Only the remainder is an
-			// internal failure.
 			fmt.Fprintf(stderr, "pi-worker: %v\n", err)
 			switch {
 			case errors.Is(err, context.DeadlineExceeded):
 				return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
 			case errors.Is(err, context.Canceled):
 				return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
-			case worktreeRefused(err):
+			case worktree.IsRefusal(err):
 				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorUsage, Message: err.Error()})
 			default:
 				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 			}
 		}
-		workspace = path
-		runWorktree = &run.Worktree{Path: path, Branch: branch}
-		fmt.Fprintf(stderr, "pi-worker: worktree %s on branch %s\n", path, branch)
+		workspace = prepared.Path
+		runWorktree = &run.Worktree{Path: prepared.Path, Branch: prepared.Branch}
+		fmt.Fprintf(stderr, "pi-worker: worktree %s on branch %s\n", prepared.Path, prepared.Branch)
 	}
 
 	var debug *pi.DebugSink
@@ -1018,6 +1016,10 @@ func allWritesDeclared(tasks []run.Task) bool {
 	return true
 }
 
+func invalidWorktreeNameError(name string) error {
+	return fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", name)
+}
+
 func preflightPiVersion(ctx context.Context, stderr io.Writer) {
 	output, err := runVersionProbe(ctx)
 	if err != nil {
@@ -1068,8 +1070,8 @@ func parseRunArgs(args []string) (runOptions, error) {
 				}
 				opts.verify = argv
 			} else if name == "--worktree" {
-				if !validWorktreeName(value) {
-					return opts, fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", value)
+				if !worktree.ValidName(value) {
+					return opts, invalidWorktreeNameError(value)
 				}
 				opts.worktree = value
 			} else {

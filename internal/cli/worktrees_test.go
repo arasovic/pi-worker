@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arasovic/pi-worker/internal/worktree"
 )
 
 // TestParseWorktreesArgsAccepted asserts the accepted forms and the
@@ -230,8 +232,8 @@ func TestWorktreesListEmpty(t *testing.T) {
 
 func TestWorktreesListInventoryFailure(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
-		return "", os.ErrInvalid
+	withWorktreeList(t, func(ctx context.Context, cwd string) ([]worktree.Entry, error) {
+		return nil, os.ErrInvalid
 	})
 	_ = repo
 	var stdout, stderr bytes.Buffer
@@ -470,11 +472,11 @@ func TestWorktreesRemoveYesSelectedOnly(t *testing.T) {
 	if !gitRefExists(t, repo, "refs/heads/"+bravoBranch) {
 		t.Fatalf("bravo branch missing")
 	}
-	got, err := listManagedWorktrees(context.Background(), repo)
+	got, err := worktree.List(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(got) != 1 || got[0].name != "bravo" {
+	if len(got) != 1 || got[0].Name != "bravo" {
 		t.Fatalf("remaining = %#v, want only bravo", got)
 	}
 }
@@ -559,9 +561,9 @@ func TestWorktreesRemoveYesNoYes(t *testing.T) {
 		t.Fatalf("prepare: %v", err)
 	}
 	called := false
-	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
+	withWorktreeList(t, func(ctx context.Context, cwd string) ([]worktree.Entry, error) {
 		called = true
-		return "", os.ErrInvalid
+		return nil, os.ErrInvalid
 	})
 	_ = repo
 	code, stdout, stderr := runCLI(t, []string{"worktrees", "remove", "probe"}, "")
@@ -766,4 +768,11 @@ func TestWorktreesRemoveInteractiveSafety(t *testing.T) {
 			t.Fatalf("branch %q missing after cancelled prompt", branch)
 		}
 	})
+}
+
+func withWorktreeList(t *testing.T, fn func(context.Context, string) ([]worktree.Entry, error)) {
+	t.Helper()
+	original := worktreeList
+	worktreeList = fn
+	t.Cleanup(func() { worktreeList = original })
 }
