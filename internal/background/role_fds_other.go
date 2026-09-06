@@ -3,15 +3,16 @@
 package background
 
 const (
-	childRoleRequestFD  = 3
-	childRoleResponseFD = 4
+	childRoleRequestFD   = 3
+	childRoleResponseFD  = 4
+	childRoleOwnershipFD = 5
 )
 
 type childRolePipes struct{}
 
 // openChildRolePipes returns errRoleProcessUnsupported without touching
 // any file descriptors on unsupported platforms.
-func openChildRolePipes() (*childRolePipes, error) {
+func openChildRolePipes(role) (*childRolePipes, error) {
 	return nil, errRoleProcessUnsupported
 }
 

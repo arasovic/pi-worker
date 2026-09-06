@@ -40,6 +40,15 @@ func (p *roleProcess) Kill() error {
 	return errRoleProcessUnsupported
 }
 
+// CloseOwnership is nil-safe on unsupported platforms: returns nil for
+// a nil receiver and errRoleProcessUnsupported for a non-nil handle.
+func (p *roleProcess) CloseOwnership() error {
+	if p == nil {
+		return nil
+	}
+	return errRoleProcessUnsupported
+}
+
 // Close is nil-safe and idempotent on unsupported platforms:
 // it returns nil for a nil receiver and errRoleProcessUnsupported otherwise.
 func (p *roleProcess) Close() error {

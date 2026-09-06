@@ -17,6 +17,8 @@ var errRoleRequestClosed = errors.New("role process request channel closed")
 // roleProcess owns a spawned child process and the pipe ends the parent
 // uses to exchange framed requests and responses with it. The child
 // inherits the request reader as fd 3 and the response writer as fd 4.
+// For roleWorkerHost the child also receives the ownership read end on fd 5,
+// and the parent retains the ownership write end on the ownershipWriter field.
 type roleProcess struct {
 	cmd            *exec.Cmd
 	requestWriter  *os.File // parent-side write end of the request pipe
@@ -45,12 +47,21 @@ type roleProcess struct {
 	respClosed   bool
 	respCloseErr error
 
+	// ownershipCloseMu guards the idempotent close of the ownership writer.
+	ownershipCloseMu  sync.Mutex
+	ownershipClosed   bool
+	ownershipCloseErr error
+
 	// closeOnce guarantees Close performs its full cleanup exactly once;
 	// all concurrent callers block until Close finishes and then receive
 	// the same cached result.
 	closeOnce sync.Once
 	closeDone chan struct{}
 	closeErr  error
+
+	// ownershipWriter is the parent-side write end of the ownership pipe.
+	// It is set only for roleWorkerHost and nil for roleSupervisor.
+	ownershipWriter *os.File
 }
 
 // startRoleProcess validates the executable and role before creating any
@@ -90,8 +101,36 @@ func startRoleProcess(executable string, r role) (*roleProcess, error) {
 		return nil, errors.Join(closeErrs...)
 	}
 
+	var ownershipReader, ownershipWriter *os.File
+	if r == roleWorkerHost {
+		ownershipReader, ownershipWriter, err = os.Pipe()
+		if err != nil {
+			closeErrs := []error{fmt.Errorf("create ownership pipe: %w", err)}
+			if cErr := requestReader.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close request reader: %w", cErr))
+			}
+			if cErr := requestWriter.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close request writer: %w", cErr))
+			}
+			if cErr := responseReader.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close response reader: %w", cErr))
+			}
+			if cErr := responseWriter.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close response writer: %w", cErr))
+			}
+			if len(closeErrs) == 1 {
+				return nil, closeErrs[0]
+			}
+			return nil, errors.Join(closeErrs...)
+		}
+	}
+
 	cmd := exec.Command(executable, string(r))
-	cmd.ExtraFiles = []*os.File{requestReader, responseWriter}
+	if r == roleWorkerHost {
+		cmd.ExtraFiles = []*os.File{requestReader, responseWriter, ownershipReader}
+	} else {
+		cmd.ExtraFiles = []*os.File{requestReader, responseWriter}
+	}
 
 	if err := cmd.Start(); err != nil {
 		closeErrs := []error{fmt.Errorf("start role process: %w", err)}
@@ -107,15 +146,25 @@ func startRoleProcess(executable string, r role) (*roleProcess, error) {
 		if cErr := responseWriter.Close(); cErr != nil {
 			closeErrs = append(closeErrs, fmt.Errorf("close response writer: %w", cErr))
 		}
+		if ownershipReader != nil {
+			if cErr := ownershipReader.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close ownership reader: %w", cErr))
+			}
+		}
+		if ownershipWriter != nil {
+			if cErr := ownershipWriter.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close ownership writer: %w", cErr))
+			}
+		}
 		if len(closeErrs) == 1 {
 			return nil, closeErrs[0]
 		}
 		return nil, errors.Join(closeErrs...)
 	}
 
-	// The child now owns its copies of the request reader and response
-	// writer; close the parent's copies so the pipe ends observe EOF as
-	// soon as the child exits.
+	// The child now owns its copies of the request reader, response
+	// writer, and (for worker-host) ownership reader; close the parent's
+	// copies so the pipe ends observe EOF as soon as the child exits.
 	closeErrs := make([]error, 0, 4)
 	if err := requestReader.Close(); err != nil {
 		closeErrs = append(closeErrs, fmt.Errorf("close child request reader: %w", err))
@@ -123,14 +172,24 @@ func startRoleProcess(executable string, r role) (*roleProcess, error) {
 	if err := responseWriter.Close(); err != nil {
 		closeErrs = append(closeErrs, fmt.Errorf("close child response writer: %w", err))
 	}
+	if ownershipReader != nil {
+		if err := ownershipReader.Close(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close child ownership reader: %w", err))
+		}
+	}
 	if len(closeErrs) > 0 {
-		// A surviving child would keep the request pipe open forever;
-		// close the parent ends, kill the exact child, and reap it.
+		// A surviving child would keep the pipes open forever;
+		// close every parent end, kill the exact child, and reap it.
 		if err := requestWriter.Close(); err != nil {
 			closeErrs = append(closeErrs, fmt.Errorf("close request writer: %w", err))
 		}
 		if err := responseReader.Close(); err != nil {
 			closeErrs = append(closeErrs, fmt.Errorf("close response reader: %w", err))
+		}
+		if ownershipWriter != nil {
+			if err := ownershipWriter.Close(); err != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close ownership writer: %w", err))
+			}
 		}
 		if err := cmd.Process.Kill(); err != nil {
 			closeErrs = append(closeErrs, fmt.Errorf("kill role process: %w", err))
@@ -141,14 +200,19 @@ func startRoleProcess(executable string, r role) (*roleProcess, error) {
 		return nil, errors.Join(closeErrs...)
 	}
 
-	return &roleProcess{
+	rp := &roleProcess{
 		cmd:            cmd,
 		requestWriter:  requestWriter,
 		responseReader: responseReader,
 		frameLimit:     privateFrameLimit,
 		done:           make(chan struct{}),
 		closeDone:      make(chan struct{}),
-	}, nil
+	}
+	// Store ownershipWriter only for worker-host; supervisor gets nil.
+	if ownershipWriter != nil {
+		rp.ownershipWriter = ownershipWriter
+	}
+	return rp, nil
 }
 
 // Send writes one request frame to the child under sendMu. It rejects a
@@ -289,11 +353,36 @@ func (p *roleProcess) Kill() error {
 	return nil
 }
 
+// CloseOwnership closes the parent ownership writer exactly once. It is
+// nil-safe and idempotent, caches the close error, and writes no bytes to
+// the pipe. For supervisors (which never received an ownership pipe) it
+// returns nil immediately.
+func (p *roleProcess) CloseOwnership() error {
+	if p == nil {
+		return nil
+	}
+	p.ownershipCloseMu.Lock()
+	defer p.ownershipCloseMu.Unlock()
+
+	if p.ownershipClosed {
+		return p.ownershipCloseErr
+	}
+	p.ownershipClosed = true
+	if p.ownershipWriter == nil {
+		return nil
+	}
+	p.ownershipCloseErr = p.ownershipWriter.Close()
+	if p.ownershipCloseErr != nil {
+		p.ownershipCloseErr = fmt.Errorf("close role process ownership writer: %w", p.ownershipCloseErr)
+	}
+	return p.ownershipCloseErr
+}
+
 // Close performs a full lifecycle teardown: Kill/reap the exact child
 // first (to unblock any Send stuck on a write to a non-reading child),
-// then CloseRequest, then closeResponse; joins any real cleanup errors,
-// caches the result, and blocks all concurrent callers until finished.
-// It is nil-safe and idempotent.
+// then CloseRequest, then CloseOwnership, then closeResponse; joins any
+// real cleanup errors, caches the result, and blocks all concurrent
+// callers until finished. It is nil-safe and idempotent.
 func (p *roleProcess) Close() error {
 	if p == nil {
 		return nil
@@ -315,6 +404,11 @@ func (p *roleProcess) Close() error {
 		// Close the request writer normally; the child is already gone
 		// so any blocked write has returned and sendMu is available.
 		if cerr := p.CloseRequest(); cerr != nil {
+			errs = append(errs, cerr)
+		}
+
+		// Close the ownership writer (supervisors get nil, which is a no-op).
+		if cerr := p.CloseOwnership(); cerr != nil {
 			errs = append(errs, cerr)
 		}
 

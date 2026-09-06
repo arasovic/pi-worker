@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -17,21 +16,31 @@ import (
 // the spawned child role process to shut down immediately.
 var roleProcessExitCanary = []byte("__role_process_test_exit__")
 
-// checkChildRoleCloexec inspects the CLOEXEC flag on the two file handles
-// owned by pipes. It does not create additional os.File wrappers and never
+// checkChildRoleCloexec inspects the CLOEXEC flag on the available role
+// pipe handles (supervisor has two, worker-host three). It does not create additional os.File wrappers and never
 // closes any handle. Returns an error describing the first descriptor whose
 // O_CLOEXEC bit is not set.
 func checkChildRoleCloexec(pipes *childRolePipes) error {
-	for name, fh := range map[string]*os.File{
-		"request":  pipes.requestReader,
-		"response": pipes.responseWriter,
-	} {
-		flags, err := unix.FcntlInt(fh.Fd(), unix.F_GETFD, 0)
+	type entry struct {
+		name string
+		fh   *os.File
+	}
+	// In order: request, response, ownership (may be nil for supervisors).
+	fdchecks := []entry{
+		{"request", pipes.requestReader},
+		{"response", pipes.responseWriter},
+		{"ownership", pipes.ownershipReader},
+	}
+	for _, e := range fdchecks {
+		if e.fh == nil {
+			continue
+		}
+		flags, err := unix.FcntlInt(e.fh.Fd(), unix.F_GETFD, 0)
 		if err != nil {
-			return fmt.Errorf("%s: FcntlInt(F_GETFD): %w", name, err)
+			return fmt.Errorf("%s: FcntlInt(F_GETFD): %w", e.name, err)
 		}
 		if flags&unix.FD_CLOEXEC == 0 {
-			return fmt.Errorf("%s: FD_CLOEXEC not set", name)
+			return fmt.Errorf("%s: FD_CLOEXEC not set", e.name)
 		}
 	}
 	return nil
@@ -44,7 +53,7 @@ func TestMain(m *testing.M) {
 	if len(os.Args) == 2 {
 		switch os.Args[1] {
 		case string(roleSupervisor):
-			pipes, err := openChildRolePipes()
+			pipes, err := openChildRolePipes(roleSupervisor)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "openChildRolePipes: %v\n", err)
 				os.Exit(91)
@@ -76,7 +85,7 @@ func TestMain(m *testing.M) {
 				}
 			}
 		case string(roleWorkerHost):
-			pipes, err := openChildRolePipes()
+			pipes, err := openChildRolePipes(roleWorkerHost)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "openChildRolePipes: %v\n", err)
 				os.Exit(94)
@@ -88,15 +97,27 @@ func TestMain(m *testing.M) {
 				fmt.Fprintf(os.Stderr, "checkChildRoleCloexec: %v\n", err)
 				os.Exit(96)
 			}
-			// Test-only helper: intentionally keeps pipes open and never reads fd3 to stress
-			// blocked Send cleanup; this is not normal worker-host behavior.
+			// This test role waits only for owner EOF while keeping
+			// request/response open. It intentionally never reads fd3.
 			defer pipes.Close()
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, os.Interrupt)
-			defer signal.Stop(sigCh)
-			<-sigCh
-			pipes.Close()
-			os.Exit(0)
+			buf := make([]byte, 1)
+			for {
+				n, err := pipes.ownershipReader.Read(buf)
+				switch {
+				case n == 0 && err == io.EOF:
+					// Clean EOF reached.
+					pipes.Close()
+					os.Exit(0)
+				case n > 0:
+					// Ownership pipe carries no bytes; unexpected byte.
+					pipes.Close()
+					os.Exit(97)
+				default:
+					// Other error.
+					pipes.Close()
+					os.Exit(98)
+				}
+			}
 		}
 	}
 	os.Exit(m.Run())

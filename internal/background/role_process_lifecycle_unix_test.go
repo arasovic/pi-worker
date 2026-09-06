@@ -50,30 +50,49 @@ func assertRoleProcessReaped(t *testing.T, p *roleProcess) {
 }
 
 // TestRoleProcessMissingExecutablePath validates that calling
-// startRoleProcess with an empty executable string twenty times
+// startRoleProcess with a nonexistent executable thirty-two times
 // always yields a nil process and a non-nil error, without leaking
-// child processes or file descriptors.  When /dev/fd is readable,
-// the entry count is checked before and after every invocation.
+// file descriptors.  When /dev/fd is readable the entry count is
+// checked before and after every invocation for both roles:
+// roleSupervisor uses two pipes (four ends) and roleWorkerHost adds
+// one more (six ends); both paths close everything on Start failure.
 func TestRoleProcessMissingExecutablePath(t *testing.T) {
-	const rounds = 20
+	const rounds = 32
 
 	fdCountBefore := countFDs(t)
 
 	tmpDir := t.TempDir()
 	nonexistent := filepath.Join(tmpDir, "nonexistent-executable")
 
-	for i := 0; i < rounds; i++ {
-		p, err := startRoleProcess(nonexistent, roleSupervisor)
-		if p != nil {
-			t.Fatalf("round %d: expected nil process, got %v", i+1, p)
+	t.Run("supervisor", func(t *testing.T) {
+		for i := 0; i < rounds/2; i++ {
+			p, err := startRoleProcess(nonexistent, roleSupervisor)
+			if p != nil {
+				t.Fatalf("round %d: expected nil process, got %v", i+1, p)
+			}
+			if err == nil {
+				t.Fatalf("round %d: expected non-nil error, got nil", i+1)
+			}
+			if fdCountBefore > 0 && countFDs(t) != fdCountBefore {
+				t.Errorf("round %d: fd leak detected", i+1)
+			}
 		}
-		if err == nil {
-			t.Fatalf("round %d: expected non-nil error, got nil", i+1)
+	})
+
+	t.Run("workerHost", func(t *testing.T) {
+		for i := 0; i < rounds/2; i++ {
+			p, err := startRoleProcess(nonexistent, roleWorkerHost)
+			if p != nil {
+				t.Fatalf("round %d: expected nil process, got %v", i+1, p)
+			}
+			if err == nil {
+				t.Fatalf("round %d: expected non-nil error, got nil", i+1)
+			}
+			if fdCountBefore > 0 && countFDs(t) != fdCountBefore {
+				t.Errorf("round %d: fd leak detected", i+1)
+			}
 		}
-		if fdCountBefore > 0 && countFDs(t) != fdCountBefore {
-			t.Errorf("round %d: fd leak detected", i+1)
-		}
-	}
+	})
 }
 
 // TestRoleProcessOversized verifies that a payload exceeding the frame

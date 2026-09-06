@@ -11,27 +11,31 @@ import (
 )
 
 const (
-	childRoleRequestFD  = 3
-	childRoleResponseFD = 4
+	childRoleRequestFD   = 3
+	childRoleResponseFD  = 4
+	childRoleOwnershipFD = 5
 )
 
-// childRolePipes owns the pair of file handles wrapping the fixed
-// descriptors used by a spawned child to exchange role information.
+// childRolePipes owns the file handles wrapping the fixed descriptors
+// used by a spawned child to exchange role information.
+// The ownershipReader end is only present when r is roleWorkerHost.
 type childRolePipes struct {
-	requestReader  *os.File // fd 3
-	responseWriter *os.File // fd 4
-	closed         bool
-	mu             sync.Mutex
-	closeErr       error // set after first Close attempt
+	requestReader   *os.File // fd 3
+	responseWriter  *os.File // fd 4
+	ownershipReader *os.File // fd 5 (only for worker-host)
+	closed          bool
+	mu              sync.Mutex
+	closeErr        error // set after first Close attempt
 }
 
 // openChildRolePipes wraps fd 3 as a read-only request reader and
 // fd 4 as a write-only response writer.  Each descriptor is verified
-// via Stat.  If a secondary Stat fails the first handle is closed
-// before returning; if NewFile fails for the second handle the
-// first handle is also closed.  Close failures are joined with the
-// primary error so that callers can inspect individual causes.
-func openChildRolePipes() (*childRolePipes, error) {
+// via Stat.  For worker-host roles an additional ownership fd 5 is
+// opened, Stat'd, and included in the returned pipes.
+//
+// Close failures are joined with the primary error so that callers
+// can inspect individual causes.
+func openChildRolePipes(r role) (*childRolePipes, error) {
 	req := os.NewFile(childRoleRequestFD, "/dev/fd/3")
 	if req == nil {
 		return nil, fmt.Errorf("open child request fd %d: NewFile returned nil", childRoleRequestFD)
@@ -73,14 +77,49 @@ func openChildRolePipes() (*childRolePipes, error) {
 	}
 	syscall.CloseOnExec(int(resp.Fd()))
 
+	var owner *os.File
+	if r == roleWorkerHost {
+		owner = os.NewFile(childRoleOwnershipFD, "/dev/fd/5")
+		if owner == nil {
+			errMsg := fmt.Errorf("open child ownership fd %d: NewFile returned nil", childRoleOwnershipFD)
+			var closeErrs []error
+			if cErr := resp.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close response fd: %w", cErr))
+			}
+			if cErr := req.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close request fd: %w", cErr))
+			}
+			if len(closeErrs) == 0 {
+				return nil, errMsg
+			}
+			return nil, errors.Join(errMsg, errors.Join(closeErrs...))
+		}
+		if _, err := owner.Stat(); err != nil {
+			var closeErrs []error
+			closeErrs = append(closeErrs, fmt.Errorf("stat child ownership fd %d: %w", childRoleOwnershipFD, err))
+			if cErr := owner.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close ownership fd: %w", cErr))
+			}
+			if cErr := resp.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close response fd: %w", cErr))
+			}
+			if cErr := req.Close(); cErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("close request fd: %w", cErr))
+			}
+			return nil, errors.Join(closeErrs...)
+		}
+		syscall.CloseOnExec(int(owner.Fd()))
+	}
+
 	return &childRolePipes{
-		requestReader:  req,
-		responseWriter: resp,
+		requestReader:   req,
+		responseWriter:  resp,
+		ownershipReader: owner,
 	}, nil
 }
 
-// Close releases both descriptors, exactly once.
-// It is nil-safe and idempotent.
+// Close releases the request, response, and ownership (when present)
+// descriptors, exactly once. It is nil-safe and idempotent.
 func (p *childRolePipes) Close() error {
 	if p == nil {
 		return nil
@@ -107,6 +146,13 @@ func (p *childRolePipes) Close() error {
 			closeErrs = append(closeErrs, fmt.Errorf("close response fd: %w", err))
 		}
 		p.responseWriter = nil
+	}
+
+	if p.ownershipReader != nil {
+		if err := p.ownershipReader.Close(); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close ownership fd: %w", err))
+		}
+		p.ownershipReader = nil
 	}
 
 	if len(closeErrs) > 0 {
