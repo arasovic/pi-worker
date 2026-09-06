@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -579,5 +580,286 @@ func TestFinishNilRecorderIsNoOp(t *testing.T) {
 	}
 	if err := recorder.Finish(time.Now(), nil, errors.New("boom")); err != nil {
 		t.Fatalf("Finish on nil recorder = %v, want nil", err)
+	}
+}
+
+// TestValidateRunID covers the shape contract: valid ids are accepted,
+// and every category of malformed id is rejected. The test checks only
+// whether validateRunID returns an error; it does not inspect error content.
+func TestValidateRunID(t *testing.T) {
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	ts := startedAt.UTC().Format("20060102T150405Z")
+
+	tests := []struct {
+		name   string
+		runID  string
+		at     time.Time
+		wantOK bool
+	}{
+		{"valid", ts + "-12345", startedAt, true},
+		{"UTC conversion", ts + "-1", time.Date(2026, 8, 30, 7, 15, 30, 0, time.FixedZone("UTC+3", 3*60*60)), true},
+		{"large pid", ts + "-999999", startedAt, true},
+
+		{"empty", "", startedAt, false},
+		{"too short", "20260830T04153", startedAt, false},
+		{"wrong timestamp", "20260830T041529Z-12345", startedAt, false},
+		{"missing hyphen", ts + ".12345", startedAt, false},
+		{"extra hyphen", ts + "--12345", startedAt, false},
+		{"empty suffix", ts + "-", startedAt, false},
+		{"trailing garbage", ts + "-12345abc", startedAt, false},
+		{"slash in pid", ts + "-12/345", startedAt, false},
+		{"zero pid", ts + "-0", startedAt, false},
+		{"leading zero", ts + "-01234", startedAt, false},
+		{"sign char", ts + "+12345", startedAt, false},
+		{"space in pid", ts + "- 123", startedAt, false},
+		{"dot in pid", ts + "-12.34", startedAt, false},
+		{"overflow", ts + "-9999999999999999999999999999", startedAt, false},
+		{"wrong startedAt", ts + "-12345", time.Date(2026, 8, 30, 4, 15, 31, 0, time.UTC), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRunID(tt.runID, tt.at)
+			if tt.wantOK && err != nil {
+				t.Fatalf("validateRunID(%q) = %v, want nil", tt.runID, err)
+			}
+			if !tt.wantOK && err == nil {
+				t.Fatalf("validateRunID(%q) = nil, want error", tt.runID)
+			}
+		})
+	}
+}
+
+// TestStartAndStartWithIDProduceIdenticalRecordBytes asserts that
+// Start (which generates a run ID) and StartWithID (which receives
+// one) produce equivalent records when given the same ID and a
+// deterministic pidCreateTime seam.
+func TestStartAndStartWithIDProduceIdenticalRecordBytes(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 1724998530123, nil }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	tasks := []run.Task{{Prompt: "p", Model: "acme/m-1"}}
+
+	dir1 := t.TempDir()
+	r1, err := Start(dir1, startedAt, "/ws", tasks)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer r1.file.Close()
+
+	dir2 := t.TempDir()
+	r2, err := StartWithID(dir2, RunID(startedAt), startedAt, "/ws", tasks)
+	if err != nil {
+		t.Fatalf("StartWithID: %v", err)
+	}
+	defer r2.file.Close()
+
+	if r1.runID != r2.runID {
+		t.Fatalf("runIDs differ: %q vs %q", r1.runID, r2.runID)
+	}
+	b1 := readRecord(t, dir1)
+	b2 := readRecord(t, dir2)
+	if !bytes.Equal(b1, b2) {
+		t.Fatalf("record bytes differ:\nstart:       %s\nstartWithID: %s", b1, b2)
+	}
+}
+
+// TestStartWithIDUsesPreallocatedIDEverywhere asserts a preallocated
+// run ID with a PID suffix different from os.Getpid() is used in the
+// filename, start line, worker line, and finish line; the start line
+// PID and createTime lookup use os.Getpid(), not the PID suffix.
+func TestStartWithIDUsesPreallocatedIDEverywhere(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	var sawCreateTimePID int
+	pidCreateTime = func(pid int) (int64, error) {
+		if sawCreateTimePID == 0 {
+			sawCreateTimePID = pid
+		}
+		return 1724998530123, nil
+	}
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	var otherPID = os.Getpid() + 1
+	preallocatedID := startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(otherPID)
+
+	dir := t.TempDir()
+	recorder, err := StartWithID(dir, preallocatedID, startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("StartWithID: %v", err)
+	}
+
+	// Filename uses the preallocated ID.
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != preallocatedID+".jsonl" {
+		t.Fatalf("filename = %v, want %s.jsonl", entries, preallocatedID)
+	}
+
+	// Worker and finish lines use the preallocated ID.
+	at := time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC)
+	recorder.WorkerProcess(at, 1, 42)
+	result := run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}
+	if err := recorder.Finish(time.Date(2026, 8, 30, 4, 15, 40, 0, time.UTC), &result, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	lines := recordLines(t, readRecord(t, dir))
+	for i, line := range lines {
+		obj := decodeLine(t, line)
+		if obj["runId"] != preallocatedID {
+			t.Fatalf("line %d runId = %v, want %s", i, obj["runId"], preallocatedID)
+		}
+	}
+
+	// Start line PID is the current process, not the suffix.
+	start := decodeLine(t, lines[0])
+	if start["pid"] != float64(os.Getpid()) {
+		t.Fatalf("start line pid = %v, want %d", start["pid"], os.Getpid())
+	}
+	if sawCreateTimePID != os.Getpid() {
+		t.Fatalf("pidCreateTime called with %d, want %d", sawCreateTimePID, os.Getpid())
+	}
+}
+
+// TestStartWithIDRejectsInvalidIDBeforeDirCreation asserts a
+// representative invalid run ID is rejected before the record
+// directory is created.
+func TestStartWithIDRejectsInvalidIDBeforeDirCreation(t *testing.T) {
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	dir := filepath.Join(t.TempDir(), "sub", "runs")
+	for _, id := range []string{"", "bad-id", "20260830T041530Z-0", "20260830T041530Z-0123"} {
+		if _, err := StartWithID(dir, id, startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}}); err == nil {
+			t.Fatalf("StartWithID(%q) succeeded, want error", id)
+		}
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("record directory exists after invalid ID: %v", err)
+	}
+}
+
+// TestStartWithIDRejectsExistingFile asserts StartWithID rejects an
+// existing regular record file without changing its bytes or mode.
+func TestStartWithIDRejectsExistingFile(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 0, errors.New("skip") }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, RunID(startedAt)+".jsonl")
+	const content = "existing content"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}}); err == nil {
+		t.Fatal("StartWithID succeeded over existing file, want error")
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != content {
+		t.Fatalf("file content changed: %q (err=%v)", got, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("file mode changed: %v", info.Mode())
+	}
+}
+
+// TestStartWithIDRejectsExistingDirectorySymlinkPipe asserts
+// StartWithID rejects a directory, symlink, or named pipe at the
+// record path without blocking or replacing the target. The named-
+// pipe case skips on platforms that lack the primitive.
+func TestStartWithIDRejectsExistingDirectorySymlinkPipe(t *testing.T) {
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	recordPath := RunID(startedAt) + ".jsonl"
+
+	// Directory.
+	t.Run("directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, recordPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}}); err == nil {
+			t.Fatal("StartWithID succeeded over directory, want error")
+		}
+		info, err := os.Stat(filepath.Join(dir, recordPath))
+		if err != nil || !info.IsDir() {
+			t.Fatalf("entry is not a directory: %v %v", info, err)
+		}
+	})
+
+	// Symlink.
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Symlink("/nonexistent", filepath.Join(dir, recordPath)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}}); err == nil {
+			t.Fatal("StartWithID succeeded over symlink, want error")
+		}
+		link, err := os.Readlink(filepath.Join(dir, recordPath))
+		if err != nil || link != "/nonexistent" {
+			t.Fatalf("symlink target changed: %q (err=%v)", link, err)
+		}
+	})
+
+	// Named pipe.
+	t.Run("named_pipe", func(t *testing.T) {
+		dir := t.TempDir()
+		pipe := filepath.Join(dir, recordPath)
+		if err := mkfifo(pipe); err != nil {
+			t.Skipf("cannot create named pipe: %v", err)
+		}
+		type result struct {
+			rec *Recorder
+			err error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			rec, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+			ch <- result{rec, err}
+		}()
+		select {
+		case r := <-ch:
+			if r.err == nil {
+				t.Fatal("StartWithID succeeded over named pipe, want error")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("StartWithID blocked: did not return within 2s on named pipe")
+		}
+		info, err := os.Stat(pipe)
+		if err != nil {
+			t.Fatalf("named pipe lost: %v", err)
+		}
+		if info.Mode()&os.ModeNamedPipe == 0 {
+			t.Fatalf("entry is not a named pipe: %v", info.Mode())
+		}
+	})
+}
+
+// TestStartWithIDRecordIsOwnerOnly asserts the created record file
+// has mode 0600 (owner read-write only).
+func TestStartWithIDRecordIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC)
+	recorder, err := StartWithID(dir, RunID(startedAt), startedAt, "/ws", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("StartWithID: %v", err)
+	}
+	defer recorder.file.Close()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %v, err = %v", entries, err)
+	}
+	info, err := entries[0].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("record mode = %v, want -rw-------", info.Mode())
 	}
 }

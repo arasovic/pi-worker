@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
@@ -249,6 +251,27 @@ func writeRecordFile(t *testing.T, dir, runID string, pid int, finishOutcome str
 	return path
 }
 
+// advanceRunlogStart wraps the runlogStart seam so that consecutive
+// calls in the same process cannot land on the same UTC second.  It
+// truncates each incoming startedAt to a UTC second and advances it
+// past the preceding one, guaranteeing distinct record IDs without
+// sleeping.  Only the two multi-invocation shared-history tests need
+// this; single-invocation tests are unaffected.
+func advanceRunlogStart(t *testing.T) {
+	t.Helper()
+	var prevSec time.Time
+	orig := runlogStart
+	runlogStart = func(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*runlog.Recorder, error) {
+		sec := startedAt.UTC().Truncate(time.Second)
+		if !sec.After(prevSec) {
+			sec = prevSec.Add(time.Second)
+		}
+		prevSec = sec
+		return orig(dir, sec, workspace, tasks)
+	}
+	t.Cleanup(func() { runlogStart = orig })
+}
+
 // TestRunWarnsAboutInterruptedRunOnceEndToEnd writes one record whose
 // run was interrupted — no finish line, pid long gone — drives two
 // consecutive runs, and asserts the warning appears once, naming the
@@ -262,6 +285,7 @@ func TestRunWarnsAboutInterruptedRunOnceEndToEnd(t *testing.T) {
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
 	t.Cleanup(func() { runlogDir = originalDir })
+	advanceRunlogStart(t)
 
 	recordPath := writeRecordFile(t, logDir, "20260830T101500Z-1", deadPID, "")
 
@@ -324,6 +348,7 @@ func TestRunWarnsOnceForInterruptedRunAfterStillRunningEndToEnd(t *testing.T) {
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
 	t.Cleanup(func() { runlogDir = originalDir })
+	advanceRunlogStart(t)
 
 	writeRecordFile(t, logDir, "20260830T101500Z-1", os.Getpid(), "")
 	recordPath := writeRecordFile(t, logDir, "20260830T103000Z-2", deadPID, "")

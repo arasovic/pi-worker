@@ -24,6 +24,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -123,45 +125,65 @@ func RunID(startedAt time.Time) string {
 	return startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
 }
 
-// Start writes the start line of one run's record before the run
-// begins: the run's identity, workspace, and each task's projection —
-// model, thinking level, the prompt (capped), the write declaration,
-// and for every file carried into the prompt its path, byte count and
-// SHA-256, never its content. The record's directory is created if
-// missing, the record file is opened for append, and the complete line
-// including its newline reaches the file in one Write call before Start
-// returns, so a run killed at any later instant still leaves its start
-// line on disk. The creation-time lookup and the marshalling run
-// before the file is opened: everything that can fail or block is done
-// first, so the only moment the file exists without its start line is
-// the single Write that follows the open.
+// validateRunID checks that runID has the exact shape RunID produces:
+// a 16-byte UTC timestamp, one hyphen, and a positive canonical
+// decimal pid. It does not parse beyond these two segments.
+func validateRunID(runID string, startedAt time.Time) error {
+	const prefixLen = len("20060102T150405Z") // 16
+
+	// The entire id is prefix + hyphen + suffix (min 18 bytes).
+	if len(runID) < prefixLen+2 {
+		return errors.New("runId: too short")
+	}
+	want := startedAt.UTC().Format("20060102T150405Z")
+	if runID[:prefixLen] != want {
+		return fmt.Errorf("runId: prefix %q does not match startedAt %q", runID[:prefixLen], want)
+	}
+	if runID[prefixLen] != '-' {
+		return fmt.Errorf("runId: expected hyphen at position %d, got %q", prefixLen, runID[prefixLen])
+	}
+	suffix := runID[prefixLen+1:]
+	pid, err := strconv.Atoi(suffix)
+	if err != nil {
+		return fmt.Errorf("runId: pid %q is not a valid integer: %v", suffix, err)
+	}
+	if pid <= 0 {
+		return fmt.Errorf("runId: pid %d is not positive", pid)
+	}
+	if strconv.Itoa(pid) != suffix {
+		return fmt.Errorf("runId: pid %q does not round-trip", suffix)
+	}
+	return nil
+}
+
+// StartWithID writes the start line of one run's record before the
+// run begins, using the caller-supplied runID as the record filename
+// and every line's runId. It validates runID against startedAt before
+// any filesystem mutation: the check rejects malformed or inconsistent
+// ids without creating a directory or touching the filesystem. The
+// record directory is then created if missing, the record file is
+// opened exclusively (O_EXCL) — rejecting any existing entry at that
+// path, including a regular file, directory, symlink, or named pipe —
+// and the complete start line reaches the file in one Write call
+// before StartWithID returns.
 //
-// The record carries the identity of the process each worker starts:
-// one worker line per started worker, appended by WorkerProcess while
-// the run is in flight — the only moment that identity exists and can
-// be recorded. The start line carries the writer's own process
-// identity, the same pid paired with its creation time, so a later
-// reader can still tell the run from a number that was reused by an
-// unrelated process. Records are never deleted, not on success and
-// not on failure.
-func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
+// The start line's pid and createTime describe the current writer
+// process (os.Getpid()), not any PID embedded in the supplied runID.
+func StartWithID(dir, runID string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
+	if err := validateRunID(runID, startedAt); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	runID := RunID(startedAt)
 	// The creation-time lookup and the marshalling of the start line
 	// happen before the record file exists: everything that can fail
 	// or block — the process-table read, the JSON encoding — completes
 	// before the open, so a marshal failure leaves no file behind, and
 	// the file exists without its start line only for the length of
-	// the single Write that follows the open. A concurrent scan that
-	// catches it in that window sees a zero-length record, which the
-	// interrupted-run reader treats as a record not yet written —
-	// never as a corrupt one — and examines again on its next scan. A
-	// lookup failure leaves the createTime key off the start line,
-	// exactly as it leaves it off a worker line — the identity is
-	// weaker then, never an error. The process is this worker itself,
-	// the same process whose pid the line records.
+	// the single Write that follows the open. A lookup failure leaves
+	// the createTime key off the start line, exactly as it leaves it
+	// off a worker line — the identity is weaker then, never an error.
 	createTime, err := pidCreateTime(os.Getpid())
 	if err != nil {
 		createTime = 0
@@ -179,7 +201,7 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +210,13 @@ func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) 
 		return nil, err
 	}
 	return &Recorder{file: file, runID: runID}, nil
+}
+
+// Start writes the start line of one run's record using the run ID
+// that RunID derives from startedAt. It is a compatibility wrapper
+// around StartWithID.
+func Start(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
+	return StartWithID(dir, RunID(startedAt), startedAt, workspace, tasks)
 }
 
 // WorkerProcess appends the worker line of the run's record: the
