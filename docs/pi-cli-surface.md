@@ -4,7 +4,7 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `0.85.0`.
+Observed version: `0.85.1`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
@@ -90,9 +90,42 @@ model inference), `queue_update` and `clear_queue` (which returned the probe
 message), `abort` success, and clean exit. `clear_queue` remains outside
 Pi Worker's outbound allowlist.
 
+The surface was re-probed on 2026-09-06 against 0.85.1 from `pi --version`
+and `pi --help`; the official release (v0.85.1, published 2026-09-05,
+13 commits from v0.85.0) adds GPT-6 Astra to the model catalog, fixes
+selector/hover/Alt-scroll TUI behavior, uses `prompt_cache_options.ttl: "30m"` for GPT-5.6+ long cache requests, and removes accidental experimental
+client/plugin distribution from 0.85.0 — none of which affects supported
+stdio RPC source; the official compare confirms no file under
+`packages/coding-agent/src/modes/rpc` changed. Installed package exports
+remain stable for root and `./rpc-entry`; `./client` and
+`./experimental/plugin` are source-only. Both local global installations
+(including PATH-selected `/opt/homebrew/bin/pi` and the NVM pi path) report
+exactly 0.85.1. `pi --help` retains `--mode rpc`, `--model`, `--session-dir`,
+`--name`, `--no-context-files`, `--no-extensions`, `--no-skills`,
+`--no-prompt-templates`, `--no-themes`, `--no-approve`, and `--tools`;
+built-in names remain `read`, `bash`, `powershell`, `edit`, `write`,
+`grep`, `find`, `ls`. `pi auth --help` retains `print-api-key`,
+`print-bearer-token`, and `check`; none was run. A promptless/no-inference
+direct RPC session confirmed success for `get_state`,
+`get_available_models`, `get_available_thinking_levels` (returned
+`high`,`max` for Command Code DeepSeek), `set_model` (exact provider/id),
+`set_thinking_level high` followed by `get_state` confirmation, and
+`get_last_assistant_text` returning `data:{}` for empty history. Idle
+`steer` accepted `pi-worker-0.85.1-probe` and emitted `queue_update`;
+`clear_queue` returned that exact steering text and emptied the queue;
+`abort` returned success; RPC process exited 0. Pi Worker candidate built
+with VerifiedVersion 0.85.1 reports `doctor ready:true` and
+`Pi version 0.85.1 is supported`; model catalog succeeds. A real Pi Worker
+dogfood task on local Pi 0.85.1 used paid
+`opencodex/command-code/xiaomi-mimo-v2.5`, thinking off, updated the five
+allowed pin surfaces, passed declared writes and post-run piversion
+verification, and completed normally. No Pi Worker production adaptation
+was needed; GPT-6 Astra appearing in the catalog does not add a Pi Worker
+special case.
+
 ## Compatibility gate
 
-**Gate result: pass for Pi 0.85.0.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 0.85.1.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.
@@ -241,7 +274,7 @@ The `get_available_models` success container is exactly
 data:{models: Model[]}}`. The `set_model` success container is exactly
 `{type:"response", command:"set_model", success:true, data:Model}`. The
 full version-pinned upstream `Model` declaration is in
-`@earendil-works/pi-coding-agent@0.85.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
+`@earendil-works/pi-coding-agent@0.85.1/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
 it is not duplicated here because v0 must not validate or reconstruct it.
 
 V0 decodes each catalog entry as this projection only:
@@ -263,7 +296,7 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 0.85.0 observes the `get_available_thinking_levels` success container as
+Pi 0.85.1 observes the `get_available_thinking_levels` success container as
 `data:{levels: ThinkingLevel[]}`, where the levels are the active model's
 supported subset of the recognized seven levels (`off`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, `max`), not always all seven. V0 requires a non-null
@@ -272,13 +305,13 @@ levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
 malformed responses remain failures.
 
-Pi 0.85.0 observes the `get_state` success container exactly as
+Pi 0.85.1 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
 V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
 required after model activation; the model must equal the selected catalog
 entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
-`@earendil-works/pi-coding-agent@0.85.0/dist/modes/rpc/rpc-types.d.ts`; V0
+`@earendil-works/pi-coding-agent@0.85.1/dist/modes/rpc/rpc-types.d.ts`; V0
 does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
@@ -300,7 +333,7 @@ response correlation, it emits only these request shapes:
 | `get_last_assistant_text` | `type` |
 
 Pi-worker must reject every other RPC type. In particular,
-it must reject direct RPC `bash`: Pi 0.85.0 dispatches that command directly,
+it must reject direct RPC `bash`: Pi 0.85.1 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
 ### Debug observability
@@ -382,7 +415,7 @@ assistant message does not inherit an earlier error. The assistant's
 
 ## Tool semantics
 
-Built-in tool names reported by `pi --help` as of Pi 0.85.0 are `read`,
+Built-in tool names reported by `pi --help` as of Pi 0.85.1 are `read`,
 `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell`. Pi-worker
 intentionally continues enabling only its established seven
 (`read,grep,find,ls,edit,write,bash`) and does not enable `powershell` in
