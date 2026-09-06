@@ -252,7 +252,7 @@ func parseWorktreesArgs(args []string) (worktreesOptions, error) {
 		return opts, errors.New("worktrees remove requires a name")
 	}
 	if !worktree.ValidName(nameArg) {
-		return opts, fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", nameArg)
+		return opts, invalidWorktreeNameError(nameArg)
 	}
 	opts.name = nameArg
 

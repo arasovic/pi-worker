@@ -1016,6 +1016,10 @@ func allWritesDeclared(tasks []run.Task) bool {
 	return true
 }
 
+func invalidWorktreeNameError(name string) error {
+	return fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", name)
+}
+
 func preflightPiVersion(ctx context.Context, stderr io.Writer) {
 	output, err := runVersionProbe(ctx)
 	if err != nil {
@@ -1067,7 +1071,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 				opts.verify = argv
 			} else if name == "--worktree" {
 				if !worktree.ValidName(value) {
-					return opts, fmt.Errorf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", value)
+					return opts, invalidWorktreeNameError(value)
 				}
 				opts.worktree = value
 			} else {
