@@ -668,37 +668,20 @@ two runs from distinct configuration files do not share a gate.
   dirty submodule is never a changed path and can never be reported as an
   undeclared write — the manifest measures this workspace's files, and a
   submodule's contents are another repository's business.
-- A collapsed untracked nested repository is neither of those cases: the
-  shape a worker's `git init` or `git clone` leaves inside the workspace
-  is not a gitlink, and when git reports the whole untracked directory
-  as one collapsed entry without entering it, the manifest reports it
-  the same way — as one `directory`-marked entry (the JSON contract in
-  `docs/json-contracts.md` describes the marker) that counts toward
-  `totalFiles` and participates in the write check. A repository the run
-  creates is one added directory entry; one that was already there when
-  the run started and was left alone is subtracted like any other
-  pre-run dirtiness, never reported as the run's addition and never
-  accused as an undeclared write; one the run removed is one deleted
-  directory entry carrying `dirtyBefore`. One unmeasurable directory
-  never disables the manifest or skips the write check. Directory paths
-  are canonical — the trailing slash git's listing prints is dropped —
-  so one path is never reported twice under two spellings and a write
-  declaration covers the directory with either spelling. Git collapses
-  the repository only while nothing about its directory is known to the
-  index, so the collapsed shape is bounded: when a run replaces a
-  tracked file or tracked directory with a repository, or a repository
-  sits in a directory a tracked file still claims, git stops collapsing
-  and lists the repository's inner files individually alongside the
-  tracked deletions or modifications. In those shapes the manifest
-  reports what git lists — the inner files as ordinary measured paths
-  that take part in the write check, never hidden behind a collapsed
-  entry git itself does not produce — and a repository replacing a
-  tracked file of the same name is a plain tracked change of that path.
-  Because a collapsed directory is never entered, a write into the
-  contents of a pre-existing collapsed repository is invisible to the
-  manifest and the write check, exactly like a write into a submodule's
-  working tree: the contents belong to the nested repository, and the
-  caller answers for them there.
+- A collapsed untracked nested repository is the fail-closed case:
+  when outer Git reports it as a single untracked path ending in `/`
+  and that path carries a `.git` marker, Pi Worker detects the marker
+  through a root-relative filesystem inspection using non-following
+  metadata — it does not recurse into the nested repository, enter its
+  directory, or run nested Git commands. Because Pi Worker cannot prove
+  the absence of inner-file changes without entering the nested
+  repository, the change manifest is omitted with `measurement failed`
+  and the declared-writes check skips with `change manifest unavailable`
+  — it never reports a clean write verdict. Paths that outer Git
+  enumerates file-by-file retain their existing measured behaviour
+  regardless of whether a `.git` marker sits among them; this treatment
+  applies only to the collapsed form that outer Git exposes as one
+  trailing-slash path.
 - Human mode prints one `changes: <n> files, +<a>/-<d>` line (singular
   `file` at one) on stdout after the worker summaries, followed by up to
   five paths most churn first. When at least one listed entry was already
