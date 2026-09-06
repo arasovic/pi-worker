@@ -42,7 +42,7 @@ func TestRoleProcessSupervisorEcho(t *testing.T) {
 	for i := range canary {
 		canary[i] = byte(i)
 	}
-	canary[0] = 0   // contains NUL
+	canary[0] = 0    // contains NUL
 	canary[1] = '\n' // contains newline
 
 	p, err := startRoleProcess(exe, roleSupervisor)
