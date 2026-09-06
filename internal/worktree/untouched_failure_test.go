@@ -242,9 +242,10 @@ func TestRemoveUntouchedBranchHEADMismatchReturnsRetry(t *testing.T) {
 	wantBranch := "run/alpha"
 	branchRef := "refs/heads/" + wantBranch
 
-	// Advance the branch by committing in the worktree so branch HEAD
-	// no longer equals the recorded Head. The worktree checkout itself
-	// stays at the recorded Head.
+	// Advance the real branch and checkout by committing in the
+	// worktree so branch HEAD no longer equals the recorded Head.
+	// The seam then deliberately reports the recorded checkout Head
+	// so the branch-ref mismatch check is isolated.
 	if err := os.WriteFile(filepath.Join(prep.Path, "adv.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}

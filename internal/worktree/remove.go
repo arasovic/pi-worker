@@ -21,7 +21,7 @@ import (
 // git worktree add on the exact path and branch and still returns an
 // error.
 func Remove(ctx context.Context, cwd string, expected Entry) error {
-	if err := validateRemoveEligibility(expected); err != nil {
+	if err := ValidateRemove(expected); err != nil {
 		return err
 	}
 
@@ -44,7 +44,7 @@ func Remove(ctx context.Context, cwd string, expected Entry) error {
 		return fmt.Errorf("worktree %q changed: retry", expected.Name)
 	}
 
-	if err := validateRemoveEligibility(*fresh); err != nil {
+	if err := ValidateRemove(*fresh); err != nil {
 		return err
 	}
 
@@ -64,9 +64,10 @@ func Remove(ctx context.Context, cwd string, expected Entry) error {
 	return nil
 }
 
-// validateRemoveEligibility checks pre-conditions that must hold
-// before any mutation is attempted.
-func validateRemoveEligibility(wt Entry) error {
+// ValidateRemove checks pre-conditions that must hold before any
+// mutation is attempted. It refuses invalid names, any entry marked
+// dirty, or any entry whose branch is marked unmerged.
+func ValidateRemove(wt Entry) error {
 	if !ValidName(wt.Name) {
 		return fmt.Errorf("invalid worktree name %q", wt.Name)
 	}
