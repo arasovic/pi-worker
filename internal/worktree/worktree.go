@@ -13,10 +13,10 @@ import (
 
 // Prepared describes a freshly created worktree.
 type Prepared struct {
-	Name   string
-	Path   string
-	Branch string
-	Head   string
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	Head   string `json:"head"`
 }
 
 // refusal is the error type Prepare returns for problems the caller

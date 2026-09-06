@@ -21,20 +21,14 @@
 package runlog
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/arasovic/pi-worker/internal/config"
-	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/shirou/gopsutil/v4/process"
 )
@@ -43,12 +37,6 @@ import (
 // own version, independent of the run result's schemaVersion: the two
 // documents evolve separately.
 const schemaVersion = 1
-
-// promptCap is the largest prompt the start line records verbatim, in
-// bytes. A longer prompt is cut to this many bytes and marked truncated
-// in the record; the run itself is unaffected — the worker always
-// receives the full prompt. The cap bounds the record, not the run.
-const promptCap = 4096
 
 // pidCreateTime is the private dependency-injection seam behind the
 // start line's and worker line's createTime fields: the creation
@@ -125,37 +113,6 @@ func RunID(startedAt time.Time) string {
 	return startedAt.UTC().Format("20060102T150405Z") + "-" + strconv.Itoa(os.Getpid())
 }
 
-// validateRunID checks that runID has the exact shape RunID produces:
-// a 16-byte UTC timestamp, one hyphen, and a positive canonical
-// decimal pid. It does not parse beyond these two segments.
-func validateRunID(runID string, startedAt time.Time) error {
-	const prefixLen = len("20060102T150405Z") // 16
-
-	// The entire id is prefix + hyphen + suffix (min 18 bytes).
-	if len(runID) < prefixLen+2 {
-		return errors.New("runId: too short")
-	}
-	want := startedAt.UTC().Format("20060102T150405Z")
-	if runID[:prefixLen] != want {
-		return fmt.Errorf("runId: prefix %q does not match startedAt %q", runID[:prefixLen], want)
-	}
-	if runID[prefixLen] != '-' {
-		return fmt.Errorf("runId: expected hyphen at position %d, got %q", prefixLen, runID[prefixLen])
-	}
-	suffix := runID[prefixLen+1:]
-	pid, err := strconv.Atoi(suffix)
-	if err != nil {
-		return fmt.Errorf("runId: pid %q is not a valid integer: %v", suffix, err)
-	}
-	if pid <= 0 {
-		return fmt.Errorf("runId: pid %d is not positive", pid)
-	}
-	if strconv.Itoa(pid) != suffix {
-		return fmt.Errorf("runId: pid %q does not round-trip", suffix)
-	}
-	return nil
-}
-
 // StartWithID writes the start line of one run's record before the
 // run begins, using the caller-supplied runID as the record filename
 // and every line's runId. It validates runID against startedAt before
@@ -170,7 +127,7 @@ func validateRunID(runID string, startedAt time.Time) error {
 // The start line's pid and createTime describe the current writer
 // process (os.Getpid()), not any PID embedded in the supplied runID.
 func StartWithID(dir, runID string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
-	if err := validateRunID(runID, startedAt); err != nil {
+	if err := ValidateRunID(runID, startedAt); err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -195,7 +152,7 @@ func StartWithID(dir, runID string, startedAt time.Time, workspace string, tasks
 		StartedAt:     startedAt.UTC().Format(time.RFC3339),
 		Workspace:     workspace,
 		PID:           os.Getpid(),
-		Tasks:         projectTasks(tasks),
+		Tasks:         run.ProjectTasks(tasks),
 		CreateTime:    createTime,
 	})
 	if err != nil {
@@ -318,64 +275,17 @@ func (r *Recorder) Finish(finishedAt time.Time, result *run.Result, runErr error
 	return nil
 }
 
-// projectTasks projects the run's tasks into the start line. This is
-// the point where content must not leak: run.Task carries the bytes of
-// the files composed into the prompt, and only their path, byte count
-// and SHA-256 are recorded. The hash is computed over the content
-// exactly as carried, so it matches a checksum of the file on disk and
-// stays consistent with the recorded byte count. The write declaration
-// keeps its two facts separate, exactly as in run.WriteDeclaration: a
-// task that declared nothing differs from a task that declared an empty
-// write set, and collapsing them would erase that difference.
-func projectTasks(tasks []run.Task) []startTask {
-	projected := make([]startTask, len(tasks))
-	for i, task := range tasks {
-		prompt, truncated := capPrompt(task.Prompt)
-		data := make([]pi.DataFile, 0, len(task.Data))
-		for _, file := range task.Data {
-			sum := sha256.Sum256(file.Content)
-			data = append(data, pi.DataFile{Path: file.Path, Bytes: len(file.Content), SHA256: hex.EncodeToString(sum[:])})
-		}
-		projected[i] = startTask{
-			Model:           task.Model,
-			ThinkingLevel:   string(task.ThinkingLevel),
-			Prompt:          prompt,
-			PromptTruncated: truncated,
-			WritesDeclared:  task.Writes.Declared,
-			Writes:          task.Writes.Paths,
-			Data:            data,
-		}
-	}
-	return projected
-}
-
-// capPrompt bounds a recorded prompt to promptCap bytes. A prompt at or
-// below the cap is returned verbatim with truncated false. A longer
-// prompt is cut to the cap and then loses trailing bytes while the
-// result is not valid UTF-8, so a multi-byte character is never split:
-// the cut backs off to the last complete character boundary at or
-// before the cap.
-func capPrompt(prompt string) (string, bool) {
-	if len(prompt) <= promptCap {
-		return prompt, false
-	}
-	cut := prompt[:promptCap]
-	for !utf8.ValidString(cut) {
-		cut = cut[:len(cut)-1]
-	}
-	return cut, true
-}
-
 // startLine is the first line of a run record, written before the run
-// starts.
+// starts. Tasks carries projections (no raw content) produced by
+// run.ProjectTasks.
 type startLine struct {
-	SchemaVersion int         `json:"schemaVersion"`
-	Event         string      `json:"event"`
-	RunID         string      `json:"runId"`
-	StartedAt     string      `json:"startedAt"`
-	Workspace     string      `json:"workspace"`
-	PID           int         `json:"pid"`
-	Tasks         []startTask `json:"tasks"`
+	SchemaVersion int                  `json:"schemaVersion"`
+	Event         string               `json:"event"`
+	RunID         string               `json:"runId"`
+	StartedAt     string               `json:"startedAt"`
+	Workspace     string               `json:"workspace"`
+	PID           int                  `json:"pid"`
+	Tasks         []run.TaskProjection `json:"tasks"`
 	// CreateTime is the process creation time of the process that
 	// wrote the start line — the pi-worker itself — in milliseconds
 	// since the Unix epoch, exactly as gopsutil reports it, for exact
@@ -383,20 +293,6 @@ type startLine struct {
 	// lookup failed at write time, which is also the shape of every
 	// record written before this field existed.
 	CreateTime int64 `json:"createTime,omitempty"`
-}
-
-// startTask is one task's projection in the start line. WritesDeclared
-// is always present; Writes carries the declared paths when there are
-// any, and Data carries the carried-file reports when the task carried
-// material.
-type startTask struct {
-	Model           string        `json:"model"`
-	ThinkingLevel   string        `json:"thinkingLevel"`
-	Prompt          string        `json:"prompt"`
-	PromptTruncated bool          `json:"promptTruncated"`
-	WritesDeclared  bool          `json:"writesDeclared"`
-	Writes          []string      `json:"writes,omitempty"`
-	Data            []pi.DataFile `json:"data,omitempty"`
 }
 
 // workerLine is the line of a run record written while the run is in

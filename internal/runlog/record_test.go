@@ -619,12 +619,12 @@ func TestValidateRunID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateRunID(tt.runID, tt.at)
+			err := ValidateRunID(tt.runID, tt.at)
 			if tt.wantOK && err != nil {
-				t.Fatalf("validateRunID(%q) = %v, want nil", tt.runID, err)
+				t.Fatalf("ValidateRunID(%q) = %v, want nil", tt.runID, err)
 			}
 			if !tt.wantOK && err == nil {
-				t.Fatalf("validateRunID(%q) = nil, want error", tt.runID)
+				t.Fatalf("ValidateRunID(%q) = nil, want error", tt.runID)
 			}
 		})
 	}
