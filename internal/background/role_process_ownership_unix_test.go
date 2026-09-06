@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -103,10 +104,14 @@ func TestRoleProcessSupervisorLifecycle(t *testing.T) {
 	sendDone := make(chan error, 1)
 	go func() { sendDone <- p.Send(payload) }()
 
+	var sendErr error
 	select {
 	case <-ctx.Done():
 		t.Fatal("Send timed out")
-	case <-sendDone:
+	case sendErr = <-sendDone:
+	}
+	if sendErr != nil {
+		t.Fatalf("Send: got %v, want nil", sendErr)
 	}
 
 	recvDone := make(chan []byte, 1)
@@ -160,6 +165,37 @@ func TestRoleProcessSupervisorLifecycle(t *testing.T) {
 	if waitErr != nil {
 		t.Fatalf("Wait: got %v, want nil", waitErr)
 	}
+}
+
+// TestRoleProcessParentClosesChildSideOwnershipReader confirms the invariant:
+// after Start the parent's copy of the ownership reader (the child-side fd
+// passed via ExtraFiles[2]) is closed.  Stat is used as the probe so an
+// accidentally-live descriptor fails immediately instead of blocking on Read.
+func TestRoleProcessParentClosesChildSideOwnershipReader(t *testing.T) {
+	p, err := startRoleProcess(testExe(t), roleWorkerHost)
+	if err != nil {
+		t.Fatalf("startRoleProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	// Three extra files: request reader, response writer, ownership reader.
+	if got := len(p.cmd.ExtraFiles); got != 3 {
+		t.Fatalf("ExtraFiles length = %d, want 3", got)
+	}
+
+	// Probe ExtraFiles[2] — the exact *os.File given to cmd.Start — to
+	// confirm the parent closed its child-side copy after Start.
+	if _, err := p.cmd.ExtraFiles[2].Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("ExtraFiles[2] after Start: expected os.ErrClosed, got %v", err)
+	}
+
+	if err := p.CloseOwnership(); err != nil {
+		t.Fatalf("CloseOwnership: %v", err)
+	}
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	assertRoleProcessReaped(t, p)
 }
 
 // TestRoleProcessWorkerHostOwnershipByteMismatch verifies that writing
