@@ -60,6 +60,9 @@ var errQueueTicketMissing = errors.New("admission: ticket missing after locked s
 // to become grantable. It is a private test seam.
 var pollInterval = 50 * time.Millisecond
 
+// saveGateState saves state to disk. It is a private test seam.
+var saveGateState = saveState
+
 // newTicketID generates a random 128-bit hex ticket ID. It is a private
 // test seam for deterministic tests.
 var newTicketID = defaultNewTicketID
@@ -135,12 +138,112 @@ func (g *Gate) updateState(update func(*state) (changed bool, err error)) error 
 	changed, actionErr := update(&st)
 
 	if reaped || changed {
-		if saveErr := saveState(g.root, st); saveErr != nil {
+		if saveErr := saveGateState(g.root, st); saveErr != nil {
 			return fmt.Errorf("save: %w", saveErr)
 		}
 	}
 
 	return actionErr
+}
+
+// Prepare enqueues an entire batch of requests in a single atomic admission.
+// It validates the batch as a unit, generates all ticket IDs before the
+// lock transition, preserves stale reaping, rejects duplicate IDs within
+// the batch or against retained tickets, appends queued tickets with
+// consecutive sequences under one g.owner identity, advances NextSequence
+// by the full batch size, and returns one QueueTicket per request in
+// input order. On any error the return is (nil, error); no new batch
+// ticket is persisted, though existing stale-owner reaping may still be
+// committed by updateState.
+func (g *Gate) Prepare(requests []Request) ([]*QueueTicket, error) {
+	if g == nil {
+		return nil, fmt.Errorf("admission prepare: gate must not be nil")
+	}
+	if len(requests) == 0 {
+		return nil, fmt.Errorf("admission prepare: requests must not be empty")
+	}
+
+	// Phase 1 — validate every request.
+	firstRunID := ""
+	workerSet := make(map[int]bool, len(requests))
+	for i, r := range requests {
+		idx := i + 1 // 1-based
+		if r.RunID == "" {
+			return nil, fmt.Errorf("admission prepare: request %d: runId must not be empty", idx)
+		}
+		if r.WorkerID <= 0 {
+			return nil, fmt.Errorf("admission prepare: request %d: workerId must be positive, got %d", idx, r.WorkerID)
+		}
+		if firstRunID == "" {
+			firstRunID = r.RunID
+		} else if r.RunID != firstRunID {
+			return nil, fmt.Errorf("admission prepare: request %d: runId %q must match first runId %q", idx, r.RunID, firstRunID)
+		}
+		if workerSet[r.WorkerID] {
+			return nil, fmt.Errorf("admission prepare: request %d: duplicate workerId %d", idx, r.WorkerID)
+		}
+		workerSet[r.WorkerID] = true
+	}
+
+	// Phase 2 — generate all ticket IDs before acquiring the lock.
+	ticketIDs := make([]string, len(requests))
+	for i := range requests {
+		id, err := newTicketID()
+		if err != nil {
+			return nil, fmt.Errorf("admission prepare: request %d: %w", i+1, err)
+		}
+		ticketIDs[i] = id
+	}
+
+	// Check for duplicate generated IDs within the batch before mutating.
+	seen := make(map[string]bool, len(ticketIDs))
+	for i, id := range ticketIDs {
+		if seen[id] {
+			return nil, fmt.Errorf("admission prepare: request %d: duplicate generated ticket id %q", i+1, id)
+		}
+		seen[id] = true
+	}
+
+	// Phase 3 — call updateState exactly once.
+	if err := g.updateState(func(st *state) (bool, error) {
+		// Reject every generated ID that collides with a retained existing ticket.
+		for i, id := range ticketIDs {
+			if findTicketIndex(st.Tickets, id) >= 0 {
+				return false, fmt.Errorf("request %d: duplicate generated ticket id %q collides with existing ticket", i+1, id)
+			}
+		}
+
+		// Verify NextSequence can advance by entire batch without overflow.
+		if st.NextSequence > math.MaxInt-len(requests) {
+			return false, errors.New("sequence overflow")
+		}
+
+		// Append all queued tickets with consecutive sequences and owner info.
+		seq := st.NextSequence
+		for i, r := range requests {
+			st.Tickets = append(st.Tickets, ticket{
+				ID:              ticketIDs[i],
+				Sequence:        seq,
+				RunID:           r.RunID,
+				WorkerID:        r.WorkerID,
+				OwnerPID:        g.owner.PID,
+				OwnerCreateTime: g.owner.CreateTime,
+				State:           ticketQueued,
+			})
+			seq++
+		}
+		st.NextSequence += len(requests)
+		return true, nil
+	}); err != nil {
+		return nil, fmt.Errorf("admission prepare: %w", err)
+	}
+
+	// Phase 4 — build result handles after durable success.
+	result := make([]*QueueTicket, len(requests))
+	for i, id := range ticketIDs {
+		result[i] = &QueueTicket{gate: g, ticketID: id, owner: g.owner}
+	}
+	return result, nil
 }
 
 // Enqueue writes exactly one durable queued ticket and never waits for
