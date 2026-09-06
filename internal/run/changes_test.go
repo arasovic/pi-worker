@@ -127,68 +127,38 @@ func newNestedRepo(t *testing.T, dir, name string) {
 	runGit(t, nested, "commit", "-q", "-m", "nested init")
 }
 
-func TestControllerChangesNewNestedRepositoryIsOneAddedDirectoryEntry(t *testing.T) {
-	// A worker that runs git init or git clone inside the workspace
-	// leaves a collapsed nested repository: git's ls-files reports the
-	// whole untracked directory as one entry instead of entering it.
-	// That directory is a real, stable workspace change, so the
-	// manifest must report it as one added directory entry — never
-	// recursively as its contents, which belong to another repository —
-	// and that single entry must never fail the measurement or the
-	// write check. The directory entry carries the directory marker,
-	// canonical path without the trailing slash git prints, zero line
-	// counts, and no file-only fields. The ordinary file outside it
-	// stays a normal per-file entry.
+func TestControllerChangesNewNestedRepositoryFailClosedOmitted(t *testing.T) {
+	// A worker creates a nested repository (trailing-slash + .git).
+	// Git reports it as one collapsed directory entry;
+	// rejectCollapsedNestedRepositories detects the .git marker and fails
+	// the measurement before any manifest
+	// is produced. The writes check skips because the manifest is unavailable.
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		newNestedRepo(t, dir, "nested")
 		return os.WriteFile(filepath.Join(dir, "ordinary.txt"), []byte("ordinary\n"), 0o644)
 	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("ordinary.txt")})
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 2 || len(changes.Files) != 2 || changes.Truncated {
-		t.Fatalf("changes = %#v, want ordinary.txt and the collapsed nested path", changes)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
-	byPath := map[string]FileChange{}
-	for _, file := range changes.Files {
-		byPath[file.Path] = file
+	if result.Writes == nil {
+		t.Fatalf("writes = nil, want a non-nil skipped check")
 	}
-	ordinary, ok := byPath["ordinary.txt"]
-	if !ok || ordinary.Status != statusAdded || ordinary.Added != 1 || ordinary.Directory {
-		t.Fatalf("ordinary.txt = %#v, want a plain added file entry", byPath["ordinary.txt"])
+	if result.Writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes.Skipped = %q, want %q", result.Writes.Skipped, reasonManifestUnavailable)
 	}
-	nested, ok := byPath["nested"]
-	if !ok {
-		t.Fatalf("manifest = %#v, want the collapsed nested directory listed at its canonical path", changes.Files)
-	}
-	if nested.Status != statusAdded || !nested.Directory || nested.Added != 0 || nested.Deleted != 0 || nested.Binary || nested.DirtyBefore || nested.NoFinalNewline {
-		t.Fatalf("nested = %#v, want one added directory entry with zero counts and no file-only fields", nested)
-	}
-	if len(byPath) != 2 {
-		t.Fatalf("manifest = %#v, want exactly the two distinct paths", changes.Files)
-	}
-	// The single directory entry participates in the write check: with
-	// only ordinary.txt declared, the collapsed directory is the one
-	// undeclared write.
-	writes := result.Writes
-	if writes == nil || writes.Skipped != "" {
-		t.Fatalf("writes = %#v, want a verdict", writes)
-	}
-	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "nested" {
-		t.Fatalf("writes = %#v, want the collapsed nested path as the one undeclared write", writes)
+	if result.Writes.UndeclaredCount != 0 || len(result.Writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want no clean verdict", result.Writes)
 	}
 }
 
-func TestControllerChangesNestedRepositoryDeclaredCoveredByEitherSpelling(t *testing.T) {
-	// The collapsed directory's canonical path is a plain segment path,
-	// so the write check covers it whether the caller declared the
-	// directory as "nested" or with git's own trailing-slash spelling
-	// "nested/", which validation cleans before the check. A declared
-	// directory therefore clears the verdict; the check is not fooled
-	// by the spelling difference into reporting the run's own declared
-	// repository as undeclared.
+func TestControllerChangesNestedRepositoryDeclaredCoveredByEitherSpellingOmitted(t *testing.T) {
+	// Whether the caller declares "nested" or "nested/", the manifest
+	// itself is unreachable because the nested repository is rejected
+	// on detection. Both declarations produce the same omission reason.
 	for _, declared := range []string{"nested", "nested/"} {
 		t.Run(declared, func(t *testing.T) {
 			dir := newGitRepo(t)
@@ -196,133 +166,106 @@ func TestControllerChangesNestedRepositoryDeclaredCoveredByEitherSpelling(t *tes
 				newNestedRepo(t, dir, "nested")
 				return nil
 			}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths(declared)})
-			changes := result.Changes
-			if changes == nil || changes.Omitted != "" || changes.TotalFiles != 1 {
-				t.Fatalf("changes = %#v, want the one added directory measured", changes)
+			if result.Changes == nil {
+				t.Fatalf("changes = nil, want a non-nil omitted manifest")
 			}
-			writes := result.Writes
-			if writes == nil || writes.Skipped != "" {
-				t.Fatalf("writes = %#v, want a verdict", writes)
+			if result.Changes.Omitted != reasonMeasurementFail {
+				t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 			}
-			if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
-				t.Fatalf("writes = %#v, want the declared directory covered under declaration %q", writes, declared)
+			if result.Writes == nil {
+				t.Fatalf("writes = nil, want a non-nil skipped check")
+			}
+			if result.Writes.Skipped != reasonManifestUnavailable {
+				t.Fatalf("writes.Skipped = %q, want %q", result.Writes.Skipped, reasonManifestUnavailable)
+			}
+			if result.Writes.UndeclaredCount != 0 || len(result.Writes.Undeclared) != 0 {
+				t.Fatalf("writes = %#v, want no clean verdict", result.Writes)
 			}
 		})
 	}
 }
 
-func TestControllerChangesPreExistingNestedRepositoryUntouchedAbsent(t *testing.T) {
-	// A nested repository that was already dirty before the run and that
-	// the run left alone is subtracted exactly like any other pre-run
-	// dirtiness: it was equally there before, it names no change the run
-	// made, and it must not appear as an added directory or as an
-	// undeclared write. The run here also declares writes it never
-	// makes, so the check must answer clean on a manifest that measured
-	// zero rather than on one that never ran. The run is settled by a
-	// scripted worker that never touches the workspace; the repository's
-	// collapsed directory stamp is measured by presence alone, and an
-	// untouched presence subtracts it out.
+func TestControllerChangesPreExistingNestedRepositoryUntouchedAbsentOmitted(t *testing.T) {
 	dir := newGitRepo(t)
 	newNestedRepo(t, dir, "nested")
 	result := runWithWrites(t, newScriptedWorker(), dir, []string{"a"}, []WriteDeclaration{declaredPaths("ordinary.txt")})
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
-		t.Fatalf("changes = %#v, want the untouched nested repository absent", changes)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
-	for _, file := range changes.Files {
-		if file.Path == "nested" {
-			t.Fatalf("manifest lists the untouched nested repository: %#v", changes.Files)
-		}
+	if result.Writes == nil {
+		t.Fatalf("writes = nil, want a non-nil skipped check")
 	}
-	writes := result.Writes
-	if writes == nil || writes.Skipped != "" {
-		t.Fatalf("writes = %#v, want a verdict", writes)
+	if result.Writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes.Skipped = %q, want %q", result.Writes.Skipped, reasonManifestUnavailable)
 	}
-	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 || writes.Truncated {
-		t.Fatalf("writes = %#v, want a clean verdict with the pre-existing repository subtracted", writes)
+	if result.Writes.UndeclaredCount != 0 || len(result.Writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want no clean verdict", result.Writes)
 	}
 }
 
-func TestControllerChangesPreExistingNestedRepositoryNotAttributedToRunChange(t *testing.T) {
-	// The false-verdict shape: a nested repository pre-exists, and the
-	// run changes one declared file elsewhere. The manifest must carry
-	// only the run's real change — never the pre-existing repository as
-	// a phantom added directory — and the write check must therefore
-	// answer clean instead of accusing the caller's own repository of
-	// being an undeclared write.
+func TestControllerChangesPreExistingNestedRepositoryNotAttributedToRunChangeOmitted(t *testing.T) {
+	// A pre-existing nested repository keeps the measurement unavailable
+	// even when the run modifies other files. The fail-closed check fires
+	// on the trailing-slash nested entry found in the raw listing, not on
+	// whatever happened during the run.
 	dir := newGitRepo(t)
 	newNestedRepo(t, dir, "nested")
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.WriteFile(filepath.Join(dir, "ordinary.txt"), []byte("ordinary\n"), 0o644)
 	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("ordinary.txt")})
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
-		t.Fatalf("changes = %#v, want only the ordinary file", changes)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
-	if changes.Files[0].Path != "ordinary.txt" || changes.Files[0].Directory {
-		t.Fatalf("file = %#v, want ordinary.txt as the only, plain entry", changes.Files[0])
+	if result.Writes == nil {
+		t.Fatalf("writes = nil, want a non-nil skipped check")
 	}
-	writes := result.Writes
-	if writes == nil || writes.Skipped != "" {
-		t.Fatalf("writes = %#v, want a verdict", writes)
+	if result.Writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes.Skipped = %q, want %q", result.Writes.Skipped, reasonManifestUnavailable)
 	}
-	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
-		t.Fatalf("writes = %#v, want clean: the pre-existing repository must not be an undeclared write", writes)
+	if result.Writes.UndeclaredCount != 0 || len(result.Writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want no clean verdict", result.Writes)
 	}
 }
 
-func TestControllerChangesPreExistingNestedRepositoryDeletedReported(t *testing.T) {
-	// A worker that removes a pre-existing nested repository destroyed
-	// pre-run dirtiness that the caller owns, so the manifest reports
-	// the deletion as one deleted directory entry with dirtyBefore: the
-	// path was dirty before the run and the run is what removed it. The
-	// deletion participates in the write check like any other change:
-	// undeclared, it is the one undeclared write.
+func TestControllerChangesPreExistingNestedRepositoryDeletedReportedOmitted(t *testing.T) {
+	// Even when a pre-existing nested repository is removed during the run,
+	// the raw untracked listing at snapshot time still contains the trailing-slash
+	// entry with a .git marker, so the measurement fails closed regardless
+	// of whether the directory exists at write-check time.
 	dir := newGitRepo(t)
 	newNestedRepo(t, dir, "nested")
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
 		return os.RemoveAll(filepath.Join(dir, "nested"))
 	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("ordinary.txt")})
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
-		t.Fatalf("changes = %#v, want the deleted directory entry", changes)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
-	file := changes.Files[0]
-	if file.Path != "nested" || file.Status != statusDeleted || !file.Directory || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore || file.Binary || file.NoFinalNewline {
-		t.Fatalf("file = %#v, want nested deleted as a dirtyBefore directory entry with zero counts", file)
+	if result.Writes == nil {
+		t.Fatalf("writes = nil, want a non-nil skipped check")
 	}
-	writes := result.Writes
-	if writes == nil || writes.Skipped != "" {
-		t.Fatalf("writes = %#v, want a verdict", writes)
+	if result.Writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes.Skipped = %q, want %q", result.Writes.Skipped, reasonManifestUnavailable)
 	}
-	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "nested" {
-		t.Fatalf("writes = %#v, want the deleted directory as the one undeclared write", writes)
+	if result.Writes.UndeclaredCount != 0 || len(result.Writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want no clean verdict", result.Writes)
 	}
 }
 
-func TestControllerChangesFileReplacedByNestedRepositorySingleEntry(t *testing.T) {
-	// A path that was an ordinary untracked file when the run started
-	// and a collapsed nested repository when it ended changed spelling
-	// between the two listings — a file is listed without a trailing
-	// slash and a collapsed directory with one. The two must merge into
-	// one entry under the canonical path: one added directory entry,
-	// dirtyBefore because the caller's file was replaced, and never a
-	// doubled pair where the same path is counted twice under two
-	// spellings. The merge is sound here because git itself reports the
-	// nested repository as one collapsed directory entry: no tracked
-	// file claims the path, so nothing descends into the repository.
-	// When a tracked file or tracked directory is replaced instead, git
-	// lists the inner files individually and the manifest reports them
-	// per-file (see TestControllerChangesTrackedDirectoryReplacedByNestedRepositoryReportsGitListedFiles).
+func TestControllerChangesFileReplacedByNestedRepositoryOmitted(t *testing.T) {
+	// A file replaced by a nested repository triggers the fail-closed
+	// check: git reports the directory with a trailing slash and the
+	// .git marker, so measurement aborts before any manifest entry is
+	// produced. This differs from a tracked-directory replacement,
+	// where git descends into the repository and lists inner files.
 	dir := newGitRepo(t)
 	if err := os.WriteFile(filepath.Join(dir, "nested"), []byte("dirty file\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -334,25 +277,18 @@ func TestControllerChangesFileReplacedByNestedRepositorySingleEntry(t *testing.T
 		newNestedRepo(t, dir, "nested")
 		return nil
 	}}, dir)
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
-		t.Fatalf("changes = %#v, want exactly one entry for the replaced path", changes)
-	}
-	file := changes.Files[0]
-	if file.Path != "nested" || file.Status != statusAdded || !file.Directory || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore {
-		t.Fatalf("file = %#v, want one added dirtyBefore directory entry for the replacement", file)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
 }
 
-func TestControllerChangesNestedRepositoryReplacedByFileSingleEntry(t *testing.T) {
-	// The mirror of the file-to-directory replacement: a pre-existing
-	// collapsed nested repository is removed and an ordinary untracked
-	// file takes its name. The path is reported once, as the file the
-	// run left, with dirtyBefore marking that the pre-run state at that
-	// path was the caller's repository — never as a doubled pair.
+func TestControllerChangesNestedRepositoryReplacedByFileOmitted(t *testing.T) {
+	// Mirror of the file-to-directory replacement: pre-existing nested
+	// repository is removed; the .git marker in the raw snapshot listing
+	// causes fail-closed before any manifest entry can be reported.
 	dir := newGitRepo(t)
 	newNestedRepo(t, dir, "nested")
 	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
@@ -361,16 +297,11 @@ func TestControllerChangesNestedRepositoryReplacedByFileSingleEntry(t *testing.T
 		}
 		return os.WriteFile(filepath.Join(dir, "nested"), []byte("file now\n"), 0o644)
 	}}, dir)
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
-		t.Fatalf("changes = %#v, want exactly one entry for the replaced path", changes)
-	}
-	file := changes.Files[0]
-	if file.Path != "nested" || file.Status != statusAdded || file.Directory || file.Added != 1 || file.Deleted != 0 || !file.DirtyBefore {
-		t.Fatalf("file = %#v, want one added dirtyBefore file entry for the replacement", file)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
 }
 
@@ -443,17 +374,12 @@ func TestControllerChangesTrackedDirectoryReplacedByNestedRepositoryReportsGitLi
 	}
 }
 
-func TestControllerChangesNestedRepositoryAddedInsideKeptTrackedDirectoryIsOneCollapsedEntry(t *testing.T) {
-	// A nested repository added inside a tracked directory that the run
-	// keeps is a fresh unknown path: git does not descend into the
-	// embedded repository, and ls-files reports the whole directory as
-	// one collapsed entry dir/nested/ without entering it. The manifest
-	// reports that one collapsed directory entry — never the inner file
-	// — exactly as it does for a repository at a never-tracked path. The
-	// collapse depends on no tracked path being replaced at that point:
-	// when the run replaces a tracked directory with a repository, git
-	// lists the inner files individually instead (see
-	// TestControllerChangesTrackedDirectoryReplacedByNestedRepositoryReportsGitListedFiles).
+func TestControllerChangesNestedRepositoryAddedInsideKeptTrackedDirectoryIsOneCollapsedEntryOmitted(t *testing.T) {
+	// Git collapses the nested repository to one trailing-slash entry
+	// even inside a kept tracked directory; the fail-closed check rejects
+	// it on detection of the .git marker. (When the parent directory
+	// itself becomes a nested repository, git descends into it and lists
+	// inner files; this case is different.)
 	dir := newGitRepo(t)
 	if err := os.MkdirAll(filepath.Join(dir, "dir"), 0o755); err != nil {
 		t.Fatalf("mkdir dir: %v", err)
@@ -467,23 +393,20 @@ func TestControllerChangesNestedRepositoryAddedInsideKeptTrackedDirectoryIsOneCo
 		newNestedRepo(t, dir, "dir/nested")
 		return nil
 	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("dir/nested")})
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
-		t.Fatalf("changes = %#v, want the one collapsed directory entry", changes)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
-	file := changes.Files[0]
-	if file.Path != "dir/nested" || file.Status != statusAdded || !file.Directory || file.Added != 0 || file.Deleted != 0 {
-		t.Fatalf("file = %#v, want dir/nested added as a collapsed directory entry with zero counts", file)
+	if result.Writes == nil {
+		t.Fatalf("writes = nil, want a non-nil skipped check")
 	}
-	writes := result.Writes
-	if writes == nil || writes.Skipped != "" {
-		t.Fatalf("writes = %#v, want a verdict", writes)
+	if result.Writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes.Skipped = %q, want %q", result.Writes.Skipped, reasonManifestUnavailable)
 	}
-	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
-		t.Fatalf("writes = %#v, want the declared collapsed directory covered", writes)
+	if result.Writes.UndeclaredCount != 0 || len(result.Writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want no clean verdict", result.Writes)
 	}
 }
 
@@ -531,56 +454,79 @@ func TestControllerChangesTrackedFileReplacedByNestedRepositoryIsTrackedChange(t
 	}
 }
 
-func TestControllerChangesNestedRepositoryDirectorySerializedWithMarker(t *testing.T) {
-	// The honest representation is pinned on the wire: the directory
-	// entry serializes with the directory marker and its canonical
-	// path, and an ordinary file entry never carries the key — a future
-	// struct change that drops the omitempty tag fails here instead of
-	// silently growing every entry. The marker is what tells a reader
-	// that zero counts mean "a directory", not "an empty file".
+func TestControllerChangesNestedRepositoryNoDirectoryEntryOnFailClosedOmitted(t *testing.T) {
+	// Fail-closed omits the whole manifest before a nested repository can
+	// produce a Directory entry; the legacy schema field remains available
+	// for non-nested defensive directory shapes.
 	dir := newGitRepo(t)
 	result := runWithChanges(t, &changesMutatingWorker{mutate: func(dir string) error {
 		newNestedRepo(t, dir, "nested")
 		return os.WriteFile(filepath.Join(dir, "ordinary.txt"), []byte("ordinary\n"), 0o644)
 	}}, dir)
-	changes := result.Changes
-	if changes == nil || changes.Omitted != "" {
-		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	if result.Changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
 	}
-	data, err := json.Marshal(changes)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	if result.Changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", result.Changes.Omitted, reasonMeasurementFail)
 	}
-	var document map[string]any
-	if err := json.Unmarshal(data, &document); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	entries, ok := document["files"].([]any)
-	if !ok || len(entries) != 2 {
-		t.Fatalf("files = %#v, want two serialized entries", document["files"])
-	}
-	byPath := map[string]map[string]any{}
-	for _, raw := range entries {
-		entry := raw.(map[string]any)
-		byPath[entry["path"].(string)] = entry
-	}
-	ordinary, ok := byPath["ordinary.txt"]
-	if !ok {
-		t.Fatalf("entries = %v, want ordinary.txt serialized", byPath)
-	}
-	if _, present := ordinary["directory"]; present {
-		t.Fatalf("ordinary entry = %s, want no directory key on a file entry", data)
-	}
-	nested, ok := byPath["nested"]
-	if !ok {
-		t.Fatalf("entries = %v, want the canonical nested path serialized", byPath)
-	}
-	if nested["directory"] != true || nested["status"] != statusAdded || nested["added"] != float64(0) || nested["deleted"] != float64(0) {
-		t.Fatalf("nested entry = %s, want directory:true with added and deleted present at zero", data)
-	}
-	if _, present := nested["noFinalNewline"]; present {
-		t.Fatalf("nested entry = %s, want no noFinalNewline key on a directory entry", data)
-	}
+}
+
+func TestRejectCollapsedNestedRepositories(t *testing.T) {
+	// rejectCollapsedNestedRepositories checks each trailing-slash
+	// entry in git's raw untracked listing for a .git marker; only
+	// trailing-slash entries are examined, so plain file names pass
+	// regardless of what sits on disk. It uses Lstat, so a dangling
+	// symlink at path/.git counts as a marker just like an ordinary
+	// directory or regular file.
+	root := t.TempDir()
+	t.Run("plain name even with nested repo", func(t *testing.T) {
+		nested := filepath.Join(root, "nested")
+		if err := os.MkdirAll(filepath.Join(nested, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		err := rejectCollapsedNestedRepositories(root, []string{"nested"})
+		if err != nil {
+			t.Fatalf("expect no error for plain name: %v", err)
+		}
+	})
+	t.Run("trailing slash without .git marker accepted", func(t *testing.T) {
+		ordinary := filepath.Join(root, "ordinary")
+		if err := os.MkdirAll(ordinary, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		err := rejectCollapsedNestedRepositories(root, []string{"ordinary/"})
+		if err != nil {
+			t.Fatalf("expect no error when no .git marker: %v", err)
+		}
+	})
+	t.Run("trailing slash with .git directory rejected", func(t *testing.T) {
+		nested := filepath.Join(root, "nested-dir")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(nested, ".git")
+		if err := os.MkdirAll(marker, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		err := rejectCollapsedNestedRepositories(root, []string{"nested-dir/"})
+		if err == nil {
+			t.Fatal("expected error when .git is a directory")
+		}
+	})
+	t.Run("trailing slash with dangling .git symlink rejected", func(t *testing.T) {
+		nested := filepath.Join(root, "nested-sym")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		deadLink := filepath.Join(nested, ".git")
+		if err := os.Symlink("/nonexistent/path", deadLink); err != nil {
+			t.Fatal(err)
+		}
+		err := rejectCollapsedNestedRepositories(root, []string{"nested-sym/"})
+		if err == nil {
+			t.Fatal("expected error when .git is a dangling symlink")
+		}
+	})
 }
 
 func TestControllerChangesAddedUntrackedFile(t *testing.T) {
@@ -2403,5 +2349,36 @@ func TestControllerChangesDirtyBeforeFromSubdirectoryUntrackedUntouchedAbsent(t 
 	}
 	if changes.TotalFiles != 0 || len(changes.Files) != 0 || changes.Truncated {
 		t.Fatalf("changes = %#v, want the untouched dirty untracked path absent", changes)
+	}
+}
+
+func TestControllerChangesNestedRepositoryOverwriteInsideOmitted(t *testing.T) {
+	// Regression for #187: a nested repository that pre-existed before
+	// the run and whose inner file the run overwrites triggers fail-closed:
+	// the raw untracked listing still carries the trailing-slash nested-
+	// repository entry with a .git marker at snapshot time, so
+	// rejectCollapsedNestedRepositories rejects the whole measurement
+	// rather than risking a confident-zero or partial-mmeasurement.
+	dir := newGitRepo(t)
+	newNestedRepo(t, dir, "nested")
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "nested", "inside.txt"), []byte("different\n"), 0o644)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("nested")})
+	changes := result.Changes
+	if changes == nil {
+		t.Fatalf("changes = nil, want a non-nil omitted manifest")
+	}
+	if changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("omitted = %q, want %q", changes.Omitted, reasonMeasurementFail)
+	}
+	writes := result.Writes
+	if writes == nil {
+		t.Fatalf("writes = nil, want a non-nil skipped check")
+	}
+	if writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes.Skipped = %q, want %q", writes.Skipped, reasonManifestUnavailable)
+	}
+	if writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
+		t.Fatalf("writes = %#v, want no clean verdict", writes)
 	}
 }
