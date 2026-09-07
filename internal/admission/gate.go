@@ -112,6 +112,18 @@ func Open(root string, maxLive int) (*Gate, error) {
 	return &Gate{root: root, maxLive: maxLive, owner: owner}, nil
 }
 
+// OwnerIdentity returns the identity of the process that opened the
+// Gate, mapped field-for-field from the identity already sampled and
+// stored by Open. It never queries the process table, and repeated
+// calls return the same value. A nil Gate returns the zero
+// OwnerIdentity.
+func (g *Gate) OwnerIdentity() OwnerIdentity {
+	if g == nil {
+		return OwnerIdentity{}
+	}
+	return OwnerIdentity{PID: g.owner.PID, CreateTime: g.owner.CreateTime}
+}
+
 // updateState performs a locked state transition. It acquires the lock,
 // loads the state, reaps stale tickets, applies update under the lock, and
 // saves when either the reaping or update changed the state. Lock, load,

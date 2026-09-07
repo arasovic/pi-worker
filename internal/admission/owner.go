@@ -7,6 +7,16 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
+// OwnerIdentity is the exported value type describing the process-level
+// identity of an admission owner: the PID and the process-table creation
+// time as reported by the operating system when the owner was sampled.
+// Both fields are positive for a valid live identity; the zero value
+// means no identity is known, for example when projecting a nil *Gate.
+type OwnerIdentity struct {
+	PID        int
+	CreateTime int64
+}
+
 // ownerIdentity holds the process-level identity of the current
 // admission owner: its PID and its process-table creation time as
 // reported by the operating system. Both values must be positive
