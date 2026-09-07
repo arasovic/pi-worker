@@ -17,15 +17,11 @@ type OwnerIdentity struct {
 	CreateTime int64
 }
 
-// ownerIdentity holds the process-level identity of the current
-// admission owner: its PID and its process-table creation time as
-// reported by the operating system. Both values must be positive
-// for the identity to be usable; a zero or negative value is treated
-// as absent or invalid.
-type ownerIdentity struct {
-	PID        int
-	CreateTime int64
-}
+// ownerIdentity aliases the exported OwnerIdentity for internal use.
+// It keeps internal fields, state, and signatures spelled privately
+// while sharing the exact exported type: identical fields, identical
+// semantics, and no conversions between the two names.
+type ownerIdentity = OwnerIdentity
 
 // ownerState is the classification of a stored owner identity
 // against the live process table.
