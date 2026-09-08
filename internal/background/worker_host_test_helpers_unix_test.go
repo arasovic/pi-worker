@@ -280,7 +280,18 @@ func waitProcessGone(t *testing.T, pid int) {
 	deadline := time.Now().Add(15 * time.Second)
 	for processAlive(pid) {
 		if time.Now().After(deadline) {
-			t.Fatalf("process %d survived cleanup", pid)
+			// Diagnose a lingering descendant before cleanup kills it:
+			// live vs zombie vs pid reuse, from /proc/<pid>/stat alone.
+			diag := "stat unavailable"
+			if runtime.GOOS == "linux" {
+				raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+				if err != nil {
+					diag = err.Error()
+				} else if stat := strings.TrimSpace(string(raw)); stat != "" {
+					diag = stat[:min(len(stat), 300)]
+				}
+			}
+			t.Fatalf("process %d survived cleanup (/proc stat: %s)", pid, diag)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
