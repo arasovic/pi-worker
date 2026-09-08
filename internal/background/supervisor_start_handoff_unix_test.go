@@ -617,10 +617,19 @@ func TestStartSupervisorHandoffPartialFrameClosesChild(t *testing.T) {
 
 	// The child's acceptance was already durable when the frame was cut:
 	// the damaged frame is a deliberate post-acceptance wire truncation,
-	// and the killed child never rolled the acceptance back.
-	snapPath := filepath.Join(backgroundRoot, req.runID, "snapshot.json")
-	if _, statErr := os.Stat(snapPath); statErr != nil {
-		t.Fatalf("child acceptance not durable when the partial frame was sent: %v", statErr)
+	// and the killed child never rolled the acceptance back. The durable
+	// snapshot is the child's genuine acceptance and binds cleanly to the
+	// request and to the exact child PID.
+	store, sErr := NewStore(backgroundRoot)
+	if sErr != nil {
+		t.Fatalf("construct store over the child's durable acceptance: %v", sErr)
+	}
+	loaded, lErr := store.Load(req.runID)
+	if lErr != nil {
+		t.Fatalf("reload the child's durable snapshot: %v", lErr)
+	}
+	if bindErr := bindSupervisorStartAccepted(req, loaded, pid); bindErr != nil {
+		t.Fatalf("durable snapshot does not bind cleanly to the request and child: %v", bindErr)
 	}
 	st := readAdmissionState(t, admissionRoot)
 	if len(st.Tickets) != len(req.tasks) {
