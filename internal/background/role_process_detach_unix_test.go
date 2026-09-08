@@ -42,11 +42,18 @@ func writeRoleProcessSleepScript(t *testing.T) string {
 
 // startRoleSleepProcess starts the bounded-sleep child under role r and
 // captures its exact PID before any Detach call can release the Go
-// handle. Cleanup always kills and reaps that exact PID — unless the
-// test already reaped the child through cmd.Wait — and then verifies
-// that no such process survives, so assertion-failure paths cannot leak
-// the child. Cleanups run last-added first, so the reap registered
-// second runs before the verification registered first.
+// handle. Cleanups run last-added first: the Close cleanup registered
+// last runs first, then the raw-PID fallback registered second, then
+// the verification registered first. The Close cleanup calls Close
+// only when closeDone is not already closed: a test body that already
+// completed the shared Close/Detach lifecycle asserted the cached
+// result, so Close is skipped and its expected error is not reported
+// again. When that cleanup Close runs, it closes every parent pipe end
+// and kills and reaps the child, so the raw-PID fallback then sees
+// cmd.ProcessState set and does nothing; otherwise the fallback kills
+// and reaps the still-unreaped exact child PID — a Detach never waits
+// and leaves one — and the final verification checks that the exact
+// PID is gone, so assertion-failure paths cannot leak the child.
 func startRoleSleepProcess(t *testing.T, r role) (*roleProcess, int) {
 	t.Helper()
 	p, err := startRoleProcess(writeRoleProcessSleepScript(t), r)
@@ -62,13 +69,28 @@ func startRoleSleepProcess(t *testing.T, r role) (*roleProcess, int) {
 	})
 	t.Cleanup(func() {
 		if p.cmd.ProcessState != nil {
-			return // already reaped through cmd.Wait
+			return // cmd.Wait may have reaped it in the test body or cleanup Close
 		}
 		if err := unix.Kill(pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
 			t.Errorf("cleanup kill role process %d: %v", pid, err)
 		}
 		if _, err := unix.Wait4(pid, nil, 0, nil); err != nil && !errors.Is(err, unix.ECHILD) {
 			t.Errorf("cleanup reap role process %d: %v", pid, err)
+		}
+	})
+	t.Cleanup(func() {
+		// Registered last so it runs before the raw exact-PID fallback
+		// above. When the test body already completed the shared
+		// Close/Detach lifecycle, closeDone is closed, so this cleanup
+		// skips Close and therefore does not report the cached result
+		// again; a Detach never kills the child, so a detached child
+		// remains alive for the exact-PID fallback to kill and reap.
+		select {
+		case <-p.closeDone:
+		default:
+			if err := p.Close(); err != nil {
+				t.Errorf("cleanup close role process: %v", err)
+			}
 		}
 	})
 	return p, pid
