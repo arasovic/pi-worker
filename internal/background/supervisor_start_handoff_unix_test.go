@@ -29,6 +29,32 @@ import (
 // variable.
 const supervisorHandoffChildEnv = "PI_WORKER_BACKGROUND_TEST_SUPERVISOR_HANDOFF_EXCHANGE"
 
+// supervisorHandoffBindMismatchChildEnv is the environment variable that
+// switches a spawned role-process test child out of its echo loop into
+// the opt-in bind-mismatch mode: after durably accepting the one start
+// request, the child answers with one complete strictly valid accepted
+// Snapshot for the same request and the exact child PID in which exactly
+// one Snapshot-represented field (workspace) is deliberately mismatched,
+// then stays alive. The value is a Go duration bounding how long the
+// child keeps running after its reply, so the starter's bind-failure
+// Close kills and reaps a still-live child while the mode stays bounded
+// even when the starter never closes it. Unset or empty keeps the echo
+// behavior; TestMain reads this variable.
+const supervisorHandoffBindMismatchChildEnv = "PI_WORKER_BACKGROUND_TEST_SUPERVISOR_HANDOFF_BIND_MISMATCH"
+
+// supervisorHandoffPartialFrameChildEnv is the environment variable that
+// switches a spawned role-process test child out of its echo loop into
+// the opt-in partial-frame mode: after durably accepting the one start
+// request, the child writes a valid frame length announcing the full
+// accepted reply, follows it with only part of the reply payload, closes
+// its response writer to produce EOF, and stays alive. The value is a Go
+// duration bounding how long the child keeps running after its damaged
+// frame, so the starter's read-failure Close kills and reaps a still-live
+// child while the mode stays bounded even when the starter never closes
+// it. Unset or empty keeps the echo behavior; TestMain reads this
+// variable.
+const supervisorHandoffPartialFrameChildEnv = "PI_WORKER_BACKGROUND_TEST_SUPERVISOR_HANDOFF_PARTIAL_FRAME"
+
 // handoffOutcome carries one return of the starter-side handoff across a
 // goroutine boundary.
 type handoffOutcome struct {
@@ -453,6 +479,159 @@ func TestStartSupervisorHandoffMalformedReplyClosesChild(t *testing.T) {
 	assertRoleChildGone(t, pid)
 	requireDirEmpty(t, backgroundRoot)
 	requireDirEmpty(t, admissionRoot)
+	requireNoHandoffLeak(t, fdsBefore, gosBefore)
+}
+
+// TestStartSupervisorHandoffBindMismatchClosesChild runs the handoff
+// against the opt-in bind-mismatch test child: after reading the one
+// request the child durably accepts it exactly as the production exchange
+// would, then answers with one complete strictly valid accepted Snapshot
+// for the same request and the exact child PID in which exactly one
+// Snapshot-represented field — workspace — is deliberately mismatched,
+// and stays alive. The strict decode must succeed and the bind must fail
+// on exactly that single field: the handoff reports accepted=false with
+// an error naming the bind mismatch, closes and reaps the still-live
+// child, and leaves the child's genuine durable acceptance untouched on
+// disk. The child mode is bounded: its hold expires on its own, and the
+// capture cleanup kills and reaps an orphaned child after a bounded wait
+// even when an assertion fails.
+func TestStartSupervisorHandoffBindMismatchClosesChild(t *testing.T) {
+	t.Setenv(supervisorHandoffBindMismatchChildEnv, "30s")
+	req, backgroundRoot, admissionRoot := exchangeStartRequest(t)
+	var proc *roleProcess
+	var pid int
+	start, _ := captureHandoffStart(t, &proc, &pid)
+	fdsBefore := countFDs(t)
+	gosBefore := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	result, err := startSupervisorHandoffWithProcess(ctx, testExe(t), req, start)
+	if result.accepted {
+		t.Fatal("bind-mismatch reply reported acceptance")
+	}
+	if err == nil {
+		t.Fatal("bind-mismatch reply returned no error")
+	}
+	if !strings.Contains(err.Error(), "bind accepted reply") {
+		t.Fatalf("error %q does not report the bind failure", err)
+	}
+	want := fmt.Sprintf("workspace %q does not match request workspace %q",
+		supervisorHandoffTamperedWorkspace, req.workspace)
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error %q does not identify the single mismatched workspace field: %q", err, want)
+	}
+	// Exactly one Snapshot-represented field mismatched: every other bind
+	// check stays silent, so the reply was bound to the request and to
+	// the exact child PID except for the one deliberate deviation.
+	for _, other := range []string{
+		"does not match request runId",
+		"does not match request acceptedAt",
+		"does not match the initial accepted time",
+		"worktree does not match",
+		"workers for",
+		"task projection",
+		"executionTimeout",
+		"does not match the spawned supervisor pid",
+	} {
+		if strings.Contains(err.Error(), other) {
+			t.Fatalf("error %q reports an additional bind mismatch (%q)", err, other)
+		}
+	}
+
+	// The starter closed and reaped the still-live child: the handoff
+	// must never accept a supervisor whose reply fails the bind.
+	assertRoleChildGone(t, pid)
+
+	// The child's durable acceptance is the genuine one — the reply
+	// deviated only on the wire. The killed child never rolled it back
+	// and the starter never touched child state.
+	store, sErr := NewStore(backgroundRoot)
+	if sErr != nil {
+		t.Fatalf("construct store over the child's durable acceptance: %v", sErr)
+	}
+	loaded, lErr := store.Load(req.runID)
+	if lErr != nil {
+		t.Fatalf("reload the child's durable snapshot: %v", lErr)
+	}
+	if bindErr := bindSupervisorStartAccepted(req, loaded, pid); bindErr != nil {
+		t.Fatalf("durable snapshot does not bind cleanly to the request and child: %v", bindErr)
+	}
+	st := readAdmissionState(t, admissionRoot)
+	if len(st.Tickets) != len(req.tasks) {
+		t.Fatalf("durable tickets = %d, want %d: %+v", len(st.Tickets), len(req.tasks), st.Tickets)
+	}
+	for i, tk := range st.Tickets {
+		if tk.RunID != req.runID || tk.WorkerID != i+1 || tk.State != "queued" || tk.OwnerPID != pid {
+			t.Errorf("ticket[%d] mismatch: %+v", i, tk)
+		}
+	}
+
+	requireNoHandoffLeak(t, fdsBefore, gosBefore)
+}
+
+// TestStartSupervisorHandoffPartialFrameClosesChild runs the handoff
+// against the opt-in partial-frame test child: after durably accepting
+// the one request, the child writes a valid frame length announcing the
+// full accepted reply, follows it with only the leading half of the reply
+// payload, and closes its response writer so the starter reads EOF in the
+// middle of the announced payload. The reply read must fail as a
+// partial-frame read — never a decode — and the handoff reports
+// accepted=false with an error naming the partial read, closes and reaps
+// the still-live child, and leaves the child's durable acceptance on
+// disk, proving the child had genuinely accepted before the frame was cut
+// off on the wire. The child mode is bounded: its hold expires on its
+// own, and the capture cleanup kills and reaps an orphaned child after a
+// bounded wait even when an assertion fails.
+func TestStartSupervisorHandoffPartialFrameClosesChild(t *testing.T) {
+	t.Setenv(supervisorHandoffPartialFrameChildEnv, "30s")
+	req, backgroundRoot, admissionRoot := exchangeStartRequest(t)
+	var proc *roleProcess
+	var pid int
+	start, _ := captureHandoffStart(t, &proc, &pid)
+	fdsBefore := countFDs(t)
+	gosBefore := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	result, err := startSupervisorHandoffWithProcess(ctx, testExe(t), req, start)
+	if result.accepted {
+		t.Fatal("partial reply frame reported acceptance")
+	}
+	if err == nil {
+		t.Fatal("partial reply frame returned no error")
+	}
+	if !strings.Contains(err.Error(), "read reply frame") ||
+		!strings.Contains(err.Error(), "read payload") ||
+		!strings.Contains(err.Error(), "unexpected EOF") {
+		t.Fatalf("error %q does not identify the partial-frame read failure", err)
+	}
+	if strings.Contains(err.Error(), "decode reply frame") {
+		t.Fatalf("error %q reports a decode failure: the partial frame must fail at the read", err)
+	}
+
+	// The starter closed and reaped the still-live child.
+	assertRoleChildGone(t, pid)
+
+	// The child's acceptance was already durable when the frame was cut:
+	// the damaged frame is a deliberate post-acceptance wire truncation,
+	// and the killed child never rolled the acceptance back.
+	snapPath := filepath.Join(backgroundRoot, req.runID, "snapshot.json")
+	if _, statErr := os.Stat(snapPath); statErr != nil {
+		t.Fatalf("child acceptance not durable when the partial frame was sent: %v", statErr)
+	}
+	st := readAdmissionState(t, admissionRoot)
+	if len(st.Tickets) != len(req.tasks) {
+		t.Fatalf("durable tickets = %d, want %d: %+v", len(st.Tickets), len(req.tasks), st.Tickets)
+	}
+	for i, tk := range st.Tickets {
+		if tk.RunID != req.runID || tk.WorkerID != i+1 || tk.State != "queued" || tk.OwnerPID != pid {
+			t.Errorf("ticket[%d] mismatch: %+v", i, tk)
+		}
+	}
+
 	requireNoHandoffLeak(t, fdsBefore, gosBefore)
 }
 
