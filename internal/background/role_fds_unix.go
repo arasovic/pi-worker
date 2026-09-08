@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -33,9 +35,31 @@ type childRolePipes struct {
 // via Stat.  For worker-host roles an additional ownership fd 5 is
 // opened, Stat'd, and included in the returned pipes.
 //
-// Close failures are joined with the primary error so that callers
-// can inspect individual causes.
+// For worker-host roles fd 3 and fd 4 are switched to non-blocking mode
+// before any os.File wrapper exists, so os.NewFile registers them as
+// pollable files whose reads and writes the runtime bounds with real
+// deadlines; the ownership descriptor and every supervisor descriptor
+// stay exactly as inherited. Close failures are joined with the primary
+// error so that callers can inspect individual causes.
 func openChildRolePipes(r role) (*childRolePipes, error) {
+	// Worker-host request/response transports must carry real bounded
+	// read and write deadlines, and the runtime poller only manages
+	// descriptors that are already non-blocking when os.NewFile wraps
+	// them (os.NewFile never changes the blocking mode of a descriptor
+	// it did not put into non-blocking mode itself, and File.Fd() only
+	// clears O_NONBLOCK on files Go created). Put fd 3 and fd 4 into
+	// non-blocking mode here, before any wrapper exists — one wrapper
+	// per descriptor, so there is never a second owner of the same fd —
+	// and leave the ownership descriptor blocking: the watcher polls it
+	// raw and nothing deadlines it. Supervisor role transports are left
+	// exactly as inherited, blocking.
+	if r == roleWorkerHost {
+		for _, fd := range []int{childRoleRequestFD, childRoleResponseFD} {
+			if err := unix.SetNonblock(fd, true); err != nil {
+				return nil, fmt.Errorf("set non-blocking mode on child fd %d: %w", fd, err)
+			}
+		}
+	}
 	req := os.NewFile(childRoleRequestFD, "/dev/fd/3")
 	if req == nil {
 		return nil, fmt.Errorf("open child request fd %d: NewFile returned nil", childRoleRequestFD)
