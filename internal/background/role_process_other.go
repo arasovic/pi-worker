@@ -57,3 +57,12 @@ func (p *roleProcess) Close() error {
 	}
 	return errRoleProcessUnsupported
 }
+
+// Detach is nil-safe on unsupported platforms: it returns nil for a nil
+// receiver and errRoleProcessUnsupported for a non-nil handle.
+func (p *roleProcess) Detach() error {
+	if p == nil {
+		return nil
+	}
+	return errRoleProcessUnsupported
+}
