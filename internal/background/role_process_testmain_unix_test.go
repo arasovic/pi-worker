@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -64,6 +65,36 @@ func TestMain(m *testing.M) {
 			if err := checkChildRoleCloexec(pipes); err != nil {
 				fmt.Fprintf(os.Stderr, "checkChildRoleCloexec: %v\n", err)
 				os.Exit(96)
+			}
+
+			// The starter-side supervisor start handoff tests set
+			// supervisorHandoffChildEnv, switching this child out of the
+			// echo loop into the real child-side supervisor start
+			// exchange. The variable's value is a Go duration: how long an
+			// accepted child keeps running after the exchange before
+			// exiting, so the tests can observe the detached supervisor as
+			// a live process. Unset or empty keeps the echo behavior every
+			// earlier role-process test relies on.
+			if hold := os.Getenv(supervisorHandoffChildEnv); hold != "" {
+				result, err := receiveSupervisorStart(pipes)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "receiveSupervisorStart: %v\n", err)
+					os.Exit(90)
+				}
+				if !result.accepted {
+					// A complete rejection already answered the handshake
+					// and rolled back every artifact; exit cleanly.
+					os.Exit(88)
+				}
+				holdDuration, perr := time.ParseDuration(hold)
+				if perr != nil {
+					fmt.Fprintf(os.Stderr, "parse %s hold %q: %v\n", supervisorHandoffChildEnv, hold, perr)
+					os.Exit(89)
+				}
+				// Accepted: behave like a supervisor that lives on after
+				// the exchange instead of exiting immediately.
+				time.Sleep(holdDuration)
+				os.Exit(0)
 			}
 			for {
 				payload, err := readFrame(pipes.requestReader, privateFrameLimit)
