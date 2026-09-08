@@ -20,7 +20,9 @@ var errRoleRequestClosed = errors.New("role process request channel closed")
 // For roleWorkerHost the child also receives the ownership read end on fd 5,
 // and the parent retains the ownership write end on the ownershipWriter field.
 type roleProcess struct {
-	cmd            *exec.Cmd
+	cmd  *exec.Cmd
+	role role // validated role from startRoleProcess: roleSupervisor or roleWorkerHost
+
 	requestWriter  *os.File // parent-side write end of the request pipe
 	responseReader *os.File // parent-side read end of the response pipe
 	frameLimit     int      // limit for Send/Receive frames (0 means use default)
@@ -52,9 +54,11 @@ type roleProcess struct {
 	ownershipClosed   bool
 	ownershipCloseErr error
 
-	// closeOnce guarantees Close performs its full cleanup exactly once;
-	// all concurrent callers block until Close finishes and then receive
-	// the same cached result.
+	// closeOnce guarantees the terminal lifecycle shared by Close and
+	// Detach performs its full cleanup exactly once: whichever of the
+	// two is called first wins, and concurrent or later callers of
+	// either block until it finishes and then receive the same cached
+	// result.
 	closeOnce sync.Once
 	closeDone chan struct{}
 	closeErr  error
@@ -202,6 +206,7 @@ func startRoleProcess(executable string, r role) (*roleProcess, error) {
 
 	rp := &roleProcess{
 		cmd:            cmd,
+		role:           r,
 		requestWriter:  requestWriter,
 		responseReader: responseReader,
 		frameLimit:     privateFrameLimit,
@@ -382,7 +387,10 @@ func (p *roleProcess) CloseOwnership() error {
 // first (to unblock any Send stuck on a write to a non-reading child),
 // then CloseRequest, then CloseOwnership, then closeResponse; joins any
 // real cleanup errors, caches the result, and blocks all concurrent
-// callers until finished. It is nil-safe and idempotent.
+// callers until finished. Close and Detach share one terminal
+// lifecycle, so whichever is called first wins: a Close after a
+// completed Detach returns the cached detach result and never kills
+// the released child. Close is nil-safe and idempotent.
 func (p *roleProcess) Close() error {
 	if p == nil {
 		return nil
@@ -419,6 +427,61 @@ func (p *roleProcess) Close() error {
 
 		if len(errs) > 0 {
 			p.closeErr = fmt.Errorf("role process close: %w", errors.Join(errs...))
+		}
+	})
+	<-p.closeDone
+	return p.closeErr
+}
+
+// Detach relinquishes an accepted supervisor child without killing or
+// waiting for it. It is valid only for roleSupervisor; detaching a
+// worker-host is rejected before any lifecycle state changes. All
+// Send/Receive frame I/O must be quiescent before Detach is called:
+// the caller must not race Detach with Send, Receive, or Close. It
+// must first decide whether the supervisor handshake result was
+// accepted or rejected and then choose exactly one terminal action.
+// Detach occupies the same terminal closeOnce/closeDone/closeErr
+// lifecycle as Close, so a later deferred Close observes the completed
+// lifecycle, returns the cached detach result, and never kills the
+// child. Within the detach lifecycle it closes the parent request
+// writer and the parent response reader, and it calls
+// cmd.Process.Release. Release only drops the Go handle so the starter
+// can never reap the child through Wait; it does not itself reparent
+// the child. The starter's imminent process exit is what lets the OS
+// reparent the still-running supervisor. Every step is attempted and
+// their errors are joined. It never calls Kill, Wait, CloseOwnership,
+// or signals the child. Detach is nil-safe and idempotent: repeated
+// calls return the cached result.
+func (p *roleProcess) Detach() error {
+	if p == nil {
+		return nil
+	}
+	if p.role != roleSupervisor {
+		return fmt.Errorf("role process detach: only %q may detach, process role is %q", roleSupervisor, p.role)
+	}
+	p.closeOnce.Do(func() {
+		defer close(p.closeDone)
+		var errs []error
+
+		// Close the request writer and the response reader so the child
+		// observes EOF on both pipes once it stops using them.
+		if cerr := p.CloseRequest(); cerr != nil {
+			errs = append(errs, cerr)
+		}
+		if cerr := p.closeResponse(); cerr != nil {
+			errs = append(errs, cerr)
+		}
+
+		// Release the os.Process handle without killing or waiting;
+		// the accepted supervisor continues independently.
+		if p.cmd != nil && p.cmd.Process != nil {
+			if rerr := p.cmd.Process.Release(); rerr != nil {
+				errs = append(errs, fmt.Errorf("release role process: %w", rerr))
+			}
+		}
+
+		if len(errs) > 0 {
+			p.closeErr = fmt.Errorf("role process detach: %w", errors.Join(errs...))
 		}
 	})
 	<-p.closeDone
