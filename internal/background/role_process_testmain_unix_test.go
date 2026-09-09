@@ -180,6 +180,25 @@ func TestMain(m *testing.M) {
 					time.Sleep(24 * time.Hour)
 				}
 			}
+			// The opt-in closed-response mode closes this worker-host
+			// child's response writer and then lives forever ignoring
+			// everything, exactly like the stuck mode, so adapter tests can
+			// observe a response stream at EOF while the child itself is
+			// still running. The pid-file environment of the stuck mode
+			// records the exact child pid. Unset or empty keeps the
+			// ownership-EOF behavior every earlier role-process test relies
+			// on.
+			if os.Getenv(workerHostClosedResponseEnv) != "" {
+				if pidPath := os.Getenv(workerHostStuckPIDFileEnv); pidPath != "" {
+					_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600)
+				}
+				_ = pipes.responseWriter.Close()
+				// A bare select {} would trip the runtime deadlock
+				// detector and exit by itself, defeating the mode.
+				for {
+					time.Sleep(24 * time.Hour)
+				}
+			}
 			// The opt-in crash mode exits immediately with code 3 without
 			// reading anything, so adapter tests can exercise the
 			// host-exited-without-terminal-result path. Unset or empty
