@@ -26,6 +26,27 @@ trusted workspace and keep parallel file ownership disjoint.
 
 Do not commit dist, npm/native, tgz files, credentials, Pi profiles, provider configuration, prompts, workspace contents, or generated local artifacts.
 
+## Live Pi probe
+
+The `livepiprobe` package proves that Pi's own built-in tools resolve relative
+paths inside the workspace Pi Worker selected rather than the caller's inherited
+working directory. It needs a real Pi binary at the pinned version and a real
+authenticated model, so it never runs in CI. Set `PI_WORKER_LIVE_MODEL` to an
+exact model selector before running it: there is no default and no fallback —
+unset means the probe reports skipped, never passed.
+
+Two npm scripts cover it:
+
+- `npm run check:govet-livepi` compiles the tag-gated probe with
+  `go vet -tags livepi ./...`. It is part of `verify`, needs no credentials, and
+  runs no probe.
+- `npm run check:livepiprobe` runs the probe itself. It calls a paid model and
+  costs money; because it sets `PI_WORKER_LIVE_REQUIRED=1`, a host that is not
+  ready fails the command instead of reporting it as skipped-and-passing.
+
+Any pull request that bumps the pinned Pi version must run the probe once and
+paste its output into the pull request.
+
 ## Dependency updates
 
 Every dependency is also pinned somewhere the version resolver does not reach,
