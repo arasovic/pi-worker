@@ -51,10 +51,12 @@
     "check:hygiene": "node npm/scripts/check-hygiene.mjs",
     "check:gofmt": "! gofmt -l $(git ls-files '*.go') | grep .",
     "check:govet": "go vet ./...",
+    "check:govet-livepi": "go vet -tags livepi ./...",
     "check:gotest": "go test -race -count=1 ./...",
+    "check:livepiprobe": "go test -tags livepi -count=1 -v ./internal/livepiprobe/...",
     "notices:check": "npm run check:notices",
     "skills-rules:check": "npm run check:rules",
-    "verify": "npm run check:gofmt && npm run check:govet && npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion && npm run check:gotest",
+    "verify": "npm run check:gofmt && npm run check:govet && npm run check:govet-livepi && npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion && npm run check:gotest",
     "prepack": "npm run check:notices && npm run check:rules && npm run check:hygiene && npm run check:piversion"
   }
 }

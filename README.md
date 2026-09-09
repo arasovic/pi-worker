@@ -77,8 +77,9 @@ command -v pi-worker
 > **Safety:** Workers can modify the current writable workspace and execute
 > `bash` with the current user's host permissions. Pi Worker is not a sandbox.
 > `--worktree` gives one run a separate working directory, not containment: a
-> worker can still reach outside it. Use a trusted workspace; parallel tasks
-> must be disjoint.
+> worker can still reach outside it. Selecting a workspace scopes where Pi's own
+> tools resolve relative paths; it is not a filesystem boundary. Use a trusted
+> workspace; parallel tasks must be disjoint.
 
 Choose an exact selector, check readiness, save a default, and run a task.
 Replace `provider/model` with one exact selector printed by `pi-worker models`

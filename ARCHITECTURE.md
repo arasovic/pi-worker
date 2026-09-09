@@ -50,8 +50,9 @@ Without `--worktree`, parallel tasks share the caller's writable workspace and
 must have disjoint file ownership. With `--worktree`, they instead share the
 run's private checkout and must likewise have disjoint file ownership. That
 checkout is a working-directory boundary, not containment: workers retain the
-user's host permissions and can reach outside it. Pi Worker provides lifecycle
-management, not a sandbox.
+user's host permissions and can reach outside it. Selecting a workspace scopes
+where Pi's own tools resolve relative paths; it is not a filesystem boundary.
+Pi Worker provides lifecycle management, not a sandbox.
 
 ### Foreground admission
 

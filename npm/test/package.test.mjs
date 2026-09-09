@@ -466,9 +466,11 @@ test("manifest exposes one non-duplicated local verification pipeline", () => {
   assert.equal(manifest.scripts["check:hygiene"], "node npm/scripts/check-hygiene.mjs");
   assert.equal(manifest.scripts["check:gofmt"], "! gofmt -l $(git ls-files '*.go') | grep .");
   assert.equal(manifest.scripts["check:govet"], "go vet ./...");
+  assert.equal(manifest.scripts["check:govet-livepi"], "go vet -tags livepi ./...");
+  assert.equal(manifest.scripts["check:livepiprobe"], "go test -tags livepi -count=1 -v ./internal/livepiprobe/...");
   assert.equal(manifest.scripts["check:gotest"], "go test -race -count=1 ./...");
   assert.match(manifest.scripts.test, /npm\/test\/\*\.test\.mjs/);
-  assert.equal(manifest.scripts.verify, "npm run check:gofmt && npm run check:govet && npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion && npm run check:gotest");
+  assert.equal(manifest.scripts.verify, "npm run check:gofmt && npm run check:govet && npm run check:govet-livepi && npm test && npm run check:rules && npm run check:notices && npm run check:hygiene && npm run check:piversion && npm run check:gotest");
 });
 
 test("npm pack has the exact allowlisted inventory, modes, and identity bytes", (t) => {
