@@ -270,8 +270,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 
 		thinking = attemptThinking
 		attemptStop()
-		_ = client.Close()
-		_ = proc.Close()
+		closeProcessThenClient(proc, client)
 		if retryable && attempt < 3 {
 			lastRetryableFailureClass = failure.Status
 			continue
@@ -281,8 +280,9 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	if successProc == nil {
 		return withThinking(WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: "startup attempts exhausted"})
 	}
-	defer successProc.Close()
-	defer client.Close()
+	// The successful run's single teardown: deferring the helper keeps the
+	// Process close ahead of the Client close despite LIFO defer order.
+	defer closeProcessThenClient(successProc, client)
 
 	thinking = successThinking
 	if startupWarning != "" {
@@ -409,6 +409,23 @@ func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest,
 		}
 	}
 	return thinking, WorkerResult{}, false, true
+}
+
+// closeProcessThenClient is the single teardown for a started host process
+// and its RPC client. The Process must be closed BEFORE the Client: closing
+// the client first closes the child's stdout pipe, and a root that then
+// writes and exits on the broken pipe is reaped before Process.Close can
+// snapshot its lineage, so descendants alive at that moment escape cleanup.
+// Stdout must remain open until containment has snapshotted and reaped the
+// tree, which only a process-first close guarantees. Cleanup errors are
+// ignored here, as at every call site.
+func closeProcessThenClient(proc *Process, client *Client) {
+	if proc != nil {
+		_ = proc.Close()
+	}
+	if client != nil {
+		_ = client.Close()
+	}
 }
 
 func startupRetryWarning(attempt int, priorFailureClass string) string {
