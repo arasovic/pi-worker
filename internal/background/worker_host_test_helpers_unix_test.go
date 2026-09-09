@@ -42,6 +42,12 @@ const workerHostStuckPIDFileEnv = "PI_WORKER_BACKGROUND_TEST_WORKER_HOST_STUCK_P
 // code 3 without reading anything.
 const workerHostCrashEnv = "PI_WORKER_BACKGROUND_TEST_WORKER_HOST_CRASH"
 
+// workerHostClosedResponseEnv makes a roleWorkerHost child close its
+// response writer — so the parent reads EOF at once — and then ignore
+// everything and live forever, exactly like the stuck mode. It reuses
+// workerHostStuckPIDFileEnv to record its exact pid.
+const workerHostClosedResponseEnv = "PI_WORKER_BACKGROUND_TEST_WORKER_HOST_CLOSED_RESPONSE"
+
 // workerHostWriteGraceEnv bounds the child-side response write grace of
 // the execute TestMain mode: the spawned child parses it in TestMain and
 // sets its own workerHostWriteGrace, so real-subprocess tests never

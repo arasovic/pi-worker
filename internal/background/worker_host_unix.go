@@ -293,6 +293,12 @@ func writeWorkerHostResponse(w io.Writer, payload []byte) error {
 	return writeFrame(w, payload, privateFrameLimit)
 }
 
+// workerHostStartProcess is the process-start seam of the adapter. It is
+// startRoleProcess in production; tests replace it to observe the exact
+// roleProcess the adapter spawns and to install a per-instance failing
+// kill on it, then restore the original in t.Cleanup.
+var workerHostStartProcess = startRoleProcess
+
 // execute launches one private same-binary worker-host child, sends the
 // encoded execution request, closes the request writer (request EOF does
 // not cancel the host), and drives the framed exchange to one terminal
@@ -304,7 +310,7 @@ func writeWorkerHostResponse(w io.Writer, payload []byte) error {
 // never waited out and never reported as a completed kill: the host may
 // still be running, and the result says so.
 func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, payload []byte) (result pi.WorkerResult) {
-	proc, startErr := startRoleProcess(a.executable, roleWorkerHost)
+	proc, startErr := workerHostStartProcess(a.executable, roleWorkerHost)
 	if startErr != nil {
 		return pi.WorkerResult{Model: req.Model, Status: pi.StatusUnavailable, Error: fmt.Sprintf("start worker host: %v", startErr)}
 	}
