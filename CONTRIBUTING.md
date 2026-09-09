@@ -41,7 +41,8 @@ Two npm scripts cover it:
   `go vet -tags livepi ./...`. It is part of `verify`, needs no credentials, and
   runs no probe.
 - `npm run check:livepiprobe` runs the probe itself. It calls a paid model and
-  costs money.
+  costs money; because it sets `PI_WORKER_LIVE_REQUIRED=1`, a host that is not
+  ready fails the command instead of reporting it as skipped-and-passing.
 
 Any pull request that bumps the pinned Pi version must run the probe once and
 paste its output into the pull request.

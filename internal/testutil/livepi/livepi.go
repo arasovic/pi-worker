@@ -64,8 +64,11 @@ func Decide(model string, lookup func(string) (string, error), probe func(ctx co
 // ProbeTimeout bounds the version probe in Gate.
 const ProbeTimeout = 5 * time.Second
 
-// Gate gathers the real inputs from the host, applies Decide, and skips the
-// test with the reason when the host is not ready.
+// Gate gathers the real inputs from the host, applies Decide, and, when the
+// host is not ready, fails the test with the reason if PI_WORKER_LIVE_REQUIRED=1
+// or skips the test with the reason otherwise. The required mode exists for the
+// deliberate probe command, so a probe that cannot run reports failure instead
+// of exiting zero.
 func Gate(t *testing.T) Result {
 	t.Helper()
 	result := Decide(
@@ -78,6 +81,9 @@ func Gate(t *testing.T) Result {
 		},
 	)
 	if !result.Ready {
+		if os.Getenv("PI_WORKER_LIVE_REQUIRED") == "1" {
+			t.Fatal(result.Reason)
+		}
 		t.Skip(result.Reason)
 	}
 	return result

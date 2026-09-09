@@ -196,9 +196,9 @@ func runProbe(t *testing.T, bin, model string, extra ...string) runDocument {
 }
 
 // assertProbe checks the shared assertions on the parsed document: the run
-// completed, the reported text contains the selected nonce, and it never
-// contains the decoy nonce. explanation is used; partialExplanation only
-// when explanation is empty.
+// completed, the reported text contains the selected nonce, and — when a decoy
+// nonce is supplied — the text never contains the decoy. explanation is used;
+// partialExplanation only when explanation is empty.
 //
 // Known residual gap: text-level proof. A leak is missed only if the model
 // read the decoy and chose not to report it.
@@ -223,38 +223,35 @@ func assertProbe(t *testing.T, doc runDocument, selected, decoy string) {
 	if !strings.Contains(text, selected) {
 		t.Fatalf("reported text does not contain the selected nonce %s\ntext:\n%s", selected, text)
 	}
-	if strings.Contains(text, decoy) {
+	if decoy != "" && strings.Contains(text, decoy) {
 		t.Fatalf("reported text contains the decoy nonce %s\ntext:\n%s", decoy, text)
 	}
 }
 
-// TestProbeCallerCheckoutIsWorkspace proves scenario 1: with the caller's
-// checkout as the workspace, Pi's tools resolve relative paths inside it. The
-// selected fixture lives in the workspace; the decoy lives one level above in
-// the parent directory. A tool that resolved relative paths above the
-// selected workspace would see the decoy.
+// TestProbeCallerCheckoutIsWorkspace is scenario 1: a resolution smoke check.
+// With the caller's checkout as the workspace, it proves only that Pi's
+// built-in tools resolve relative paths inside the selected workspace at all,
+// rather than in some unrelated directory such as Pi's own session directory:
+// the reported text must contain the selected nonce. It does NOT discriminate
+// against Pi resolving relative paths from its process working directory —
+// here the selected workspace and the inherited working directory are the
+// same directory, so such a regression would pass this scenario too. The
+// discriminating scenario is TestProbeManagedWorktreeIsWorkspace, the only
+// configuration where the selected workspace and the inherited working
+// directory differ.
 func TestProbeCallerCheckoutIsWorkspace(t *testing.T) {
 	gate := livepi.Gate(t)
 	bin := piWorkerBin(t)
 
-	parent := t.TempDir()
-	workspace := filepath.Join(parent, "workspace")
-	if err := os.Mkdir(workspace, 0o755); err != nil {
-		t.Fatalf("mkdir workspace: %v", err)
-	}
+	workspace := t.TempDir()
 	initRepo(t, workspace)
 
 	selected := nonce(t)
-	decoy := nonce(t)
 	writeFixture(t, workspace, selected)
-	// The decoy sits one level above the workspace: exactly where a
-	// regressed tool resolving "probe/..." relative to the caller's
-	// checkout parent, or any path escaping the workspace, would land.
-	writeFixture(t, parent, decoy)
 
 	t.Chdir(workspace)
 	doc := runProbe(t, bin, gate.Model)
-	assertProbe(t, doc, selected, decoy)
+	assertProbe(t, doc, selected, "")
 }
 
 // TestProbeManagedWorktreeIsWorkspace proves scenario 2: with --worktree, the
@@ -297,11 +294,36 @@ func TestProbeManagedWorktreeIsWorkspace(t *testing.T) {
 	name := "probe-" + nonce(t)
 	t.Chdir(repo)
 	doc := runProbe(t, bin, gate.Model, "--worktree", name)
-	assertProbe(t, doc, selected, decoy)
 
-	// Remove the managed worktree so the temporary repository can be
-	// cleaned up: worktree remove refuses a linked checkout held by the
-	// repository's worktree list.
-	git(t, repo, "worktree", "remove", "--force", filepath.Join(repo, ".pi-worker", "worktrees", name))
-	git(t, repo, "branch", "-D", "run/"+name)
+	worktree := filepath.Join(repo, ".pi-worker", "worktrees", name)
+	t.Cleanup(func() {
+		// Remove the managed worktree so the temporary repository can be
+		// cleaned up: worktree remove refuses a linked checkout held by the
+		// repository's worktree list.
+		git(t, repo, "worktree", "remove", "--force", worktree)
+		git(t, repo, "branch", "-D", "run/"+name)
+	})
+
+	// Precondition: the managed worktree must actually hold the selected
+	// fixture, checked out from HEAD, and never the repository root's
+	// uncommitted decoy. Checking here turns a wrong-revision or copied-
+	// working-tree failure into a precondition failure instead of a
+	// confusing text assertion later.
+	for _, file := range []string{"marker.txt", "found-" + selected + ".txt"} {
+		content, err := os.ReadFile(filepath.Join(worktree, "probe", file))
+		if err != nil {
+			t.Fatalf("precondition: managed worktree missing probe/%s: %v", file, err)
+		}
+		if got := strings.TrimSpace(string(content)); got != selected {
+			t.Fatalf("precondition: managed worktree probe/%s = %q, want selected nonce %q", file, got, selected)
+		}
+	}
+	// The decoy's own file name is the only decoy artifact that could appear
+	// here: marker.txt exists in both fixtures, and the loop above already
+	// pins its content to the selected nonce.
+	if _, err := os.Stat(filepath.Join(worktree, "probe", "found-"+decoy+".txt")); err == nil {
+		t.Fatalf("precondition: managed worktree holds the decoy file probe/found-%s.txt", decoy)
+	}
+
+	assertProbe(t, doc, selected, decoy)
 }
