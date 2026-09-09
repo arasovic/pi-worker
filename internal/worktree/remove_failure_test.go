@@ -206,8 +206,8 @@ func TestRemoveListFailurePreventsCommands(t *testing.T) {
 		defer mu.Unlock()
 		cmd := strings.Join(args, " ")
 		calls = append(calls, cmd)
-		if cmd == "rev-parse --show-toplevel" {
-			return t.TempDir(), nil
+		if cmd == "rev-parse --git-common-dir" {
+			return filepath.Join(t.TempDir(), ".git"), nil
 		}
 		return "", fmt.Errorf("injected list failure")
 	})
