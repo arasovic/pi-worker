@@ -6,11 +6,31 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// waitMutexHeld blocks until mu is held by another goroutine or the bounded
+// deadline expires. sync.Mutex.TryLock succeeds only while the mutex is
+// free, so a failing TryLock is positive evidence that some other goroutine
+// holds it — here, that the blocked Send or Receive is genuinely inside its
+// I/O call holding the mutex Close must not wait for.
+func waitMutexHeld(t *testing.T, mu *sync.Mutex, what string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if mu.TryLock() {
+			mu.Unlock()
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		return
+	}
+	t.Fatalf("%s was never held: the blocking call was not entered within the deadline", what)
+}
 
 // TestRoleProcessCloseKillFailureUnblocksIO proves that Close survives a
 // Kill that fails. Close kills the child first so a Send blocked writing
@@ -64,10 +84,14 @@ func TestRoleProcessCloseKillFailureUnblocksIO(t *testing.T) {
 		receiveDone <- err
 	}()
 
-	// Let both goroutines settle inside their blocking calls: Send is
-	// stuck writing to the full request pipe holding sendMu, Receive is
-	// stuck reading the empty response pipe holding receiveMu.
-	time.Sleep(200 * time.Millisecond)
+	// Both goroutines must be genuinely inside their blocking calls before
+	// Close runs: Send stuck writing to the full request pipe while holding
+	// sendMu, Receive stuck reading the empty response pipe while holding
+	// receiveMu. Waiting for the mutexes to be held is the observable
+	// condition; a fixed sleep only assumes it, and a Close that starts too
+	// early would pass even against the deadlocking implementation.
+	waitMutexHeld(t, &p.sendMu, "sendMu")
+	waitMutexHeld(t, &p.receiveMu, "receiveMu")
 
 	go func() { closeDone <- p.Close() }()
 
@@ -83,8 +107,9 @@ func TestRoleProcessCloseKillFailureUnblocksIO(t *testing.T) {
 		t.Fatal("Close did not return: deadlocked on sendMu/receiveMu after a failed Kill")
 	}
 
-	// Close returned, so the child is gone and the blocked I/O must have
-	// unblocked with errors; collect both through bounded waits.
+	// Close returned and closed the parent-side pipe ends, so the blocked
+	// I/O calls must have returned with errors; collect both through
+	// bounded waits.
 	var sendErr, receiveErr error
 	for i := 0; i < 2; i++ {
 		select {
