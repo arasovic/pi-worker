@@ -4,7 +4,9 @@ package background
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -110,4 +112,221 @@ func TestRoleProcessCloseKillFailureUnblocksIO(t *testing.T) {
 
 	// The child is alive on purpose on the failing-kill path; asserting
 	// reaping here would be wrong. Cleanup SIGKILLs and reaps it.
+}
+
+// TestRoleProcessKillAfterDetachReturnsReleasedError proves that Kill on
+// a handle released by Detach is not mistaken for the already-done case:
+// Process.Kill on a released handle reports a released process, which is
+// neither nil nor os.ErrProcessDone, so Kill must return that error
+// wrapped and must not call Wait — the wait lifecycle is still open and
+// the released child cannot be reaped through this handle. The child here
+// is the supervisor echo child, which exits on request-pipe EOF, so the
+// short-lived child itself is irrelevant: every assertion is about the
+// parent's handle state after Release. Cleanup kills and reaps the exact
+// recorded PID with raw syscalls, because the released Go handle makes
+// p.Wait() both forbidden and useless.
+func TestRoleProcessKillAfterDetachReturnsReleasedError(t *testing.T) {
+	p, err := startRoleProcess(testExe(t), roleSupervisor)
+	if err != nil {
+		t.Fatalf("startRoleProcess: %v", err)
+	}
+	pid := p.cmd.Process.Pid
+
+	if err := p.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+
+	// The released handle reports the child as gone from Go's point of
+	// view; the OS process may still be winding down after the request
+	// EOF, so cleanup works on the raw PID. Reap with Wait4 — never with
+	// p.Wait(), whose handle was released.
+	t.Cleanup(func() {
+		if kerr := syscall.Kill(pid, syscall.SIGKILL); kerr != nil && !errors.Is(kerr, syscall.ESRCH) {
+			t.Errorf("cleanup kill %d: %v", pid, kerr)
+		}
+		if _, werr := syscall.Wait4(pid, nil, 0, nil); werr != nil && !errors.Is(werr, syscall.ECHILD) {
+			t.Errorf("cleanup reap %d: %v", pid, werr)
+		}
+	})
+
+	killErr := p.Kill()
+	if killErr == nil {
+		t.Fatal("Kill on a released handle: got nil, want the released-process error")
+	}
+	if errors.Is(killErr, os.ErrProcessDone) {
+		t.Fatalf("Kill on a released handle: got %v, which must not be os.ErrProcessDone", killErr)
+	}
+
+	// Kill must have returned before ever entering Wait: the wait
+	// lifecycle is still open, so done is unclosed.
+	select {
+	case <-p.done:
+		t.Fatal("Kill on a released handle entered Wait: done channel is closed")
+	default:
+	}
+}
+
+// TestRoleProcessCloseFailedKillIsCachedAndNotRetried proves that Close
+// never retries a failed kill: the first Close performs exactly one kill
+// through the seam, caches the failure, and every later Close — serial or
+// concurrent — returns that same cached error value without touching the
+// seam again. The seam counts every invocation, so a retry would show up
+// as a second count.
+func TestRoleProcessCloseFailedKillIsCachedAndNotRetried(t *testing.T) {
+	// The stuck child ignores every pipe and lives forever, so the kill
+	// failure is the only event in this lifecycle.
+	t.Setenv(workerHostStuckEnv, "1")
+	t.Setenv(workerHostStuckPIDFileEnv, filepath.Join(t.TempDir(), "stuck.pid"))
+
+	p, err := startRoleProcess(testExe(t), roleWorkerHost)
+	if err != nil {
+		t.Fatalf("startRoleProcess: %v", err)
+	}
+	pid := p.cmd.Process.Pid
+
+	// A counting failing seam, installed before any goroutine runs and
+	// never written again; the atomic keeps the post-hoc read honest
+	// under -race. Cleanup SIGKILLs the exact child and reaps it.
+	var kills atomic.Int64
+	killErr := errors.New("forced kill failure")
+	p.killProcess = func() error { kills.Add(1); return killErr }
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = p.Wait()
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- p.Close() }()
+	var first error
+	select {
+	case first = <-firstDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first Close did not return")
+	}
+	if first == nil {
+		t.Fatal("Close: expected non-nil error after a failed Kill, got nil")
+	}
+	if !errors.Is(first, killErr) {
+		t.Fatalf("Close: got %v, want an error wrapping the forced kill failure %v", first, killErr)
+	}
+
+	// Two serial and three concurrent repeat Closes must all observe the
+	// cached failure without re-killing.
+	const extraSerial = 2
+	const extraConcurrent = 3
+	results := make(chan error, extraSerial+extraConcurrent)
+	for i := 0; i < extraSerial; i++ {
+		go func() { results <- p.Close() }()
+	}
+	for i := 0; i < extraConcurrent; i++ {
+		go func() { results <- p.Close() }()
+	}
+	for i := 0; i < extraSerial+extraConcurrent; i++ {
+		select {
+		case closeErr := <-results:
+			if closeErr == nil {
+				t.Fatal("repeated Close: got nil, want the cached failure")
+			}
+			if !errors.Is(closeErr, killErr) {
+				t.Fatalf("repeated Close: got %v, want an error wrapping %v", closeErr, killErr)
+			}
+			if closeErr != first {
+				t.Fatalf("repeated Close: got a different error value %p, want the cached first error %p", closeErr, first)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("repeated Close %d did not return", i+1)
+		}
+	}
+
+	if got := kills.Load(); got != 1 {
+		t.Fatalf("kill seam invoked %d times, want exactly 1", got)
+	}
+}
+
+// TestRoleProcessExplicitKillRetryAfterFailedClose proves the recovery
+// path after a failed-killing Close: Close fails and caches its error,
+// and a later explicit Kill with the obstacle removed can really kill and
+// reap the child — while the cached Close error stays exactly what it
+// was, a historical record that a successful retry does not rewrite.
+func TestRoleProcessExplicitKillRetryAfterFailedClose(t *testing.T) {
+	t.Setenv(workerHostStuckEnv, "1")
+	t.Setenv(workerHostStuckPIDFileEnv, filepath.Join(t.TempDir(), "stuck.pid"))
+
+	p, err := startRoleProcess(testExe(t), roleWorkerHost)
+	if err != nil {
+		t.Fatalf("startRoleProcess: %v", err)
+	}
+	pid := p.cmd.Process.Pid
+
+	// The seam fails only while the flag is set: the Close kill fails,
+	// then the flag flips through the atomic inside the closure, so the
+	// seam itself is the only writer from then on and no field is ever
+	// rewritten after goroutines start.
+	var fail atomic.Bool
+	fail.Store(true)
+	var kills atomic.Int64
+	killErr := errors.New("forced kill failure")
+	p.killProcess = func() error {
+		kills.Add(1)
+		if fail.Load() {
+			return killErr
+		}
+		return p.cmd.Process.Kill()
+	}
+	// Cleanup only reaps if the explicit retry below did not already do
+	// it: a reaped child makes Wait a no-op returning the cached error.
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = p.Wait()
+	})
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- p.Close() }()
+	var cachedErr error
+	select {
+	case cachedErr = <-closeDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	if cachedErr == nil {
+		t.Fatal("Close: expected non-nil error after a failed Kill, got nil")
+	}
+
+	// The obstacle is gone: the next Kill really kills and reaps.
+	fail.Store(false)
+	killDone := make(chan error, 1)
+	go func() { killDone <- p.Kill() }()
+	select {
+	case killErr2 := <-killDone:
+		if killErr2 != nil {
+			t.Fatalf("explicit Kill retry: got %v, want nil", killErr2)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("explicit Kill retry did not return")
+	}
+
+	assertRoleProcessReaped(t, p)
+
+	// A successful retry does not rewrite the cached Close failure.
+	retryCloseDone := make(chan error, 1)
+	go func() { retryCloseDone <- p.Close() }()
+	select {
+	case closeErr := <-retryCloseDone:
+		if closeErr == nil {
+			t.Fatal("Close after successful Kill: got nil, want the cached failure")
+		}
+		if closeErr != cachedErr {
+			t.Fatalf("Close after successful Kill: got a different error value %p, want the cached %p", closeErr, cachedErr)
+		}
+		if !errors.Is(closeErr, killErr) {
+			t.Fatalf("Close after successful Kill: got %v, want an error wrapping %v", closeErr, killErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close after successful Kill did not return")
+	}
+
+	// Exactly two kills ran: the failed Close kill and the retry.
+	if got := kills.Load(); got != 2 {
+		t.Fatalf("kill seam invoked %d times, want exactly 2", got)
+	}
 }

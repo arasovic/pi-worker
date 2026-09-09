@@ -369,11 +369,20 @@ func (p *roleProcess) killChildProcess() error {
 	return p.cmd.Process.Kill()
 }
 
-// Kill terminates the child process. It is nil-safe and idempotent:
-// if the process is already gone it returns nil; otherwise it kills
-// cmd.Process, always calls Wait to reap the zombie, and returns any
-// unexpected Kill infrastructure errors. A normal non-zero exit from
-// Wait is treated as a child outcome, not a cleanup failure.
+// Kill terminates the child process and reaps it when the kill
+// succeeds. It is nil-safe: a nil process, a nil cmd, or a nil
+// cmd.Process returns nil. When the kill succeeds, or when it reports
+// the process as already done, Kill reaps the child through Wait and
+// returns nil; a non-zero child exit reported by Wait is a child
+// outcome, not a cleanup failure, so Kill is idempotent for the
+// already-done case. On any other kill error Kill returns that error
+// wrapped and does not call Wait: the child may still be running, and
+// waiting for it could block forever. A handle released by Detach is
+// not an already-done process: Process.Kill reports a released
+// process, Kill returns that error without calling Wait, and the child
+// cannot be recovered through this handle. The kill goes through the
+// per-instance killProcess seam when one is installed, and through
+// cmd.Process directly otherwise.
 func (p *roleProcess) Kill() error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
