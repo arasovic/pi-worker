@@ -44,6 +44,11 @@ type roleProcess struct {
 	done     chan struct{}
 	waitErr  error
 
+	// killProcess is the process-kill seam. It is nil in production, where
+	// Kill signals cmd.Process directly; tests set it per instance to force
+	// a deterministic kill failure.
+	killProcess func() error
+
 	// respCloseMu guards the idempotent close of the response reader.
 	respCloseMu  sync.Mutex
 	respClosed   bool
@@ -340,6 +345,15 @@ func (p *roleProcess) closeResponse() error {
 	return p.respCloseErr
 }
 
+// killChildProcess signals the child through the per-instance seam when one
+// is installed, and directly otherwise.
+func (p *roleProcess) killChildProcess() error {
+	if p.killProcess != nil {
+		return p.killProcess()
+	}
+	return p.cmd.Process.Kill()
+}
+
 // Kill terminates the child process. It is nil-safe and idempotent:
 // if the process is already gone it returns nil; otherwise it kills
 // cmd.Process, always calls Wait to reap the zombie, and returns any
@@ -349,7 +363,7 @@ func (p *roleProcess) Kill() error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
-	err := p.cmd.Process.Kill()
+	err := p.killChildProcess()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("kill role process: %w", err)
 	}
