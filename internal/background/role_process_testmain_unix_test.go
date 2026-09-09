@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 // roleProcessExitCanary is a test-only sentinel frame payload that instructs
@@ -73,6 +75,18 @@ func TestMain(m *testing.M) {
 			if err := checkChildRoleCloexec(pipes); err != nil {
 				fmt.Fprintf(os.Stderr, "checkChildRoleCloexec: %v\n", err)
 				os.Exit(96)
+			}
+
+			// The opt-in flow-test driver mode turns this supervisor
+			// child into the test stand-in for the future production
+			// supervisor dispatch slice: after the real child-side
+			// supervisor start exchange it consumes its own prepared
+			// admission ticket and runs one real worker-host execution.
+			// The environment variables are set by the flow test that
+			// spawns the child. Unset or empty keeps the echo behavior
+			// every earlier role-process test relies on.
+			if outcomePath := os.Getenv(supervisorDriverOutcomeEnv); outcomePath != "" {
+				runSupervisorWorkerDriver(pipes, outcomePath, os.Getenv(supervisorDriverHoldEnv))
 			}
 
 			// The starter-side supervisor start handoff tests set
@@ -149,6 +163,69 @@ func TestMain(m *testing.M) {
 				fmt.Fprintf(os.Stderr, "checkChildRoleCloexec: %v\n", err)
 				os.Exit(96)
 			}
+			// The opt-in stuck mode makes this worker-host child ignore
+			// everything — its request pipe, its ownership pipe — and live
+			// forever, so adapter tests can exercise the bounded fallback
+			// kill. The optional pid-file environment records the exact
+			// child pid for the spawning test. Unset or empty keeps the
+			// ownership-EOF behavior every earlier role-process test
+			// relies on.
+			if os.Getenv(workerHostStuckEnv) != "" {
+				if pidPath := os.Getenv(workerHostStuckPIDFileEnv); pidPath != "" {
+					_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0o600)
+				}
+				// A bare select {} would trip the runtime deadlock
+				// detector and exit by itself, defeating the stuck mode.
+				for {
+					time.Sleep(24 * time.Hour)
+				}
+			}
+			// The opt-in crash mode exits immediately with code 3 without
+			// reading anything, so adapter tests can exercise the
+			// host-exited-without-terminal-result path. Unset or empty
+			// keeps the ownership-EOF behavior.
+			if os.Getenv(workerHostCrashEnv) != "" {
+				pipes.Close()
+				os.Exit(3)
+			}
+			// The opt-in execute mode dispatches the real production
+			// child-side worker-host handler over these pipes. Unset or
+			// empty keeps the ownership-EOF behavior every earlier
+			// role-process test relies on.
+			if os.Getenv(workerHostExecuteEnv) != "" {
+				// The spawning test may bound this child's response write
+				// grace through the child's own environment: the child
+				// parses it here in TestMain and sets its own
+				// workerHostWriteGrace, so real-subprocess tests never
+				// mutate the parent process's package global. Unset or
+				// empty keeps the production default.
+				if grace := os.Getenv(workerHostWriteGraceEnv); grace != "" {
+					d, perr := time.ParseDuration(grace)
+					if perr != nil || d <= 0 {
+						fmt.Fprintf(os.Stderr, "parse %s %q: %v\n", workerHostWriteGraceEnv, grace, perr)
+						os.Exit(85)
+					}
+					workerHostWriteGrace = d
+				}
+				exchange, err := receiveWorkerHost(pipes)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "receiveWorkerHost: %v\n", err)
+					os.Exit(71)
+				}
+				_ = exchange
+				os.Exit(0)
+			}
+			// The opt-in protocol-failure mode scripts one misbehaving
+			// host exchange: after reading the one request frame it puts
+			// one malformed frame (an unknown kind) on the wire, then one
+			// strictly valid completed terminal result frame, and exits 0
+			// on its own. Adapter tests use it to prove that a later
+			// terminal result never overrides an earlier protocol
+			// failure. Unset or empty keeps the ownership-EOF behavior
+			// every earlier role-process test relies on.
+			if os.Getenv(workerHostProtocolFailureEnv) != "" {
+				runWorkerHostProtocolFailureChild(pipes)
+			}
 			// This test role waits only for owner EOF while keeping
 			// request/response open. It intentionally never reads fd3.
 			defer pipes.Close()
@@ -172,7 +249,45 @@ func TestMain(m *testing.M) {
 			}
 		}
 	}
-	os.Exit(m.Run())
+	// Remove the per-run fakepi build directory (built lazily by the
+	// worker-host tests) after the run, mirroring the internal/pi test
+	// binary's own fakepi cleanup.
+	code := m.Run()
+	removeFakePiBuildDir()
+	os.Exit(code)
+}
+
+// runWorkerHostProtocolFailureChild is the opt-in malformed-then-terminal
+// TestMain child mode: it reads exactly one request frame, writes one
+// malformed response frame — a strictly valid JSON document whose kind
+// is unknown, so the strict parent decode refuses it as a protocol
+// failure rather than a transport failure — then one strictly valid
+// completed terminal result frame, closes the child transport ends, and
+// exits 0. It never returns.
+func runWorkerHostProtocolFailureChild(pipes *childRolePipes) {
+	if _, err := readFrame(pipes.requestReader, privateFrameLimit); err != nil {
+		fmt.Fprintf(os.Stderr, "protocol failure child: read request frame: %v\n", err)
+		os.Exit(86)
+	}
+	malformed := []byte(`{"schemaVersion":1,"kind":"not-a-real-kind"}`)
+	if err := writeFrame(pipes.responseWriter, malformed, privateFrameLimit); err != nil {
+		fmt.Fprintf(os.Stderr, "protocol failure child: write malformed frame: %v\n", err)
+		os.Exit(86)
+	}
+	terminal, err := encodeWorkerHostResult(pi.WorkerResult{
+		Status:      pi.StatusCompleted,
+		Explanation: "completed result sent after the malformed frame",
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "protocol failure child: encode terminal result: %v\n", err)
+		os.Exit(86)
+	}
+	if err := writeFrame(pipes.responseWriter, terminal, privateFrameLimit); err != nil {
+		fmt.Fprintf(os.Stderr, "protocol failure child: write terminal frame: %v\n", err)
+		os.Exit(86)
+	}
+	pipes.Close()
+	os.Exit(0)
 }
 
 // supervisorHandoffChildAcceptedSnapshot reads exactly one bounded request
