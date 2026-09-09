@@ -170,24 +170,23 @@ describe("pinned skills target-rule extraction contract", () => {
   });
 
   test("the generator supports write followed by check", () => {
-    const writePath = join(npmRoot, "generated", ".skills-rules-test.json");
-    const write = spawnSync(process.execPath, [extractorPath, "--write", writePath], {
-      cwd: dirname(npmRoot),
-      encoding: "utf8",
-    });
-    assert.equal(write.status, 0, write.stderr);
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), "pi-worker-skill-rules-write-test-"));
+    try {
+      const writePath = join(temporaryDirectory, "skills-rules.json");
+      const write = spawnSync(process.execPath, [extractorPath, "--write", writePath], {
+        cwd: dirname(npmRoot),
+        encoding: "utf8",
+      });
+      assert.equal(write.status, 0, write.stderr);
 
-    const check = spawnSync(process.execPath, [extractorPath, "--check", writePath], {
-      cwd: dirname(npmRoot),
-      encoding: "utf8",
-    });
-    assert.equal(check.status, 0, check.stderr);
-
-    const cleanup = spawnSync(process.execPath, [
-      "-e",
-      `const { unlinkSync } = require("node:fs"); unlinkSync(${JSON.stringify(writePath)});`,
-    ], { encoding: "utf8" });
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+      const check = spawnSync(process.execPath, [extractorPath, "--check", writePath], {
+        cwd: dirname(npmRoot),
+        encoding: "utf8",
+      });
+      assert.equal(check.status, 0, check.stderr);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 });
 
