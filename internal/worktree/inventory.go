@@ -31,7 +31,7 @@ type entryRef struct {
 // <root>/.pi-worker/worktrees/<name> on branch run/<name>. It never
 // mutates repository state.
 func List(ctx context.Context, cwd string) ([]Entry, error) {
-	root, err := runGitFunc(ctx, cwd, "rev-parse", "--show-toplevel")
+	root, err := resolveMainRoot(ctx, cwd)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}

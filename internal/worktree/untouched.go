@@ -20,7 +20,7 @@ func RemoveUntouched(ctx context.Context, cwd string, expected Prepared) error {
 	}
 
 	// Resolve the repository root from cwd.
-	root, err := runGitFunc(ctx, cwd, "rev-parse", "--show-toplevel")
+	root, err := resolveMainRoot(ctx, cwd)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("resolve repository root: %w", ctxErr)
