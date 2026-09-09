@@ -300,7 +300,9 @@ func writeWorkerHostResponse(w io.Writer, payload []byte) error {
 // cleanup; the deferred Close is reached only after the host is reaped,
 // so it never kills a host that may still be cleaning Pi. Only the
 // bounded fallback kill ends a host early, and the result then states
-// the cleanup uncertainty explicitly.
+// the cleanup uncertainty explicitly. A fallback kill that fails is
+// never waited out and never reported as a completed kill: the host may
+// still be running, and the result says so.
 func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, payload []byte) (result pi.WorkerResult) {
 	proc, startErr := startRoleProcess(a.executable, roleWorkerHost)
 	if startErr != nil {
@@ -326,8 +328,7 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 		case <-sendDone:
 		case <-time.After(bound):
 		}
-		killed, waitErr := reapWorkerHost(proc, bound)
-		return workerHostNoTerminalResult(req.Model, origin, bound, killed, waitErr != nil && !killed)
+		return workerHostNoTerminalResult(req.Model, origin, bound, reapWorkerHost(proc, bound))
 	case sendErr := <-sendDone:
 		if sendErr != nil {
 			// The request never reached the host intact, so no Pi can
@@ -337,8 +338,7 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 			origin := hostDrainOrigin{status: pi.StatusError, head: "worker failure",
 				cause: fmt.Errorf("send worker host request frame: %w", sendErr)}
 			bound := workerHostCleanupBound
-			killed, waitErr := reapWorkerHost(proc, bound)
-			return workerHostNoTerminalResult(req.Model, origin, bound, killed, waitErr != nil && !killed)
+			return workerHostNoTerminalResult(req.Model, origin, bound, reapWorkerHost(proc, bound))
 		}
 	}
 	// The complete request is on the wire. Close the request writer: the
@@ -393,8 +393,7 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 					_ = proc.CloseOwnership()
 					drainTimer = time.After(bound)
 				}
-				killed, waitErr := reapWorkerHost(proc, bound)
-				return workerHostNoTerminalResult(req.Model, origin, bound, killed, waitErr != nil && !killed)
+				return workerHostNoTerminalResult(req.Model, origin, bound, reapWorkerHost(proc, bound))
 			default:
 				frame, decodeErr := decodeWorkerHostResponse(out.frame)
 				if decodeErr != nil {
@@ -416,8 +415,7 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 					}
 					// A second malformed frame while draining: nothing
 					// more can be learned from this host.
-					killed, waitErr := reapWorkerHost(proc, bound)
-					return workerHostNoTerminalResult(req.Model, origin, bound, killed, waitErr != nil && !killed)
+					return workerHostNoTerminalResult(req.Model, origin, bound, reapWorkerHost(proc, bound))
 				}
 				switch frame.kind {
 				case workerHostFrameProcessStart:
@@ -473,9 +471,22 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 				origin = hostDrainOrigin{status: pi.StatusError, head: "worker failure",
 					cause: errors.New("worker host did not settle within the cleanup bound")}
 			}
-			_ = proc.Kill()
+			outcome := hostForceKilled
+			killErr := proc.Kill()
+			if killErr != nil {
+				// A failed kill leaves the host alive, so its response
+				// writer stays open and the in-flight Receive blocks on a
+				// pipe nobody writes: the drain below would never return.
+				// Close the parent read end instead — closeResponseReader,
+				// never closeResponse: the blocked Receive already holds
+				// receiveMu, so the mutex variant would deadlock on the one
+				// goroutine this close must release. It is idempotent and
+				// safe alongside the deferred proc.Close.
+				_ = proc.closeResponseReader()
+				outcome = hostKillFailed
+			}
 			<-recvDone
-			return workerHostNoTerminalResult(req.Model, origin, bound, true, false)
+			return workerHostNoTerminalResult(req.Model, origin, bound, outcome)
 		}
 	}
 
@@ -484,7 +495,7 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 	// the Pi containment cleanup. Reap the host within the bound; only a
 	// host stuck after its terminal frame is killed, and the received
 	// result stands untouched.
-	_, _ = reapWorkerHost(proc, bound)
+	_ = reapWorkerHost(proc, bound)
 	return *terminal
 }
 
@@ -508,19 +519,36 @@ func hostDrainOriginFromCtx(ctx context.Context) hostDrainOrigin {
 	return hostDrainOrigin{status: pi.StatusCancelled, head: "cancelled", cause: ctx.Err()}
 }
 
+// hostExitOutcome states how the worker host ended when no terminal
+// result frame reached the parent. Clean exit, forced kill, abnormal
+// exit and failed kill are four separate facts: only the first means the
+// host finished its own Pi containment cleanup, and a failed kill is not
+// a completed forced termination — the host may still be running.
+type hostExitOutcome int
+
+const (
+	hostExitedCleanly    hostExitOutcome = iota // exited on its own after ownership loss
+	hostForceKilled                             // ended by the bounded fallback kill, which reaped it
+	hostExitedAbnormally                        // exited with an error before its terminal frame
+	hostKillFailed                              // the fallback kill failed: the host may still run
+)
+
 // workerHostNoTerminalResult assembles the honest result when the host
 // ended without a terminal result frame: the drain origin's status, the
 // cause, and an explicit statement of what is and is not known about Pi
 // cleanup. A host that was force-killed or that exited abnormally leaves
-// its Pi cleanup uncertain; only a host that exited cleanly on its own
-// after ownership loss is treated as having finished its own cleanup.
-// This result is never a success.
-func workerHostNoTerminalResult(model string, origin hostDrainOrigin, bound time.Duration, killed, crashed bool) pi.WorkerResult {
+// its Pi cleanup uncertain; a host the fallback kill could not remove may
+// still be running it and is reported unkilled; only a host that exited
+// cleanly on its own after ownership loss is treated as having finished
+// its own cleanup. This result is never a success.
+func workerHostNoTerminalResult(model string, origin hostDrainOrigin, bound time.Duration, outcome hostExitOutcome) pi.WorkerResult {
 	msg := fmt.Sprintf("%s: %v", origin.head, origin.cause)
-	switch {
-	case killed:
+	switch outcome {
+	case hostForceKilled:
 		msg += fmt.Sprintf("; worker host was force-killed after %s before reporting a terminal result; its Pi cleanup outcome is uncertain", bound)
-	case crashed:
+	case hostKillFailed:
+		msg += fmt.Sprintf("; worker host could not be killed after %s and may still be running; its Pi cleanup outcome is uncertain", bound)
+	case hostExitedAbnormally:
 		msg += "; worker host exited abnormally before reporting a terminal result; its Pi cleanup outcome is uncertain"
 	default:
 		msg += "; worker host exited before reporting a terminal result"
@@ -529,18 +557,33 @@ func workerHostNoTerminalResult(model string, origin hostDrainOrigin, bound time
 }
 
 // reapWorkerHost waits up to bound for the host process to exit and
-// reports whether the bounded fallback kill was required and the wait
-// error (nil for a clean exit). When the fallback fires, Kill reaps the
-// host before reapWorkerHost returns, so a concurrent Wait goroutine
-// always finishes.
-func reapWorkerHost(proc *roleProcess, bound time.Duration) (forceKilled bool, waitErr error) {
+// reports how it ended: clean or abnormal by its wait error, and — once
+// the bound expires — by the outcome of the fallback kill. A successful
+// Kill reaps the host before reapWorkerHost returns, so the concurrent
+// Wait goroutine always finishes. A failed Kill leaves the child
+// possibly running, so the host is reported unkilled immediately instead
+// of waited for.
+func reapWorkerHost(proc *roleProcess, bound time.Duration) hostExitOutcome {
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- proc.Wait() }()
 	select {
-	case waitErr = <-waitDone:
-		return false, waitErr
+	case waitErr := <-waitDone:
+		if waitErr != nil {
+			return hostExitedAbnormally
+		}
+		return hostExitedCleanly
 	case <-time.After(bound):
-		_ = proc.Kill()
-		return true, <-waitDone
+		killErr := proc.Kill()
+		if killErr != nil {
+			// cmd.Wait returns only once the child exits, so reading
+			// waitDone would pin the bounded fallback on a host that is
+			// still alive. waitDone is buffered, so the parked goroutine's
+			// send never blocks.
+			// ponytail: ceiling is one goroutine parked in cmd.Wait per
+			// unkilled host, freed only by that host's own exit.
+			return hostKillFailed
+		}
+		<-waitDone
+		return hostForceKilled
 	}
 }
