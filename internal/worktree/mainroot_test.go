@@ -3,7 +3,9 @@ package worktree
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18,10 +20,6 @@ func TestPrepareFromLinkedWorktreeUsesMainRoot(t *testing.T) {
 	root := newTempRepo(t)
 	linked := filepath.Join(filepath.Dir(root), filepath.Base(root)+"-linked")
 	gitRun(t, root, "worktree", "add", "-b", "feature", linked)
-
-	if err := os.Chdir(linked); err != nil {
-		t.Fatalf("chdir linked: %v", err)
-	}
 
 	got, err := Prepare(context.Background(), linked, "probe")
 	if err != nil {
@@ -86,5 +84,84 @@ func TestRemoveUntouchedFromLinkedWorktree(t *testing.T) {
 	}
 	if gitRefExists(t, root, "refs/heads/run/alpha") {
 		t.Fatal("branch run/alpha still exists")
+	}
+}
+
+// TestPrepareLinkedWorktreeOfSeparateGitDir pins the external-git-
+// directory layout (git init --separate-git-dir): the managed worktree
+// must land inside a real working tree and never beside or inside git
+// storage. The metadata directory is deliberately named with a .git
+// suffix, the shape most likely to fool a filename-based root
+// derivation.
+//
+// Measured, so the test's limits are stated rather than assumed: here
+// the common directory is the external metadata directory, which does
+// not end in a .git *component*, so root resolution falls back to the
+// caller's own checkout. That is the same answer the pre-#191 code
+// gave, so this test does not fail without the #191 fix — it guards
+// against a future root derivation that invents a path in this layout.
+func TestPrepareLinkedWorktreeOfSeparateGitDir(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("HOME", t.TempDir())
+	base := t.TempDir()
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "HOME="+os.Getenv("HOME"))
+		o, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, o)
+		}
+		return strings.TrimSpace(string(o))
+	}
+
+	// Main checkout with its git metadata in base/repository.git.
+	main := filepath.Join(base, "main")
+	meta := filepath.Join(base, "repository.git")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(main, "init", "-q", "--separate-git-dir="+meta)
+	git(main, "config", "user.email", "test@pi-worker")
+	git(main, "config", "user.name", "pi-worker test")
+	if err := os.WriteFile(filepath.Join(main, "file.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(main, "add", "file.txt")
+	git(main, "commit", "-q", "-m", "initial")
+
+	linked := filepath.Join(base, "linked")
+	git(main, "worktree", "add", "-b", "feature", linked)
+
+	got, err := Prepare(context.Background(), linked, "probe")
+	if err != nil {
+		t.Fatalf("Prepare from linked worktree of separate-git-dir repo: %v", err)
+	}
+
+	// The created checkout must be inside a directory that git itself
+	// reports as a work tree — not inside or beside git storage.
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatalf("eval symlinks base: %v", err)
+	}
+	rel, err := filepath.Rel(resolvedBase, got.Path)
+	if err != nil {
+		t.Fatalf("rel base: %v", err)
+	}
+	if strings.HasPrefix(rel, "repository.git") || strings.HasPrefix(rel, "..") {
+		t.Fatalf("managed path %q is outside any working tree (rel %q)", got.Path, rel)
+	}
+	resolved, err := filepath.EvalSymlinks(got.Path)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	listOut := git(main, "worktree", "list", "--porcelain")
+	if !strings.Contains(listOut, "worktree "+resolved) {
+		t.Fatalf("managed path %q is not a work tree of the repository:\n%s", got.Path, listOut)
+	}
+	if _, err := os.Stat(filepath.Join(got.Path, "file.txt")); err != nil {
+		t.Fatalf("checkout missing file.txt at %s: %v", got.Path, err)
 	}
 }

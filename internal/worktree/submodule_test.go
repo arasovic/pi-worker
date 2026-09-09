@@ -9,13 +9,19 @@ import (
 	"testing"
 )
 
-// TestPrepareInsideSubmoduleUsesSubmoduleRoot verifies that Prepare run
-// from inside a git submodule creates the managed worktree under the
-// submodule's own top level, not under the superproject's internal git
-// storage. Inside a submodule git rev-parse --git-common-dir returns
-// <superproject>/.git/modules/sub, so the common-dir-based root
-// resolution must not strip a (nonexistent) trailing .git and must fall
-// back to git rev-parse --show-toplevel.
+// TestPrepareInsideSubmoduleUsesSubmoduleRoot guards the submodule
+// edge case: Prepare run from inside a git submodule must create the
+// managed worktree under the submodule's own top level, not under the
+// superproject's internal git storage. Inside a submodule
+// git rev-parse --git-common-dir returns
+// <superproject>/.git/modules/sub, so root resolution must fall back
+// to git rev-parse --show-toplevel when the common directory is the
+// git storage itself.
+//
+// This test is not a regression test for the #191 fix: it passes under
+// the pre-#191 implementation too, because a submodule common directory
+// does not end in .git and so never triggered the suffix strip. Its
+// purpose is to pin the fallback behavior the edge case needs.
 func TestPrepareInsideSubmoduleUsesSubmoduleRoot(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("HOME", t.TempDir())

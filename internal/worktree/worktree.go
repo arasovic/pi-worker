@@ -104,8 +104,18 @@ func resolveMainRoot(ctx context.Context, dir string) (string, error) {
 	if strings.HasSuffix(commonDir, sep+".git") {
 		return strings.TrimSuffix(commonDir, sep+".git"), nil
 	}
-	// Submodule (or similar): fall back to the top level of the
-	// checkout that dir belongs to.
+	// The common directory is git storage that is not <root>/.git, so
+	// no repository root can be derived from it. Measured shapes:
+	// a submodule reports <superproject>/.git/modules/<name>, and a
+	// repository created with --separate-git-dir reports the external
+	// metadata directory. Fall back to the top level of the checkout
+	// that dir belongs to, which is what this package did before.
+	//
+	// Known limit, measured: in the --separate-git-dir layout a linked
+	// worktree still resolves to itself, so a managed worktree created
+	// from one nests as #191 described. git offers no better answer
+	// there — git worktree list names the metadata directory, not the
+	// user's main checkout — so this is git's limit, not a missing case.
 	return runGitFunc(ctx, dir, "rev-parse", "--show-toplevel")
 }
 
