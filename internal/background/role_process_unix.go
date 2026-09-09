@@ -285,7 +285,14 @@ func (p *roleProcess) CloseRequest() error {
 	}
 	p.sendMu.Lock()
 	defer p.sendMu.Unlock()
+	return p.closeRequestWriter()
+}
 
+// closeRequestWriter closes the parent request writer exactly once under
+// requestCloseMu only, without taking sendMu. It is the shared body of
+// CloseRequest and of the failed-kill branch of Close, which must not wait
+// for a Send that is blocked writing to a child the kill did not remove.
+func (p *roleProcess) closeRequestWriter() error {
 	p.requestCloseMu.Lock()
 	defer p.requestCloseMu.Unlock()
 
@@ -327,7 +334,15 @@ func (p *roleProcess) closeResponse() error {
 	}
 	p.receiveMu.Lock()
 	defer p.receiveMu.Unlock()
+	return p.closeResponseReader()
+}
 
+// closeResponseReader closes the parent response reader exactly once under
+// respCloseMu only, without taking receiveMu. It is the shared body of
+// closeResponse and of the failed-kill branch of Close, which must not wait
+// for a Receive that is blocked reading from a child the kill did not
+// remove.
+func (p *roleProcess) closeResponseReader() error {
 	p.respCloseMu.Lock()
 	defer p.respCloseMu.Unlock()
 
@@ -401,10 +416,17 @@ func (p *roleProcess) CloseOwnership() error {
 // first (to unblock any Send stuck on a write to a non-reading child),
 // then CloseRequest, then CloseOwnership, then closeResponse; joins any
 // real cleanup errors, caches the result, and blocks all concurrent
-// callers until finished. Close and Detach share one terminal
-// lifecycle, so whichever is called first wins: a Close after a
-// completed Detach returns the cached detach result and never kills
-// the released child. Close is nil-safe and idempotent.
+// callers until finished. On a failed Kill the child is not reaped;
+// Close still closes every parent pipe end, without the I/O mutexes, so
+// blocked Send and Receive calls return. The cached result reports the
+// cleanup as incomplete and preserves the real kill error; closeOnce is
+// never reset, so Close never retries by itself. An explicit later Kill
+// on a valid handle may still succeed and reap the child; the cached
+// Close error is a historical record and does not change. Close and
+// Detach share one terminal lifecycle, so whichever is called first
+// wins: a Close after a completed Detach returns the cached detach
+// result and never kills the released child. Close is nil-safe and
+// idempotent.
 func (p *roleProcess) Close() error {
 	if p == nil {
 		return nil
@@ -420,7 +442,25 @@ func (p *roleProcess) Close() error {
 		// deadlocking between Kill (which waits for Send to release
 		// sendMu) and CloseRequest (which needs sendMu).
 		if cerr := p.Kill(); cerr != nil {
+			// The kill failed, so the child may still be running and a
+			// blocked Send or Receive still holds sendMu or receiveMu.
+			// Close the parent pipe ends under their own close mutexes
+			// only: taking the I/O mutexes here would wait for exactly
+			// the goroutines these closes are meant to release. The
+			// child is not reaped, so this cleanup is incomplete and the
+			// cached result says so.
 			errs = append(errs, cerr)
+			if rerr := p.closeRequestWriter(); rerr != nil {
+				errs = append(errs, rerr)
+			}
+			if rerr := p.CloseOwnership(); rerr != nil {
+				errs = append(errs, rerr)
+			}
+			if rerr := p.closeResponseReader(); rerr != nil {
+				errs = append(errs, rerr)
+			}
+			p.closeErr = fmt.Errorf("role process close: cleanup incomplete: %w", errors.Join(errs...))
+			return
 		}
 
 		// Close the request writer normally; the child is already gone
