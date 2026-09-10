@@ -8,7 +8,7 @@ appendix, is part of the upstream file and is intentionally left unchanged.
 This file is generated. Run `go run ./tools/notices --write THIRD_PARTY_NOTICES`
 instead of editing it by hand.
 
-## github.com/shirou/gopsutil/v4 v4.26.7
+## github.com/shirou/gopsutil/v4 v4.26.8
 Targets: darwin, linux
 
 ### LICENSE

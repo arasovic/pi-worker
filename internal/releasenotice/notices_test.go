@@ -19,7 +19,7 @@ func TestInventoryMatchesFixedModuleSet(t *testing.T) {
 
 	got := Inventory()
 	want := []Dependency{
-		{Module: "github.com/shirou/gopsutil/v4", Version: "v4.26.7", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
+		{Module: "github.com/shirou/gopsutil/v4", Version: "v4.26.8", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
 		{Module: "golang.org/x/sys", Version: "v0.47.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
 		{Module: "github.com/tklauser/go-sysconf", Version: "v0.3.16", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
 		{Module: "github.com/ebitengine/purego", Version: "v0.10.2", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
@@ -46,7 +46,7 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 
 	moduleCache := t.TempDir()
 	fixtures := map[string]map[string]string{
-		"github.com/shirou/gopsutil/v4@v4.26.7": {
+		"github.com/shirou/gopsutil/v4@v4.26.8": {
 			"LICENSE": "gopsutil license line A\nline B\n\n",
 		},
 		"golang.org/x/sys@v0.47.0": {
@@ -93,7 +93,7 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 	}
 
 	order := []string{
-		"## github.com/shirou/gopsutil/v4 v4.26.7",
+		"## github.com/shirou/gopsutil/v4 v4.26.8",
 		"## golang.org/x/sys v0.47.0",
 		"## github.com/tklauser/go-sysconf v0.3.16",
 		"## github.com/ebitengine/purego v0.10.2",
@@ -151,7 +151,7 @@ func TestRenderStartsWithGeneratedPreamble(t *testing.T) {
 	}
 	content := string(raw)
 
-	firstModule := "## github.com/shirou/gopsutil/v4 v4.26.7"
+	firstModule := "## github.com/shirou/gopsutil/v4 v4.26.8"
 	if !strings.HasPrefix(content, preamble) {
 		t.Fatalf("rendered notices do not start with the generated preamble")
 	}
@@ -175,7 +175,7 @@ func TestRenderRejectsMissingFixtureFiles(t *testing.T) {
 	t.Run("missing license", func(t *testing.T) {
 		t.Helper()
 		moduleCache := t.TempDir()
-		module := "github.com/shirou/gopsutil/v4@v4.26.7"
+		module := "github.com/shirou/gopsutil/v4@v4.26.8"
 		dir := filepath.Join(moduleCache, filepath.FromSlash(module))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir module dir: %v", err)
@@ -289,7 +289,7 @@ func sortedTargetSet(targets map[string]bool) []string {
 func writeNoticeFixtureFiles(t *testing.T, moduleCache string) {
 	t.Helper()
 	fixtures := map[string]map[string]string{
-		"github.com/shirou/gopsutil/v4@v4.26.7": {
+		"github.com/shirou/gopsutil/v4@v4.26.8": {
 			"LICENSE": "gopsutil license line A\nline B\n\n",
 		},
 		"golang.org/x/sys@v0.47.0": {
