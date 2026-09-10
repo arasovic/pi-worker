@@ -54,6 +54,26 @@ func ValidName(name string) bool {
 	return true
 }
 
+// samePath reports whether two spellings name the same directory on
+// disk. It is the #229 identity comparison, reused for two paths
+// instead of a path and a stat: git lists the physical spelling of a
+// repository reached through a symlink (/private/var/...), while a
+// caller that resolved the root through the symlink holds the other
+// spelling (/var/...). Only a directory that exists has an identity, so
+// when the first spelling cannot be statted the pair is compared
+// literally and is equal only when both name the same clean path — that
+// keeps two different missing paths apart and lets the caller's own
+// missing-target check report a checkout that is already gone.
+func samePath(a, b string) bool {
+	info := statIfExists(a)
+	if info == nil {
+		// No identity to compare: a or b is gone, so only the exact
+		// spelling can claim they are the same place.
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return sameDir(b, info)
+}
+
 // runGitFunc is the seam for testing. It defaults to runGit.
 var runGitFunc = runGit
 
