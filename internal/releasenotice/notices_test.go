@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -14,74 +15,69 @@ import (
 	"testing"
 )
 
-func TestInventoryMatchesFixedModuleSet(t *testing.T) {
+// TestInventoryDeclaresDecisionsOnly states what the declared inventory is for:
+// which modules are distributed, on which targets, with which notice files. It
+// names no version, because a version is not a decision this package makes.
+func TestInventoryDeclaresDecisionsOnly(t *testing.T) {
 	t.Helper()
 
-	got := Inventory()
-	want := []Dependency{
-		{Module: "github.com/shirou/gopsutil/v4", Version: "v4.26.8", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
-		{Module: "golang.org/x/sys", Version: "v0.47.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
-		{Module: "github.com/tklauser/go-sysconf", Version: "v0.3.16", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
-		{Module: "github.com/ebitengine/purego", Version: "v0.10.2", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
-		{Module: "github.com/tklauser/numcpus", Version: "v0.11.0", Targets: []string{"linux"}, LicenseFiles: []string{"LICENSE"}},
-		{Module: "golang.org/x/term", Version: "v0.45.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
+	inventory := Inventory()
+	if len(inventory) == 0 {
+		t.Fatalf("Inventory() declares no dependency")
 	}
 
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Inventory() mismatch\n got: %#v\nwant: %#v", got, want)
+	platforms := map[string]bool{"darwin": true, "linux": true}
+	for _, dep := range inventory {
+		if dep.Module == "" {
+			t.Fatalf("Inventory() declares a dependency without a module")
+		}
+		if len(dep.Targets) == 0 {
+			t.Fatalf("dependency %q declares no target", dep.Module)
+		}
+		for _, target := range dep.Targets {
+			if !platforms[target] {
+				t.Fatalf("dependency %q declares target %q, which is not a release platform", dep.Module, target)
+			}
+		}
+		if len(dep.LicenseFiles) == 0 {
+			t.Fatalf("dependency %q declares no notice file", dep.Module)
+		}
+		for _, file := range dep.LicenseFiles {
+			if filepath.Base(file) != file {
+				t.Fatalf("dependency %q declares notice path %q, which must name a file inside the module", dep.Module, file)
+			}
+		}
 	}
 
-	copy := Inventory()
-	if len(copy) != len(got) {
-		t.Fatalf("Inventory() copy length mismatch")
+	clone := Inventory()
+	if !reflect.DeepEqual(clone, inventory) {
+		t.Fatalf("Inventory() is not stable across calls:\n got: %#v\nwant: %#v", clone, inventory)
 	}
-	copy[0].Targets[0] = "mutated"
-	if got[0].Targets[0] == copy[0].Targets[0] {
-		t.Fatalf("Inventory() returns mutable shared dependency list")
+	clone[0].Targets[0] = "mutated"
+	clone[0].LicenseFiles[0] = "MUTATED"
+	if inventory[0].Targets[0] == "mutated" || inventory[0].LicenseFiles[0] == "MUTATED" {
+		t.Fatalf("Inventory() returns mutable shared dependency slices")
 	}
 }
 
 func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 	t.Helper()
 
+	inventory := Inventory()
 	moduleCache := t.TempDir()
-	fixtures := map[string]map[string]string{
-		"github.com/shirou/gopsutil/v4@v4.26.8": {
-			"LICENSE": "gopsutil license line A\nline B\n\n",
-		},
-		"golang.org/x/sys@v0.47.0": {
-			"LICENSE": "sys license\n\n",
-			"PATENTS": "sys patents\n",
-		},
-		"github.com/tklauser/go-sysconf@v0.3.16": {
-			"LICENSE": "sysconf license\n\n",
-		},
-		"github.com/ebitengine/purego@v0.10.2": {
-			"LICENSE": "purego license\n\n",
-		},
-		"github.com/tklauser/numcpus@v0.11.0": {
-			"LICENSE": "numcpus license\n",
-		},
-		"golang.org/x/term@v0.45.0": {
-			"LICENSE": "term license\n",
-			"PATENTS": "term patents\n",
-		},
-	}
-	for moduleVersion, files := range fixtures {
-		for file, content := range files {
-			path := filepath.Join(moduleCache, filepath.FromSlash(moduleVersion), file)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatalf("mkdir fixture module dir: %v", err)
-			}
-			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-				t.Fatalf("write fixture module file: %v", err)
-			}
-		}
-	}
+	fixtures := writeNoticeFixtures(t, moduleCache)
+	versions := resolvedVersions(t)
 
 	raw, err := Render(moduleCache)
 	if err != nil {
 		t.Fatalf("Render() unexpected error: %v", err)
+	}
+	second, err := Render(moduleCache)
+	if err != nil {
+		t.Fatalf("second Render() unexpected error: %v", err)
+	}
+	if !bytes.Equal(raw, second) {
+		t.Fatalf("Render() is not deterministic")
 	}
 	content := string(raw)
 
@@ -91,17 +87,21 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 	if strings.HasSuffix(content, "\n\n") {
 		t.Fatalf("rendered notices contain a blank line at EOF")
 	}
-
-	order := []string{
-		"## github.com/shirou/gopsutil/v4 v4.26.8",
-		"## golang.org/x/sys v0.47.0",
-		"## github.com/tklauser/go-sysconf v0.3.16",
-		"## github.com/ebitengine/purego v0.10.2",
-		"## github.com/tklauser/numcpus v0.11.0",
-		"## golang.org/x/term v0.45.0",
+	lastDep := inventory[len(inventory)-1]
+	lastNotice := lastDep.LicenseFiles[len(lastDep.LicenseFiles)-1]
+	if want := fixtures[noticeKey(lastDep, versions)][lastNotice]; !strings.HasSuffix(content, want) {
+		t.Fatalf("rendered notices do not end with the last notice block verbatim; want suffix %q", want)
 	}
+
+	// Every declared module gets exactly one heading, in declaration order,
+	// naming the version the build selects. The notice bytes under a heading have
+	// to be the bytes of that same version: each fixture repeats the module@version
+	// directory it lives in, so a heading and a body that disagree fail here
+	// instead of agreeing on a version nothing builds with.
 	last := -1
-	for _, header := range order {
+	for _, dep := range inventory {
+		version := versions[dep.Module]
+		header := "## " + dep.Module + " " + version
 		idx := strings.Index(content, header)
 		if idx < 0 {
 			t.Fatalf("expected module section %q in rendered notices", header)
@@ -112,38 +112,53 @@ func TestRenderWritesDeterministicNoticeContent(t *testing.T) {
 		if strings.Count(content, header) != 1 {
 			t.Fatalf("module section duplicated: %q", header)
 		}
-		dep := dependencyForHeader(t, header)
-		if !strings.Contains(content, "## "+dep.Module+" "+dep.Version+"\nTargets: "+strings.Join(dep.Targets, ", ")) {
+		if !strings.Contains(content, header+"\nTargets: "+strings.Join(dep.Targets, ", ")) {
 			t.Fatalf("targets block missing for %q", header)
 		}
 		last = idx
-	}
 
-	for moduleVersion, files := range fixtures {
-		for file, expectedText := range files {
-			if !strings.Contains(content, expectedText) {
-				t.Fatalf("missing fixture text for %q %q", moduleVersion, file)
+		section := sectionForModule(content, dep.Module+" "+version)
+		if section == "" {
+			t.Fatalf("module section %q missing from rendered notices", dep.Module)
+		}
+		for _, file := range dep.LicenseFiles {
+			if !strings.Contains(section, "### "+file) {
+				t.Fatalf("notice block for %q %s missing", dep.Module, file)
+			}
+			if want := fixtures[noticeKey(dep, versions)][file]; !strings.Contains(section, want) {
+				t.Fatalf("section for %q does not contain the %s of %s: %q",
+					dep.Module, file, noticeKey(dep, versions), want)
 			}
 		}
 	}
 
-	xsysSection := sectionForModule(content, "golang.org/x/sys v0.47.0")
-	if !strings.Contains(xsysSection, "### LICENSE") || !strings.Contains(xsysSection, "### PATENTS") {
-		t.Fatalf("expected x/sys to contain separate LICENSE and PATENTS sections")
+	// A heading is always a module and a version, never a bare module: an empty
+	// version cannot reach the document.
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.HasPrefix(line, "## ") {
+			continue
+		}
+		if fields := strings.Fields(line); len(fields) != 3 || !strings.HasPrefix(fields[2], "v") {
+			t.Fatalf("module heading %q does not name a module and one build-selected version", line)
+		}
 	}
-	if !strings.Contains(xsysSection, fixtures["golang.org/x/sys@v0.47.0"]["LICENSE"]) {
-		t.Fatalf("x/sys LICENSE content missing")
-	}
-	if !strings.Contains(xsysSection, fixtures["golang.org/x/sys@v0.47.0"]["PATENTS"]) {
-		t.Fatalf("x/sys PATENTS content missing")
+
+	multi := dependencyWithSeveralNoticeFiles(t)
+	section := sectionForModule(content, multi.Module+" "+versions[multi.Module])
+	for _, file := range multi.LicenseFiles {
+		if !strings.Contains(section, "### "+file) {
+			t.Fatalf("expected %s to render %s as its own section", multi.Module, file)
+		}
 	}
 }
 
 func TestRenderStartsWithGeneratedPreamble(t *testing.T) {
 	t.Helper()
 
+	inventory := Inventory()
 	moduleCache := t.TempDir()
-	writeNoticeFixtureFiles(t, moduleCache)
+	writeNoticeFixtures(t, moduleCache)
+	versions := resolvedVersions(t)
 
 	raw, err := Render(moduleCache)
 	if err != nil {
@@ -151,7 +166,7 @@ func TestRenderStartsWithGeneratedPreamble(t *testing.T) {
 	}
 	content := string(raw)
 
-	firstModule := "## github.com/shirou/gopsutil/v4 v4.26.8"
+	firstModule := "## " + inventory[0].Module + " " + versions[inventory[0].Module]
 	if !strings.HasPrefix(content, preamble) {
 		t.Fatalf("rendered notices do not start with the generated preamble")
 	}
@@ -169,30 +184,51 @@ func TestRenderStartsWithGeneratedPreamble(t *testing.T) {
 	}
 }
 
-func TestRenderRejectsMissingFixtureFiles(t *testing.T) {
+func TestRenderRejectsMissingNoticeFiles(t *testing.T) {
 	t.Helper()
+
+	inventory := Inventory()
+	versions := resolvedVersions(t)
+	multi := dependencyWithSeveralNoticeFiles(t)
 
 	t.Run("missing license", func(t *testing.T) {
 		t.Helper()
 		moduleCache := t.TempDir()
-		module := "github.com/shirou/gopsutil/v4@v4.26.8"
-		dir := filepath.Join(moduleCache, filepath.FromSlash(module))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir module dir: %v", err)
+		writeNoticeFixtures(t, moduleCache)
+
+		dep := inventory[0]
+		path := filepath.Join(moduleCache, filepath.FromSlash(noticeKey(dep, versions)), dep.LicenseFiles[0])
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove fixture notice file: %v", err)
 		}
-		if _, err := Render(moduleCache); err == nil {
-			t.Fatalf("expected render to fail with missing license file")
+		_, err := Render(moduleCache)
+		if err == nil {
+			t.Fatalf("expected render to fail with a missing license file")
+		}
+		if !strings.Contains(err.Error(), dep.Module) || !strings.Contains(err.Error(), versions[dep.Module]) {
+			t.Fatalf("read failure must name the module and its selected version; got: %v", err)
 		}
 	})
 
-	t.Run("missing patents", func(t *testing.T) {
+	t.Run("missing second notice file", func(t *testing.T) {
+		t.Helper()
 		moduleCache := t.TempDir()
-		writeNoticeFixtureFiles(t, moduleCache)
-		if err := os.Remove(filepath.Join(moduleCache, filepath.FromSlash("golang.org/x/sys@v0.47.0"), "PATENTS")); err != nil {
-			t.Fatalf("remove fixture patents file: %v", err)
+		writeNoticeFixtures(t, moduleCache)
+
+		file := multi.LicenseFiles[1]
+		path := filepath.Join(moduleCache, filepath.FromSlash(noticeKey(multi, versions)), file)
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove fixture notice file: %v", err)
 		}
 		if _, err := Render(moduleCache); err == nil {
-			t.Fatalf("expected render to fail with missing PATENTS file")
+			t.Fatalf("expected render to fail with a missing %s file", file)
+		}
+	})
+
+	t.Run("empty module cache", func(t *testing.T) {
+		t.Helper()
+		if _, err := Render(t.TempDir()); err == nil {
+			t.Fatalf("expected render to fail with an empty module cache")
 		}
 	})
 }
@@ -201,7 +237,7 @@ func TestVerifyMatchesRenderedNotice(t *testing.T) {
 	t.Helper()
 
 	moduleCache := t.TempDir()
-	writeNoticeFixtureFiles(t, moduleCache)
+	writeNoticeFixtures(t, moduleCache)
 
 	raw, err := Render(moduleCache)
 	if err != nil {
@@ -219,7 +255,14 @@ func TestVerifyMatchesRenderedNotice(t *testing.T) {
 	}
 }
 
+// TestInventoryMatchesTargetDependencyUnion checks the decisions the package
+// declares against what the release targets actually build: the declared module
+// set is the union of the distributed dependencies, and each module's declared
+// targets are the platforms whose build list carries it. No version literal
+// participates, so a dependency bump cannot turn this red.
 func TestInventoryMatchesTargetDependencyUnion(t *testing.T) {
+	t.Helper()
+
 	targets := []struct {
 		goos   string
 		goarch string
@@ -230,99 +273,155 @@ func TestInventoryMatchesTargetDependencyUnion(t *testing.T) {
 		{goos: "linux", goarch: "arm64"},
 	}
 
-	got := make(map[string]string)
-	actualTargets := make(map[string]map[string]bool)
+	seenOn := make(map[string]map[string]bool)
+	graphVersion := make(map[string]string)
 	for _, target := range targets {
 		for module, version := range modulesForTarget(t, target.goos, target.goarch) {
-			got[module] = version
-			if actualTargets[module] == nil {
-				actualTargets[module] = make(map[string]bool)
+			if seenOn[module] == nil {
+				seenOn[module] = make(map[string]bool)
 			}
-			actualTargets[module][target.goos] = true
+			seenOn[module][target.goos] = true
+			if prior, ok := graphVersion[module]; ok && prior != version {
+				t.Fatalf("release targets disagree on the version of %q: %q and %q", module, prior, version)
+			}
+			graphVersion[module] = version
 		}
 	}
 
-	want := make(map[string]string)
-	for _, dep := range Inventory() {
-		want[dep.Module] = dep.Version
+	inventory := Inventory()
+	declared := make(map[string]bool, len(inventory))
+	for _, dep := range inventory {
+		if declared[dep.Module] {
+			t.Fatalf("dependency %q declared twice", dep.Module)
+		}
+		declared[dep.Module] = true
 	}
 
-	if len(got) != len(want) {
-		t.Fatalf("dependency graph size mismatch; got=%d want=%d", len(got), len(want))
-	}
-	for module, version := range want {
-		gotVersion, ok := got[module]
-		if !ok {
-			t.Fatalf("missing dependency %q in target graph union", module)
-		}
-		if gotVersion != version {
-			t.Fatalf("version mismatch for %q: got %q want %q", module, gotVersion, version)
-		}
-	}
-	for module := range got {
-		if _, ok := want[module]; !ok {
+	for module := range seenOn {
+		if _, ok := declared[module]; !ok {
 			t.Fatalf("unexpected dependency present in union: %q", module)
 		}
 	}
+	for _, dep := range inventory {
+		targets, ok := seenOn[dep.Module]
+		if !ok {
+			t.Fatalf("missing dependency %q in target graph union", dep.Module)
+		}
+		// Compare the graph's answer directly, so a target that pulled in no
+		// dependency at all cannot pass the set comparison by accident.
+		graph := sortedTargetSet(targets)
+		if want := sortedTargetSet(stringSet(dep.Targets)); !reflect.DeepEqual(graph, want) {
+			t.Fatalf("target membership mismatch for %q: graph=%v declared=%v", dep.Module, graph, want)
+		}
+	}
+}
+
+// TestRenderNamesTheVersionTheBuildSelects ties the rendered document to the
+// build lists the release targets actually compile: the heading version of every
+// distributed module is what the go command selects and what each of the
+// module's own targets carries, so the document cannot name a version no binary
+// contains.
+func TestRenderNamesTheVersionTheBuildSelects(t *testing.T) {
+	t.Helper()
+
+	buildList := map[string]map[string]string{
+		"darwin": modulesForTarget(t, "darwin", "arm64"),
+		"linux":  modulesForTarget(t, "linux", "amd64"),
+	}
+	versions, err := SelectedVersions()
+	if err != nil {
+		t.Fatalf("SelectedVersions() unexpected error: %v", err)
+	}
+
+	moduleCache := t.TempDir()
+	writeNoticeFixtures(t, moduleCache)
+	raw, err := Render(moduleCache)
+	if err != nil {
+		t.Fatalf("Render() unexpected error: %v", err)
+	}
+	content := string(raw)
 
 	for _, dep := range Inventory() {
-		declared := make(map[string]bool, len(dep.Targets))
-		for _, target := range dep.Targets {
-			declared[target] = true
+		selected := versions[dep.Module]
+		if strings.Count(content, "## "+dep.Module+" "+selected+"\n") != 1 {
+			t.Fatalf("rendered notices do not name the build-selected version %q of %q", selected, dep.Module)
 		}
-		actual := actualTargets[dep.Module]
-		if !reflect.DeepEqual(declared, actual) {
-			t.Fatalf("target membership mismatch for %q: got=%v want=%v", dep.Module, sortedTargetSet(actual), sortedTargetSet(declared))
+		for _, goos := range dep.Targets {
+			carried, ok := buildList[goos][dep.Module]
+			if !ok {
+				t.Fatalf("module %q: the %s release target builds no version of it", dep.Module, goos)
+			}
+			if carried != selected {
+				t.Fatalf("module %q: the notices name %q, but the %s release target compiles %q",
+					dep.Module, selected, goos, carried)
+			}
 		}
 	}
 }
 
-func sortedTargetSet(targets map[string]bool) []string {
-	result := make([]string, 0, len(targets))
-	for target := range targets {
-		result = append(result, target)
-	}
-	sort.Strings(result)
-	return result
+// noticeKey is the module cache directory holding dep's selected version.
+func noticeKey(dep Dependency, versions map[string]string) string {
+	return dep.Module + "@" + versions[dep.Module]
 }
 
-func writeNoticeFixtureFiles(t *testing.T, moduleCache string) {
+// dependencyWithSeveralNoticeFiles returns a declared dependency whose notices
+// are more than one file, the case the renderer has to keep separate.
+func dependencyWithSeveralNoticeFiles(t *testing.T) Dependency {
 	t.Helper()
-	fixtures := map[string]map[string]string{
-		"github.com/shirou/gopsutil/v4@v4.26.8": {
-			"LICENSE": "gopsutil license line A\nline B\n\n",
-		},
-		"golang.org/x/sys@v0.47.0": {
-			"LICENSE": "sys license\n\n",
-			"PATENTS": "sys patents\n",
-		},
-		"github.com/tklauser/go-sysconf@v0.3.16": {
-			"LICENSE": "sysconf license\n\n",
-		},
-		"github.com/ebitengine/purego@v0.10.2": {
-			"LICENSE": "purego license\n\n",
-		},
-		"github.com/tklauser/numcpus@v0.11.0": {
-			"LICENSE": "numcpus license\n",
-		},
-		"golang.org/x/term@v0.45.0": {
-			"LICENSE": "term license\n",
-			"PATENTS": "term patents\n",
-		},
+	for _, dep := range Inventory() {
+		if len(dep.LicenseFiles) > 1 {
+			return dep
+		}
 	}
-	for moduleVersion, files := range fixtures {
-		for file, content := range files {
-			path := filepath.Join(moduleCache, filepath.FromSlash(moduleVersion), file)
+	t.Fatalf("the inventory declares no dependency with more than one notice file")
+	return Dependency{}
+}
+
+// resolvedVersions resolves the declared inventory against the build, the same
+// way Render does.
+func resolvedVersions(t *testing.T) map[string]string {
+	t.Helper()
+	versions, err := SelectedVersions()
+	if err != nil {
+		t.Fatalf("SelectedVersions() unexpected error: %v", err)
+	}
+	for _, dep := range Inventory() {
+		if _, ok := versions[dep.Module]; !ok {
+			t.Fatalf("the build selected no version for declared module %q", dep.Module)
+		}
+	}
+	return versions
+}
+
+// writeNoticeFixtures builds a module cache holding the declared notice files at
+// the versions the build selects. Each fixture repeats the module@version
+// directory it lives in, so a document naming a version other than the bytes it
+// carries is caught rather than averaged away.
+func writeNoticeFixtures(t *testing.T, moduleCache string) map[string]map[string]string {
+	t.Helper()
+
+	versions := resolvedVersions(t)
+	fixtures := make(map[string]map[string]string)
+	for _, dep := range Inventory() {
+		key := noticeKey(dep, versions)
+		fixtures[key] = make(map[string]string, len(dep.LicenseFiles))
+		for _, file := range dep.LicenseFiles {
+			content := fmt.Sprintf("%s notice text for %s\n", strings.ToLower(file), key)
+			path := filepath.Join(moduleCache, filepath.FromSlash(key), file)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				t.Fatalf("mkdir fixture module dir: %v", err)
 			}
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				t.Fatalf("write fixture module file: %v", err)
 			}
+			fixtures[key][file] = content
 		}
 	}
+	return fixtures
 }
 
+// modulesForTarget returns the module versions the build list of one release
+// target carries, read from the go command for that GOOS/GOARCH pair.
 func modulesForTarget(t *testing.T, goos, goarch string) map[string]string {
 	t.Helper()
 
@@ -382,14 +481,19 @@ func sectionForModule(content, header string) string {
 	return content[start:end]
 }
 
-func dependencyForHeader(t *testing.T, header string) Dependency {
-	t.Helper()
-	for _, dep := range Inventory() {
-		candidate := "## " + dep.Module + " " + dep.Version
-		if candidate == header {
-			return dep
-		}
+func stringSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
 	}
-	t.Fatalf("header %q not found in inventory", header)
-	return Dependency{}
+	return set
+}
+
+func sortedTargetSet(targets map[string]bool) []string {
+	result := make([]string, 0, len(targets))
+	for target := range targets {
+		result = append(result, target)
+	}
+	sort.Strings(result)
+	return result
 }

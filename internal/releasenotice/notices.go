@@ -9,20 +9,21 @@ import (
 )
 
 // Dependency describes a third-party module and which notice files to include.
+// Which version of the module the artifact carries is not declared here: it is
+// the version the build selects, reported by SelectedVersions.
 type Dependency struct {
 	Module       string
-	Version      string
 	Targets      []string
 	LicenseFiles []string
 }
 
 var fixedInventory = []Dependency{
-	{Module: "github.com/shirou/gopsutil/v4", Version: "v4.26.8", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
-	{Module: "golang.org/x/sys", Version: "v0.47.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
-	{Module: "github.com/tklauser/go-sysconf", Version: "v0.3.16", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
-	{Module: "github.com/ebitengine/purego", Version: "v0.10.2", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
-	{Module: "github.com/tklauser/numcpus", Version: "v0.11.0", Targets: []string{"linux"}, LicenseFiles: []string{"LICENSE"}},
-	{Module: "golang.org/x/term", Version: "v0.45.0", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
+	{Module: "github.com/shirou/gopsutil/v4", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
+	{Module: "golang.org/x/sys", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
+	{Module: "github.com/tklauser/go-sysconf", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE"}},
+	{Module: "github.com/ebitengine/purego", Targets: []string{"darwin"}, LicenseFiles: []string{"LICENSE"}},
+	{Module: "github.com/tklauser/numcpus", Targets: []string{"linux"}, LicenseFiles: []string{"LICENSE"}},
+	{Module: "golang.org/x/term", Targets: []string{"darwin", "linux"}, LicenseFiles: []string{"LICENSE", "PATENTS"}},
 }
 
 // Inventory returns the exact dependency set included in release artifacts.
@@ -45,16 +46,25 @@ const preamble = "# Third-Party Notices\n\n" +
 	"This file is generated. Run `go run ./tools/notices --write THIRD_PARTY_NOTICES`\n" +
 	"instead of editing it by hand.\n\n"
 
-// Render renders the third-party notice document from a module cache path.
+// Render renders the third-party notice document from a module cache path. The
+// version named for each module is the version the build selects.
 func Render(moduleCache string) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString(preamble)
 	inventory := Inventory()
+	versions, err := SelectedVersions()
+	if err != nil {
+		return nil, err
+	}
 	for i, dep := range inventory {
+		version, err := selectedVersion(versions, dep.Module)
+		if err != nil {
+			return nil, err
+		}
 		b.WriteString("## ")
 		b.WriteString(dep.Module)
 		b.WriteByte(' ')
-		b.WriteString(dep.Version)
+		b.WriteString(version)
 		b.WriteByte('\n')
 		b.WriteString("Targets: ")
 		b.WriteString(strings.Join(dep.Targets, ", "))
@@ -62,10 +72,10 @@ func Render(moduleCache string) ([]byte, error) {
 		b.WriteByte('\n')
 
 		for j, fileName := range dep.LicenseFiles {
-			path := filepath.Join(moduleCache, filepath.FromSlash(dep.Module+"@"+dep.Version), fileName)
+			path := filepath.Join(moduleCache, filepath.FromSlash(dep.Module+"@"+version), fileName)
 			data, err := os.ReadFile(path)
 			if err != nil {
-				return nil, fmt.Errorf("read %s %s %s: %w", dep.Module, dep.Version, fileName, err)
+				return nil, fmt.Errorf("read %s %s %s: %w", dep.Module, version, fileName, err)
 			}
 
 			b.WriteString("### ")
