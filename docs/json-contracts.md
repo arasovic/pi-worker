@@ -236,6 +236,33 @@ Refusals (worktree not found, checkout dirty, branch not merged, or missing
 `--yes`) and inventory or removal failures emit no success document: refusals
 exit `2`, resolution or mutation failures exit `9`.
 
+## `run --background --json`, `runs status --json`, `runs wait --json`
+
+All three print the same document: the background run snapshot the
+supervisor persisted, verbatim, on one line. There is no second shape —
+`run --background` prints the accepted state, and the two read commands
+print whatever state is durable when they read.
+
+Required root fields are `schemaVersion` (`1`), `runId`, `state`,
+`terminal`, `acceptedAt`, `updatedAt`, `workspace`, `supervisor`, and
+non-null `workers`. `state` is `accepted`, `running`, `completed`,
+`partial`, `failed`, `timed-out`, or `cancelled`. `terminal` says whether
+the run has finished; only a terminal document carries `status`,
+`outcome`, and `result`, and `result` is exactly the `run --json`
+document described above. `worktree` is present only for a run that works
+in a managed private checkout.
+
+Each entry of `workers` carries `workerId` (1-based, request order),
+`state`, `acceptedAt`, `queueDeadline`, `executionTimeout`, and `task`;
+`startedAt`, `finishedAt`, `process`, and `result` appear once the worker
+has reached the phase that produces them. Worker `state` is `queued`,
+`running`, `completed`, `failed`, `timed-out`, `cancelled`,
+`unavailable`, or `error`.
+
+A `runs wait` whose bound arrived first prints the latest non-terminal
+document — `terminal` is `false` and there is no `result` — and says on
+stderr, never in the document, that the wait ran out.
+
 ## `run --json`
 
 Required root fields are `schemaVersion`, `status`, `outcome`, and non-null
