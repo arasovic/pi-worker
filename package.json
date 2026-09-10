@@ -44,7 +44,7 @@
   "scripts": {
     "postinstall": "node npm/scripts/postinstall.mjs",
     "stage": "node npm/scripts/stage-package.mjs",
-    "test": "node --test npm/test/*.test.mjs",
+    "test": "node --test --import ./npm/test/prerequisites.mjs npm/test/*.test.mjs",
     "check:rules": "node npm/scripts/extract-skills-rules.mjs --check npm/generated/skills-rules.json",
     "check:notices": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
     "check:piversion": "go run ./tools/piversion --check",
