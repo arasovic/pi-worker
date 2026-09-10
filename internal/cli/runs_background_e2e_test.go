@@ -37,9 +37,10 @@ func slowBackgroundScript(finalText string, delayStep time.Duration) *script.Scr
 
 // setupBackgroundRun points one background run at scratch roots, the built
 // binary and the fake Pi driven by the given script, and returns the Manager
-// that reads the same state the command writes. The run is not started here;
-// the test starts it, through the command under test.
-func setupBackgroundRun(t *testing.T, s *script.Script) *background.Manager {
+// that reads the same state the command writes along with the root that state
+// is stored under. The run is not started here; the test starts it, through
+// the command under test.
+func setupBackgroundRun(t *testing.T, s *script.Script) (*background.Manager, string) {
 	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("background runs need a platform that can host a role process")
@@ -64,7 +65,7 @@ func setupBackgroundRun(t *testing.T, s *script.Script) *background.Manager {
 	t.Cleanup(func() {
 		newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable = originalManager, originalPi, originalRole
 	})
-	return manager
+	return manager, root
 }
 
 // startBackgroundRun starts one background run through the real command and
@@ -106,7 +107,7 @@ func writeAlwaysFailingVerifyCommand(t *testing.T) []string {
 // comes back while the run is unmistakably in flight, says the run is not
 // finished, and returns without waiting for anything.
 func TestRunsStatusOfARunInFlightAnswersImmediatelyAndReportsItGoing(t *testing.T) {
-	manager := setupBackgroundRun(t, slowBackgroundScript("in flight", backgroundRunDelayStep))
+	manager, _ := setupBackgroundRun(t, slowBackgroundScript("in flight", backgroundRunDelayStep))
 	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
 
 	started := time.Now()
@@ -171,7 +172,7 @@ func TestRunsStatusOfARunInFlightAnswersImmediatelyAndReportsItGoing(t *testing.
 // run that has finished reports what it became, what each worker answered,
 // and the exit code that same result produces in the foreground.
 func TestRunsStatusOfAFinishedRunReportsItsResult(t *testing.T) {
-	manager := setupBackgroundRun(t, backgroundHappyScript("finished answer"))
+	manager, _ := setupBackgroundRun(t, backgroundHappyScript("finished answer"))
 	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
 	final, err := manager.Wait(context.Background(), runID, 90*time.Second)
 	if err != nil {
@@ -254,7 +255,7 @@ func foregroundCodeOfFinishedRun(snap background.Snapshot) int {
 // the foreground — measured against a real foreground run of the same task
 // and the same verification command, not against a hardcoded number.
 func TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode(t *testing.T) {
-	manager := setupBackgroundRun(t, backgroundHappyScript("waited answer"))
+	manager, _ := setupBackgroundRun(t, backgroundHappyScript("waited answer"))
 	verify := writeAlwaysFailingVerifyCommand(t)
 
 	// The same run in the foreground: a verification that fails on a run
@@ -302,7 +303,7 @@ func TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode(t *testing.T) {
 // leaves the run completely alone: nothing cancelled, nothing killed, the run
 // finishing by itself afterwards.
 func TestRunsWaitTimeoutReportsLatestStateAndLeavesTheRunGoing(t *testing.T) {
-	manager := setupBackgroundRun(t, slowBackgroundScript("late answer", backgroundRunDelayStep))
+	manager, _ := setupBackgroundRun(t, slowBackgroundScript("late answer", backgroundRunDelayStep))
 	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
 
 	code, stdout, stderr := runCLI(t, []string{"runs", "wait", runID, "--timeout", "200ms"}, "")
@@ -379,7 +380,7 @@ func TestRunsWaitTimeoutReportsLatestStateAndLeavesTheRunGoing(t *testing.T) {
 // is recorded under is a usage error for both commands, reported by name, and
 // that neither invents a state for a run that does not exist.
 func TestRunsStatusAndWaitRefuseAnUnknownRunID(t *testing.T) {
-	setupBackgroundRun(t, backgroundHappyScript("never started"))
+	_, _ = setupBackgroundRun(t, backgroundHappyScript("never started"))
 	const unknown = "20260830T101500Z-4242"
 
 	for _, args := range [][]string{
@@ -547,7 +548,7 @@ func TestRunsStatusAndWaitAreWiredIntoMainWithContext(t *testing.T) {
 // of both commands is exactly the documented background document: the fields
 // the store holds, with the run's own result inside them, and no second shape.
 func TestRunsStatusJSONDocumentIsTheStoredSnapshot(t *testing.T) {
-	manager := setupBackgroundRun(t, backgroundHappyScript("stored answer"))
+	manager, _ := setupBackgroundRun(t, backgroundHappyScript("stored answer"))
 	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
 	final, err := manager.Wait(context.Background(), runID, 90*time.Second)
 	if err != nil {
@@ -577,4 +578,48 @@ func sortedKeys(m map[string]any) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestRunsWaitOnAnUnreadableRunReportsTheReadFailureNotAnEmptyDocument
+// requires that a wait whose bound is already spent still reports a run it
+// cannot read as unreadable. The ran-out arm exists to report a live run's
+// latest state; a run whose stored state is gone has no state, and passing a
+// zero snapshot off as one prints a run with an empty identity.
+func TestRunsWaitOnAnUnreadableRunReportsTheReadFailureNotAnEmptyDocument(t *testing.T) {
+	manager, root := setupBackgroundRun(t, backgroundHappyScript("state removed under the wait"))
+	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
+	if code != 0 {
+		t.Fatalf("run --background = (%d, %q, %q), want 0", code, stdout, stderr)
+	}
+	runID, ok := decodeJSONObject(t, stdout)["runId"].(string)
+	if !ok || runID == "" {
+		t.Fatalf("accepted run reported no identity: %q", stdout)
+	}
+	if _, err := manager.Wait(context.Background(), runID, 90*time.Second); err != nil {
+		t.Fatalf("drain run %s: %v", runID, err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, runID)); err != nil {
+		t.Fatalf("remove stored state of run %s: %v", runID, err)
+	}
+
+	// The bound is already spent when the first read happens, which is the
+	// only arrangement in which the wait has both a read failure and a
+	// context error to choose between.
+	for _, args := range [][]string{
+		{"runs", "wait", runID, "--timeout", "1ns"},
+		{"runs", "wait", runID, "--timeout", "1ns", "--json"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, args, "")
+			if code == contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout}) {
+				t.Fatalf("%v = (%d, %q, %q), want a read failure rather than the timeout code", args, code, stdout, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("%v printed %q, want nothing on stdout for a run nobody can read", args, stdout)
+			}
+			if !strings.Contains(stderr, "unknown run") || !strings.Contains(stderr, `"`+runID+`"`) {
+				t.Fatalf("%v stderr = %q, want a refusal naming the identity it could not read", args, stderr)
+			}
+		})
+	}
 }

@@ -228,11 +228,12 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		// has just given up on waiting.
 		snap, loadErr := store.Load(runID)
 		if loadErr != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				// Nothing readable was ever observed, so there is no state to
-				// report — only the reason this wait ended.
-				return Snapshot{}, ctxErr
-			}
+			// The read failure is the answer, whatever else is also true of
+			// this call — including that its bound is already spent. A wait
+			// that ran out without ever reading anything has no state to
+			// report, and the reason it cannot report one is the read, not the
+			// bound: handing back a zero Snapshot with the context error would
+			// print a run with no identity as a run that is merely still going.
 			return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)
 		}
 		if snap.Terminal {
