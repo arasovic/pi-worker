@@ -111,6 +111,8 @@ func parseManagedWorktreeList(root, output string) (map[string]entryRef, error) 
 	const maxLine = 64 * 1024
 
 	managedDir := filepath.Join(root, ".pi-worker", "worktrees")
+	// Statted once per list and reused by every entry's identity check.
+	managedDirInfo := statIfExists(managedDir)
 	entries := make(map[string]entryRef)
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	scanner.Buffer(make([]byte, 0, 4096), maxLine)
@@ -137,7 +139,7 @@ func parseManagedWorktreeList(root, output string) (map[string]entryRef, error) 
 		if count > maxEntries {
 			return fmt.Errorf("malformed git worktree output: too many entries")
 		}
-		name, managed, err := managedNameFromPath(managedDir, cur.path)
+		name, managed, err := managedNameFromPath(managedDir, managedDirInfo, cur.path)
 		if err != nil {
 			return err
 		}
@@ -251,8 +253,9 @@ func parseManagedBranchNames(output string) (map[string]struct{}, error) {
 }
 
 // managedNameFromPath extracts the worktree name from a checkout
-// path that must be a direct child of managedDir.
-func managedNameFromPath(managedDir, path string) (name string, managed bool, err error) {
+// path that must be a direct child of managedDir. managedDirInfo is the
+// os.FileInfo for managedDir, or nil when that directory does not exist.
+func managedNameFromPath(managedDir string, managedDirInfo os.FileInfo, path string) (name string, managed bool, err error) {
 	if !filepath.IsAbs(path) {
 		return "", false, fmt.Errorf("malformed git worktree output: path %q is not absolute", path)
 	}
@@ -267,7 +270,14 @@ func managedNameFromPath(managedDir, path string) (name string, managed bool, er
 		return "", false, fmt.Errorf("managed checkout path %q is missing a name", path)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", false, nil
+		// On a case-insensitive filesystem the byte comparison above can miss
+		// a real match: git reports the spelling it recorded while managedDir
+		// comes from the caller's cwd. Only filepath.Dir(path) == managedDir on
+		// disk makes path a managed checkout.
+		if managedDirInfo == nil || !sameDir(filepath.Dir(path), managedDirInfo) {
+			return "", false, nil
+		}
+		rel = filepath.Base(path)
 	}
 	if strings.ContainsRune(rel, os.PathSeparator) {
 		return "", false, fmt.Errorf("managed checkout path %q is nested; want <root>/.pi-worker/worktrees/<name>", path)
@@ -276,6 +286,27 @@ func managedNameFromPath(managedDir, path string) (name string, managed bool, er
 		return "", false, fmt.Errorf("managed checkout path %q has invalid name %q", path, rel)
 	}
 	return rel, true, nil
+}
+
+// statIfExists returns the info for path, or nil when path cannot be
+// statted.
+func statIfExists(path string) os.FileInfo {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	return info
+}
+
+// sameDir reports whether path names the same directory on disk as the
+// already-statted otherInfo. A failed stat means "not the same": a missing
+// managed directory is the normal case, not an error.
+func sameDir(path string, otherInfo os.FileInfo) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(info, otherInfo)
 }
 
 // checkoutHasChanges reports whether the worktree at path has

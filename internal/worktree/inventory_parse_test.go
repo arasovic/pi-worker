@@ -180,7 +180,7 @@ func TestManagedNameFromPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotName, gotMgd, err := managedNameFromPath(dir, tt.path)
+			gotName, gotMgd, err := managedNameFromPath(dir, statIfExists(dir), tt.path)
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("got nil error, want it to contain %q", tt.wantErr)
