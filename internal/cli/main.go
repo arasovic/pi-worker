@@ -398,7 +398,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker runs prune --keep <n> [--yes] [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees list [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees remove <name> [--yes] [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug]")
 }
 
 type versionOutput struct {
@@ -467,6 +467,9 @@ type runOptions struct {
 	worktree  string
 	json      bool
 	debug     bool
+	// background starts the run in a process of its own and returns as
+	// soon as it is accepted, instead of waiting for it here.
+	background bool
 	// writes is the per-task declared write set in task order: nil when
 	// no --writes appeared, and a zero-value entry — Declared false — for
 	// a task that declared nothing. --writes "" fills a Declared true
@@ -507,6 +510,12 @@ type runOptions struct {
 // run, and with --verify a completed run's workspace is checked once
 // before returning with its own timeout budget.
 func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
+	// A background run is accepted here and waited for by nobody: the
+	// command returns while the run keeps going in a process of its own.
+	if opts.background {
+		return backgroundRunCommand(parent, opts, tasks, stdout, stderr)
+	}
+
 	workspace, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
@@ -1238,7 +1247,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 			}
 			declaration.Declared = true
 			opts.data[index] = declaration
-		case "--json", "--debug":
+		case "--json", "--debug", "--background":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)
 			}
@@ -1246,10 +1255,13 @@ func parseRunArgs(args []string) (runOptions, error) {
 				return opts, fmt.Errorf("flag %s specified more than once", name)
 			}
 			seen[name] = true
-			if name == "--json" {
+			switch name {
+			case "--json":
 				opts.json = true
-			} else {
+			case "--debug":
 				opts.debug = true
+			default:
+				opts.background = true
 			}
 		default:
 			if strings.HasPrefix(arg, "-") {
