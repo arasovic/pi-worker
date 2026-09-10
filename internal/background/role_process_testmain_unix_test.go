@@ -268,11 +268,12 @@ func TestMain(m *testing.M) {
 			}
 		}
 	}
-	// Remove the per-run fakepi build directory (built lazily by the
-	// worker-host tests) after the run, mirroring the internal/pi test
-	// binary's own fakepi cleanup.
+	// Remove the per-run fakepi and production pi-worker build
+	// directories (built lazily by the worker-host tests) after the run,
+	// mirroring the internal/pi test binary's own fakepi cleanup.
 	code := m.Run()
 	removeFakePiBuildDir()
+	removePiWorkerBuildDir()
 	os.Exit(code)
 }
 

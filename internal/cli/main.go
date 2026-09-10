@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/admission"
+	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
@@ -116,6 +117,15 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printUsage(stderr)
 		return 2
+	}
+	// A private role child is the same binary as its parent, launched with
+	// the hidden role token as its only argument, so the token is resolved
+	// before any command dispatch: a role child that fell through to the
+	// command switch would print usage text and exit as a usage error,
+	// which is what a caller must never observe from a child its own
+	// adapter started.
+	if handled, code := background.DispatchRole(args[0], stderr); handled {
+		return code
 	}
 	switch args[0] {
 	case "version":
