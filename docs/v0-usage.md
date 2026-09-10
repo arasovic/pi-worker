@@ -95,6 +95,8 @@ one plain diagnostic line.
 - `pi-worker skill receipt-path [--json]`
 - `pi-worker runs list [--json]`
 - `pi-worker runs prune --keep <n> [--yes] [--json]`
+- `pi-worker runs status <id> [--json]`
+- `pi-worker runs wait <id> [--timeout <duration>] [--json]`
 - `pi-worker worktrees list [--json]`
 - `pi-worker worktrees remove <name> [--yes] [--json]`
 - `pi-worker run ...`
@@ -349,6 +351,48 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   confirmed, so those old records stay unreportable by design. A worker
   process-table row that cannot be read skips only that worker; the
   other workers of the same run are still scanned.
+
+## Background runs
+
+```text
+pi-worker run --background [--json] ...
+pi-worker runs status <id> [--json]
+pi-worker runs wait <id> [--timeout <duration>] [--json]
+```
+
+- `run --background` accepts the run, hands it to a detached supervisor
+  process, and returns as soon as that supervisor has written the
+  accepted state durably. The tasks keep going after the command exits.
+  Human output is one line naming the run identity and the number of
+  workers; `--json` prints the accepted run document instead. Exit `0`
+  means accepted, not finished: no task has produced a result yet.
+- A start that was refused exits non-zero without leaving a run behind:
+  `2` when the workspace or the requested private checkout is refused,
+  `7` when the acceptance handshake ran out of time, `8` when the start
+  was cancelled, and `9` for any other internal failure.
+- `runs status <id>` reads that run's latest durable state exactly once
+  and returns. It waits for nothing, so a run in flight is answered
+  immediately, and asking again reports whatever has become durable
+  since.
+- `runs wait <id>` reads the same state repeatedly until the run
+  finishes, then prints the finished run. Waiting is reading and nothing
+  else: it never cancels, kills, or attaches to the run.
+- `runs wait --timeout <duration>` bounds the wait. Without one the
+  bound is `30m`. When the bound arrives first, the command prints the
+  latest state on stdout, says on stderr that the wait ran out, exits
+  `7`, and leaves the run alone — the run keeps going and finishes by
+  itself, and a later `runs status` reports its result. `runs status`
+  takes no `--timeout`: it waits for nothing.
+- Exit codes: a run that has finished exits with the code that same
+  result produces in the foreground — the snapshot carries the run's own
+  result and it goes through the one mapping under `### Exit codes`. A
+  `runs status` of a run still going exits `0`: it asked one question
+  and answered it. An identity no run is recorded under, or one that
+  cannot be a run identity at all, is a usage error and exits `2` with
+  nothing on stdout.
+- Both commands are refused where no background run can exist — a
+  platform whose supervisor process cannot start — with exit `9` and no
+  document on stdout.
 
 ## Managed worktrees
 
@@ -1151,7 +1195,8 @@ cat prompt.txt | pi-worker run --model provider/model-id
 - trust store and content provenance
 - Docker/OpenShell
 - patch application and merge-back (checkout is in v0)
-- durable registry / background / status / wait / steer / cancel / resume
+- durable registry / steer / cancel / resume (background runs and their
+  status and wait commands are in v0, under `## Background runs`)
 
 ## Compatibility note
 

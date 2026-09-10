@@ -34,6 +34,15 @@ const pruneGraceWindow = time.Hour
 type runsOptions struct {
 	command string
 	json    bool
+	// runID is the identity a status or a wait asks about. Both commands
+	// take exactly one, and both take it by name: an identity no run is
+	// recorded under is a usage error, not a state to report.
+	runID string
+	// timeout is a wait's own bound: how long it may keep reading a run
+	// before it reports the latest state it saw and stops waiting. It is
+	// defaulted by the parser, because a wait that named no bound still
+	// has one.
+	timeout time.Duration
 	// yes answers the deletion prompt up front: prune runs without
 	// asking, whatever the terminal state is.
 	yes bool
@@ -61,6 +70,10 @@ func runsCommand(parent context.Context, args []string, stdin io.Reader, stdout,
 		return runsListCommand(parent, opts, stdout, stderr)
 	case "prune":
 		return runsPruneCommand(parent, opts, stdin, stdout, stderr)
+	case "status":
+		return runsStatusCommand(parent, opts, stdout, stderr)
+	case "wait":
+		return runsWaitCommand(parent, opts, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "pi-worker: unknown runs command %q\n", opts.command)
 		printUsage(stderr)
@@ -696,11 +709,21 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 		return opts, errors.New("runs requires a subcommand")
 	}
 	switch args[0] {
-	case "list", "prune":
+	case "list", "prune", "status", "wait":
 		opts.command = args[0]
 	default:
 		return opts, fmt.Errorf("unknown runs command %q", args[0])
 	}
+	// A wait always has a bound, whether or not the caller named one, so
+	// the default is carried from here rather than applied at the read:
+	// the number the command reports when it runs out is the number it
+	// actually waited to.
+	opts.timeout = defaultRunsWaitTimeout
+
+	// Identity arguments, in the order they appeared. Only the two read
+	// commands can take one, and only one: a second is a mistake the
+	// caller has to fix, never something to pick a side of.
+	var identities []string
 
 	seen := map[string]bool{}
 	for i := 1; i < len(args); i++ {
@@ -748,9 +771,37 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 			}
 			opts.keep = keep
 			opts.keepSet = true
+		case "--timeout":
+			// Valued exactly like --keep: both spellings --timeout 30s and
+			// --timeout=30s are accepted, and a repeat is rejected with the
+			// same wording. It is a wait's bound, so the same duration a
+			// run's --timeout takes is what it holds a wait to.
+			if !hasValue {
+				if i+1 >= len(args) {
+					return opts, fmt.Errorf("flag %s requires a value", name)
+				}
+				i++
+				value = args[i]
+			}
+			if seen[name] {
+				return opts, fmt.Errorf("flag %s specified more than once", name)
+			}
+			seen[name] = true
+			duration, err := time.ParseDuration(value)
+			if err != nil {
+				return opts, fmt.Errorf("invalid timeout %q: %v", value, err)
+			}
+			if duration <= 0 {
+				return opts, fmt.Errorf("invalid timeout %q: must be positive", value)
+			}
+			opts.timeout = duration
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return opts, fmt.Errorf("unknown flag %q", arg)
+			}
+			if opts.command == "status" || opts.command == "wait" {
+				identities = append(identities, arg)
+				continue
 			}
 			return opts, fmt.Errorf("unexpected argument %q", arg)
 		}
@@ -761,6 +812,9 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 		if !opts.keepSet {
 			return opts, errors.New("runs prune requires --keep <n>")
 		}
+		if seen["--timeout"] {
+			return opts, fmt.Errorf("flag --timeout is not valid with runs prune")
+		}
 	case "list":
 		// The two prune-only flags stay prune-only: runs list --keep 3
 		// is a usage error, not a silently ignored flag.
@@ -769,6 +823,31 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 		}
 		if opts.yes {
 			return opts, fmt.Errorf("flag --yes is not valid with runs list")
+		}
+		if seen["--timeout"] {
+			return opts, fmt.Errorf("flag --timeout is not valid with runs list")
+		}
+	case "status", "wait":
+		// The prune-only flags and the wait's own bound stay what they
+		// are: a status waits for nothing, so it has no bound to set, and
+		// neither command deletes anything, so neither takes --keep or
+		// --yes.
+		if opts.keepSet {
+			return opts, fmt.Errorf("flag --keep is not valid with runs %s", opts.command)
+		}
+		if opts.yes {
+			return opts, fmt.Errorf("flag --yes is not valid with runs %s", opts.command)
+		}
+		if opts.command == "status" && seen["--timeout"] {
+			return opts, fmt.Errorf("flag --timeout is not valid with runs status")
+		}
+		switch len(identities) {
+		case 0:
+			return opts, fmt.Errorf("runs %s requires a run id", opts.command)
+		case 1:
+			opts.runID = identities[0]
+		default:
+			return opts, fmt.Errorf("runs %s takes one run id, got %d", opts.command, len(identities))
 		}
 	}
 
