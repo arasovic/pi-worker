@@ -47,9 +47,13 @@ func roleExecutable() (string, error) {
 // unstarted, while a supervisor that already answered is never recalled and
 // the run keeps going whether or not anything is still listening.
 func (m *Manager) Start(ctx context.Context, opts StartOptions) (StartedRun, error) {
-	executable, err := roleExecutable()
-	if err != nil {
-		return StartedRun{}, fmt.Errorf("background manager start: %w", err)
+	executable := opts.RoleExecutable
+	if executable == "" {
+		resolved, err := roleExecutable()
+		if err != nil {
+			return StartedRun{}, fmt.Errorf("background manager start: %w", err)
+		}
+		executable = resolved
 	}
 	return m.startWithExecutable(ctx, executable, opts)
 }

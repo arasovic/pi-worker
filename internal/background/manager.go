@@ -102,6 +102,12 @@ type StartOptions struct {
 	// the run works in: created by Start under <root>/.pi-worker/worktrees
 	// on branch run/<name>, and the workspace the run is recorded against.
 	WorktreeName string
+	// RoleExecutable names the program a supervisor is spawned from. Empty
+	// means this program, which is what production always wants: the
+	// supervisor is the same binary re-executed with a private role token.
+	// A caller whose own program does not dispatch role tokens — a test
+	// binary — names the built one here instead.
+	RoleExecutable string
 	// QueueWait bounds how long Start waits for the acceptance handshake.
 	// Unset or non-positive means the default bound.
 	QueueWait time.Duration
