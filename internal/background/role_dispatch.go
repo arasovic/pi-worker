@@ -1,7 +1,6 @@
 package background
 
 import (
-	"fmt"
 	"io"
 )
 
@@ -20,10 +19,13 @@ const (
 	// roleExitExchangeFailed reports that the child opened its transport
 	// and then failed the exchange itself.
 	roleExitExchangeFailed = 71
-	// roleExitRoleNotDispatched reports a private role token the binary
-	// recognises but does not run yet, so a parent can tell it from a
-	// child that started its exchange and failed it.
-	roleExitRoleNotDispatched = 70
+	// roleExitExecutableUnavailable reports a child that accepted its
+	// exchange and then could not resolve its own program path, so it
+	// has no role executable to spawn its own children with.
+	roleExitExecutableUnavailable = 79
+	// roleExitRunFailed reports a supervisor child whose accepted run did
+	// not reach a durable terminal snapshot.
+	roleExitRunFailed = 83
 	// roleExitUnsupportedPlatform reports a private role token on a
 	// platform where no role process can start at all. It is outside
 	// every code any role child or CLI path already uses, so a parent
@@ -43,14 +45,7 @@ const (
 func DispatchRole(name string, stderr io.Writer) (handled bool, code int) {
 	switch r := role(name); r {
 	case roleSupervisor:
-		// The supervisor child half answers a start handshake and hands
-		// off to a scheduling loop the product does not have yet, so a
-		// child that accepted here would report acceptance from a
-		// supervisor that immediately exits and leaves its run with no
-		// one to schedule it. The token is recognised and refused; the
-		// exchange is never started.
-		fmt.Fprintf(stderr, "pi-worker: %s role is not dispatched yet\n", roleSupervisor)
-		return true, roleExitRoleNotDispatched
+		return dispatchSupervisorRole(stderr)
 	case roleWorkerHost:
 		return dispatchWorkerHostRole(stderr)
 	default:

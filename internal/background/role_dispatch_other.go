@@ -15,3 +15,12 @@ func dispatchWorkerHostRole(stderr io.Writer) (bool, int) {
 	fmt.Fprintf(stderr, "pi-worker: %s role: %v\n", roleWorkerHost, errRoleProcessUnsupported)
 	return true, roleExitUnsupportedPlatform
 }
+
+// dispatchSupervisorRole rejects the supervisor role token where no role
+// process can start: the start transport descriptors no starter could
+// have inherited here, so the handshake can never run and the process
+// says so and fails.
+func dispatchSupervisorRole(stderr io.Writer) (bool, int) {
+	fmt.Fprintf(stderr, "pi-worker: %s role: %v\n", roleSupervisor, errRoleProcessUnsupported)
+	return true, roleExitUnsupportedPlatform
+}
