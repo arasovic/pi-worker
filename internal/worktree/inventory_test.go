@@ -289,3 +289,58 @@ func TestListCheckoutStatusFailureSurfacesPath(t *testing.T) {
 		t.Fatalf("got %#v, want nil", got)
 	}
 }
+
+// TestListDifferentlyCasedRoot finds a managed checkout when the
+// repository is reached through a spelling of the root that differs from
+// the one git recorded.
+func TestListDifferentlyCasedRoot(t *testing.T) {
+	root := newTempRepo(t)
+	if _, err := Prepare(context.Background(), root, "probe"); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	want, err := List(context.Background(), root)
+	if err != nil {
+		t.Fatalf("List from canonical root: %v", err)
+	}
+	if len(want) != 1 {
+		t.Fatalf("got %#v, want the probe entry", want)
+	}
+
+	alt := alternateCase(root)
+	altInfo, altErr := os.Stat(alt)
+	rootInfo, rootErr := os.Stat(root)
+	if altErr != nil || rootErr != nil || !os.SameFile(altInfo, rootInfo) {
+		t.Skipf("%q is not the same directory as %q: this test needs a case-insensitive filesystem", alt, root)
+	}
+
+	got, err := List(context.Background(), alt)
+	if err != nil {
+		t.Fatalf("List from differently-cased root %q: %v", alt, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("entry %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+// alternateCase flips the case of the last ASCII letter in path, naming
+// the same file on a case-insensitive filesystem.
+func alternateCase(path string) string {
+	b := []byte(path)
+	for i := len(b) - 1; i >= 0; i-- {
+		c := b[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - ('a' - 'A')
+			return string(b)
+		case c >= 'A' && c <= 'Z':
+			b[i] = c + ('a' - 'A')
+			return string(b)
+		}
+	}
+	return ""
+}
