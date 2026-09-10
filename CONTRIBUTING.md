@@ -17,6 +17,11 @@ Run checks appropriate to the changed surface:
 - `npm run verify` covers formatting (`gofmt`), vetting (`go vet ./...`), the Go suite with race detection (`go test -race -count=1 ./...`), the JavaScript suite (`npm test`), and the four project checks (`check:rules`, `check:notices`, `check:piversion`, `check:hygiene`).
 - Focused per-check commands: `npm run check:gofmt`, `npm run check:govet`, `npm run check:gotest`, `npm run check:rules`, `npm run check:notices`, `npm run check:piversion`, and `npm run check:hygiene`.
 - `verify` does not cover `go build ./...`, which CI runs, or `git diff --check`, which you run before every commit.
+- Install the pinned npm dependencies in the checkout before `npm test` with
+  `npm ci --ignore-scripts`; never run the postinstall script locally, it
+  installs the skill into this machine's home directories. `npm test` checks
+  that prerequisite first and stops with a named error instead of letting the
+  skill suite hang on a missing `skills/bin/cli.mjs`.
 
 The hygiene command is a narrow accidental-artifact gate, not a general secret scanner. Inspect staged changes before every commit.
 
