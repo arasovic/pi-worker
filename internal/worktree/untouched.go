@@ -31,7 +31,7 @@ func RemoveUntouched(ctx context.Context, cwd string, expected Prepared) error {
 	// Compute exact managed path and branch; require expected identity.
 	wantPath := filepath.Join(root, ".pi-worker", "worktrees", expected.Name)
 	wantBranch := "run/" + expected.Name
-	if expected.Path != wantPath {
+	if !samePath(expected.Path, wantPath) {
 		return fmt.Errorf("expected path %q does not match computed %q", expected.Path, wantPath)
 	}
 	if expected.Branch != wantBranch {
@@ -60,10 +60,14 @@ func RemoveUntouched(ctx context.Context, cwd string, expected Prepared) error {
 		return fmt.Errorf("worktree %q not found: retry", expected.Name)
 	}
 
-	// Require exact Path, Branch, Dirty=false. Ignore Merged because
+	// Require the same checkout directory, branch, and Dirty=false. The
+	// two spellings are compared by identity: git lists the physical path
+	// of a repository reached through a symlink, so a string compare
+	// would call the same checkout a different one and every retry of a
+	// start that was refused would leave it behind. Ignore Merged because
 	// the caller HEAD may have moved or changed branch while the run
 	// waited.
-	if fresh.Path != expected.Path || fresh.Branch != expected.Branch {
+	if !samePath(fresh.Path, expected.Path) || fresh.Branch != expected.Branch {
 		return fmt.Errorf("worktree %q changed: retry", expected.Name)
 	}
 	if fresh.Dirty {

@@ -176,6 +176,33 @@ func TestRemoveUntouchedMismatchedPath(t *testing.T) {
 	}
 }
 
+// TestRemoveUntouchedOtherExistingPathRefused verifies that comparing
+// paths by identity still refuses a Path that names a different real
+// checkout directory: the two paths both exist, so neither fails to
+// stat, and only identity keeps alpha from being removed through
+// beta's directory.
+func TestRemoveUntouchedOtherExistingPathRefused(t *testing.T) {
+	root := newTempRepo(t)
+	prep, err := Prepare(context.Background(), root, "alpha")
+	if err != nil {
+		t.Fatalf("Prepare alpha: %v", err)
+	}
+	beta, err := Prepare(context.Background(), root, "beta")
+	if err != nil {
+		t.Fatalf("Prepare beta: %v", err)
+	}
+
+	wrong := prep
+	wrong.Path = beta.Path
+
+	err = RemoveUntouched(context.Background(), root, wrong)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("err = %v, want path-mismatch error", err)
+	}
+	requirePairIntact(t, root, prep)
+	requirePairIntact(t, root, beta)
+}
+
 // TestRemoveUntouchedMismatchedBranch verifies that a mismatched
 // Branch is rejected and the real pair remains.
 func TestRemoveUntouchedMismatchedBranch(t *testing.T) {

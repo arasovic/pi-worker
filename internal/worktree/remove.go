@@ -11,9 +11,12 @@ import (
 // names, any expected checkout marked dirty, or any expected branch
 // marked unmerged without mutating state. Immediately before mutation
 // it re-inventories via List, finds the same name, and requires the
-// full observable snapshot to match exactly: name, path, branch,
-// dirty, merged. A missing or changed target returns a retry error
-// with no mutation. It reconfirms the fresh target is clean and
+// full observable snapshot to match: name, branch, dirty, merged, and
+// a path naming the same checkout directory as the expected one —
+// compared by directory identity, because git lists the physical
+// spelling of a repository reached through a symlink. A missing or
+// changed target returns a retry error with no mutation. It reconfirms
+// the fresh target is clean and
 // merged, then runs git worktree remove on the exact path without
 // force, and only after that succeeds deletes the exact branch with
 // git branch -d without force. If that branch delete fails the helper
@@ -40,7 +43,7 @@ func Remove(ctx context.Context, cwd string, expected Entry) error {
 	if fresh == nil {
 		return fmt.Errorf("worktree %q not found: retry", expected.Name)
 	}
-	if fresh.Name != expected.Name || fresh.Path != expected.Path || fresh.Branch != expected.Branch || fresh.Dirty != expected.Dirty || fresh.Merged != expected.Merged {
+	if fresh.Name != expected.Name || !samePath(fresh.Path, expected.Path) || fresh.Branch != expected.Branch || fresh.Dirty != expected.Dirty || fresh.Merged != expected.Merged {
 		return fmt.Errorf("worktree %q changed: retry", expected.Name)
 	}
 
