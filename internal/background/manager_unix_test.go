@@ -239,13 +239,7 @@ func TestManagerUnacceptedStartLeavesNothing(t *testing.T) {
 // managed private checkout can be prepared beside.
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()
-	// The path is resolved before git ever sees it: a repository reached
-	// through a symlink cannot give its checkout back today (#241), and this
-	// test is about what the Manager gives back, not about that.
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolve the repository directory: %v", err)
-	}
+	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\n"), 0o644); err != nil {
 		t.Fatalf("write repository file: %v", err)
 	}
