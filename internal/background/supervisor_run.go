@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
@@ -24,39 +23,136 @@ type supervisorLaunch struct {
 	startedAt time.Time
 }
 
-// supervisorLaunches records the launches of one run. The controller calls
-// the observer from worker goroutines, so every read and write is
-// serialized on mu.
-type supervisorLaunches struct {
-	mu      sync.Mutex
-	workers map[int]supervisorLaunch
+// supervisorRunObserver is the run controller's process observer and the one
+// writer of every non-terminal snapshot of one run. It holds the last
+// snapshot this run made durable, the launches it observed, and every
+// persistence failure it could not return, all under mu: the controller calls
+// the observer from worker goroutines, so a launch is recorded and promoted
+// in one serialized step.
+//
+// The in-memory snapshot is never a hypothesis about the run. It changes only
+// after a Replace succeeded, so it always mirrors the durable file, and no
+// snapshot it hands out shares its worker slice with a value it keeps: the
+// only writes to a promoted snapshot happen on a copy made under mu before
+// that copy becomes durable.
+type supervisorRunObserver struct {
+	mu       sync.Mutex
+	store    *Store
+	durable  Snapshot
+	launched map[int]supervisorLaunch
+	recorded []error
 }
 
-func newSupervisorLaunches() *supervisorLaunches {
-	return &supervisorLaunches{workers: make(map[int]supervisorLaunch)}
+// newSupervisorRunObserver returns the observer for one accepted run. The
+// durable Snapshot it starts from is the one acceptance persisted; store may
+// be nil for an observer that records launches without persisting anything.
+func newSupervisorRunObserver(store *Store, accepted Snapshot) *supervisorRunObserver {
+	workers := make([]WorkerSnapshot, len(accepted.Workers))
+	copy(workers, accepted.Workers)
+	durable := accepted
+	durable.Workers = workers
+	return &supervisorRunObserver{store: store, durable: durable, launched: make(map[int]supervisorLaunch)}
 }
 
 // observer returns the pi.ProcessObserver handed to every worker. The pid it
 // is given names a process that is alive right now, which is the only moment
 // its creation time can be sampled truthfully.
-func (l *supervisorLaunches) observer() pi.ProcessObserver {
+func (o *supervisorRunObserver) observer() pi.ProcessObserver {
 	return func(workerID, pid int) {
+		// Sampled before mu is taken: the identity is only knowable while the
+		// process is alive, and a lock held by another launch must never be
+		// what delays the observation.
 		launch := supervisorLaunch{startedAt: time.Now().UTC()}
-		if created, err := supervisorPidCreateTime(pid); err == nil {
+		created, err := supervisorPidCreateTime(pid)
+		if err == nil {
 			launch.process = &ProcessIdentity{PID: pid, CreateTime: created}
 		}
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		l.workers[workerID] = launch
+
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if launch.process == nil {
+			// No identity exists, so this worker cannot be reported as
+			// running: it stays queued in the durable snapshot and the reason
+			// is recorded instead.
+			o.noteFailure(fmt.Errorf("observe worker %d launch: %w", workerID, err))
+			return
+		}
+		o.launched[workerID] = launch
+		if o.store == nil {
+			return
+		}
+
+		pending := o.snapshotLocked()
+		workers := make([]WorkerSnapshot, len(pending.Workers))
+		copy(workers, pending.Workers)
+		pending.Workers = workers
+
+		now := launch.startedAt
+		pending.State = RunRunning
+		pending.Terminal = false
+		pending.UpdatedAt = now
+		for i := range pending.Workers {
+			if pending.Workers[i].WorkerID != workerID {
+				continue
+			}
+			pending.Workers[i].State = WorkerRunning
+			pending.Workers[i].StartedAt = &now
+			pending.Workers[i].Process = launch.process
+			pending.Workers[i].FinishedAt = nil
+			pending.Workers[i].Result = nil
+		}
+		if err := o.store.Replace(pending); err != nil {
+			// The worker really did launch and its identity is known, so the
+			// launch stays recorded; only the promotion is not durable yet,
+			// and the next launch retries it over the same base.
+			o.noteFailure(fmt.Errorf("persist running snapshot for worker %d: %w", workerID, err))
+			return
+		}
+		o.durable = pending
 	}
 }
 
-// get returns the recorded launch for a worker ID, and whether one exists.
-func (l *supervisorLaunches) get(workerID int) (supervisorLaunch, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	launch, ok := l.workers[workerID]
+// current returns the last snapshot this run made durable, or the accepted
+// snapshot it started from when nothing was persisted since.
+func (o *supervisorRunObserver) current() Snapshot {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	snap := o.snapshotLocked()
+	workers := make([]WorkerSnapshot, len(snap.Workers))
+	copy(workers, snap.Workers)
+	snap.Workers = workers
+	return snap
+}
+
+// launch returns the recorded launch for a worker ID, and whether one exists.
+func (o *supervisorRunObserver) launch(workerID int) (supervisorLaunch, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	launch, ok := o.launched[workerID]
 	return launch, ok
+}
+
+// failures returns every persistence failure the observer recorded, including
+// the creation-time lookups that left a worker queued. The observer answers
+// the controller with nothing, so this is where those failures surface.
+func (o *supervisorRunObserver) failures() []error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	errs := make([]error, len(o.recorded))
+	copy(errs, o.recorded)
+	return errs
+}
+
+// noteFailure records a failure the observer cannot return. o.mu must be held.
+func (o *supervisorRunObserver) noteFailure(err error) {
+	o.recorded = append(o.recorded, err)
+}
+
+// snapshotLocked reads the durable snapshot. o.mu must be held, and the
+// result shares its worker slice with what the observer keeps: callers that
+// mutate must copy first.
+func (o *supervisorRunObserver) snapshotLocked() Snapshot {
+	return o.durable
 }
 
 // supervisorPidCreateTime returns the process-table creation time of pid in
@@ -88,20 +184,20 @@ func runAcceptedRun(ctx context.Context, executable string, result supervisorSta
 }
 
 // runAcceptedRunWith drives an accepted supervisor start result through
-// worker in exactly three steps: promote the persisted accepted Snapshot to
-// running, run the controller over the tickets this run's acceptance already
-// prepared, then persist the terminal Snapshot. One Replace per phase.
+// worker in two persisted phases: whatever the process observer writes while
+// the run is in flight — one Replace per observed launch, promoting the run
+// from accepted to running — and then the terminal Snapshot.
 //
 // The caller must hand over an accepted result: scheduling a preparation
 // nobody accepted would release leases it never owned. The prepared tickets
-// belong to the controller from step 2 on — this function never cancels
+// belong to the controller from phase one on — this function never cancels
 // them.
 //
 // The terminal snapshot is written on every path of an accepted result —
-// including the ones where the running snapshot could not be persisted and
-// where controller.Run returned an error — because a supervisor that exits
-// without one leaves a run nobody can ever finish. Only what failed is
-// reported: a nil return means the terminal snapshot is durable.
+// including the ones where no launch could be persisted and where
+// controller.Run returned an error — because a supervisor that exits without
+// one leaves a run nobody can ever finish. Only what failed is reported: a
+// nil return means the terminal snapshot is durable.
 func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisorStartResult) error {
 	if !result.accepted || result.preparation == nil {
 		return fmt.Errorf("run accepted run (%s): start result is not accepted", result.request.runID)
@@ -109,26 +205,14 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 	req, prep, store := result.request, result.preparation, result.preparation.store
 	var errs []error
 
-	// Step 1 — the accepted Snapshot becomes the running Snapshot. A
-	// running phase that cannot be persisted leaves the accepted Snapshot
-	// durable and the tickets still prepared, so the run is still started
-	// and still settled: an accepted snapshot needs no promotion to carry
-	// a terminal result.
-	base := prep.snapshot
-	running, err := markAcceptedRunRunning(store, prep.snapshot)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("run accepted run (%s): %w", req.runID, err))
-	} else {
-		base = running
-	}
-
-	// Step 2 — the controller runs the accepted tasks exactly the way a
+	// Step 1 — the controller runs the accepted tasks exactly the way a
 	// foreground run does, except that admission uses the prepared tickets
-	// instead of enqueuing a second set, and each launch is observed while
-	// the process is alive. req.workspace already names the private checkout
-	// when one was prepared. req.debug is not a debug sink, so Debug stays
-	// nil.
-	launches := newSupervisorLaunches()
+	// instead of enqueuing a second set, and each launch is persisted by the
+	// observer while its process is alive. The run stays accepted until a
+	// worker process exists to make it running. req.workspace already names
+	// the private checkout when one was prepared, and req.debug is not a
+	// debug sink, so Debug stays nil.
+	observer := newSupervisorRunObserver(store, prep.snapshot)
 	options := []run.Option{run.WithGitInspector(run.NewDefaultGitInspector())}
 	if len(req.verify) > 0 {
 		options = append(options, run.WithVerifier(run.NewDefaultVerifier()))
@@ -138,21 +222,25 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 		Tasks:          req.tasks,
 		Workspace:      req.workspace,
 		Verify:         req.verify,
-		OnProcessStart: launches.observer(),
+		OnProcessStart: observer.observer(),
 	})
 	if runErr != nil {
 		errs = append(errs, fmt.Errorf("run accepted run (%s): controller: %w", req.runID, runErr))
 	}
+	// What the observer could not persist is a failure of this run even
+	// though the run itself settled: a worker whose launch never reached disk
+	// is a fact the snapshot does not carry.
+	errs = append(errs, observerFailures(req.runID, observer.failures())...)
 
-	// Step 3 — the terminal Snapshot. The phase before it is already
-	// durable, so it is the base even when the controller returned no
-	// result at all.
-	terminal, terminalErr := buildTerminalRunSnapshot(base, runResult, launches, runErr)
+	// Step 2 — the terminal Snapshot. Whatever the observer made durable is
+	// its base; when the observer persisted nothing, the accepted snapshot is.
+	base := observer.current()
+	terminal, terminalErr := buildTerminalRunSnapshot(base, runResult, observer, runErr)
 	if terminalErr != nil {
 		err := fmt.Errorf("run accepted run (%s): build terminal snapshot: %w", req.runID, terminalErr)
 		errs = append(errs, err)
 		cause := joinSupervisorStartErrors(runErr, err)
-		if writeErr := writeFailedTerminalSnapshot(store, base, cause); writeErr != nil {
+		if writeErr := writeFailedTerminalSnapshot(observer, cause); writeErr != nil {
 			errs = append(errs, writeErr)
 		}
 		return joinSupervisorStartErrors(errs...)
@@ -163,49 +251,14 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 	return joinSupervisorStartErrors(errs...)
 }
 
-// markAcceptedRunRunning copies the accepted Snapshot, promotes the run and
-// every worker to the running state, and persists it through store. It
-// returns the promoted Snapshot only once it is durable.
-//
-// Validate requires a running worker to carry a startedAt and a process
-// identity, and no worker process exists yet at this point: admission has not
-// even granted the first lease. The identity this snapshot supervises the run
-// with is the accepted snapshot's supervisor — a real, live process that owns
-// every launch to come — and step 3 records what the observer measured in its
-// place.
-func markAcceptedRunRunning(store *Store, accepted Snapshot) (Snapshot, error) {
-	running := accepted
-	running.State = RunRunning
-	running.Terminal = false
-	running.UpdatedAt = time.Now().UTC()
-
-	identity := accepted.Supervisor
-	if identity.PID <= 0 || identity.CreateTime <= 0 {
-		// An accepted snapshot always carries a positive supervisor
-		// identity; when it somehow does not, this process is observed
-		// instead, and a process table that cannot answer fails the phase
-		// rather than persisting an invented identity.
-		created, err := supervisorPidCreateTime(os.Getpid())
-		if err != nil {
-			return Snapshot{}, fmt.Errorf("mark run running: %w", err)
-		}
-		identity = ProcessIdentity{PID: os.Getpid(), CreateTime: created}
+// observerFailures words the observer's recorded failures for the run that
+// produced them, without losing the causes the observer already named.
+func observerFailures(runID string, errs []error) []error {
+	out := make([]error, 0, len(errs))
+	for _, err := range errs {
+		out = append(out, fmt.Errorf("run accepted run (%s): %w", runID, err))
 	}
-	for i := range running.Workers {
-		worker := &running.Workers[i]
-		started := running.UpdatedAt
-		worker.State = WorkerRunning
-		worker.StartedAt = &started
-		worker.FinishedAt = nil
-		worker.Result = nil
-		provisional := identity
-		worker.Process = &provisional
-	}
-
-	if err := store.Replace(running); err != nil {
-		return Snapshot{}, fmt.Errorf("mark run running: %w", err)
-	}
-	return running, nil
+	return out
 }
 
 // buildTerminalRunSnapshot derives the terminal Snapshot from what the
@@ -214,30 +267,37 @@ func markAcceptedRunRunning(store *Store, accepted Snapshot) (Snapshot, error) {
 //
 // A non-nil controller error decides the run status on its own, the way the
 // CLI maps the same error to its exit code, because a run whose controller
-// failed is recorded by how it failed. The controller fills no outcome word —
-// the CLI assigns that after Run returns — so an outcome the controller did
-// not name is derived here through the same contracts.RunOutcome call, and
-// whichever value is used is carried into the stored result copy, which keeps
-// the snapshot's three views of the run consistent.
-func buildTerminalRunSnapshot(running Snapshot, runResult run.Result, launches *supervisorLaunches, runErr error) (Snapshot, error) {
+// failed is recorded by how it failed, and it decides the outcome word too:
+// the controller's own outcome value is never kept, because the controller
+// fills none. Without a controller error the result answers for itself
+// through run.RunFailure, the function the CLI derives its word and exit code
+// from, so a run whose verification failed or whose writes strayed outside
+// the declared paths persists what a foreground run would have reported
+// rather than its status word alone. Whichever value is used is carried into
+// the stored result copy, which keeps the snapshot's three views of the run
+// consistent.
+func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *supervisorRunObserver, runErr error) (Snapshot, error) {
 	status := runResult.Status
+	var runError *contracts.RunError
 	if runErr != nil {
-		status = failedRunStatus(runErr)
+		status, runError = failedRunStatus(runErr), supervisorRunError(failedRunStatus(runErr), runErr)
+	} else {
+		status, runError = run.RunFailure(runResult)
+	}
+	if len(runResult.Workers) != len(base.Workers) {
+		return Snapshot{}, fmt.Errorf("controller returned %d worker results for %d workers", len(runResult.Workers), len(base.Workers))
 	}
 	state, err := terminalRunState(status)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if len(runResult.Workers) != len(running.Workers) {
-		return Snapshot{}, fmt.Errorf("controller returned %d worker results for %d workers", len(runResult.Workers), len(running.Workers))
-	}
-	outcome := runResult.Outcome
-	if !outcomeSet(outcome) {
-		outcome = contracts.RunOutcome(status, supervisorRunError(status, runErr))
-	}
+	outcome := contracts.RunOutcome(status, runError)
 
 	now := time.Now().UTC()
-	terminal := running
+	terminal := base
+	workers := make([]WorkerSnapshot, len(base.Workers))
+	copy(workers, base.Workers)
+	terminal.Workers = workers
 	terminal.State = state
 	terminal.Terminal = true
 	terminal.UpdatedAt = now
@@ -256,19 +316,20 @@ func buildTerminalRunSnapshot(running Snapshot, runResult run.Result, launches *
 		}
 		worker.State = workerState
 		worker.Result = &runResult.Workers[i]
-		// A terminal snapshot records only what the observer witnessed: the
-		// running phase's provisional identity is dropped here, because a
-		// worker nobody saw launch has no process to name and no start to
-		// report, and the moment the controller returned stands in for the
-		// missing observation.
-		started := now
+		// A terminal snapshot records only what the observer witnessed. A
+		// worker nobody saw launch has no start to report and no process to
+		// name: Validate's terminal rule requires finishedAt alone, so both
+		// stay nil rather than taking the moment this function ran or the
+		// supervisor's identity as substitutes.
+		var started *time.Time
 		var observed *ProcessIdentity
-		if launch, ok := launches.get(worker.WorkerID); ok {
-			started = launch.startedAt
+		if launch, ok := launches.launch(worker.WorkerID); ok {
+			startedAt := launch.startedAt
+			started = &startedAt
 			observed = launch.process
 		}
 		worker.Process = observed
-		worker.StartedAt = &started
+		worker.StartedAt = started
 		worker.FinishedAt = &now
 	}
 	return terminal, nil
@@ -278,8 +339,14 @@ func buildTerminalRunSnapshot(running Snapshot, runResult run.Result, launches *
 // result could not be carried into one — the controller returned nothing
 // usable, or what it returned cannot name a snapshot. Every worker is
 // reported as an error carrying the cause, under the status that cause
-// derives.
-func writeFailedTerminalSnapshot(store *Store, running Snapshot, cause error) error {
+// derives. The observer whose run failed supplies the base snapshot and the
+// launches already recorded, so nothing already durable is rewritten.
+func writeFailedTerminalSnapshot(observer *supervisorRunObserver, cause error) error {
+	running := observer.current()
+	store := observer.store
+	if store == nil {
+		return fmt.Errorf("run accepted run (%s): replace failed terminal snapshot: no store", running.RunID)
+	}
 	status := failedRunStatus(cause)
 	message := "run ended without a controller result"
 	if cause != nil {
@@ -297,7 +364,7 @@ func writeFailedTerminalSnapshot(store *Store, running Snapshot, cause error) er
 		SchemaVersion: contracts.SchemaVersion,
 		Status:        status,
 		Workers:       workers,
-	}, newSupervisorLaunches(), cause)
+	}, observer, cause)
 	if err != nil {
 		return fmt.Errorf("run accepted run (%s): build failed terminal snapshot: %w", running.RunID, err)
 	}
