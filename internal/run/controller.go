@@ -164,11 +164,15 @@ type Controller struct {
 	// WithForegroundAdmission is rejected at Run time.
 	foregroundAdmission bool
 	gate                *admission.Gate
-	runID               string
-	acceptedAt          time.Time
-	executionTimeout    time.Duration
-	executionContext    func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	queueContext        func(context.Context, int, time.Time) (context.Context, context.CancelFunc)
+	// preparedTickets, when non-nil, are tickets a caller already
+	// prepared for this run's tasks in task order; the controller uses
+	// them instead of enqueuing its own.
+	preparedTickets  []*admission.QueueTicket
+	runID            string
+	acceptedAt       time.Time
+	executionTimeout time.Duration
+	executionContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	queueContext     func(context.Context, int, time.Time) (context.Context, context.CancelFunc)
 }
 
 // Option configures a Controller.
@@ -194,6 +198,21 @@ func WithForegroundAdmission(gate *admission.Gate, runID string, acceptedAt time
 	return func(c *Controller) {
 		c.foregroundAdmission = true
 		c.gate = gate
+		c.runID = runID
+		c.acceptedAt = acceptedAt
+		c.executionTimeout = executionTimeout
+	}
+}
+
+// WithPreparedAdmission configures the admission path with tickets a
+// caller has already prepared, instead of enqueuing new ones. Used by a
+// run whose tickets were prepared as part of accepting it, so the
+// controller must never enqueue a second set for the same workers.
+// tickets are in task order: tickets[i] belongs to task i.
+func WithPreparedAdmission(runID string, acceptedAt time.Time, executionTimeout time.Duration, tickets []*admission.QueueTicket) Option {
+	return func(c *Controller) {
+		c.foregroundAdmission = true
+		c.preparedTickets = tickets
 		c.runID = runID
 		c.acceptedAt = acceptedAt
 		c.executionTimeout = executionTimeout
@@ -236,8 +255,19 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// Validate admission configuration when set. The explicit bool
 	// prevents nil gate from silently disabling admission.
 	if c.foregroundAdmission {
-		if c.gate == nil {
-			return Result{}, fmt.Errorf("foreground admission: gate must not be nil")
+		if c.preparedTickets == nil {
+			if c.gate == nil {
+				return Result{}, fmt.Errorf("foreground admission: gate must not be nil")
+			}
+		} else {
+			if len(c.preparedTickets) != len(req.Tasks) {
+				return Result{}, fmt.Errorf("foreground admission: %d prepared tickets for %d tasks", len(c.preparedTickets), len(req.Tasks))
+			}
+			for i, ticket := range c.preparedTickets {
+				if ticket == nil {
+					return Result{}, fmt.Errorf("foreground admission: prepared ticket %d is nil", i+1)
+				}
+			}
 		}
 		if c.runID == "" {
 			return Result{}, fmt.Errorf("foreground admission: runId must not be empty")
@@ -335,7 +365,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// failure, cancel each earlier ticket, join every rollback error with
 	// the enqueue error, and return before worker start.
 	var tickets []*admission.QueueTicket
-	if c.foregroundAdmission {
+	if c.foregroundAdmission && c.preparedTickets != nil {
+		tickets = c.preparedTickets
+	} else if c.foregroundAdmission {
 		tickets = make([]*admission.QueueTicket, len(req.Tasks))
 		var enqueueErr error
 		for i := range req.Tasks {
