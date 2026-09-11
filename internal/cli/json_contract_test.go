@@ -200,7 +200,7 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 			t.Fatalf("outcome = %v, want completed", document["outcome"])
 		}
 		workers := requireJSONArray(t, document["workers"], "workers")
-		assertExactJSONKeys(t, workers[0].(map[string]any), "model", "requestedThinkingLevel", "thinkingLevel", "thinkingFallback", "warning", "explanation", "status")
+		assertExactJSONKeys(t, workers[0].(map[string]any), "model", "requestedThinkingLevel", "thinkingLevel", "thinkingFallback", "warning", "explanation", "status", "acceptedAt", "startedAt", "finishedAt", "executionTimeout")
 	})
 
 	t.Run("worktrees list", func(t *testing.T) {

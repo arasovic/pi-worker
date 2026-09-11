@@ -398,7 +398,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		admissionErrs = append(admissionErrs, err)
 		admissionErrMu.Unlock()
 	}
-	executeTask := func(workerCtx context.Context, index int, task Task) {
+	executeTask := func(workerCtx context.Context, index int, task Task) pi.WorkerResult {
 		prompt, dataFiles := composeTaskPrompt(task, token)
 		result := c.worker.Run(workerCtx, pi.WorkerRequest{
 			Model:          task.Model,
@@ -414,7 +414,6 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		// prompt and never sees the files, so its result cannot
 		// know them.
 		result.DataFiles = dataFiles
-		results[index] = result
 		if monitoringEnabled {
 			// Use the manifest budget: same dirty-stamp work as measureChanges.
 			snapCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
@@ -433,13 +432,27 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 				c.afterWorkerSettled(index)
 			}
 		}
+		return result
+	}
+	// acceptedAt is the run layer's own acceptance instant, shared by every
+	// admitted worker. It is normalized to UTC and left nil when admission
+	// is not configured, where no acceptance happened.
+	var acceptedAt *time.Time
+	if c.foregroundAdmission {
+		at := c.acceptedAt.UTC()
+		acceptedAt = &at
 	}
 	for i, task := range req.Tasks {
 		wg.Add(1)
 		go func(index int, task Task) {
 			defer wg.Done()
 			if !c.foregroundAdmission {
-				executeTask(ctx, index, task)
+				startedAt := time.Now().UTC()
+				result := executeTask(ctx, index, task)
+				finishedAt := time.Now().UTC()
+				result.StartedAt = &startedAt
+				result.FinishedAt = &finishedAt
+				results[index] = result
 				return
 			}
 			// Admission path: wait for the queue ticket, then run under
@@ -463,15 +476,22 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 				if status == pi.StatusError {
 					recordAdmissionErr(fmt.Errorf("admission wait task %d: %w", index+1, waitErr))
 				}
+				// A worker that never started still carries the run's
+				// acceptance instant and finish stamp, but no start.
+				finishedAt := time.Now().UTC()
 				results[index] = pi.WorkerResult{
 					Model:                  task.Model,
 					RequestedThinkingLevel: task.ThinkingLevel,
 					Status:                 status,
 					Error:                  fmt.Sprintf("admission wait: %v", waitErr),
+					AcceptedAt:             acceptedAt,
+					FinishedAt:             &finishedAt,
+					ExecutionTimeout:       c.executionTimeout.String(),
 				}
 				return
 			}
-			// Lease granted: run under an execution-timeout context.
+			// Lease granted: startedAt is the moment execution may begin.
+			startedAt := time.Now().UTC()
 			wCtx, wCancel := c.executionContext(ctx, c.executionTimeout)
 			defer func() {
 				releaseErr := lease.Release()
@@ -480,7 +500,13 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 				}
 			}()
 			defer wCancel()
-			executeTask(wCtx, index, task)
+			result := executeTask(wCtx, index, task)
+			finishedAt := time.Now().UTC()
+			result.AcceptedAt = acceptedAt
+			result.StartedAt = &startedAt
+			result.FinishedAt = &finishedAt
+			result.ExecutionTimeout = c.executionTimeout.String()
+			results[index] = result
 		}(i, task)
 	}
 	wg.Wait()

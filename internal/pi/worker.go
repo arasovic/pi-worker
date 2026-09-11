@@ -112,6 +112,15 @@ type WorkerResult struct {
 	// populated by the run layer from what it composed; absent when the
 	// task carried no material.
 	DataFiles []DataFile `json:"data,omitempty"`
+	// AcceptedAt, StartedAt, FinishedAt, and ExecutionTimeout are the run
+	// layer's own timeline record, stamped by the controller from what it
+	// accepted and executed; the worker process never sets them. AcceptedAt
+	// and ExecutionTimeout are present only when admission is configured,
+	// and StartedAt is absent for a worker that never began execution.
+	AcceptedAt       *time.Time `json:"acceptedAt,omitempty"`
+	StartedAt        *time.Time `json:"startedAt,omitempty"`
+	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
+	ExecutionTimeout string     `json:"executionTimeout,omitempty"`
 	// Usage is the summed usage of the worker's assistant messages as Pi
 	// reported it: token counts and US-dollar cost figures pass through
 	// unchanged, and pi-worker derives no price of its own. It is nil

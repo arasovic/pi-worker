@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 )
@@ -1120,4 +1121,65 @@ type funcWorker struct {
 
 func (f *funcWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
 	return f.fn(ctx, req)
+}
+
+// TestControllerReportsWorkerTimeline verifies that the run layer stamps
+// each worker's own timeline into the result: the run's acceptance instant,
+// when execution actually began, when it finished, and the configured
+// execution budget, ordered accepted <= started <= finished per worker. The
+// worker process never supplies these facts; the controller records them.
+func TestControllerReportsWorkerTimeline(t *testing.T) {
+	gate, err := admission.Open(t.TempDir(), MaxTasks)
+	if errors.Is(err, admission.ErrUnsupported) {
+		t.Skipf("admission is unsupported on this platform: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("open gate: %v", err)
+	}
+
+	acceptedAt := time.Now()
+	executionTimeout := 5 * time.Minute
+	worker := newScriptedWorker()
+	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, executionTimeout))
+
+	result, runErr := controller.Run(context.Background(), validRequest("task-1", "task-2", "task-3"))
+	if runErr != nil {
+		t.Fatalf("Run returned error: %v", runErr)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("status = %q, want %q", result.Status, contracts.RunCompleted)
+	}
+	if len(result.Workers) != 3 {
+		t.Fatalf("workers = %d, want 3", len(result.Workers))
+	}
+	wantAcceptedAt := acceptedAt.UTC()
+	for i, w := range result.Workers {
+		if w.AcceptedAt == nil {
+			t.Fatalf("worker %d acceptedAt is nil", i+1)
+		}
+		if !w.AcceptedAt.Equal(wantAcceptedAt) {
+			t.Fatalf("worker %d acceptedAt = %v, want %v", i+1, w.AcceptedAt, wantAcceptedAt)
+		}
+		if w.AcceptedAt.Location() != time.UTC {
+			t.Fatalf("worker %d acceptedAt location = %v, want UTC", i+1, w.AcceptedAt.Location())
+		}
+		if w.StartedAt == nil {
+			t.Fatalf("worker %d startedAt is nil", i+1)
+		}
+		if w.FinishedAt == nil {
+			t.Fatalf("worker %d finishedAt is nil", i+1)
+		}
+		if w.StartedAt.Location() != time.UTC || w.FinishedAt.Location() != time.UTC {
+			t.Fatalf("worker %d timeline is not UTC: startedAt=%v finishedAt=%v", i+1, w.StartedAt, w.FinishedAt)
+		}
+		if w.StartedAt.Before(*w.AcceptedAt) {
+			t.Fatalf("worker %d startedAt %v precedes acceptedAt %v", i+1, w.StartedAt, w.AcceptedAt)
+		}
+		if w.FinishedAt.Before(*w.StartedAt) {
+			t.Fatalf("worker %d finishedAt %v precedes startedAt %v", i+1, w.FinishedAt, w.StartedAt)
+		}
+		if w.ExecutionTimeout != executionTimeout.String() {
+			t.Fatalf("worker %d executionTimeout = %q, want %q", i+1, w.ExecutionTimeout, executionTimeout.String())
+		}
+	}
 }
