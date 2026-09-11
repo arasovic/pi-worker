@@ -388,9 +388,11 @@ pi-worker runs cancel <id> [--json]
 - `runs cancel <id>` reads and prints the latest state once, and, when the
   supervisor identity still matches the live process, requests a stop with
   `SIGTERM` and returns without waiting or writing a snapshot. The supervisor
-  then finishes the run as `cancelled`; use `runs wait` to follow it. A stale
-  or unavailable supervisor is not signalled and exits `9` because this
-  command never finishes a record on its behalf.
+  then finishes the run as `cancelled` through the same cleanup path a Ctrl-C
+  takes, with the same limits described under
+  `### Ctrl-C / timeout cleanup and lifecycle boundary`; use `runs wait` to
+  follow it. A stale or unavailable supervisor is not signalled and exits `9`
+  because this command never finishes a record on its behalf.
 - Exit codes: a run that has finished exits with the code that same
   result produces in the foreground — the snapshot carries the run's own
   result and it goes through the one mapping under `### Exit codes`. A

@@ -22,10 +22,12 @@ func TestSupervisorRoleSIGTERMCancelsAcceptedRun(t *testing.T) {
 	runSupervisorRoleSignalCase(t, false)
 }
 
-// TestSupervisorRoleTwoSIGTERMsDoesNotInterruptTerminalWrite proves that a
-// second shutdown signal cannot restore the default disposition while the
-// accepted run is finishing its terminal snapshot.
-func TestSupervisorRoleTwoSIGTERMsDoesNotInterruptTerminalWrite(t *testing.T) {
+// TestSupervisorRoleTwoSIGTERMsStillEndsAsCancelled covers the second
+// shutdown signal: when it is delivered before the supervisor exits, the run
+// still ends as a durable cancelled snapshot. The supervisor may finish its
+// orderly path first, in which case the second signal is never delivered and
+// this case degrades to the single-signal one.
+func TestSupervisorRoleTwoSIGTERMsStillEndsAsCancelled(t *testing.T) {
 	runSupervisorRoleSignalCase(t, true)
 }
 
