@@ -97,6 +97,7 @@ one plain diagnostic line.
 - `pi-worker runs prune --keep <n> [--yes] [--json]`
 - `pi-worker runs status <id> [--json]`
 - `pi-worker runs wait <id> [--timeout <duration>] [--json]`
+- `pi-worker runs cancel <id> [--json]`
 - `pi-worker worktrees list [--json]`
 - `pi-worker worktrees remove <name> [--yes] [--json]`
 - `pi-worker run ...`
@@ -358,6 +359,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
 pi-worker run --background [--json] ...
 pi-worker runs status <id> [--json]
 pi-worker runs wait <id> [--timeout <duration>] [--json]
+pi-worker runs cancel <id> [--json]
 ```
 
 - `run --background` accepts the run, hands it to a detached supervisor
@@ -383,6 +385,12 @@ pi-worker runs wait <id> [--timeout <duration>] [--json]
   `7`, and leaves the run alone — the run keeps going and finishes by
   itself, and a later `runs status` reports its result. `runs status`
   takes no `--timeout`: it waits for nothing.
+- `runs cancel <id>` reads and prints the latest state once, and, when the
+  supervisor identity still matches the live process, requests a stop with
+  `SIGTERM` and returns without waiting or writing a snapshot. The supervisor
+  then finishes the run as `cancelled`; use `runs wait` to follow it. A stale
+  or unavailable supervisor is not signalled and exits `9` because this
+  command never finishes a record on its behalf.
 - Exit codes: a run that has finished exits with the code that same
   result produces in the foreground — the snapshot carries the run's own
   result and it goes through the one mapping under `### Exit codes`. A
@@ -1204,8 +1212,8 @@ cat prompt.txt | pi-worker run --model provider/model-id
 - trust store and content provenance
 - Docker/OpenShell
 - patch application and merge-back (checkout is in v0)
-- durable registry / steer / cancel / resume (background runs and their
-  status and wait commands are in v0, under `## Background runs`)
+- durable registry / steer / resume (background runs and their
+  status, wait, and cancel commands are in v0, under `## Background runs`)
 
 ## Compatibility note
 

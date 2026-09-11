@@ -249,6 +249,69 @@ func foregroundCodeOfFinishedRun(snap background.Snapshot) int {
 	return code
 }
 
+// TestRunsCancelFinishedRunReportsItsOwnExitCodeAndDoesNotSignal requires
+// that a terminal run is only reported and is not signalled.
+func TestRunsCancelFinishedRunReportsItsOwnExitCodeAndDoesNotSignal(t *testing.T) {
+	manager, _ := setupBackgroundRun(t, backgroundHappyScript("finished before cancel"))
+	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
+	final, err := manager.Wait(context.Background(), runID, 90*time.Second)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"runs", "cancel", runID}, "")
+	if code != foregroundCodeOfFinishedRun(final) || stderr != "" {
+		t.Fatalf("runs cancel finished = (%d, %q, %q), want the run's code and no stderr", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "outcome=completed") {
+		t.Fatalf("stdout = %q, want the terminal snapshot", stdout)
+	}
+}
+
+func TestRunsCancelStaleSupervisorRefusesToSignal(t *testing.T) {
+	manager, root := setupBackgroundRun(t, slowBackgroundScript("stale identity", backgroundRunDelayStep))
+	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
+	snap, err := manager.Status(runID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	snap.Supervisor.CreateTime++
+	store, err := background.NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Replace(snap); err != nil {
+		t.Fatalf("Replace stale snapshot: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"runs", "cancel", runID}, "")
+	if code != 9 || stdout != "" || !strings.Contains(stderr, "supervisor is no longer there") {
+		t.Fatalf("runs cancel stale = (%d, %q, %q), want refusal with no stdout", code, stdout, stderr)
+	}
+}
+
+func TestRunsCancelUnknownRunRejectsTheIdentity(t *testing.T) {
+	setupBackgroundRun(t, backgroundHappyScript("unused"))
+	code, stdout, stderr := runCLI(t, []string{"runs", "cancel", "20260830T101500Z-4242"}, "")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "unknown run") {
+		t.Fatalf("runs cancel unknown = (%d, %q, %q), want exit 2 and unknown run", code, stdout, stderr)
+	}
+}
+
+func TestRunsCancelLiveRunRequestsStopAndWaitSeesCancelled(t *testing.T) {
+	manager, _ := setupBackgroundRun(t, slowBackgroundScript("must not complete", backgroundRunDelayStep))
+	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
+	code, stdout, stderr := runCLI(t, []string{"runs", "cancel", runID}, "")
+	if code != 0 || !strings.Contains(stderr, "stop requested") {
+		t.Fatalf("runs cancel live = (%d, %q, %q), want exit 0 and stop requested", code, stdout, stderr)
+	}
+	final, err := manager.Wait(context.Background(), runID, 90*time.Second)
+	if err != nil {
+		t.Fatalf("Wait after cancel: %v", err)
+	}
+	if !final.Terminal || final.State != background.RunCancelled {
+		t.Fatalf("final run = state %q terminal=%v, want cancelled terminal", final.State, final.Terminal)
+	}
+}
+
 // TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode requires that a wait
 // comes back with the run that finished, that it says what the workers
 // answered, and that its exit code is the code the same result produces in

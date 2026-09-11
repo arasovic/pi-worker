@@ -34,8 +34,8 @@ const pruneGraceWindow = time.Hour
 type runsOptions struct {
 	command string
 	json    bool
-	// runID is the identity a status or a wait asks about. Both commands
-	// take exactly one, and both take it by name: an identity no run is
+	// runID is the identity a status, wait, or cancel asks about. These
+	// commands take exactly one, and take it by name: an identity no run is
 	// recorded under is a usage error, not a state to report.
 	runID string
 	// timeout is a wait's own bound: how long it may keep reading a run
@@ -74,6 +74,8 @@ func runsCommand(parent context.Context, args []string, stdin io.Reader, stdout,
 		return runsStatusCommand(parent, opts, stdout, stderr)
 	case "wait":
 		return runsWaitCommand(parent, opts, stdout, stderr)
+	case "cancel":
+		return runsCancelCommand(parent, opts, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "pi-worker: unknown runs command %q\n", opts.command)
 		printUsage(stderr)
@@ -709,7 +711,7 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 		return opts, errors.New("runs requires a subcommand")
 	}
 	switch args[0] {
-	case "list", "prune", "status", "wait":
+	case "list", "prune", "status", "wait", "cancel":
 		opts.command = args[0]
 	default:
 		return opts, fmt.Errorf("unknown runs command %q", args[0])
@@ -799,7 +801,7 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 			if strings.HasPrefix(arg, "-") {
 				return opts, fmt.Errorf("unknown flag %q", arg)
 			}
-			if opts.command == "status" || opts.command == "wait" {
+			if opts.command == "status" || opts.command == "wait" || opts.command == "cancel" {
 				identities = append(identities, arg)
 				continue
 			}
@@ -848,6 +850,26 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 			opts.runID = identities[0]
 		default:
 			return opts, fmt.Errorf("runs %s takes one run id, got %d", opts.command, len(identities))
+		}
+	case "cancel":
+		// Cancel is a one-shot signal request. It has no wait bound and
+		// never takes either of the prune-only flags.
+		if opts.keepSet {
+			return opts, fmt.Errorf("flag --keep is not valid with runs cancel")
+		}
+		if opts.yes {
+			return opts, fmt.Errorf("flag --yes is not valid with runs cancel")
+		}
+		if seen["--timeout"] {
+			return opts, fmt.Errorf("flag --timeout is not valid with runs cancel")
+		}
+		switch len(identities) {
+		case 0:
+			return opts, errors.New("runs cancel requires a run id")
+		case 1:
+			opts.runID = identities[0]
+		default:
+			return opts, fmt.Errorf("runs cancel takes one run id, got %d", len(identities))
 		}
 	}
 

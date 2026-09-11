@@ -106,6 +106,52 @@ func runsWaitCommand(parent context.Context, opts runsOptions, stdout, stderr io
 	}
 }
 
+// runsCancelCommand requests cancellation without waiting for the supervisor
+// to finish. Manager.Cancel performs the single durable read, protects the
+// recorded PID with a process creation-time check, and sends only SIGTERM
+// after that identity matches. No path here writes a snapshot.
+func runsCancelCommand(parent context.Context, opts runsOptions, stdout, stderr io.Writer) int {
+	if refused := runsRefuseUnsupportedPlatform(stderr); refused != 0 {
+		return refused
+	}
+	if _, err := runlog.ParseRunID(opts.runID); err != nil {
+		return runsUnknownRun(opts.runID, stderr)
+	}
+	manager, code := runsManager(stderr)
+	if code != 0 {
+		return code
+	}
+	snap, err := manager.Cancel(opts.runID)
+	if err != nil {
+		var unavailable *background.SupervisorUnavailableError
+		if errors.As(err, &unavailable) {
+			fmt.Fprintf(stderr, "pi-worker: runs cancel %s: supervisor is no longer there; the record cannot be finished from here\n", opts.runID)
+			return 9
+		}
+		var signalFailure *background.SupervisorSignalError
+		if errors.As(err, &signalFailure) {
+			fmt.Fprintf(stderr, "pi-worker: runs cancel %s: could not request stop: %v\n", opts.runID, signalFailure)
+			return 9
+		}
+		if code := runsReadFailure(opts.runID, err, stderr); code != 0 {
+			return code
+		}
+		return 9
+	}
+	if snap.Terminal {
+		if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, ""); code != 0 {
+			return code
+		}
+		return runsFinishedExitCode(snap)
+	}
+	if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, fmt.Sprintf(
+		"pi-worker: runs cancel %s stop requested; the run reports cancelled once it has finished stopping — runs wait follows it",
+		opts.runID)); code != 0 {
+		return code
+	}
+	return 0
+}
+
 // runsRenderWaited prints what a wait came back with and carries the exit
 // code of the state that was printed: a finished run's own code, and 0 for
 // the live state a wait that ran out reports.
