@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 // dispatchWorkerHostRole runs one private worker-host child over the
@@ -67,7 +69,12 @@ func dispatchSupervisorRole(stderr io.Writer) (bool, int) {
 	}
 	// No deadline here: the queue deadline is the accepted one, and the
 	// execution timeout is applied per worker inside the run controller.
-	if err := runAcceptedRun(context.Background(), executable, result); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Keep interception installed through runAcceptedRun's terminal snapshot
+	// write: a second SIGTERM must not restore the default disposition and
+	// kill the supervisor while that write is in flight.
+	defer stop()
+	if err := runAcceptedRun(ctx, executable, result); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: run accepted %s run: %v\n", roleSupervisor, err)
 		return true, roleExitRunFailed
 	}
