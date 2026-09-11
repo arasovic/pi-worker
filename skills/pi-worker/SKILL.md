@@ -46,16 +46,15 @@ returns a run id at once instead of blocking. Wait in slices under that bound:
 `pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out leaves
 the run going; wait again. No cancel: the run stops only on its own `--timeout`.
 
-Parse the single JSON document. A run can end without producing a document;
-then the exit code is the signal. An exit of 2 always means the command was
-rejected — fix your argv and re-run; an exit of 9 is an internal failure; an
-exit of 7 or 8 means it was cut short: without a document, report interruption
-and stop; with a document, read and report each worker's `model`, effective
-`thinkingLevel`, `status`, `explanation`, `partialExplanation` when present, and
-`error`, plus root `changes`, `writes` when present, and `verification` when
-present. The rejection message is on stderr, not stdout — the documented
-invocation sends its debug output there too — so read stderr when no document
-appears.
+Parse the single JSON document; if none comes back, the exit code is the signal.
+Exit 2 always means the command was rejected — fix your argv and re-run; exit 9
+is an internal failure; an exit of 7 or 8 means it was cut short: without a
+document, report interruption and stop. Whatever the outcome, read and report
+each worker's `model`, effective `thinkingLevel`, `status`, `explanation`,
+`partialExplanation` when present, and `error`, plus root `changes`, `writes`,
+and `verification` when present; a failed run's `changes` still lists what the
+workers wrote; nothing is rolled back, so inspect the workspace before cleaning.
+Stderr carries the rejection and debug output; read it when no document appears.
 7. For checkouts created by `run --worktree <name>`, manage only the exact
 Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on
 branch `run/<same-name>`: `pi-worker worktrees list [--json]` is read-only,

@@ -200,7 +200,8 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /Windows pre-assignment window can escape/i);
   assert.match(normalizedSkill, /exit of 7 or 8 means it was cut short/i);
   assert.match(normalizedSkill, /without a document, report interruption and stop/i);
-  assert.match(normalizedSkill, /with a document, read and report/i);
+  assert.match(normalizedSkill, /whatever the outcome, read and report/i);
+  assert.match(normalizedSkill, /a failed run's `changes` still lists what the workers wrote; nothing is rolled back/i);
   assert.match(normalizedSkill, /--background/);
   assert.match(normalizedSkill, /runs wait <id> --timeout <slice> --json/i);
   assert.match(normalizedSkill, /a wait that runs out leaves the run going/i);

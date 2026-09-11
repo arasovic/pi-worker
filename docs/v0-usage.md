@@ -738,9 +738,9 @@ two runs from distinct configuration files do not share a gate.
 - `--json` mode carries a `changes` object. It is not gated by the git
   tripwire: a run that only left modified files behind carries `changes`
   and no `git`.
-- The manifest is measured on every terminal status, including a timed-out
-  or cancelled run, under its own thirty-second budget: a run that stopped
-  mid-edit is exactly the run whose changes a caller most needs.
+- The manifest is measured on every terminal status, including a timed-out,
+  cancelled, or failed run, under its own thirty-second budget: a run that
+  stopped mid-edit is exactly the run whose changes a caller most needs.
 - A dirty working tree is measured by subtraction, not guessed: paths
   already dirty when the run started are stamped up front, and the ones
   whose identity never moved are subtracted — they were equally dirty

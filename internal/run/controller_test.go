@@ -1005,6 +1005,60 @@ func TestControllerSettledOutputRegressionDetectsOverwrittenDisjointWrite(t *tes
 	}
 }
 
+// TestControllerFailedWorkerStillReportsChangeManifest pins that a worker
+// ending without a final message does not cost the caller the manifest: the
+// run still reports failed, and the measured changes still name what the
+// worker wrote before it settled.
+func TestControllerFailedWorkerStillReportsChangeManifest(t *testing.T) {
+	dir := t.TempDir()
+	isolateGitConfig(t)
+	runGit(t, dir, "init", "-q")
+	runGit(t, dir, "config", "user.email", "test@pi-worker")
+	runGit(t, dir, "config", "user.name", "pi-worker test")
+	if err := os.WriteFile(filepath.Join(dir, "committed.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write committed.txt: %v", err)
+	}
+	runGit(t, dir, "add", "committed.txt")
+	runGit(t, dir, "commit", "-q", "-m", "initial")
+
+	worker := &funcWorker{
+		fn: func(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+			if err := os.WriteFile(filepath.Join(dir, "written.txt"), []byte("worker output\n"), 0o644); err != nil {
+				return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+			}
+			return pi.WorkerResult{Status: pi.StatusFailed, Error: "agent settled without producing final text"}
+		},
+	}
+	result, err := New(worker, WithGitInspector(NewDefaultGitInspector())).Run(context.Background(), Request{
+		Tasks:     []Task{{Prompt: "task-a", Model: "acme/m-1"}},
+		Workspace: dir,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != contracts.RunFailed {
+		t.Fatalf("status = %q, want %q", result.Status, contracts.RunFailed)
+	}
+	if len(result.Workers) != 1 || result.Workers[0].Status != pi.StatusFailed {
+		t.Fatalf("workers = %#v, want one failed worker", result.Workers)
+	}
+	if result.Changes == nil || result.Changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest naming written.txt", result.Changes)
+	}
+	found := false
+	for _, f := range result.Changes.Files {
+		if f.Path == "written.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("changes missing written.txt: %#v", result.Changes.Files)
+	}
+	if result.Changes.TotalFiles != 1 {
+		t.Fatalf("TotalFiles = %d, want 1", result.Changes.TotalFiles)
+	}
+}
+
 func TestControllerDoesNotRepairClobberedDisjointWrite(t *testing.T) {
 	clobbered := []byte("clobbered by B\n")
 	result, dir, _ := runSettledInterferenceScenario(t, clobbered)
