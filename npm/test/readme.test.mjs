@@ -205,7 +205,7 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /--background/);
   assert.match(normalizedSkill, /runs wait <id> --timeout <slice> --json/i);
   assert.match(normalizedSkill, /a wait that runs out leaves the run going/i);
-  assert.match(normalizedSkill, /no cancel/i);
+  assert.match(normalizedSkill, /runs cancel <id> --json/i);
   assert.doesNotMatch(
     normalizedSkill,
     /(?:--background|slices?|threshold|host|command)[^.]{0,40}\d+\s*minutes?|\d+\s*minutes?[^.]{0,40}(?:--background|slices?|threshold|host|command)/i,

@@ -44,7 +44,7 @@ Scheduling: every task joins the same machine-wide FIFO; the concurrency limit d
 If the caller may stop attending or a command is host-bounded, `--background`
 returns a run id at once instead of blocking. Wait in slices under that bound:
 `pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out leaves
-the run going; wait again. No cancel: the run stops only on its own `--timeout`.
+the run going; wait again. Cancel with `pi-worker runs cancel <id> --json`.
 
 Parse the single JSON document; if none comes back, the exit code is the signal.
 Exit 2 always means the command was rejected — fix your argv and re-run; exit 9

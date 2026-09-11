@@ -236,12 +236,13 @@ Refusals (worktree not found, checkout dirty, branch not merged, or missing
 `--yes`) and inventory or removal failures emit no success document: refusals
 exit `2`, resolution or mutation failures exit `9`.
 
-## `run --background --json`, `runs status --json`, `runs wait --json`
+## `run --background --json`, `runs status --json`, `runs wait --json`, `runs cancel --json`
 
-All three print the same document: the background run snapshot the
+All four print the same document: the background run snapshot the
 supervisor persisted, verbatim, on one line. There is no second shape —
-`run --background` prints the accepted state, and the two read commands
-print whatever state is durable when they read.
+`run --background` prints the accepted state, the read commands print whatever
+state is durable when they read, and `runs cancel` prints the one snapshot it
+read before requesting a stop.
 
 Required root fields are `schemaVersion` (`1`), `runId`, `state`,
 `terminal`, `acceptedAt`, `updatedAt`, `workspace`, `supervisor`, and

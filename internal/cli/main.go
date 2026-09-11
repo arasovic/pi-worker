@@ -398,6 +398,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker runs prune --keep <n> [--yes] [--json]")
 	fmt.Fprintln(w, "       pi-worker runs status <id> [--json]")
 	fmt.Fprintln(w, "       pi-worker runs wait <id> [--timeout <duration>] [--json]")
+	fmt.Fprintln(w, "       pi-worker runs cancel <id> [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees list [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees remove <name> [--yes] [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug]")
