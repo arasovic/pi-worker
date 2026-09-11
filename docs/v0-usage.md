@@ -1049,6 +1049,15 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - `workers` in input order (the same order as task inputs, not completion order)
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`
+  - each worker's timeline, stamped by the run layer rather than by the
+    worker process: `acceptedAt` (the moment the run was accepted),
+    `startedAt` (the moment execution actually began), and `finishedAt`
+    (the moment it settled), each an RFC 3339 timestamp in UTC. A worker
+    whose admission wait failed before it ever ran carries `acceptedAt`
+    and `finishedAt` but no `startedAt`; a run without admission stamps
+    only `startedAt` and `finishedAt`.
+  - each admitted worker's `executionTimeout`: the execution budget its
+    task was given, as a Go duration string (for example `5m0s`)
   - each worker that carried material lists `data`: one entry per
     carried file, each with `path` (the path composed into the prompt as
     the section label), `byteCount` (the length of the content actually

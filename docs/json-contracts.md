@@ -341,6 +341,13 @@ Worker fields are conditionally present:
 - `usage`: present only when at least one assistant message reported a
   non-zero usage figure; the token counts and dollar figures Pi
   computed, passed through unchanged
+- `acceptedAt`, `startedAt`, `finishedAt`: the run layer's own timeline
+  record, stamped from what the controller accepted and executed rather
+  than reported by the worker, RFC 3339 in UTC. `acceptedAt` is present
+  only when admission is configured; `startedAt` is absent for a worker
+  that never began execution, such as one whose queue wait failed
+- `executionTimeout`: present only when admission is configured; the
+  Go duration string of the execution budget the task was given
 
 Partial text reporting is additive and optional, so `schemaVersion`
 stays `1`. Worker `partialExplanation` appears only when a run ended
