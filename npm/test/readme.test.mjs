@@ -201,6 +201,15 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /exit of 7 or 8 means it was cut short/i);
   assert.match(normalizedSkill, /without a document, report interruption and stop/i);
   assert.match(normalizedSkill, /with a document, read and report/i);
+  assert.match(normalizedSkill, /--background/);
+  assert.match(normalizedSkill, /runs wait <id> --timeout <slice> --json/i);
+  assert.match(normalizedSkill, /a wait that runs out leaves the run going/i);
+  assert.match(normalizedSkill, /no cancel/i);
+  assert.doesNotMatch(
+    normalizedSkill,
+    /(?:--background|slices?|threshold|host|command)[^.]{0,40}\d+\s*minutes?|\d+\s*minutes?[^.]{0,40}(?:--background|slices?|threshold|host|command)/i,
+    "skill does not express the background trigger as a number of minutes"
+  );
   assert.doesNotMatch(normalizedSkill, /Do not treat empty output as any kind of success/i);
   for (const field of [
     "model",
