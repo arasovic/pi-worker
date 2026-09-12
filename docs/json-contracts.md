@@ -336,7 +336,19 @@ Worker fields are conditionally present:
   prior classification; user and tool-result messages do not, and a missing
   or malformed stopReason does not inherit an earlier error. A settled empty
   assistant message with another stop reason retains the generic empty-answer
-  failure wording.
+  failure wording. An error-stopped turn is continued on the same session
+  with one fixed prompt, at most twice; a cancelled or timed-out run is never
+  continued. When a continuation turn produces no newer assistant message,
+  the run ends after that one attempt instead of spending the bound, because
+  the retained classification still belongs to the earlier turn. The failure
+  text and the `partialExplanation` accounting stay as above, and the upstream
+  error text is still never projected anywhere.
+- `continuationAttempts`: present when the worker sent at least one
+  continuation prompt after an error-stopped turn; the number of those
+  prompts, zero or more and never more than the fixed bound of two. A run
+  whose turns never error-stopped omits it. When present, the worker
+  `warning` names the count and whether the retries produced the final
+  answer.
 - `data`: present only when the task carried `--data` files; one entry
   per carried file, each with `path`, `byteCount`, and `sha256`
 - `usage`: present only when at least one assistant message reported a

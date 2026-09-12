@@ -26,6 +26,7 @@ const (
 	debugModelToolCall = "phase=model-tool-call" // + elapsed=
 	debugModelActivity = "phase=model-activity"  // + elapsed=
 	debugWaiting       = "phase=waiting-for-pi"  // + last-phase= silence= process=alive
+	debugContinuation  = "phase=continuation"    // + attempt=
 	debugSettled       = "phase=settled"
 	debugStarted       = "status=started"
 	debugCompleted     = "status=completed"
@@ -189,6 +190,8 @@ func fixedDebugPhase(event string) (string, bool) {
 		return "model-tool-call", true
 	case debugModelActivity:
 		return "model-activity", true
+	case debugContinuation:
+		return "continuation", true
 	case debugSettled:
 		return "settled", true
 	default:
