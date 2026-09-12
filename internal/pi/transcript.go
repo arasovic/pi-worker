@@ -56,6 +56,12 @@ type transcriptAccumulator struct {
 	// ended with the stable error stopReason. Neither stopReason text nor the
 	// errorMessage beside it is retained: both are upstream-controlled input.
 	hasAssistantError bool
+	// assistantMessages counts every valid assistant message boundary observed
+	// (one per assistant message_start). It is the worker's evidence that a
+	// retried turn produced a newer assistant message: the count after a turn
+	// is greater than the count recorded before the continuation prompt was
+	// sent. Only the count is retained, never message content.
+	assistantMessages int
 }
 
 // OnEvent tracks one message boundary, text-delivery frame, or assistant
@@ -79,6 +85,7 @@ func (a *transcriptAccumulator) OnEvent(event Event) error {
 		if err := json.Unmarshal(event.Raw, &frame); err == nil {
 			if assistant, _, _ := parseAssistantMessage(frame.Message); assistant {
 				a.hasAssistantError = false
+				a.assistantMessages++
 			}
 		}
 		if len(a.text) > 0 {
@@ -262,6 +269,15 @@ func parseAssistantMessage(raw json.RawMessage) (assistant bool, stopReason stri
 // the accompanying errorMessage, which is raw upstream prose.
 func (a *transcriptAccumulator) assistantError() bool {
 	return a.hasAssistantError
+}
+
+// assistantMessageCount reports how many valid assistant messages have
+// started. The worker records it before a continuation prompt and compares it
+// afterwards: an unchanged count proves the retried turn produced no newer
+// assistant message, so the retained error classification still belongs to
+// the earlier turn. It exposes a count, never message content.
+func (a *transcriptAccumulator) assistantMessageCount() int {
+	return a.assistantMessages
 }
 
 // snapshot returns the in-flight message's text when it carries any,

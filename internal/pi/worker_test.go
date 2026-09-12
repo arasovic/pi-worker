@@ -1047,6 +1047,261 @@ func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
 	}
 }
 
+// errorStopTurnSteps is the scripted sequence for one turn that settles with
+// the stable assistant error stop. The message carries the upstream
+// errorMessage prose, which the worker must never project anywhere.
+func errorStopTurnSteps(upstreamSecret string) []script.Step {
+	return []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial evidence"}],"stopReason":"error","errorMessage":"` + upstreamSecret + `"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+}
+
+// TestWorkerContinuesAfterErrorStopThenCompletes covers the happy continuation:
+// the first turn error-stops, the continuation turn completes, and the run
+// reports the second turn's final text with exactly one continuation attempt
+// and a warning naming it.
+func TestWorkerContinuesAfterErrorStopThenCompletes(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-continue-7a2f"
+	scriptConfig := happyPathScript("unused")
+	// The first turn error-stops after reporting usage and text; the second
+	// turn reports more usage and the final text.
+	firstTurn := []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_update","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.001}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"partial evidence"}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial evidence"}],"stopReason":"error","errorMessage":"` + upstreamSecret + `"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	secondTurn := []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_update","usage":{"input":20,"output":8,"cacheRead":0,"cacheWrite":0,"totalTokens":28,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.002}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"final answer text"}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final answer text"}],"stopReason":"stop"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {firstTurn, secondTurn},
+		"get_last_assistant_text": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"first turn text"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"final answer text"}`)}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	var debugOut bytes.Buffer
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		Debug:     NewDebugSink(&debugOut),
+	})
+
+	if result.ContinuationAttempts != 1 {
+		t.Fatalf("continuationAttempts = %d, want 1", result.ContinuationAttempts)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if result.Explanation != "final answer text" {
+		t.Fatalf("explanation = %q, want the continuation turn's text", result.Explanation)
+	}
+	if want := continuationSucceededWarning(1); result.Warning != want {
+		t.Fatalf("warning = %q, want %q", result.Warning, want)
+	}
+	// Usage keeps accumulating across the failed turn and the continuation.
+	if result.Usage == nil || result.Usage.Input != 30 || result.Usage.Output != 13 || result.Usage.TotalTokens != 43 {
+		t.Fatalf("usage = %#v, want input 30 output 13 totalTokens 43", result.Usage)
+	}
+	if diff := result.Usage.Cost.Total - 0.003; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("usage cost total = %v, want 0.003", result.Usage.Cost.Total)
+	}
+	types := waitRequestLog(t, logPath, 7)
+	if got := countStrings(types, "prompt"); got != 2 {
+		t.Fatalf("request log = %v, want two prompts", types)
+	}
+	debugText := debugOut.String()
+	if got := strings.Count(debugText, "phase=continuation attempt=1"); got != 1 {
+		t.Fatalf("debug continuation lines = %d, want 1:\n%s", got, debugText)
+	}
+	for _, surface := range []string{result.Error, result.Warning, result.Explanation, debugText} {
+		if strings.Contains(surface, upstreamSecret) {
+			t.Fatalf("upstream errorMessage leaked into %q", surface)
+		}
+	}
+}
+
+// TestWorkerStopsAfterOneContinuationWhenNoNewAssistantMessageArrives covers
+// the deterministic-rejection stop: the continuation turn settles with an
+// error stop without producing a newer assistant message, so the worker stops
+// after exactly one continuation attempt instead of spending the second.
+func TestWorkerStopsAfterOneContinuationWhenNoNewAssistantMessageArrives(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-repeat-9c3d"
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			errorStopTurnSteps(upstreamSecret),
+			// The retried turn settles with the retained error classification
+			// and no newer assistant message: no message_start, no message_end.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+		"get_last_assistant_text": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"first turn text"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"first turn text"}`)}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	var debugOut bytes.Buffer
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		Debug:     NewDebugSink(&debugOut),
+	})
+
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if result.Error != "upstream/model turn ended with an error" {
+		t.Fatalf("error = %q, want the fixed error-stop wording", result.Error)
+	}
+	if result.ContinuationAttempts != 1 {
+		t.Fatalf("continuationAttempts = %d, want exactly 1", result.ContinuationAttempts)
+	}
+	// The warning carries the count and that the retries produced no progress.
+	if want := continuationNoProgressWarning(1); result.Warning != want {
+		t.Fatalf("warning = %q, want %q", result.Warning, want)
+	}
+	types := waitRequestLog(t, logPath, 6)
+	if got := countStrings(types, "prompt"); got != 2 {
+		t.Fatalf("request log = %v, want exactly two prompts", types)
+	}
+	debugText := debugOut.String()
+	if got := strings.Count(debugText, "phase=continuation"); got != 1 {
+		t.Fatalf("debug continuation lines = %d, want 1:\n%s", got, debugText)
+	}
+	for _, surface := range []string{result.Error, result.Warning, debugText} {
+		if strings.Contains(surface, upstreamSecret) {
+			t.Fatalf("upstream errorMessage leaked into %q", surface)
+		}
+	}
+}
+
+// TestWorkerStopsAfterTwoContinuationAttempts covers the fixed bound: each
+// retried turn produces a newer assistant message but still error-stops, so the
+// worker spends exactly two continuation attempts and stops.
+func TestWorkerStopsAfterTwoContinuationAttempts(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-bound-2b6c"
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			errorStopTurnSteps(upstreamSecret),
+			errorStopTurnSteps(upstreamSecret),
+			errorStopTurnSteps(upstreamSecret),
+		},
+		"get_last_assistant_text": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"first turn text"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"second turn text"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"third turn text"}`)}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if result.Error != "upstream/model turn ended with an error" {
+		t.Fatalf("error = %q, want the fixed error-stop wording", result.Error)
+	}
+	if result.ContinuationAttempts != maxContinuationAttempts {
+		t.Fatalf("continuationAttempts = %d, want %d", result.ContinuationAttempts, maxContinuationAttempts)
+	}
+	if want := continuationNoProgressWarning(maxContinuationAttempts); result.Warning != want {
+		t.Fatalf("warning = %q, want %q", result.Warning, want)
+	}
+	types := waitRequestLog(t, logPath, 8)
+	if got := countStrings(types, "prompt"); got != 3 {
+		t.Fatalf("request log = %v, want exactly three prompts", types)
+	}
+}
+
+// cancelOnMatchWriter cancels a context synchronously, from whichever
+// goroutine writes the matching debug line, so the cancellation deterministically
+// lands after that line and before the writer's caller continues. It is used to
+// cancel exactly when the first turn's terminal text RPC completes.
+type cancelOnMatchWriter struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	match  string
+	cancel context.CancelFunc
+}
+
+func (w *cancelOnMatchWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	cancelled := w.cancel != nil && strings.Contains(w.buf.String(), w.match)
+	w.mu.Unlock()
+	if cancelled {
+		w.cancel()
+	}
+	return n, err
+}
+
+// TestWorkerDoesNotContinueWhenContextCancelledAtErrorStop covers the first
+// stop condition: a run whose context is already cancelled when the error stop
+// is classified is never re-prompted.
+func TestWorkerDoesNotContinueWhenContextCancelledAtErrorStop(t *testing.T) {
+	const upstreamSecret = "UPSTREAM-ERROR-SECRET-cancel-4e8b"
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.Triggers["prompt"] = errorStopTurnSteps(upstreamSecret)
+	scriptConfig.Triggers["get_last_assistant_text"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"first turn text"}`)}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel as soon as the first turn's terminal text RPC completes: by then
+	// the error stop is settled, so the worker's pre-retry context check is the
+	// stop condition that fires.
+	writer := &cancelOnMatchWriter{match: "rpc=get_last_assistant_text status=completed", cancel: cancel}
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		Debug:     NewDebugSink(writer),
+	})
+
+	if result.Status != StatusCancelled {
+		t.Fatalf("status = %q, want cancelled; error = %q", result.Status, result.Error)
+	}
+	if result.ContinuationAttempts != 0 {
+		t.Fatalf("continuationAttempts = %d, want 0 for a cancelled run", result.ContinuationAttempts)
+	}
+	if result.Warning != "" {
+		t.Fatalf("warning = %q, want none for a run that never retried", result.Warning)
+	}
+	types := waitRequestLog(t, logPath, 5)
+	if got := countStrings(types, "prompt"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one prompt", types)
+	}
+}
+
 func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
 	// These are many individually legal text_delta frames, not one oversized
 	// frame. The older assistant message and the newer in-flight message share

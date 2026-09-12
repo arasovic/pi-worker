@@ -613,6 +613,7 @@ two runs from distinct configuration files do not share a gate.
   4. confirmation check that `set_model` returns the exact same `provider` and `id`
 - If no exact model match exists, or confirmation differs/missing, execution stops with an error. There is **no** pattern matching, fallback, or switching.
 - Each worker gets at most three startup/handshake attempts before the prompt. Every attempt launches a fresh process and reruns the pre-prompt checks; the task prompt itself is sent once only, never retried. If a later attempt succeeds after a retryable startup failure, the worker result carries a warning naming the successful retry, and the run record stores each started process through the existing worker-identity line.
+- After a turn settles with the stable assistant error stop, the worker continues the same live session with one fixed continuation prompt, at most twice. A cancelled or timed-out run is never continued. A continuation that produces no newer assistant message ends the run after that one attempt. The failure text is unchanged, and the upstream error text is still never projected anywhere.
 
 ### Thinking level
 
@@ -1075,6 +1076,11 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     read, lowercase hex, matching what a checksum of the file on disk
     produces); content itself is never reported
   - fallback workers include `thinkingFallback: true` and a fixed `warning`
+  - `continuationAttempts`: the number of continuation prompts the worker
+    sent after an error-stopped turn; present when at least one was sent, and
+    never more than the fixed bound of two. A run whose turns never
+    error-stopped omits it, and its `warning` names the count and whether the
+    retries produced the final answer
   - a worker's `partialExplanation`, when present, is capped at `MaxFrameBytes`
     (8 MiB) UTF-8 bytes across the in-flight and most-recent message buffers;
     older text is evicted without splitting a UTF-8 rune
