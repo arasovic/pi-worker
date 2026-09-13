@@ -651,6 +651,83 @@ func TestRunUsageErrors(t *testing.T) {
 	}
 }
 
+// TestRunRejectsNonUTF8TaskFile requires a task file whose bytes are not
+// valid UTF-8 to be refused as a usage error on the foreground path,
+// before anything starts: the same bad input the background start
+// request encoder used to reject as an internal failure must be caught
+// where the rest of the command line is resolved.
+func TestRunRejectsNonUTF8TaskFile(t *testing.T) {
+	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
+	taskFile := filepath.Join(t.TempDir(), "task.bin")
+	if err := os.WriteFile(taskFile, []byte("\xff\xfe bad"), 0o600); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task-file", taskFile}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, taskFile) {
+		t.Fatalf("stderr = %q, want it to name the task file %q", stderr, taskFile)
+	}
+	if !strings.Contains(stderr, "not valid UTF-8") {
+		t.Fatalf("stderr = %q, want the encoding rejection", stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
+	}
+}
+
+// TestRunBackgroundRejectsNonUTF8TaskFile pins the defect: the same task
+// file exits 9 with --background when the check only lives in the start
+// request encoder. With the check in resolveTasks the rejection happens
+// before the background command runs, so no supervisor seam is needed
+// and stdout stays empty.
+func TestRunBackgroundRejectsNonUTF8TaskFile(t *testing.T) {
+	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
+	taskFile := filepath.Join(t.TempDir(), "task.bin")
+	if err := os.WriteFile(taskFile, []byte("\xff\xfe bad"), 0o600); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--model", "acme/m-1", "--task-file", taskFile}, "")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, taskFile) {
+		t.Fatalf("stderr = %q, want it to name the task file %q", stderr, taskFile)
+	}
+	if !strings.Contains(stderr, "not valid UTF-8") {
+		t.Fatalf("stderr = %q, want the encoding rejection", stderr)
+	}
+}
+
+// TestRunRejectsNonUTF8Stdin requires the stdin prompt to be held to the
+// same encoding rule as a task file: it is one of the three input
+// mechanisms, so a bad byte on stdin is the same usage error.
+func TestRunRejectsNonUTF8Stdin(t *testing.T) {
+	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1"}, "\xff\xfe bad")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "not valid UTF-8") {
+		t.Fatalf("stderr = %q, want the encoding rejection", stderr)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
+	}
+}
+
 func TestRunUsageShowsWritesFlag(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

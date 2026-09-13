@@ -830,6 +830,7 @@ two runs from distinct configuration files do not share a gate.
   - `--task-file` repeated 1..3 times, or
   - no task flags: one task read from stdin.
 - Mixing `--task` and `--task-file` is rejected.
+- A prompt must be valid UTF-8; bytes that are not are a usage error that exits `2` before anything starts, whoever supplied the prompt — `--task`, `--task-file`, or stdin.
 - Default timeout is `30m` per task. Each task's execution budget starts independently after that task receives an admission lease; queue time does not consume it.
 
 ### Workspace and worker sharing

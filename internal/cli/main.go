@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/background"
@@ -1398,23 +1399,32 @@ func validateModel(model string) error {
 }
 
 // resolveTasks resolves the accepted task list: task values as-is, task
-// files read in order (each must be non-empty), or one task read from
-// stdin when neither flag was given.
+// files read in order (each must be non-empty and valid UTF-8), or one
+// task read from stdin when neither flag was given.
 func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 	if len(opts.tasks) > 0 {
+		for i, task := range opts.tasks {
+			if err := promptEncodingError(i, "", task); err != nil {
+				return nil, err
+			}
+		}
 		return append([]string(nil), opts.tasks...), nil
 	}
 	if len(opts.taskFiles) > 0 {
 		tasks := make([]string, 0, len(opts.taskFiles))
-		for _, path := range opts.taskFiles {
+		for i, path := range opts.taskFiles {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return nil, fmt.Errorf("read task file: %v", err)
 			}
-			if strings.TrimSpace(string(data)) == "" {
+			prompt := string(data)
+			if err := promptEncodingError(i, path, prompt); err != nil {
+				return nil, err
+			}
+			if strings.TrimSpace(prompt) == "" {
 				return nil, fmt.Errorf("task file %q is empty", path)
 			}
-			tasks = append(tasks, string(data))
+			tasks = append(tasks, prompt)
 		}
 		return tasks, nil
 	}
@@ -1422,10 +1432,36 @@ func resolveTasks(opts runOptions, stdin io.Reader) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read prompt from stdin: %v", err)
 	}
-	if strings.TrimSpace(string(data)) == "" {
+	prompt := string(data)
+	if err := promptEncodingError(0, "", prompt); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("no prompt provided on stdin")
 	}
-	return []string{string(data)}, nil
+	return []string{prompt}, nil
+}
+
+// promptEncodingError is the one usage error for a prompt that is not
+// valid UTF-8. Every prompt — a --task value, a task file's bytes, or
+// the stdin read — is held to the same rule here, where the rest of the
+// command line is resolved, so the foreground run and the background
+// start request agree on what a legal prompt is and a bad one is refused
+// before anything starts. The error names the task by its 1-based
+// position and, for a task file, the path, in the style of the existing
+// "task file %q is empty" error. A task file's path is never empty here:
+// parseRunArgs rejects an empty one before resolveTasks runs. The
+// background encoder keeps its own check as the last line of defense for
+// a start request assembled without this pass; this one turns the same
+// input into the usage error it is.
+func promptEncodingError(index int, path, prompt string) error {
+	if utf8.ValidString(prompt) {
+		return nil
+	}
+	if path != "" {
+		return fmt.Errorf("task %d: task file %q is not valid UTF-8", index+1, path)
+	}
+	return fmt.Errorf("task %d: prompt is not valid UTF-8", index+1)
 }
 
 // readDataDeclaration reads every file a --data declaration names, once,
