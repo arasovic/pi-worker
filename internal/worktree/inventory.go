@@ -312,7 +312,7 @@ func sameDir(path string, otherInfo os.FileInfo) bool {
 // checkoutHasChanges reports whether the worktree at path has
 // uncommitted changes.
 func checkoutHasChanges(ctx context.Context, path string) (bool, error) {
-	out, err := runGitFunc(ctx, path, "status", "--porcelain=v1")
+	out, err := runGitFunc(ctx, path, "-c", "status.showUntrackedFiles=all", "status", "--porcelain=v1")
 	if err != nil {
 		return false, err
 	}

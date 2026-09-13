@@ -31,7 +31,7 @@ func TestRemoveWorktreeRemoveFailureReturnsError(t *testing.T) {
 			return runGit(context.Background(), root, args...)
 		}
 		// status must run from the worktree path.
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		if cmd == "worktree remove "+ent.Path {
@@ -87,7 +87,7 @@ func TestRemoveBranchDeleteFailureRestores(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		if cmd == "worktree remove "+ent.Path {
@@ -162,7 +162,7 @@ func TestRemoveBranchDeleteAndRestoreBothFail(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		if cmd == "worktree remove "+ent.Path {
@@ -246,7 +246,7 @@ func TestRemoveMalformedListPreventsCommands(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		return "", fmt.Errorf("unexpected call after List: %q", cmd)

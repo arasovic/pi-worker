@@ -79,6 +79,13 @@ func withRunGitFunc(t *testing.T, fn func(context.Context, string, ...string) (s
 	t.Cleanup(func() { runGitFunc = orig })
 }
 
+// isStatusCall reports whether the joined git args are the checkout
+// porcelain status call checkoutHasChanges makes.
+func isStatusCall(cmd string) bool {
+	return strings.HasPrefix(cmd, "status ") ||
+		strings.HasPrefix(cmd, "-c status.showUntrackedFiles=all status ")
+}
+
 func TestValidName(t *testing.T) {
 	accepted := []string{"a", "z", "0", "9", "abc", "run-2", "a-b-c",
 		strings.Repeat("x", 64)}
