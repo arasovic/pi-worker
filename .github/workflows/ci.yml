@@ -177,3 +177,14 @@ jobs:
         run: npm run stage -- --dist dist
       - name: Assert npm pack inventory
         run: PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm/test/package.test.mjs
+      - name: Install packed package with scripts
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/home" "$tmp/prefix"
+          tarball="$(npm pack --json --pack-destination "$tmp" | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8"))[0].filename)')"
+          HOME="$tmp/home" npm install -g --foreground-scripts --prefix "$tmp/prefix" "$tmp/$tarball"
+          test -f "$tmp/home/.agents/skills/pi-worker/SKILL.md"
+          receipt="$(HOME="$tmp/home" "$tmp/prefix/bin/pi-worker" skill receipt-path --json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).receiptPath)')"
+          test -f "$receipt"

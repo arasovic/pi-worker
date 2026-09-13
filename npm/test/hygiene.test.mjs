@@ -186,6 +186,10 @@ test("CI keeps read-only reproducible source and snapshot gates", () => {
   }
   assert.match(ciWorkflow, /npm ci --ignore-scripts/);
   assert.match(ciWorkflow, /npm run verify/);
+  const packedInstall = ciWorkflow.match(/HOME="\$tmp\/home" npm install -g[^\n]*/);
+  assert.ok(packedInstall, "CI installs the packed package with install scripts enabled");
+  assert.match(packedInstall[0], /--foreground-scripts/);
+  assert.doesNotMatch(packedInstall[0], /--ignore-scripts/);
   assert.match(ciWorkflow, /go run \.\/tools\/release/);
   assert.match(ciWorkflow, /npm run stage -- --dist dist/);
   assert.match(ciWorkflow, /npm run check:hygiene/);
