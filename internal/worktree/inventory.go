@@ -28,14 +28,16 @@ type entryRef struct {
 }
 
 // List inventories the exact private worktrees managed under
-// <root>/.pi-worker/worktrees/<name> on branch run/<name>. It never
-// mutates repository state.
+// <root>/.pi-worker/worktrees/<name> on branch run/<name>, judging
+// each branch's Merged flag against the caller's HEAD, read from cwd
+// rather than from the main worktree — the two differ when cwd is a
+// linked worktree. It never mutates repository state.
 func List(ctx context.Context, cwd string) ([]Entry, error) {
 	root, err := resolveMainRoot(ctx, cwd)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}
-	head, err := runGitFunc(ctx, root, "rev-parse", "HEAD")
+	head, err := runGitFunc(ctx, cwd, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("resolve caller HEAD: %w", err)
 	}

@@ -140,12 +140,13 @@ func resolveMainRoot(ctx context.Context, dir string) (string, error) {
 }
 
 // Prepare creates a private worktree for name under cwd. It resolves
-// the repository root from cwd, resolves the exact HEAD hash once,
-// refuses an existing path or branch before any mutation, and creates
-// the worktree at <root>/.pi-worker/worktrees/<name> on branch
-// run/<name> from the resolved hash. A cancelled or expired context
-// wraps ctx.Err and is never a refusal. No cleanup is attempted on
-// failure.
+// the repository root from cwd, resolves the exact HEAD hash once from
+// the caller's directory — not the main worktree's HEAD, which differs
+// when cwd is a linked worktree — refuses an existing path or branch
+// before any mutation, and creates the worktree at
+// <root>/.pi-worker/worktrees/<name> on branch run/<name> from the
+// resolved hash. A cancelled or expired context wraps ctx.Err and is
+// never a refusal. No cleanup is attempted on failure.
 func Prepare(ctx context.Context, cwd, name string) (Prepared, error) {
 	if !ValidName(name) {
 		return Prepared{}, &refusal{msg: fmt.Sprintf("invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", name)}
@@ -176,7 +177,7 @@ func Prepare(ctx context.Context, cwd, name string) (Prepared, error) {
 		return Prepared{}, fmt.Errorf("create worktree %s: %w", path, ctxErr)
 	}
 
-	head, err := runGitFunc(ctx, root, "rev-parse", "HEAD")
+	head, err := runGitFunc(ctx, cwd, "rev-parse", "HEAD")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Prepared{}, fmt.Errorf("resolve HEAD: %w", ctxErr)
