@@ -60,6 +60,108 @@ func TestSelectedVersionsFailsForAModuleTheBuildDoesNotSelect(t *testing.T) {
 	}
 }
 
+// TestVersionFormatAnswersTwoFieldsForAnUnreplacedModule pins the real template
+// against the real go command: a module this repository does not replace must
+// answer with its path and its version, and nothing else. A template that
+// printed the path again in the no-replace branch would answer three fields,
+// sending every unreplaced module through the replaced branch of
+// parseSelections.
+func TestVersionFormatAnswersTwoFieldsForAnUnreplacedModule(t *testing.T) {
+	t.Helper()
+
+	const module = "github.com/tklauser/numcpus"
+
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatalf("moduleRoot() unexpected error: %v", err)
+	}
+
+	run, err := goList(context.Background(), root, "list", "-m", "-f", versionFormat, module)
+	if err != nil {
+		t.Fatalf("go list from %q failed: %v: %s", root, err, goComplaint(run.stderr))
+	}
+
+	fields := strings.Fields(strings.TrimSpace(run.stdout))
+	if len(fields) != 2 {
+		t.Fatalf("go list answered %q, want two fields: the module path and its version", run.stdout)
+	}
+	if fields[0] != module {
+		t.Fatalf("go list answered %q, want the module path first", run.stdout)
+	}
+}
+
+// TestSelectedVersionsReadsReplaceDirectives covers the replace directive: the
+// version named in the notice document is the version the build contains, which
+// for a replaced module is the replacement's version. A replacement the notice
+// cannot describe honestly — another module path, whose license lives under a
+// different module cache directory, or a local directory with no version at all
+// — fails, naming the module and the replace directive.
+func TestSelectedVersionsReadsReplaceDirectives(t *testing.T) {
+	t.Helper()
+
+	module := "example.com/replaced"
+
+	for _, tc := range []struct {
+		name     string
+		answer   string
+		want     string
+		mentions []string
+	}{
+		{
+			name:   "same-path replace resolves to the replacement version",
+			answer: module + " " + module + " v1.1.0",
+			want:   "v1.1.0",
+		},
+		{
+			name:     "different-path replace fails",
+			answer:   module + " example.com/other v1.1.0",
+			mentions: []string{module, "example.com/other", "replace"},
+		},
+		{
+			name:     "local directory replace fails",
+			answer:   module + " ../localdep ",
+			mentions: []string{module, "../localdep", "replace"},
+		},
+		{
+			name:   "no replace resolves to the module's own version",
+			answer: module + " v1.0.0",
+			want:   "v1.0.0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Helper()
+
+			original := goList
+			t.Cleanup(func() { goList = original })
+			goList = func(context.Context, string, ...string) (goRun, error) {
+				return goRun{stdout: tc.answer + "\n"}, nil
+			}
+
+			versions, err := selectedVersions(t.Context(), []string{module})
+			if len(tc.mentions) > 0 {
+				if err == nil {
+					t.Fatalf("selectedVersions() resolved %q to %q, which the notice cannot describe honestly", module, versions[module])
+				}
+				if !errors.Is(err, errNoSelectedVersion) {
+					t.Fatalf("selectedVersions() error must be %v; got: %v", errNoSelectedVersion, err)
+				}
+				for _, mention := range tc.mentions {
+					if !strings.Contains(err.Error(), mention) {
+						t.Fatalf("selectedVersions() error must mention %q; got: %v", mention, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("selectedVersions() unexpected error: %v", err)
+			}
+			if got := versions[module]; got != tc.want {
+				t.Fatalf("selectedVersions() resolved %q to %q, want %q", module, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRenderFailsWhenTheBuildSelectsNoVersionForADependency guards the same
 // property from the rendering side: Render cannot name versions taken from the
 // build, so it refuses to produce a document at all. Each stand-in below is an
