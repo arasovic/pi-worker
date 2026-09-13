@@ -8,10 +8,11 @@ import (
 // transcriptAccumulator is the worker's salvage record of assistant text and
 // the stable terminal classification as they stream. It implements
 // EventHandler, appending the delta of every text_delta message_update frame,
-// and retaining an assistant message's stopReason at message_end. A run that
-// ends without a final text — timed out, cancelled, or failed before
-// settlement — can therefore report text already produced or a stable
-// assistant error. The client calls OnEvent from its single driving goroutine,
+// and retaining an assistant message's stopReason and, for an error stop, the
+// errorMessage beside it at message_end. A run that ends without a final text
+// — timed out, cancelled, or failed before settlement — can therefore report
+// text already produced, a stable assistant error, and Pi's own error text.
+// The client calls OnEvent from its single driving goroutine,
 // matching the client's single-flight contract, so the accumulator needs no
 // locking.
 //
@@ -53,9 +54,16 @@ type transcriptAccumulator struct {
 	// so short streams do not pay for the full ceiling up front.
 	storage []byte
 	// hasAssistantError records only whether the latest assistant message
-	// ended with the stable error stopReason. Neither stopReason text nor the
-	// errorMessage beside it is retained: both are upstream-controlled input.
+	// ended with the stable error stopReason. The stopReason text itself is
+	// not retained; the errorMessage beside an error stop is kept verbatim
+	// so the worker can report Pi's own failure text.
 	hasAssistantError bool
+	// assistantErrorText is the errorMessage of the latest assistant message
+	// whose stopReason was "error", or "" when that message carried none. It
+	// is Pi's own text, reported verbatim by the worker and never classified
+	// or rewritten; a newer assistant message clears it exactly as it clears
+	// hasAssistantError.
+	assistantErrorText string
 	// assistantMessages counts every valid assistant message boundary observed
 	// (one per assistant message_start). It is the worker's evidence that a
 	// retried turn produced a newer assistant message: the count after a turn
@@ -83,8 +91,9 @@ func (a *transcriptAccumulator) OnEvent(event Event) error {
 			Message json.RawMessage `json:"message"`
 		}
 		if err := json.Unmarshal(event.Raw, &frame); err == nil {
-			if assistant, _, _ := parseAssistantMessage(frame.Message); assistant {
+			if assistant, _, _, _ := parseAssistantMessage(frame.Message); assistant {
 				a.hasAssistantError = false
+				a.assistantErrorText = ""
 				a.assistantMessages++
 			}
 		}
@@ -122,19 +131,24 @@ func (a *transcriptAccumulator) OnEvent(event Event) error {
 		a.appendDelta(delta)
 	case "message_end":
 		// message_end.message is Pi's authoritative complete assistant
-		// message. Keep only its stable stopReason classification; the
-		// adjacent errorMessage is provider-controlled prose and is not
-		// safe to project into the worker result. A known assistant message
-		// with a missing or malformed stopReason explicitly clears the old
-		// classification rather than inheriting it.
+		// message. Keep its stable stopReason classification and, when that
+		// stop is an error, the errorMessage beside it: Pi's own failure text
+		// is reported verbatim rather than classified or rewritten. A known
+		// assistant message with a missing or malformed stopReason explicitly
+		// clears the old classification rather than inheriting it.
 		var frame struct {
 			Message json.RawMessage `json:"message"`
 		}
 		if err := json.Unmarshal(event.Raw, &frame); err != nil {
 			return nil
 		}
-		if assistant, stopReason, validStopReason := parseAssistantMessage(frame.Message); assistant {
+		if assistant, stopReason, validStopReason, errorMessage := parseAssistantMessage(frame.Message); assistant {
 			a.hasAssistantError = validStopReason && stopReason == "error"
+			if a.hasAssistantError {
+				a.assistantErrorText = errorMessage
+			} else {
+				a.assistantErrorText = ""
+			}
 		}
 	}
 	return nil
@@ -245,30 +259,43 @@ func utf8Suffix(value string, max int) string {
 
 // parseAssistantMessage accepts only an object whose role is the exact string
 // "assistant". It separately reports whether stopReason was a string, so a
-// missing or mistyped stopReason cannot preserve an older assistant error.
-func parseAssistantMessage(raw json.RawMessage) (assistant bool, stopReason string, validStopReason bool) {
+// missing or mistyped stopReason cannot preserve an older assistant error, and
+// carries the errorMessage string when one is present. A missing, null, or
+// mistyped errorMessage yields the empty string.
+func parseAssistantMessage(raw json.RawMessage) (assistant bool, stopReason string, validStopReason bool, errorMessage string) {
 	var message struct {
-		Role       json.RawMessage `json:"role"`
-		StopReason json.RawMessage `json:"stopReason"`
+		Role         json.RawMessage `json:"role"`
+		StopReason   json.RawMessage `json:"stopReason"`
+		ErrorMessage json.RawMessage `json:"errorMessage"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &message) != nil {
-		return false, "", false
+		return false, "", false, ""
 	}
 	var role string
 	if json.Unmarshal(message.Role, &role) != nil || role != "assistant" {
-		return false, "", false
+		return false, "", false, ""
+	}
+	if len(message.ErrorMessage) > 0 && string(message.ErrorMessage) != "null" {
+		_ = json.Unmarshal(message.ErrorMessage, &errorMessage)
 	}
 	if len(message.StopReason) == 0 || string(message.StopReason) == "null" || json.Unmarshal(message.StopReason, &stopReason) != nil {
-		return true, "", false
+		return true, "", false, errorMessage
 	}
-	return true, stopReason, true
+	return true, stopReason, true, errorMessage
 }
 
 // assistantError reports the stable assistant stopReason that Pi uses when
-// the model/provider turn fails. It intentionally does not expose or retain
-// the accompanying errorMessage, which is raw upstream prose.
+// the model/provider turn fails.
 func (a *transcriptAccumulator) assistantError() bool {
 	return a.hasAssistantError
+}
+
+// assistantErrorMessage reports the errorMessage Pi attached to the latest
+// assistant message's stable error stop, or "" when that message carried
+// none. It is Pi's own failure text, reported verbatim by the worker; a newer
+// assistant message replaces it.
+func (a *transcriptAccumulator) assistantErrorMessage() string {
+	return a.assistantErrorText
 }
 
 // assistantMessageCount reports how many valid assistant messages have

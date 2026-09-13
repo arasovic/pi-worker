@@ -256,10 +256,11 @@ protocol failure. A successful `prompt` response only means preflight
 accepted, queued, or handled the prompt; later failures are emitted in the
 event/message stream, including assistant messages with `stopReason:
 "error"`. Pi-worker reports the stable error as `upstream/model turn ended with
-an error`, without copying the message's `errorMessage`; any text emitted by
-that failed turn is partial evidence, not a final explanation. A settled
-assistant message with another stop reason and empty text retains the generic
-empty-answer wording.
+an error: <errorMessage>`, carrying the message's `errorMessage` verbatim;
+when it is absent the worker reports `upstream/model turn ended with an error`
+alone. Any text emitted by that failed turn is partial evidence, not a final
+explanation. A settled assistant message with another stop reason and empty
+text retains the generic empty-answer wording.
 
 ### V0 consumer projection
 
@@ -402,16 +403,20 @@ message must replace, not sum. Assistant `stopReason` can be
 `stop`, `length`, `toolUse`, `error`, or `aborted`; it is not the session
 terminal condition. A latest assistant `message_end` with
 `stopReason: "error"` makes the worker fail with `upstream/model turn ended
-with an error`; this wording does not claim that no text existed and does not
-attribute the error to a particular provider mechanism. Text emitted by that
-failed turn is exposed only as `partialExplanation`, never as `explanation`.
+with an error: <errorMessage>`, appending the assistant message's
+`errorMessage` verbatim when it is present; an error stop with no
+`errorMessage` yields the base sentence alone. This wording does not claim
+that no text existed and does not attribute the error to a particular
+provider mechanism. Text emitted by that failed turn is exposed only as
+`partialExplanation`, never as `explanation`.
 Partial assistant text retained for this field is capped at `MaxFrameBytes`
 (8 MiB) UTF-8 bytes across the in-flight and most-recent message buffers;
 when the cap is reached, older text is evicted without splitting a UTF-8 rune.
 A newer valid assistant message supersedes the prior classification; user and
 tool-result messages do not. A missing or malformed stopReason on the latest
 assistant message does not inherit an earlier error. The assistant's
-`errorMessage` is not a pi-worker result projection.
+`errorMessage` is projected verbatim only in the worker `error` field, never
+into the fixed continuation prompt, the warning, or the debug stream.
 
 ## Tool semantics
 
