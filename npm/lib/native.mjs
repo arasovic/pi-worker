@@ -10,8 +10,8 @@ export class UnsupportedPlatformError extends Error {
 }
 
 export class NativeProcessError extends Error {
-  constructor() {
-    super("native process could not be started");
+  constructor(message = "native process could not be started") {
+    super(message);
     this.name = "NativeProcessError";
   }
 }
@@ -157,7 +157,7 @@ export function runNativeCaptured(binary, args, options = {}) {
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       const next = (streamName === "stdout" ? stdoutBytes : stderrBytes) + data.length;
       if (next > maxOutputBytes) {
-        captureError = new Error(`${streamName} exceeded the native capture limit`);
+        captureError = new NativeProcessError(`${streamName} exceeded the native capture limit`);
         child.kill("SIGKILL");
         return;
       }

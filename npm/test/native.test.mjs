@@ -245,7 +245,11 @@ describe("launcher process behavior", () => {
 	test("rejects oversized captured status output", async () => {
 		await assert.rejects(
 			runNativeCaptured(argsFixture, ["x".repeat(2048)], { maxOutputBytes: 64 }),
-			/capture limit/,
+			(error) => {
+				assert.ok(error instanceof NativeProcessError);
+				assert.match(error.message, /capture limit/);
+				return true;
+			},
 		);
 	});
 
@@ -331,6 +335,26 @@ describe("launcher process behavior", () => {
       state: "performed",
       targets: [{ path: external, identity: "current" }],
     });
+  });
+
+  test("oversized native status document has the documented failure shape", { skip: unsupportedNativeSkip }, () => {
+    const fixture = launcherFixture("oversized-status-document", { status: true });
+    mkdirSync(join(fixture.binary, ".."), { recursive: true });
+    writeFileSync(
+      fixture.binary,
+      "#!/bin/sh\nhead -c 1100000 /dev/zero | tr '\\0' a\n",
+      { mode: 0o755 },
+    );
+
+    const child = spawnSync(bin, [fixture.launcher, "skill", "status", "--json"], {
+      encoding: "utf8",
+    });
+
+    assert.equal(child.status, 9);
+    assert.equal(child.signal, null);
+    assert.equal(child.stdout, "");
+    assert.equal(child.stderr, "pi-worker: stdout exceeded the native capture limit\n");
+    assert.doesNotMatch(child.stderr, /stack|at /i);
   });
 
   for (const [name, args] of [
