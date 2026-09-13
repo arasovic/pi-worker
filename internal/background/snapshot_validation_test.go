@@ -41,20 +41,44 @@ func TestValidate_WorkerAcceptedAtNonUTC(t *testing.T) {
 // --- multi-worker missing writes declaration -------------------------------------
 
 func TestNewSnapshot_MultiWorkerMissingDeclaration(t *testing.T) {
-	first := fixtureTask()
-	second := fixtureTask()
-	second.Writes = run.WriteDeclaration{Declared: true, Paths: []string{"b.txt"}}
-	// Remove Writes entirely so ProjectTasks produces Declared=false / Writes=nil.
-	second.Writes = run.WriteDeclaration{}
+	t.Run("both undeclared is legal", func(t *testing.T) {
+		first := fixtureTask()
+		second := fixtureTask()
+		// Neither task declared: the all-or-none rule leaves the run legal,
+		// exactly as it is in the foreground.
+		first.Writes = run.WriteDeclaration{}
+		second.Writes = run.WriteDeclaration{}
 
-	_, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws",
-		ProcessIdentity{PID: 1, CreateTime: 100}, []run.Task{first, second}, time.Minute, nil)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "writesDeclared must be true when multiple workers") {
-		t.Errorf("error = %q; want substring %q", err.Error(), "writesDeclared must be true when multiple workers")
-	}
+		snap, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws",
+			ProcessIdentity{PID: 1, CreateTime: 100}, []run.Task{first, second}, time.Minute, nil)
+		if err != nil {
+			t.Fatalf("NewSnapshot with no declaration on either worker: %v", err)
+		}
+		if len(snap.Workers) != 2 {
+			t.Fatalf("workers = %d, want 2", len(snap.Workers))
+		}
+		for _, w := range snap.Workers {
+			if w.Task.WritesDeclared {
+				t.Errorf("worker[%d]: writesDeclared = true, want false", w.WorkerID)
+			}
+		}
+	})
+
+	t.Run("partial declaration is refused", func(t *testing.T) {
+		first := fixtureTask()
+		second := fixtureTask()
+		// One declared and one did not: the declaration must be all-or-none.
+		second.Writes = run.WriteDeclaration{}
+
+		_, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws",
+			ProcessIdentity{PID: 1, CreateTime: 100}, []run.Task{first, second}, time.Minute, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "worker[2]: declared no writes while another worker declared: the declaration is all-or-none") {
+			t.Errorf("error = %q; want the all-or-none message naming worker 2", err.Error())
+		}
+	})
 }
 
 // --- declared write path validation ----------------------------------------------

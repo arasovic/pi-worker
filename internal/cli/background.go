@@ -54,6 +54,11 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
 
+	// The same warning the foreground prints: --background changes who
+	// waits, not what runs, and a multi-task run nobody declared for is
+	// legal on both paths.
+	warnSharedWorkspace(tasks, stderr)
+
 	started, err := manager.Start(ctx, background.StartOptions{
 		Tasks:            tasks,
 		Workspace:        workspace,

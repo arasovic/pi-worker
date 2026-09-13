@@ -564,9 +564,7 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 
 	preflightPiVersion(parent, stderr)
 
-	if len(tasks) > 1 && !allWritesDeclared(tasks) {
-		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
-	}
+	warnSharedWorkspace(tasks, stderr)
 
 	gate, err := openAdmission(opts.admissionRoot, opts.maxModelWorkers)
 	if err != nil {
@@ -1036,6 +1034,17 @@ func allWritesDeclared(tasks []run.Task) bool {
 		}
 	}
 	return true
+}
+
+// warnSharedWorkspace prints the one warning a multi-worker run gets when
+// not every task declared its writes: the workers share the writable
+// current workspace and must use disjoint files. It is shared by the
+// foreground and background run commands so the two cannot drift, and it
+// is stderr-only, so a JSON consumer's stdout stays a single document.
+func warnSharedWorkspace(tasks []run.Task, stderr io.Writer) {
+	if len(tasks) > 1 && !allWritesDeclared(tasks) {
+		fmt.Fprintf(stderr, "pi-worker: warning: %d workers share the writable current workspace; tasks must use disjoint files\n", len(tasks))
+	}
 }
 
 func invalidWorktreeNameError(name string) error {

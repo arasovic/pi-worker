@@ -269,14 +269,28 @@ func (s Snapshot) Validate() error {
 		}
 	}
 
-	// Multi-worker cross-checks: writes must be declared and paths must not overlap.
+	// Multi-worker cross-checks: the write declaration is all-or-none —
+	// every worker declared or none did, exactly the rule the foreground
+	// states — and declared paths must not overlap. A run where nobody
+	// declared stays legal; the CLI rejects a partial declaration before
+	// any snapshot exists, so this only defends a snapshot built without
+	// the CLI in front of it.
 	if len(s.Workers) > 1 {
 		workerPaths := make(map[int][]string)
+		anyDeclared := false
+		var undeclared []int
 		for _, w := range s.Workers {
-			if !w.Task.WritesDeclared {
-				errs = append(errs, fmt.Sprintf("worker[%d]: writesDeclared must be true when multiple workers", w.WorkerID))
+			if w.Task.WritesDeclared {
+				anyDeclared = true
+			} else {
+				undeclared = append(undeclared, w.WorkerID)
 			}
 			workerPaths[w.WorkerID-1] = w.Task.Writes
+		}
+		if anyDeclared {
+			for _, id := range undeclared {
+				errs = append(errs, fmt.Sprintf("worker[%d]: declared no writes while another worker declared: the declaration is all-or-none", id))
+			}
 		}
 		for idA, pathsA := range workerPaths {
 			for idB, pathsB := range workerPaths {
