@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -491,10 +492,12 @@ func TestStartSupervisorHandoffMalformedReplyClosesChild(t *testing.T) {
 // and stays alive. The strict decode must succeed and the bind must fail
 // on exactly that single field: the handoff reports accepted=false with
 // an error naming the bind mismatch, closes and reaps the still-live
-// child, and leaves the child's genuine durable acceptance untouched on
-// disk. The child mode is bounded: its hold expires on its own, and the
-// capture cleanup kills and reaps an orphaned child after a bounded wait
-// even when an assertion fails.
+// child, and rolls the never-accepted snapshot back so no durable run is
+// left behind; the admission tickets stay on disk because their owner is
+// the reaped child and Gate.Reconcile reaps them. The child mode is
+// bounded: its hold expires on its own, and the capture cleanup kills and
+// reaps an orphaned child after a bounded wait even when an assertion
+// fails.
 func TestStartSupervisorHandoffBindMismatchClosesChild(t *testing.T) {
 	t.Setenv(supervisorHandoffBindMismatchChildEnv, "30s")
 	req, backgroundRoot, admissionRoot := exchangeStartRequest(t)
@@ -544,20 +547,16 @@ func TestStartSupervisorHandoffBindMismatchClosesChild(t *testing.T) {
 	// must never accept a supervisor whose reply fails the bind.
 	assertRoleChildGone(t, pid)
 
-	// The child's durable acceptance is the genuine one — the reply
-	// deviated only on the wire. The killed child never rolled it back
-	// and the starter never touched child state.
-	store, sErr := NewStore(backgroundRoot)
-	if sErr != nil {
-		t.Fatalf("construct store over the child's durable acceptance: %v", sErr)
+	// The bind failed, so the reply was never accepted: the never-accepted
+	// snapshot and its run directory must have been rolled back by the
+	// starter even though the child had durably written them.
+	runDir := filepath.Join(backgroundRoot, req.runID)
+	if _, statErr := os.Stat(runDir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("run directory survived a non-accepted start: stat %s = %v", runDir, statErr)
 	}
-	loaded, lErr := store.Load(req.runID)
-	if lErr != nil {
-		t.Fatalf("reload the child's durable snapshot: %v", lErr)
-	}
-	if bindErr := bindSupervisorStartAccepted(req, loaded, pid); bindErr != nil {
-		t.Fatalf("durable snapshot does not bind cleanly to the request and child: %v", bindErr)
-	}
+	// The admission tickets are recovered by Gate.Reconcile, not by the
+	// starter: their owner is the reaped child, so the durable batch is
+	// still observable here.
 	st := readAdmissionState(t, admissionRoot)
 	if len(st.Tickets) != len(req.tasks) {
 		t.Fatalf("durable tickets = %d, want %d: %+v", len(st.Tickets), len(req.tasks), st.Tickets)
@@ -579,11 +578,12 @@ func TestStartSupervisorHandoffBindMismatchClosesChild(t *testing.T) {
 // middle of the announced payload. The reply read must fail as a
 // partial-frame read — never a decode — and the handoff reports
 // accepted=false with an error naming the partial read, closes and reaps
-// the still-live child, and leaves the child's durable acceptance on
-// disk, proving the child had genuinely accepted before the frame was cut
-// off on the wire. The child mode is bounded: its hold expires on its
-// own, and the capture cleanup kills and reaps an orphaned child after a
-// bounded wait even when an assertion fails.
+// the still-live child, and rolls the never-accepted snapshot back so no
+// durable run is left behind; the admission tickets stay on disk because
+// their owner is the reaped child and Gate.Reconcile reaps them. The child
+// mode is bounded: its hold expires on its own, and the capture cleanup
+// kills and reaps an orphaned child after a bounded wait even when an
+// assertion fails.
 func TestStartSupervisorHandoffPartialFrameClosesChild(t *testing.T) {
 	t.Setenv(supervisorHandoffPartialFrameChildEnv, "30s")
 	req, backgroundRoot, admissionRoot := exchangeStartRequest(t)
@@ -615,21 +615,14 @@ func TestStartSupervisorHandoffPartialFrameClosesChild(t *testing.T) {
 	// The starter closed and reaped the still-live child.
 	assertRoleChildGone(t, pid)
 
-	// The child's acceptance was already durable when the frame was cut:
-	// the damaged frame is a deliberate post-acceptance wire truncation,
-	// and the killed child never rolled the acceptance back. The durable
-	// snapshot is the child's genuine acceptance and binds cleanly to the
-	// request and to the exact child PID.
-	store, sErr := NewStore(backgroundRoot)
-	if sErr != nil {
-		t.Fatalf("construct store over the child's durable acceptance: %v", sErr)
-	}
-	loaded, lErr := store.Load(req.runID)
-	if lErr != nil {
-		t.Fatalf("reload the child's durable snapshot: %v", lErr)
-	}
-	if bindErr := bindSupervisorStartAccepted(req, loaded, pid); bindErr != nil {
-		t.Fatalf("durable snapshot does not bind cleanly to the request and child: %v", bindErr)
+	// The read failed mid-frame, so the reply was never accepted: the
+	// child's durable snapshot must have been rolled back by the starter
+	// even though the child had already written it before truncating the
+	// frame. The admission tickets are recovered by Gate.Reconcile, not by
+	// the starter, so their durable batch is still observable.
+	runDir := filepath.Join(backgroundRoot, req.runID)
+	if _, statErr := os.Stat(runDir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("run directory survived a non-accepted start: stat %s = %v", runDir, statErr)
 	}
 	st := readAdmissionState(t, admissionRoot)
 	if len(st.Tickets) != len(req.tasks) {
