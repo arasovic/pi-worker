@@ -12,8 +12,12 @@ import (
 )
 
 // versionFormat is the `go list` template reporting a module and the version
-// selected for it.
-const versionFormat = "{{.Path}} {{.Version}}"
+// the build selects for it. A module named by a replace directive is built at
+// the replacement's version, so the template reports the replacement's path and
+// version whenever one is set; the resolver refuses a replacement it cannot
+// describe honestly. Without a replace directive only the module's own version
+// follows its path, so an unreplaced module answers with exactly two fields.
+const versionFormat = "{{.Path}} {{if .Replace}}{{.Replace.Path}} {{.Replace.Version}}{{else}}{{.Version}}{{end}}"
 
 // errNoSelectedVersion is reported for a declared module whose version the
 // build did not supply. It is the one failure that would otherwise render a
@@ -62,28 +66,58 @@ func selectedVersions(ctx context.Context, modules []string) (map[string]string,
 			errNoSelectedVersion, strings.Join(args, " "), root, err, goComplaint(run.stderr))
 	}
 
-	selected := make(map[string]string)
-	for _, line := range strings.Split(run.stdout, "\n") {
-		module, version, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if !ok || module == "" {
-			continue
-		}
-		selected[module] = strings.TrimSpace(version)
-	}
+	selected := parseSelections(run.stdout)
 
 	for _, module := range modules {
-		version, ok := selected[module]
+		selection, ok := selected[module]
 		if !ok {
 			return nil, fmt.Errorf("%w: module %s is not in the build list of %s: go %s answered: %s",
 				errNoSelectedVersion, module, root, strings.Join(args, " "), goComplaint(run.stderr))
 		}
-		if version == "" {
+		if selection.replacementPath != "" {
+			if selection.version == "" {
+				return nil, fmt.Errorf("%w: module %s is replaced by the local directory %s by a replace directive, for which the go command selects no version",
+					errNoSelectedVersion, module, selection.replacementPath)
+			}
+			if selection.replacementPath != module {
+				return nil, fmt.Errorf("%w: module %s is replaced by %s, a different module, by a replace directive, whose license lives under another module's cache directory",
+					errNoSelectedVersion, module, selection.replacementPath)
+			}
+		}
+		if selection.version == "" {
 			return nil, fmt.Errorf("%w: module %s was reported with an empty version by go in %s",
 				errNoSelectedVersion, module, root)
 		}
-		versions[module] = version
+		versions[module] = selection.version
 	}
 	return versions, nil
+}
+
+// moduleSelection is what the go command answered for one module: the version
+// the build selects for it, and the path a replace directive sends it to when
+// one is set.
+type moduleSelection struct {
+	replacementPath string
+	version         string
+}
+
+// parseSelections reads the lines versionFormat produces. A module without a
+// replace directive answers with its own version; a replaced module answers
+// with the replacement's path and version, the version empty when the
+// replacement is a local directory that has none. Module paths and versions
+// hold no spaces, so the number of fields says which answer a line is.
+func parseSelections(stdout string) map[string]moduleSelection {
+	selected := make(map[string]moduleSelection)
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Split(line, " ")
+		switch {
+		case len(fields) == 2 && fields[0] != "":
+			selected[fields[0]] = moduleSelection{version: fields[1]}
+		case len(fields) == 3 && fields[0] != "":
+			selected[fields[0]] = moduleSelection{replacementPath: fields[1], version: fields[2]}
+		}
+	}
+	return selected
 }
 
 // goList runs the go command in dir and returns the run. It is a variable so a
