@@ -334,21 +334,23 @@ Worker fields are conditionally present:
   `partialExplanation`, never a final `explanation`; the assistant
   `errorMessage` is never copied. A newer assistant message supersedes the
   prior classification; user and tool-result messages do not, and a missing
-  or malformed stopReason does not inherit an earlier error. A settled empty
-  assistant message with another stop reason retains the generic empty-answer
-  failure wording. An error-stopped turn is continued on the same session
-  with one fixed prompt, at most twice; a cancelled or timed-out run is never
-  continued. When a continuation turn produces no newer assistant message,
-  the run ends after that one attempt instead of spending the bound, because
-  the retained classification still belongs to the earlier turn. The failure
-  text and the `partialExplanation` accounting stay as above, and the upstream
-  error text is still never projected anywhere.
+  or malformed stopReason does not inherit an earlier error. A turn that
+  settles without a final answer — the stable error stop or an empty final
+  text — is continued on the same session with one fixed prompt, at most
+  twice; a cancelled or timed-out run is never continued. When a continuation
+  turn starts no newer assistant message, the run ends after that one attempt
+  instead of spending the bound: nothing about the conversation changed, so
+  the same stop repeats deterministically. The failure text names the stop
+  that ended the run: the fixed error wording above for an error stop, and the
+  generic empty-answer wording for an empty final text. The
+  `partialExplanation` accounting stays as above, and the upstream error text
+  is still never projected anywhere.
 - `continuationAttempts`: present when the worker sent at least one
-  continuation prompt after an error-stopped turn; the number of those
-  prompts, zero or more and never more than the fixed bound of two. A run
-  whose turns never error-stopped omits it. When present, the worker
-  `warning` names the count and whether the retries produced the final
-  answer.
+  continuation prompt after a turn that ended without a final answer; the
+  number of those prompts, zero or more and never more than the fixed bound of
+  two. A run whose first turn produced a final answer omits it. When present,
+  the worker `warning` names the count and whether the retries produced the
+  final answer.
 - `data`: present only when the task carried `--data` files; one entry
   per carried file, each with `path`, `byteCount`, and `sha256`
 - `usage`: present only when at least one assistant message reported a

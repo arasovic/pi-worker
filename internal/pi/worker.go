@@ -19,16 +19,16 @@ const (
 )
 
 // maxContinuationAttempts bounds how many further turns the worker takes on
-// the same live client after a turn settled with an assistant error stop. The
-// bound is fixed: there is no flag, config key, or tunable for it.
+// the same live client after a turn settled without a final answer. The bound
+// is fixed: there is no flag, config key, or tunable for it.
 const maxContinuationAttempts = 2
 
 // continuationPrompt is the one fixed English sentence submitted as the
-// continuation prompt after an error-stopped turn. It is never interpolated
-// with anything, least of all the upstream errorMessage: that field is
-// upstream-controlled prose and must never reach the prompt, the result, the
-// warning, the debug stream, or the run record.
-const continuationPrompt = "Your previous turn ended with an error. Continue the task from where you stopped without redoing completed work; if it was already complete, restate the final result."
+// continuation prompt after a turn ended without a final answer. It is never
+// interpolated with anything, least of all the upstream errorMessage: that
+// field is upstream-controlled prose and must never reach the prompt, the
+// result, the warning, the debug stream, or the run record.
+const continuationPrompt = "Your previous turn ended without a final answer. Continue the task from where you stopped without redoing completed work; if it was already complete, restate the final result."
 
 // ProcessObserver is told the identity of the process one worker
 // started, at the moment it starts: the worker id it ran under and the
@@ -121,8 +121,8 @@ type WorkerResult struct {
 	Status             string `json:"status"`
 	Error              string `json:"error,omitempty"`
 	// ContinuationAttempts is the number of continuation prompts the worker
-	// sent after a turn settled with an assistant error stop. It is zero on a
-	// run whose turns never error-stopped, and never more than
+	// sent after a turn settled without a final answer. It is zero on a run
+	// whose first turn produced a final answer, and never more than
 	// maxContinuationAttempts. When non-zero it is present in the JSON result
 	// and the worker warning names the count and whether the retries produced
 	// the final answer.
@@ -350,12 +350,13 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 
 	// The submit-and-wait sequence below is the single owned FrameReader
 	// consumer window, reused unchanged for the original prompt and for every
-	// continuation prompt. A turn that settles with an assistant error stop is
-	// continued on the same live client — the session and host process stay
-	// alive until Run returns — for at most maxContinuationAttempts further
-	// turns. The errorMessage beside the stop is never read, so it can never
-	// reach the continuation prompt, the result, the warning, the debug stream,
-	// or the run record.
+	// continuation prompt. A turn that settles without a final answer — an
+	// assistant error stop or an empty final text — is continued on the same
+	// live client, whose session and host process stay alive until Run
+	// returns, for at most maxContinuationAttempts further turns. The
+	// errorMessage beside an error stop is never read, so it can never reach
+	// the continuation prompt, the result, the warning, the debug stream, or
+	// the run record.
 	prompt := req.Prompt
 	assistantMessagesAtContinuation := transcript.assistantMessageCount()
 	for {
@@ -381,33 +382,40 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		if err != nil {
 			return finalize(w.classify(req.Model, ctx, err))
 		}
-		if !transcript.assistantError() {
-			if strings.TrimSpace(text) == "" {
-				return finalize(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "agent settled without producing final text"})
-			}
+		if !transcript.assistantError() && strings.TrimSpace(text) != "" {
 			return finalize(WorkerResult{Model: req.Model, Status: StatusCompleted, Explanation: text})
 		}
+		// A turn that settles without a final answer is a continuable stop
+		// whether the stable assistant error stop carries it or the final text
+		// is empty: the turn is over, the work may be unfinished, and the
+		// session is intact and re-promptable. Both stops go through the gates
+		// below unchanged, and the failure text names the stop that ended the
+		// run.
+		//
 		// stopReason is Pi's stable classification of the assistant message.
-		// Do not surface its accompanying errorMessage: that field is
+		// Its accompanying errorMessage is never surfaced: that field is
 		// upstream-controlled prose and may carry secrets, credentials, URLs,
 		// or unstable response bodies. An error stop is not a completed answer
 		// even if the turn emitted some text; withThinking preserves any such
 		// streamed text as partialExplanation.
+		stopError := "agent settled without producing final text"
+		if transcript.assistantError() {
+			stopError = "upstream/model turn ended with an error"
+		}
 		if err := ctx.Err(); err != nil {
 			// A cancelled or timed-out run is never re-prompted: the ending
 			// rejection is the context's, and classify reports it as such.
 			return finalize(w.classify(req.Model, ctx, err))
 		}
 		if continuationAttempts >= maxContinuationAttempts {
-			return finalize(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "upstream/model turn ended with an error"})
+			return finalize(WorkerResult{Model: req.Model, Status: StatusFailed, Error: stopError})
 		}
 		if continuationAttempts > 0 && transcript.assistantMessageCount() == assistantMessagesAtContinuation {
-			// The retried turn settled with an error stop but produced no newer
-			// assistant message: the stop classification is the earlier turn's,
-			// and a rejection rooted in the conversation repeats
-			// deterministically. One attempt is the whole evidence needed, so
-			// the second is not spent.
-			return finalize(WorkerResult{Model: req.Model, Status: StatusFailed, Error: "upstream/model turn ended with an error"})
+			// The retried turn settled without starting a newer assistant
+			// message, so nothing about the conversation changed: the same stop
+			// repeats deterministically. One attempt is the whole evidence
+			// needed, so the second is not spent.
+			return finalize(WorkerResult{Model: req.Model, Status: StatusFailed, Error: stopError})
 		}
 		continuationAttempts++
 		assistantMessagesAtContinuation = transcript.assistantMessageCount()
@@ -517,18 +525,20 @@ func startupRetryWarning(attempt int, priorFailureClass string) string {
 	return fmt.Sprintf("startup succeeded on attempt %d/3 after %s startup failure", attempt, priorFailureClass)
 }
 
-// continuationSucceededWarning is the one warning a run that retried after an
-// error stop carries when a continuation turn produced the final answer.
+// continuationSucceededWarning is the one warning a run that retried after a
+// turn ended without a final answer carries when a continuation turn produced
+// the final answer.
 func continuationSucceededWarning(attempt int) string {
-	return fmt.Sprintf("continuation succeeded on attempt %d/%d after an upstream/model error stop", attempt, maxContinuationAttempts)
+	return fmt.Sprintf("continuation succeeded on attempt %d/%d after a turn that ended without a final answer", attempt, maxContinuationAttempts)
 }
 
-// continuationNoProgressWarning is the one warning a run that retried after an
-// error stop carries when it ended without a completed continuation. It names
-// the attempts made and that the retries produced no progress; the result's
-// error text stays the fixed error-stop wording.
+// continuationNoProgressWarning is the one warning a run that retried after a
+// turn ended without a final answer carries when it ended without a completed
+// continuation. It names the attempts made and that the retries produced no
+// progress; the result's error text stays the fixed wording for the stop that
+// ended the run.
 func continuationNoProgressWarning(attempt int) string {
-	return fmt.Sprintf("continuation attempt %d/%d after an upstream/model error stop; the retries produced no progress", attempt, maxContinuationAttempts)
+	return fmt.Sprintf("continuation attempt %d/%d after a turn that ended without a final answer; the retries produced no progress", attempt, maxContinuationAttempts)
 }
 
 func retryableStartupFailure(err error) bool {
