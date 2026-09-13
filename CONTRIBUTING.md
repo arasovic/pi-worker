@@ -58,15 +58,18 @@ Every dependency is also pinned somewhere the version resolver does not reach,
 so a Dependabot pull request lands red by design and needs one companion commit
 on its own branch:
 
-- Go modules: THIRD_PARTY_NOTICES is rendered from `fixedInventory` in
-  `internal/releasenotice/notices.go`, not from `go.mod`, so regenerating alone
-  is a no-op. Edit the versions in `fixedInventory` first, then replace the same
-  versions in `internal/releasenotice/notices_test.go`, whose fixture module
-  cache is keyed by `module@version`, and only then run
-  `go run ./tools/notices --write THIRD_PARTY_NOTICES`.
-  `TestInventoryMatchesTargetDependencyUnion` compares the inventory against the
-  real module graph for every release target, so transitive bumps must be
-  carried too: updating gopsutil also moves purego.
+- Go modules: THIRD_PARTY_NOTICES takes each module's version from the go
+  build, so a version bump needs no source edit: run
+  `go run ./tools/notices --write THIRD_PARTY_NOTICES` and commit the result.
+  `npm run check:notices` fails until you do. `fixedInventory` in
+  `internal/releasenotice/notices.go` lists modules, their release targets and
+  license files. Edit it only when the module set changes: a new module, a
+  removed one, or a license file that moved.
+  `TestInventoryMatchesTargetDependencyUnion` compares it against the real
+  module graph for every release target, so a bump that pulls in a new
+  transitive module fails there until it is added. A `replace` directive for an
+  inventoried module must keep the same module path and name a version; the
+  notice tool refuses other replacements.
 
   After changing modules, run `go mod download all` and commit any resulting
   `go.sum` change. `go mod tidy` alone is not sufficient: the
