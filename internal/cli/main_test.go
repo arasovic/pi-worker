@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/admission"
+	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/contracts"
@@ -699,6 +700,38 @@ func TestRunWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
 	}
 	if fake.callCount() != 2 {
 		t.Fatalf("worker calls = %d, want 2", fake.callCount())
+	}
+}
+
+// TestRunBackgroundWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares
+// requires the background path to accept the same run the foreground
+// accepts: two tasks with no --writes anywhere is legal, so the command
+// reaches the start and prints the shared-workspace warning exactly once.
+// The role program is a path that does not exist, so the start itself is
+// refused before any supervisor exists — no real supervisor is created
+// for this test — and the warning this test is about is printed before
+// that refusal, exactly as it is before a successful start.
+func TestRunBackgroundWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
+	manager, err := background.NewManager(t.TempDir(), t.TempDir(), 2)
+	if err != nil {
+		t.Fatalf("background.NewManager: %v", err)
+	}
+	originalManager, originalRole := newBackgroundManager, backgroundRoleExecutable
+	newBackgroundManager = func(string, int) (*background.Manager, error) { return manager, nil }
+	backgroundRoleExecutable = filepath.Join(t.TempDir(), "no-such-supervisor")
+	t.Cleanup(func() {
+		newBackgroundManager, backgroundRoleExecutable = originalManager, originalRole
+	})
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
+	if code == 0 {
+		t.Fatalf("exit = 0 for a start whose supervisor could not be spawned; stdout = %q", stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty for a start that was not accepted", stdout)
+	}
+	if count := strings.Count(stderr, "pi-worker: warning: 2 workers share the writable current workspace; tasks must use disjoint files"); count != 1 {
+		t.Fatalf("warning count = %d, want 1: %q", count, stderr)
 	}
 }
 
