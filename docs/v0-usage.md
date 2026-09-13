@@ -476,7 +476,7 @@ pi-worker worktrees remove <name> [--yes] [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--json] [--debug]
+pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug]
 ```
 
 ## Personal default model
