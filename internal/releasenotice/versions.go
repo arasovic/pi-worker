@@ -105,7 +105,8 @@ type moduleSelection struct {
 // replace directive answers with its own version; a replaced module answers
 // with the replacement's path and version, the version empty when the
 // replacement is a local directory that has none. Module paths and versions
-// hold no spaces, so the number of fields says which answer a line is.
+// hold no spaces; only the replacement path may, so everything between the
+// module path and the replacement version is joined back into it.
 func parseSelections(stdout string) map[string]moduleSelection {
 	selected := make(map[string]moduleSelection)
 	for _, line := range strings.Split(stdout, "\n") {
@@ -113,8 +114,11 @@ func parseSelections(stdout string) map[string]moduleSelection {
 		switch {
 		case len(fields) == 2 && fields[0] != "":
 			selected[fields[0]] = moduleSelection{version: fields[1]}
-		case len(fields) == 3 && fields[0] != "":
-			selected[fields[0]] = moduleSelection{replacementPath: fields[1], version: fields[2]}
+		case len(fields) >= 3 && fields[0] != "":
+			selected[fields[0]] = moduleSelection{
+				replacementPath: strings.Join(fields[1:len(fields)-1], " "),
+				version:         fields[len(fields)-1],
+			}
 		}
 	}
 	return selected
