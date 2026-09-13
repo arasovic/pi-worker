@@ -64,6 +64,17 @@ func TestMain(m *testing.M) {
 	if len(os.Args) == 2 {
 		switch os.Args[1] {
 		case string(roleSupervisor):
+			// The dispatch-signal mode runs the production
+			// dispatchSupervisorRole with the exchange replaced by a
+			// seam that SIGTERMs this child's own process and then
+			// rejects the start with no preparation. It must run before
+			// this branch opens its own wrappers for the role
+			// descriptors, because the production dispatch opens them
+			// itself and a second live wrapper over the same fds would
+			// race the first wrapper's close. It never returns.
+			if os.Getenv(supervisorDispatchSignalChildEnv) != "" {
+				runSupervisorDispatchSignalChild()
+			}
 			pipes, err := openChildRolePipes(roleSupervisor)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "openChildRolePipes: %v\n", err)
