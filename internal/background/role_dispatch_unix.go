@@ -32,6 +32,12 @@ func dispatchWorkerHostRole(stderr io.Writer) (bool, int) {
 	return true, roleExitSucceeded
 }
 
+// receiveSupervisorStartFunc is the child-side supervisor start exchange
+// dispatchSupervisorRole runs. Production always leaves it as
+// receiveSupervisorStart; the seam exists only so a test can drive the
+// child path with an exchange result no concrete transport can produce.
+var receiveSupervisorStartFunc = receiveSupervisorStart
+
 // dispatchSupervisorRole runs one private supervisor child over the fixed
 // descriptors the starter handed it and reports the role exit code for how
 // far it got. receiveSupervisorStart closes both supervisor transport ends
@@ -44,7 +50,18 @@ func dispatchSupervisorRole(stderr io.Writer) (bool, int) {
 		fmt.Fprintf(stderr, "pi-worker: open %s role pipes: %v\n", roleSupervisor, err)
 		return true, roleExitPipesUnavailable
 	}
-	result, err := receiveSupervisorStart(pipes)
+	// The interception is installed before the exchange because a SIGTERM
+	// that arrives before or during the exchange must not take the default
+	// action and kill the child: an accepted start then hands runAcceptedRun
+	// the already-cancelled context and ends the run the normal cancelled
+	// way, and a rejected start still runs the rejection path below
+	// unchanged.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// Keep interception installed through runAcceptedRun's terminal snapshot
+	// write: a second SIGTERM must not restore the default disposition and
+	// kill the supervisor while that write is in flight.
+	defer stop()
+	result, err := receiveSupervisorStartFunc(pipes)
 	if err != nil {
 		// An accepted result may still carry a pipe-close diagnostic: the run
 		// it describes is sound regardless, so the diagnostic is reported and
@@ -69,11 +86,6 @@ func dispatchSupervisorRole(stderr io.Writer) (bool, int) {
 	}
 	// No deadline here: the queue deadline is the accepted one, and the
 	// execution timeout is applied per worker inside the run controller.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	// Keep interception installed through runAcceptedRun's terminal snapshot
-	// write: a second SIGTERM must not restore the default disposition and
-	// kill the supervisor while that write is in flight.
-	defer stop()
 	if err := runAcceptedRun(ctx, executable, result); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: run accepted %s run: %v\n", roleSupervisor, err)
 		return true, roleExitRunFailed
