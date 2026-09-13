@@ -5,6 +5,7 @@ package background
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,10 +49,16 @@ func TestStartSupervisorHandoffCancelBeforeDecodeClosesChild(t *testing.T) {
 
 	// The child's acceptance was already durable when the cancellation
 	// landed: the complete reply frame precedes the probe, and the reply
-	// is written only after the Snapshot and tickets are durable.
-	snapPath := filepath.Join(backgroundRoot, req.runID, "snapshot.json")
-	if _, statErr := os.Stat(snapPath); statErr != nil {
-		t.Fatalf("child acceptance not durable when the cancellation landed: %v", statErr)
+	// is written only after the Snapshot and tickets are durable. The
+	// starter gave up without accepting, so the snapshot and its run
+	// directory must have been rolled back by the time the call returns.
+	runDir := filepath.Join(backgroundRoot, req.runID)
+	snapPath := filepath.Join(runDir, "snapshot.json")
+	if _, statErr := os.Stat(snapPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("snapshot survived a non-accepted start: stat %s = %v", snapPath, statErr)
+	}
+	if _, statErr := os.Stat(runDir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("run directory survived a non-accepted start: stat %s = %v", runDir, statErr)
 	}
 	if st := readAdmissionState(t, admissionRoot); len(st.Tickets) != len(req.tasks) {
 		t.Fatalf("durable tickets = %d, want %d when the cancellation landed", len(st.Tickets), len(req.tasks))

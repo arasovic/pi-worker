@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"reflect"
 	"time"
 	"unicode/utf8"
@@ -215,14 +216,16 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 		if outcome.err != nil {
 			closeErr := proc.Close()
 			return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-				fmt.Errorf("start supervisor handoff: read reply frame: %w", outcome.err), closeErr, closeRequestDiag)
+				fmt.Errorf("start supervisor handoff: read reply frame: %w", outcome.err), closeErr, closeRequestDiag,
+				discardUnacceptedStartSnapshot(req))
 		}
 		frame = outcome.frame
 	case <-ctx.Done():
 		closeErr := proc.Close()
 		<-receiveDone
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-			fmt.Errorf("start supervisor handoff: %w", ctx.Err()), closeErr, closeRequestDiag)
+			fmt.Errorf("start supervisor handoff: %w", ctx.Err()), closeErr, closeRequestDiag,
+			discardUnacceptedStartSnapshot(req))
 	}
 
 	// Phase 6 — the cancellation linearization point: one complete reply
@@ -236,7 +239,8 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		closeErr := proc.Close()
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-			fmt.Errorf("start supervisor handoff: %w", ctxErr), closeErr, closeRequestDiag)
+			fmt.Errorf("start supervisor handoff: %w", ctxErr), closeErr, closeRequestDiag,
+			discardUnacceptedStartSnapshot(req))
 	}
 
 	// Phase 7 — strict decode. Once decoding begins, cancellation can no
@@ -245,7 +249,8 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 	if decodeErr != nil {
 		closeErr := proc.Close()
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-			fmt.Errorf("start supervisor handoff: decode reply frame: %w", decodeErr), closeErr, closeRequestDiag)
+			fmt.Errorf("start supervisor handoff: decode reply frame: %w", decodeErr), closeErr, closeRequestDiag,
+			discardUnacceptedStartSnapshot(req))
 	}
 
 	// A complete rejection is a decided non-accepted answer: the child
@@ -266,12 +271,14 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 	if rebindErr != nil {
 		closeErr := proc.Close()
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-			fmt.Errorf("start supervisor handoff: rebind request: %w", rebindErr), closeErr, closeRequestDiag)
+			fmt.Errorf("start supervisor handoff: rebind request: %w", rebindErr), closeErr, closeRequestDiag,
+			discardUnacceptedStartSnapshot(req))
 	}
 	if bindErr := bindSupervisorStartAccepted(expected, reply.snapshot, supervisorPID); bindErr != nil {
 		closeErr := proc.Close()
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-			fmt.Errorf("start supervisor handoff: bind accepted reply: %w", bindErr), closeErr, closeRequestDiag)
+			fmt.Errorf("start supervisor handoff: bind accepted reply: %w", bindErr), closeErr, closeRequestDiag,
+			discardUnacceptedStartSnapshot(req))
 	}
 
 	// Phase 9 — the reply is fully decoded and bound: acceptance is
@@ -294,6 +301,32 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 		return result, joinSupervisorStartErrors(closeRequestDiag, detachDiag)
 	}
 	return result, nil
+}
+
+// discardUnacceptedStartSnapshot removes the durable snapshot the child
+// may have written for a request whose reply the starter never accepted.
+// The child writes the snapshot before its accepted reply, so a starter
+// that gives up after sending the request frame — cancellation, deadline,
+// read error, cancellation at the decode point, decode error, or bind
+// error — must roll the orphaned snapshot back itself; the admission
+// tickets need no such recovery because Gate.Reconcile reaps tickets whose
+// owner, the now-reaped child, is gone. A run directory that does not
+// exist is not an error; any other failure is returned so the caller can
+// join it into the handoff error. The decided rejection branch and every
+// accepted return are never passed here: the child already rolled back its
+// own state before rejecting, and acceptance is never rolled back.
+func discardUnacceptedStartSnapshot(req supervisorStartRequest) error {
+	store, err := NewStore(req.backgroundRoot)
+	if err != nil {
+		return fmt.Errorf("start supervisor handoff: roll back unaccepted snapshot: %w", err)
+	}
+	if err := store.Remove(req.runID); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("start supervisor handoff: roll back unaccepted snapshot: %w", err)
+	}
+	return nil
 }
 
 // bindSupervisorStartAccepted verifies that an accepted reply snapshot is
