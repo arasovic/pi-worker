@@ -92,8 +92,9 @@ var supervisorStartCloseRequestProbe func()
 // the request — run id, accepted time (which also stamps the initial
 // snapshot update time), workspace, worktree, worker order/projections,
 // and execution timeout — and to the exact spawned supervisor PID. An
-// encoded request larger than the private frame limit is rejected before
-// any context check and before any process exists. A structurally valid
+// encoded request larger than the private frame limit is rejected with
+// ErrStartRequestTooLarge before any context check and before any
+// process exists. A structurally valid
 // snapshot for another request is a protocol failure, never an
 // acceptance. On acceptance the child is detached; on every other outcome
 // it is closed and reaped. All primary and cleanup errors are preserved
@@ -145,8 +146,8 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 	// deliver and the child-side read would refuse.
 	if len(payload) > privateFrameLimit {
 		return supervisorStartHandoffResult{}, fmt.Errorf(
-			"start supervisor handoff: request payload is %d bytes, exceeding the private frame limit of %d bytes",
-			len(payload), privateFrameLimit)
+			"%w: the run's prompts and --data files encode to %d bytes, above the %d MiB limit for background runs; shrink the input or run without --background",
+			ErrStartRequestTooLarge, len(payload), privateFrameLimit>>20)
 	}
 
 	// Cancellation before process creation leaves nothing to clean up.

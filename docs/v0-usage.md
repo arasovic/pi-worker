@@ -1013,10 +1013,15 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   anywhere in the argument list, before the `--task` or `--task-file`
   included, and a prompt read from stdin — a run with no task flag at
   all — declares its material the same way.
-- There is **no** size limit and **no** count limit, per task or per
-  run: pi-worker cannot know the caller's budget, model, or context
-  window, so any ceiling would be a cost opinion wearing a safety
-  guard's clothes.
+- Foreground runs have **no** size limit and **no** count limit, per
+  task or per run: pi-worker cannot know the caller's budget, model, or
+  context window, so any ceiling would be a cost opinion wearing a safety
+  guard's clothes. A background run is the one exception, and for a
+  transport reason rather than a cost one: its prompts and `--data` files
+  travel to the detached supervisor as one framed request with a 64 MiB
+  ceiling, so a `run --background` whose prompts and data files together
+  encode to more than 64 MiB is refused with exit `2` before any process
+  starts — shrink the input or run without `--background`.
 - Every data file is read once, up front, before any worker starts, in
   the same pass that validates the rest of the command line. A missing,
   unreadable, or otherwise failing file is a usage error that exits `2`

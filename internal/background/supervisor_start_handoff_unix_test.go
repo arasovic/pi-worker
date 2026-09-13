@@ -3,6 +3,7 @@
 package background
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/arasovic/pi-worker/internal/run"
 )
 
 // supervisorHandoffChildEnv is the environment variable that switches a
@@ -898,11 +901,12 @@ func TestStartSupervisorHandoffDetachDiagnosticKeepsAcceptedSupervisor(t *testin
 }
 
 // TestStartSupervisorHandoffOversizedRequestNeverStarts verifies that an
-// encoded request larger than the private frame limit is rejected before
-// any context check and before any process creation: the error names the
-// encoded byte count and the limit, and the process starter is never
-// consulted even under an already-canceled context, proving the size
-// check precedes both the context check and the process start.
+// encoded request larger than the private frame limit is rejected with
+// ErrStartRequestTooLarge before any context check and before any process
+// creation: the error names the encoded byte count and the background
+// limit, and the process starter is never consulted even under an
+// already-canceled context, proving the size check precedes both the
+// context check and the process start.
 func TestStartSupervisorHandoffOversizedRequestNeverStarts(t *testing.T) {
 	req := validStartRequest()
 	req.tasks[0].Prompt = strings.Repeat("x", privateFrameLimit) // encoded JSON exceeds the limit
@@ -931,14 +935,77 @@ func TestStartSupervisorHandoffOversizedRequestNeverStarts(t *testing.T) {
 	if errors.Is(err, context.Canceled) {
 		t.Fatalf("error %v reports the cancellation instead of the oversize rejection: the size check must precede the context check", err)
 	}
-	if !strings.Contains(err.Error(), fmt.Sprintf("payload is %d bytes", len(payload))) {
+	if !errors.Is(err, ErrStartRequestTooLarge) {
+		t.Fatalf("error %v does not carry ErrStartRequestTooLarge", err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("encode to %d bytes", len(payload))) {
 		t.Fatalf("error %q does not name the encoded byte count %d", err, len(payload))
 	}
-	if !strings.Contains(err.Error(), fmt.Sprintf("frame limit of %d bytes", privateFrameLimit)) {
-		t.Fatalf("error %q does not name the private frame limit %d", err, privateFrameLimit)
+	if !strings.Contains(err.Error(), "--background") {
+		t.Fatalf("error %q does not name the foreground alternative", err)
 	}
 	if calls != 0 {
 		t.Fatalf("process starter consulted %d times by an oversized request", calls)
+	}
+}
+
+// TestStartSupervisorHandoffOversizedDataRequestNeverStarts verifies that
+// data content alone can push the encoded request just over the private
+// frame limit, and that such a request is rejected with
+// ErrStartRequestTooLarge before any context check and before any process
+// creation: the content lives only in memory, nothing large is written to
+// disk, and the process starter is never consulted.
+func TestStartSupervisorHandoffOversizedDataRequestNeverStarts(t *testing.T) {
+	req := minimalStartRequest()
+	// Size the in-memory content exactly. With a one-byte content the wire
+	// already carries the whole data-field overhead in base64 string form,
+	// and every three added content bytes add exactly four base64 bytes:
+	// the deficit plus a small margin, floored to whole groups, is enough
+	// to land the encoded request just over the limit.
+	req.tasks[0].Data = []run.DataFile{{Path: "in/blob.bin", Content: []byte("x")}}
+	base, err := encodeSupervisorStartRequest(req)
+	if err != nil {
+		t.Fatalf("encode probe request: %v", err)
+	}
+	deficit := privateFrameLimit + 16 - len(base)
+	contentLen := 1 + (deficit/4)*3
+	req.tasks[0].Data[0].Content = bytes.Repeat([]byte("d"), contentLen)
+	payload, err := encodeSupervisorStartRequest(req)
+	if err != nil {
+		t.Fatalf("encode oversized data request: %v", err)
+	}
+	if len(payload) <= privateFrameLimit {
+		t.Fatalf("oversized data fixture encodes to %d bytes, want more than the %d byte limit", len(payload), privateFrameLimit)
+	}
+	calls := 0
+	start := func(string, role) (*roleProcess, error) {
+		calls++
+		return nil, errors.New("process starter must not be consulted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := startSupervisorHandoffWithProcess(ctx, testExe(t), req, start)
+	if result.accepted {
+		t.Fatal("oversized data request reported acceptance")
+	}
+	if !errors.Is(err, ErrStartRequestTooLarge) {
+		t.Fatalf("error %v does not carry ErrStartRequestTooLarge", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v reports the cancellation instead of the oversize rejection: the size check must precede the context check", err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("encode to %d bytes", len(payload))) {
+		t.Fatalf("error %q does not name the encoded byte count %d", err, len(payload))
+	}
+	if !strings.Contains(err.Error(), "above the 64 MiB limit") {
+		t.Fatalf("error %q does not name the 64 MiB background limit", err)
+	}
+	if !strings.Contains(err.Error(), "--background") {
+		t.Fatalf("error %q does not name the foreground alternative", err)
+	}
+	if calls != 0 {
+		t.Fatalf("process starter consulted %d times by an oversized data request", calls)
 	}
 }
 
