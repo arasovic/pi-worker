@@ -404,6 +404,39 @@ func TestTranscriptAssistantErrorStateFollowsAssistantBoundaries(t *testing.T) {
 			if a.assistantError() {
 				t.Fatal("missing or malformed retry stopReason inherited the prior error")
 			}
+			if got := a.assistantErrorMessage(); got != "" {
+				t.Fatalf("assistantErrorMessage = %q, want empty after a superseding message", got)
+			}
 		})
+	}
+}
+
+func TestTranscriptAssistantErrorMessageFollowsTheLatestErrorStop(t *testing.T) {
+	// The error text is retained verbatim from the message whose stopReason
+	// is the error stop, replaced when a newer error stop carries its own
+	// text, and cleared when a newer assistant message supersedes the error.
+	a := &transcriptAccumulator{}
+	for _, ev := range []Event{
+		{Type: "message_start", Raw: json.RawMessage(`{"type":"message_start","message":{"role":"assistant"}}`)},
+		{Type: "message_end", Raw: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"first upstream failure"}}`)},
+	} {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(%s) = %v, want nil", ev.Type, err)
+		}
+	}
+	if got := a.assistantErrorMessage(); got != "first upstream failure" {
+		t.Fatalf("assistantErrorMessage = %q, want the first error stop's text", got)
+	}
+	if err := a.OnEvent(Event{Type: "message_end", Raw: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","stopReason":"error"}}`)}); err != nil {
+		t.Fatalf("second error stop = %v, want nil", err)
+	}
+	if got := a.assistantErrorMessage(); got != "" {
+		t.Fatalf("assistantErrorMessage = %q, want empty after an error stop without text", got)
+	}
+	if err := a.OnEvent(Event{Type: "message_end", Raw: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}`)}); err != nil {
+		t.Fatalf("clean stop = %v, want nil", err)
+	}
+	if got := a.assistantErrorMessage(); got != "" {
+		t.Fatalf("assistantErrorMessage = %q, want empty after a clean stop", got)
 	}
 }

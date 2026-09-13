@@ -25,9 +25,10 @@ const maxContinuationAttempts = 2
 
 // continuationPrompt is the one fixed English sentence submitted as the
 // continuation prompt after a turn ended without a final answer. It is never
-// interpolated with anything, least of all the upstream errorMessage: that
-// field is upstream-controlled prose and must never reach the prompt, the
-// result, the warning, the debug stream, or the run record.
+// interpolated with anything, least of all the upstream errorMessage: the
+// error text is reported verbatim in the worker error, which travels with the
+// result into the JSON output and the stored run record; it never reaches the
+// continuation prompt, the warnings, or the debug stream.
 const continuationPrompt = "Your previous turn ended without a final answer. Continue the task from where you stopped without redoing completed work; if it was already complete, restate the final result."
 
 // ProcessObserver is told the identity of the process one worker
@@ -354,9 +355,10 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// assistant error stop or an empty final text — is continued on the same
 	// live client, whose session and host process stay alive until Run
 	// returns, for at most maxContinuationAttempts further turns. The
-	// errorMessage beside an error stop is never read, so it can never reach
-	// the continuation prompt, the result, the warning, the debug stream, or
-	// the run record.
+	// errorMessage beside an error stop is reported verbatim in the worker
+	// error when the run fails, which travels with the result into the JSON
+	// output and the stored run record; it never reaches the continuation
+	// prompt, the warnings, or the debug stream.
 	prompt := req.Prompt
 	assistantMessagesAtContinuation := transcript.assistantMessageCount()
 	for {
@@ -393,14 +395,17 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		// run.
 		//
 		// stopReason is Pi's stable classification of the assistant message.
-		// Its accompanying errorMessage is never surfaced: that field is
-		// upstream-controlled prose and may carry secrets, credentials, URLs,
-		// or unstable response bodies. An error stop is not a completed answer
+		// Its accompanying errorMessage is Pi's own failure text and is
+		// appended to the worker error verbatim: no classification, no
+		// dictionary, no rewriting. An error stop is not a completed answer
 		// even if the turn emitted some text; withThinking preserves any such
 		// streamed text as partialExplanation.
 		stopError := "agent settled without producing final text"
 		if transcript.assistantError() {
 			stopError = "upstream/model turn ended with an error"
+			if errorText := transcript.assistantErrorMessage(); errorText != "" {
+				stopError += ": " + errorText
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			// A cancelled or timed-out run is never re-prompted: the ending

@@ -1015,7 +1015,8 @@ func TestWorkerOmittedTextFieldIsTaskFailure(t *testing.T) {
 
 // TestWorkerAssistantErrorWithTextRemainsFailed drives a settled assistant
 // error that also emitted text. The text is evidence from the failed turn,
-// not a final explanation, and the upstream errorMessage is never projected.
+// not a final explanation, and the worker error carries Pi's own
+// errorMessage verbatim.
 func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
 	const upstreamSecret = "UPSTREAM-ERROR-SECRET-7a2f"
 	scriptConfig := happyPathScript("partial evidence")
@@ -1036,20 +1037,62 @@ func TestWorkerAssistantErrorWithTextRemainsFailed(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("status = %q, want failed; result = %#v", result.Status, result)
 	}
-	if result.Error != "upstream/model turn ended with an error" {
-		t.Fatalf("error = %q, want stable upstream/model wording", result.Error)
+	if want := "upstream/model turn ended with an error: " + upstreamSecret; result.Error != want {
+		t.Fatalf("error = %q, want %q", result.Error, want)
 	}
 	if result.Explanation != "" || result.PartialExplanation != "partial evidence" {
 		t.Fatalf("result = %#v, want partial evidence without final explanation", result)
 	}
-	if strings.Contains(result.Error, upstreamSecret) {
-		t.Fatalf("error leaked errorMessage: %q", result.Error)
+}
+
+// TestWorkerErrorStopWithoutErrorMessageKeepsBaseSentence covers the empty
+// case: an error stop whose assistant message carries no errorMessage yields
+// the base sentence alone, with no colon and no suffix.
+func TestWorkerErrorStopWithoutErrorMessageKeepsBaseSentence(t *testing.T) {
+	scriptConfig := happyPathScript("partial evidence")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first turn error-stops with no errorMessage; the retried turn
+			// settles with no newer assistant message, so the run stops after
+			// one continuation attempt and reports the base sentence.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+				{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial evidence"}],"stopReason":"error"}}`)},
+				{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+		"get_last_assistant_text": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"partial evidence"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"partial evidence"}`)}}},
+		},
+	}
+	setupFakePiEnv(t, scriptConfig)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed; result = %#v", result.Status, result)
+	}
+	if result.Error != "upstream/model turn ended with an error" {
+		t.Fatalf("error = %q, want the base sentence alone", result.Error)
+	}
+	if result.ContinuationAttempts != 1 {
+		t.Fatalf("continuationAttempts = %d, want exactly 1", result.ContinuationAttempts)
 	}
 }
 
 // errorStopTurnSteps is the scripted sequence for one turn that settles with
 // the stable assistant error stop. The message carries the upstream
-// errorMessage prose, which the worker must never project anywhere.
+// errorMessage prose, which the worker reports verbatim in the failed run's
+// error and never copies anywhere else.
 func errorStopTurnSteps(upstreamSecret string) []script.Step {
 	return []script.Step{
 		{Response: &script.Response{Success: true}},
@@ -1129,7 +1172,7 @@ func TestWorkerContinuesAfterErrorStopThenCompletes(t *testing.T) {
 	if got := strings.Count(debugText, "phase=continuation attempt=1"); got != 1 {
 		t.Fatalf("debug continuation lines = %d, want 1:\n%s", got, debugText)
 	}
-	for _, surface := range []string{result.Error, result.Warning, result.Explanation, debugText} {
+	for _, surface := range []string{result.Explanation, result.Warning, debugText} {
 		if strings.Contains(surface, upstreamSecret) {
 			t.Fatalf("upstream errorMessage leaked into %q", surface)
 		}
@@ -1285,8 +1328,8 @@ func TestWorkerStopsAfterOneContinuationWhenNoNewAssistantMessageArrives(t *test
 	if result.Status != StatusFailed {
 		t.Fatalf("status = %q, want failed", result.Status)
 	}
-	if result.Error != "upstream/model turn ended with an error" {
-		t.Fatalf("error = %q, want the fixed error-stop wording", result.Error)
+	if want := "upstream/model turn ended with an error: " + upstreamSecret; result.Error != want {
+		t.Fatalf("error = %q, want %q", result.Error, want)
 	}
 	if result.ContinuationAttempts != 1 {
 		t.Fatalf("continuationAttempts = %d, want exactly 1", result.ContinuationAttempts)
@@ -1303,7 +1346,7 @@ func TestWorkerStopsAfterOneContinuationWhenNoNewAssistantMessageArrives(t *test
 	if got := strings.Count(debugText, "phase=continuation"); got != 1 {
 		t.Fatalf("debug continuation lines = %d, want 1:\n%s", got, debugText)
 	}
-	for _, surface := range []string{result.Error, result.Warning, debugText} {
+	for _, surface := range []string{result.Warning, debugText} {
 		if strings.Contains(surface, upstreamSecret) {
 			t.Fatalf("upstream errorMessage leaked into %q", surface)
 		}
@@ -1339,8 +1382,8 @@ func TestWorkerStopsAfterTwoContinuationAttempts(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("status = %q, want failed", result.Status)
 	}
-	if result.Error != "upstream/model turn ended with an error" {
-		t.Fatalf("error = %q, want the fixed error-stop wording", result.Error)
+	if want := "upstream/model turn ended with an error: " + upstreamSecret; result.Error != want {
+		t.Fatalf("error = %q, want %q", result.Error, want)
 	}
 	if result.ContinuationAttempts != maxContinuationAttempts {
 		t.Fatalf("continuationAttempts = %d, want %d", result.ContinuationAttempts, maxContinuationAttempts)
