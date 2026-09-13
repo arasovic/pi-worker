@@ -115,6 +115,29 @@ func TestListDirtyAndUnmergedReportingSorted(t *testing.T) {
 	}
 }
 
+func TestListDirtyWithUntrackedFilesHidden(t *testing.T) {
+	root := newTempRepo(t)
+	gitRun(t, root, "config", "status.showUntrackedFiles", "no")
+	prep, err := Prepare(context.Background(), root, "probe")
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(prep.Path, "untracked.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("write untracked: %v", err)
+	}
+	got, err := List(context.Background(), root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %#v, want one entry", got)
+	}
+	wantPath := filepath.Join(root, ".pi-worker", "worktrees", "probe")
+	if got[0] != (Entry{Name: "probe", Path: wantPath, Branch: "run/probe", Dirty: true, Merged: true}) {
+		t.Fatalf("entry = %#v", got[0])
+	}
+}
+
 func TestListIgnoresUnrelatedWorktreesAndBranches(t *testing.T) {
 	root := newTempRepo(t)
 	otherWorktree := filepath.Join(t.TempDir(), "other worktree")
@@ -259,7 +282,11 @@ func TestListCheckoutStatusFailureSurfacesPath(t *testing.T) {
 	root := t.TempDir()
 	managedPath := filepath.Join(root, ".pi-worker", "worktrees", "alpha")
 	withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
-		switch strings.Join(args, " ") {
+		cmd := strings.Join(args, " ")
+		if isStatusCall(cmd) {
+			return "", fmt.Errorf("mock status failure for %q", dir)
+		}
+		switch cmd {
 		case "rev-parse --git-common-dir":
 			return filepath.Join(root, ".git"), nil
 		case "rev-parse HEAD":
@@ -271,10 +298,8 @@ func TestListCheckoutStatusFailureSurfacesPath(t *testing.T) {
 			return "main\nrun/alpha\n", nil
 		case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
 			return "main\nrun/alpha\n", nil
-		case "status --porcelain=v1":
-			return "", fmt.Errorf("mock status failure for %q", dir)
 		default:
-			t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
+			t.Fatalf("unexpected git call: %q in %q", cmd, dir)
 			return "", nil
 		}
 	})

@@ -35,7 +35,7 @@ func TestRemoveUntouchedWorktreeRemoveFailure(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		// Inject failure at the worktree remove step.
@@ -102,7 +102,7 @@ func TestRemoveUntouchedUpdateRefFailureRestores(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		// Let real git handle worktree removal.
@@ -197,7 +197,7 @@ func TestRemoveUntouchedUpdateRefAndRestoreBothFail(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		if cmd == "worktree remove "+wantPath {
@@ -279,7 +279,7 @@ func TestRemoveUntouchedBranchHEADMismatchReturnsRetry(t *testing.T) {
 			strings.HasPrefix(cmd, "for-each-ref") {
 			return runGit(context.Background(), root, args...)
 		}
-		if strings.HasPrefix(cmd, "status ") {
+		if isStatusCall(cmd) {
 			return runGit(context.Background(), dir, args...)
 		}
 		t.Fatalf("unexpected git call after branch HEAD check: %q", cmd)
