@@ -235,6 +235,62 @@ func TestManagerUnacceptedStartLeavesNothing(t *testing.T) {
 	}
 }
 
+// TestManagerAcceptedStartWithDiagnosticKeepsRun requires that an accepted
+// handoff which also reports a diagnostic is still an accepted start: the
+// Manager returns the run identity the request minted, never gives the
+// private checkout back to the caller, and never reports the diagnostic as a
+// start failure. The accepted snapshot belongs to the detached supervisor
+// that is already running the tasks, so it must survive the diagnostic.
+func TestManagerAcceptedStartWithDiagnosticKeepsRun(t *testing.T) {
+	repo := newGitWorkspace(t)
+	m, _, _ := newTestManager(t)
+
+	var removed []worktree.Prepared
+	opts := managerStartOptions(t)
+	opts.Workspace = repo
+	opts.WorktreeName = "manager-accepted-diagnostic"
+	opts.removeWorktree = func(ctx context.Context, cwd string, expected worktree.Prepared) error {
+		removed = append(removed, expected)
+		return worktree.RemoveUntouched(ctx, cwd, expected)
+	}
+
+	// Return an accepted result with a non-nil diagnostic, exactly the shape
+	// a close-request or detach diagnostic produces after acceptance.
+	var acceptedPath string
+	diagnostic := errors.New("injected detach diagnostic")
+	original := startSupervisorHandoffFunc
+	startSupervisorHandoffFunc = func(_ context.Context, _ string, req supervisorStartRequest) (supervisorStartHandoffResult, error) {
+		acceptedPath = req.workspace
+		snap, err := NewSnapshot(req.runID, req.acceptedAt, req.workspace,
+			ProcessIdentity{PID: 1, CreateTime: 1}, req.tasks, req.executionTimeout, req.worktree)
+		if err != nil {
+			t.Fatalf("build accepted snapshot: %v", err)
+		}
+		return supervisorStartHandoffResult{snapshot: snap, accepted: true}, diagnostic
+	}
+	t.Cleanup(func() { startSupervisorHandoffFunc = original })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	started, err := m.startWithExecutable(ctx, "unused", opts)
+	if err != nil {
+		t.Fatalf("accepted start with a diagnostic returned an error: %v", err)
+	}
+	if started.RunID == "" {
+		t.Fatal("accepted start returned no run id")
+	}
+	if started.Snapshot.RunID != started.RunID {
+		t.Fatalf("started run identity = %q, snapshot says %q", started.RunID, started.Snapshot.RunID)
+	}
+
+	if len(removed) != 0 {
+		t.Fatalf("worktrees given back for an accepted start = %d, want none: %+v", len(removed), removed)
+	}
+	if _, statErr := os.Stat(acceptedPath); statErr != nil {
+		t.Fatalf("private checkout %q did not survive the accepted start: %v", acceptedPath, statErr)
+	}
+}
+
 // newGitWorkspace returns a fresh repository with one commit: the directory a
 // managed private checkout can be prepared beside.
 func newGitWorkspace(t *testing.T) string {

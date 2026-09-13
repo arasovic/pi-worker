@@ -12,6 +12,13 @@ import (
 	"github.com/arasovic/pi-worker/internal/worktree"
 )
 
+// startSupervisorHandoffFunc is the starter-side supervisor start handoff
+// startWithExecutable runs. Production always leaves it as
+// startSupervisorHandoff; the seam exists only so a test can
+// drive the Manager path with a handoff result that no concrete seam can
+// produce, mirroring the existing supervisorStartCancelProbe seam.
+var startSupervisorHandoffFunc = startSupervisorHandoff
+
 // roleExecutable names the program a detached supervisor is spawned from:
 // this program itself, because the supervisor is the same binary re-executed
 // with a private role token.
@@ -126,20 +133,22 @@ func (m *Manager) startWithExecutable(ctx context.Context, executable string, op
 
 	handoffCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	result, err := startSupervisorHandoff(handoffCtx, executable, req)
+	result, err := startSupervisorHandoffFunc(handoffCtx, executable, req)
+	// Acceptance is checked before the error: an accepted result may still
+	// carry a close-request or detach diagnostic, and that diagnostic does
+	// not turn the accepted run into a failure. The snapshot and the tickets
+	// are durable and owned by the run lifecycle, the worktree is where the
+	// run works, and the supervisor is already detached, so nothing below
+	// may unwind any of it — not even a cancellation arriving at this
+	// instant.
+	if result.accepted {
+		return StartedRun{RunID: req.runID, Snapshot: result.snapshot}, nil
+	}
 	if err != nil {
-		// The handoff reported its own failure, unaccepted by definition:
-		// its snapshot and tickets are already rolled back, so only the
-		// worktree is left to give back, and its failure joins the cause.
+		// The handoff reported its own failure with no acceptance: its
+		// snapshot and tickets are already rolled back, so only the worktree
+		// is left to give back, and its failure joins the cause.
 		return StartedRun{}, joinStartErrors(err, giveBackWorktree())
 	}
-	if !result.accepted {
-		return StartedRun{}, joinStartErrors(errSupervisorRejected, giveBackWorktree())
-	}
-
-	// Accepted: the snapshot and the tickets are durable and owned by the
-	// run lifecycle, the worktree is where the run works, and the supervisor
-	// is already detached, so nothing below may unwind any of it — not even
-	// a cancellation arriving at this instant.
-	return StartedRun{RunID: req.runID, Snapshot: result.snapshot}, nil
+	return StartedRun{}, joinStartErrors(errSupervisorRejected, giveBackWorktree())
 }
