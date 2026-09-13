@@ -12,6 +12,13 @@ const privateFrameLimit = 64 << 20 // 64 MiB
 
 var errPrivateFrameTooLarge = errors.New("frame payload exceeds limit")
 
+// ErrStartRequestTooLarge reports a background start request whose
+// encoded prompts and --data files exceed privateFrameLimit, so the
+// request can never be framed to the supervisor. It is a usage error: the
+// caller can shrink the input or run in the foreground, which has no such
+// limit.
+var ErrStartRequestTooLarge = errors.New("background start request too large")
+
 // writeFrame encodes a single frame to w as a big-endian uint32 length prefix
 // followed by the raw payload bytes. The caller must supply a positive limit;
 // payload or announced length above that limit is rejected before any write;

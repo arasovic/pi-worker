@@ -103,6 +103,8 @@ func backgroundStartExitCode(err error) int {
 		return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
 	case errors.Is(err, context.Canceled):
 		return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
+	case errors.Is(err, background.ErrStartRequestTooLarge):
+		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorUsage, Message: err.Error()})
 	case worktree.IsRefusal(err):
 		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorUsage, Message: err.Error()})
 	default:
