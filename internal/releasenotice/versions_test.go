@@ -123,6 +123,11 @@ func TestSelectedVersionsReadsReplaceDirectives(t *testing.T) {
 			mentions: []string{module, "../localdep", "replace"},
 		},
 		{
+			name:     "local directory replace whose path holds a space fails",
+			answer:   module + " ../local dep ",
+			mentions: []string{module, "../local dep", "replace"},
+		},
+		{
 			name:   "no replace resolves to the module's own version",
 			answer: module + " v1.0.0",
 			want:   "v1.0.0",
