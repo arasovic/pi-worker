@@ -1136,6 +1136,120 @@ func TestWorkerContinuesAfterErrorStopThenCompletes(t *testing.T) {
 	}
 }
 
+// emptySettledTurnSteps is the scripted sequence for one turn that settles
+// with no assistant text and no error stop: an empty assistant message whose
+// stopReason is the ordinary stop.
+func emptySettledTurnSteps() []script.Step {
+	return []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"stop"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+}
+
+// TestWorkerContinuesAfterEmptySettledTurnThenCompletes covers the empty-stop
+// happy continuation: the first turn settles with no assistant text and no
+// error stop, the continuation turn completes, and the run reports the second
+// turn's final text with exactly one continuation attempt and a warning
+// naming it.
+func TestWorkerContinuesAfterEmptySettledTurnThenCompletes(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	// The first turn settles empty; the second turn carries the final text.
+	secondTurn := []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final answer text"}],"stopReason":"stop"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {emptySettledTurnSteps(), secondTurn},
+		"get_last_assistant_text": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"final answer text"}`)}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	var debugOut bytes.Buffer
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+		Debug:     NewDebugSink(&debugOut),
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	if result.Explanation != "final answer text" {
+		t.Fatalf("explanation = %q, want the continuation turn's text", result.Explanation)
+	}
+	if result.ContinuationAttempts != 1 {
+		t.Fatalf("continuationAttempts = %d, want 1", result.ContinuationAttempts)
+	}
+	if want := continuationSucceededWarning(1); result.Warning != want {
+		t.Fatalf("warning = %q, want %q", result.Warning, want)
+	}
+	types := waitRequestLog(t, logPath, 7)
+	if got := countStrings(types, "prompt"); got != 2 {
+		t.Fatalf("request log = %v, want two prompts", types)
+	}
+	debugText := debugOut.String()
+	if got := strings.Count(debugText, "phase=continuation attempt=1"); got != 1 {
+		t.Fatalf("debug continuation lines = %d, want 1:\n%s", got, debugText)
+	}
+}
+
+// TestWorkerStopsAfterOneContinuationWhenAnEmptySettledTurnRepeats covers the
+// deterministic empty stop: the continuation turn settles with no newer
+// assistant message, so the worker stops after exactly one continuation
+// attempt with the empty-answer failure text.
+func TestWorkerStopsAfterOneContinuationWhenAnEmptySettledTurnRepeats(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			emptySettledTurnSteps(),
+			// The retried turn settles with no newer assistant message: no
+			// message_start, no message_end.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+		"get_last_assistant_text": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{}`)}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if result.Error != "agent settled without producing final text" {
+		t.Fatalf("error = %q, want the empty-answer wording", result.Error)
+	}
+	if result.ContinuationAttempts != 1 {
+		t.Fatalf("continuationAttempts = %d, want exactly 1", result.ContinuationAttempts)
+	}
+	if want := continuationNoProgressWarning(1); result.Warning != want {
+		t.Fatalf("warning = %q, want %q", result.Warning, want)
+	}
+	types := waitRequestLog(t, logPath, 6)
+	if got := countStrings(types, "prompt"); got != 2 {
+		t.Fatalf("request log = %v, want exactly two prompts", types)
+	}
+}
+
 // TestWorkerStopsAfterOneContinuationWhenNoNewAssistantMessageArrives covers
 // the deterministic-rejection stop: the continuation turn settles with an
 // error stop without producing a newer assistant message, so the worker stops

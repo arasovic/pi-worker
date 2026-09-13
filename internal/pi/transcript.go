@@ -274,8 +274,8 @@ func (a *transcriptAccumulator) assistantError() bool {
 // assistantMessageCount reports how many valid assistant messages have
 // started. The worker records it before a continuation prompt and compares it
 // afterwards: an unchanged count proves the retried turn produced no newer
-// assistant message, so the retained error classification still belongs to
-// the earlier turn. It exposes a count, never message content.
+// assistant message, so the run's stop is the earlier turn's. It exposes a
+// count, never message content.
 func (a *transcriptAccumulator) assistantMessageCount() int {
 	return a.assistantMessages
 }
