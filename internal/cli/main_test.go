@@ -834,10 +834,10 @@ func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
 	requireWritesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
-	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
+	if req := mustWorkerRequest(t, fake, 1); !strings.HasPrefix(req.Prompt, "first task") {
 		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
 	}
-	if req := mustWorkerRequest(t, fake, 2); req.Prompt != "second task" {
+	if req := mustWorkerRequest(t, fake, 2); !strings.HasPrefix(req.Prompt, "second task") {
 		t.Fatalf("worker 2 prompt = %q, want second task", req.Prompt)
 	}
 }

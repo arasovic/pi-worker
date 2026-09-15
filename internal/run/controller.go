@@ -400,6 +400,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	}
 	executeTask := func(workerCtx context.Context, index int, task Task) pi.WorkerResult {
 		prompt, dataFiles := composeTaskPrompt(task, token)
+		if note := siblingNote(req.Tasks, index); note != "" {
+			prompt += "\n\n" + note
+		}
 		result := c.worker.Run(workerCtx, pi.WorkerRequest{
 			Model:          task.Model,
 			ThinkingLevel:  task.ThinkingLevel,
@@ -643,6 +646,30 @@ func runFrameToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(random[:]), nil
+}
+
+// siblingNote returns the advisory note for one task when the run has
+// multiple tasks and every task declared its writes. Paths are kept in the
+// other tasks' declaration order and spelling; a declared-empty sibling
+// contributes no paths.
+func siblingNote(tasks []Task, taskIndex int) string {
+	if len(tasks) <= 1 || !writesDeclaredOnEveryTask(tasks) {
+		return ""
+	}
+	var paths []string
+	for i, task := range tasks {
+		if i != taskIndex && task.Writes.Declared {
+			paths = append(paths, task.Writes.Paths...)
+		}
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	return "Another worker is running in this workspace at the same time as you.\n" +
+		"Its task declared these paths: " + strings.Join(paths, ", ") + "\n" +
+		"Files there may change while you work. Those changes are that worker's,\n" +
+		"made during this run — not the state the workspace was in when you\n" +
+		"started, and not a consequence of your own edits."
 }
 
 // composeTaskPrompt returns the prompt composed for one task: the task's
