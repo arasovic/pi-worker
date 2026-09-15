@@ -453,7 +453,7 @@ func TestControllerAcceptsDisjointDeclaredWrites(t *testing.T) {
 			if result.Status != contracts.RunCompleted {
 				t.Fatalf("status = %q, want completed", result.Status)
 			}
-			if len(result.Workers) != 2 || result.Workers[0].Explanation != "done:a" || result.Workers[1].Explanation != "done:b" {
+			if len(result.Workers) != 2 || !strings.HasPrefix(result.Workers[0].Explanation, "done:a") || !strings.HasPrefix(result.Workers[1].Explanation, "done:b") {
 				t.Fatalf("workers = %#v", result.Workers)
 			}
 			if worker.callCount() != 2 {
@@ -901,13 +901,13 @@ func runSettledInterferenceScenario(t *testing.T, bOverwriteA []byte) (Result, s
 			if s.gate != nil {
 				<-s.gate
 			}
-			switch req.Prompt {
-			case "task-a":
+			switch {
+			case strings.HasPrefix(req.Prompt, "task-a"):
 				if err := os.WriteFile(filepath.Join(s.dir, "a.txt"), []byte("changed by A\n"), 0o644); err != nil {
 					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
 				}
 				return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "a done"}
-			case "task-b":
+			case strings.HasPrefix(req.Prompt, "task-b"):
 				<-s.afterA
 				if err := os.WriteFile(filepath.Join(s.dir, "b.txt"), []byte("changed by B\n"), 0o644); err != nil {
 					return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
