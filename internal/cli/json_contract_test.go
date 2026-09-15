@@ -162,7 +162,7 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 		document := decodeJSONObject(t, stdout)
 		assertExactJSONKeys(t, document, "schemaVersion", "runs")
 		runs := requireJSONArray(t, document["runs"], "runs")
-		assertExactJSONKeys(t, runs[0].(map[string]any), "runId", "startedAt", "workspace", "tasks", "outcome", "path")
+		assertExactJSONKeys(t, runs[0].(map[string]any), "runId", "startedAt", "workspace", "tasks", "models", "outcome", "path")
 	})
 
 	t.Run("runs prune", func(t *testing.T) {

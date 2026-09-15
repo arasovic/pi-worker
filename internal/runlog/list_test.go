@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -90,11 +91,11 @@ func TestListClassifiesFinishedRecordsFromTheFinishLine(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	want := []Run{
-		{RunID: "20260830T103000Z-3", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Outcome: "error", Path: errorPath},
-		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/workspace-b", Tasks: 0, Outcome: "completed", Path: zeroTasksPath},
-		{RunID: "20260830T101500Z-1", StartedAt: "1980-01-02T03:04:05Z", Workspace: "/workspace-a", Tasks: 2, Outcome: "undeclared-writes", Path: resultPath},
+		{RunID: "20260830T103000Z-3", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Models: []string{}, Outcome: "error", Path: errorPath},
+		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/workspace-b", Tasks: 0, Models: []string{}, Outcome: "completed", Path: zeroTasksPath},
+		{RunID: "20260830T101500Z-1", StartedAt: "1980-01-02T03:04:05Z", Workspace: "/workspace-a", Tasks: 2, Models: []string{"acme/m-1"}, Outcome: "undeclared-writes", Path: resultPath},
 	}
-	if !slices.Equal(runs, want) {
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -117,10 +118,10 @@ func TestListClassifiesRunningAndInterruptedThroughTheLivenessSeam(t *testing.T)
 		t.Fatalf("List: %v", err)
 	}
 	want := []Run{
-		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/workspace-b", Tasks: 3, Outcome: "interrupted", Path: interruptedPath},
-		{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace-a", Tasks: 1, Outcome: "running", Path: runningPath},
+		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/workspace-b", Tasks: 3, Models: []string{"acme/m-1"}, Outcome: "interrupted", Path: interruptedPath},
+		{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace-a", Tasks: 1, Models: []string{"acme/m-1"}, Outcome: "running", Path: runningPath},
 	}
-	if !slices.Equal(runs, want) {
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -176,10 +177,10 @@ func TestListTornLastLineClassifiedByStartLine(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	want := []Run{
-		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Outcome: "interrupted", Path: deadPath},
-		{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Outcome: "running", Path: livePath},
+		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Models: []string{}, Outcome: "interrupted", Path: deadPath},
+		{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Models: []string{}, Outcome: "running", Path: livePath},
 	}
-	if !slices.Equal(runs, want) {
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -209,15 +210,86 @@ func TestListUnknownRecordsStillListed(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	want := []Run{
-		{RunID: "20260830T102500Z-0d", Outcome: "unknown", Path: filepath.Join(dir, "20260830T102500Z-0d.jsonl")},
-		{RunID: "20260830T102000Z-0c", Outcome: "unknown", Path: filepath.Join(dir, "20260830T102000Z-0c.jsonl")},
-		{RunID: "20260830T101500Z-0b", Outcome: "unknown", Path: filepath.Join(dir, "20260830T101500Z-0b.jsonl")},
-		{RunID: "20260830T101000Z-1", Outcome: "unknown", Path: filepath.Join(dir, "20260830T101000Z-1.jsonl")},
-		{RunID: "20260830T100500Z-0a", Outcome: "unknown", Path: filepath.Join(dir, "20260830T100500Z-0a.jsonl")},
-		{RunID: "20260830T100000Z-0", Outcome: "unknown", Path: filepath.Join(dir, "20260830T100000Z-0.jsonl")},
+		{RunID: "20260830T102500Z-0d", Models: []string{}, Outcome: "unknown", Path: filepath.Join(dir, "20260830T102500Z-0d.jsonl")},
+		{RunID: "20260830T102000Z-0c", Models: []string{}, Outcome: "unknown", Path: filepath.Join(dir, "20260830T102000Z-0c.jsonl")},
+		{RunID: "20260830T101500Z-0b", Models: []string{}, Outcome: "unknown", Path: filepath.Join(dir, "20260830T101500Z-0b.jsonl")},
+		{RunID: "20260830T101000Z-1", Models: []string{}, Outcome: "unknown", Path: filepath.Join(dir, "20260830T101000Z-1.jsonl")},
+		{RunID: "20260830T100500Z-0a", Models: []string{}, Outcome: "unknown", Path: filepath.Join(dir, "20260830T100500Z-0a.jsonl")},
+		{RunID: "20260830T100000Z-0", Models: []string{}, Outcome: "unknown", Path: filepath.Join(dir, "20260830T100000Z-0.jsonl")},
 	}
-	if !slices.Equal(runs, want) {
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
+// TestListCollectsTaskModelsInOrderWithoutRepeats asserts the model
+// collection rule itself: the models a run's tasks named are reported
+// in task order, each distinct model once. The record is built here —
+// the shared helper names one model for every task — so the fixture's
+// three tasks, naming acme/m-1, acme/m-2, acme/m-1 in order, pin both
+// halves of the rule. A start line with no task array yields the
+// empty, non-null slice, so the field is never null in JSON.
+func TestListCollectsTaskModelsInOrderWithoutRepeats(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return true, nil })
+	dir := t.TempDir()
+	writeRecordLines := func(t *testing.T, name string, lines ...map[string]any) string {
+		t.Helper()
+		var record strings.Builder
+		for _, line := range lines {
+			data, err := json.Marshal(line)
+			if err != nil {
+				t.Fatalf("marshal record line: %v", err)
+			}
+			record.Write(data)
+			record.WriteByte('\n')
+		}
+		path := filepath.Join(dir, name+".jsonl")
+		if err := os.WriteFile(path, []byte(record.String()), 0o600); err != nil {
+			t.Fatalf("write record: %v", err)
+		}
+		return path
+	}
+
+	// Three tasks naming, in order, acme/m-1, acme/m-2, acme/m-1: the
+	// repeat contributes nothing, the order is kept.
+	mixedPath := writeRecordLines(t, "20260830T101500Z-1", map[string]any{
+		"schemaVersion": schemaVersion,
+		"event":         "start",
+		"runId":         "20260830T101500Z-1",
+		"startedAt":     "2026-08-30T10:15:00Z",
+		"workspace":     "/workspace",
+		"pid":           4242,
+		"tasks": []map[string]any{
+			{"model": "acme/m-1"},
+			{"model": "acme/m-2"},
+			{"model": "acme/m-1"},
+		},
+	})
+	// A start line carrying no task array at all.
+	noTasksPath := writeRecordLines(t, "20260830T102000Z-2", map[string]any{
+		"schemaVersion": schemaVersion,
+		"event":         "start",
+		"runId":         "20260830T102000Z-2",
+		"startedAt":     "2026-08-30T10:20:00Z",
+		"workspace":     "/workspace",
+		"pid":           4242,
+	})
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{
+		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/workspace", Tasks: 0, Models: []string{}, Outcome: "running", Path: noTasksPath},
+		{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 3, Models: []string{"acme/m-1", "acme/m-2"}, Outcome: "running", Path: mixedPath},
+	}
+	if !reflect.DeepEqual(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+	for _, run := range runs {
+		if run.Models == nil {
+			t.Fatalf("run %s models = nil, want non-null", run.RunID)
+		}
 	}
 }
 
@@ -349,8 +421,8 @@ func TestListDisplayDamageDoesNotChangeClassification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }

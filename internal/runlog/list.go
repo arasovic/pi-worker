@@ -18,12 +18,13 @@ import (
 // fields, the outcome, and the record's path. It is an inventory
 // entry, not the record itself.
 type Run struct {
-	RunID     string `json:"runId"`
-	StartedAt string `json:"startedAt"`
-	Workspace string `json:"workspace"`
-	Tasks     int    `json:"tasks"`
-	Outcome   string `json:"outcome"`
-	Path      string `json:"path"`
+	RunID     string   `json:"runId"`
+	StartedAt string   `json:"startedAt"`
+	Workspace string   `json:"workspace"`
+	Tasks     int      `json:"tasks"`
+	Models    []string `json:"models"`
+	Outcome   string   `json:"outcome"`
+	Path      string   `json:"path"`
 }
 
 // List returns one entry per run record in dir, newest first — run ids
@@ -78,8 +79,10 @@ func List(dir string) ([]Run, error) {
 		rec, err := parseRecord(path)
 		if err != nil {
 			// An unknown record is still listed, carrying what the file
-			// name alone tells: the run id and the path.
-			runs = append(runs, Run{RunID: runID, Outcome: "unknown", Path: path})
+			// name alone tells: the run id and the path. The models
+			// field is never null: an unreadable record names no model,
+			// so it carries the empty slice.
+			runs = append(runs, Run{RunID: runID, Models: []string{}, Outcome: "unknown", Path: path})
 			continue
 		}
 		run := Run{
@@ -87,6 +90,7 @@ func List(dir string) ([]Run, error) {
 			StartedAt: rec.startedAt,
 			Workspace: rec.workspace,
 			Tasks:     rec.tasks,
+			Models:    rec.models,
 			Path:      path,
 		}
 		switch {
@@ -149,11 +153,13 @@ type recordFacts struct {
 	// under the run — a leftover in the second worker's group must
 	// still be found.
 	workers []workerFacts
-	// startedAt, workspace, and tasks are the start line's display
-	// fields, copied verbatim.
+	// startedAt, workspace, tasks, and models are the start line's
+	// display fields, copied verbatim. models holds the distinct
+	// models the tasks named, in task order.
 	startedAt string
 	workspace string
 	tasks     int
+	models    []string
 	// finished reports whether the record carries its finish line: its
 	// last non-empty line decodes with event "finish".
 	finished bool
@@ -316,7 +322,7 @@ func parseRecord(path string) (recordFacts, error) {
 	if err := json.Unmarshal([]byte(lines[first]), &start); err != nil || start.Event != "start" || start.PID <= 0 {
 		return recordFacts{}, errors.New("record has no usable start line")
 	}
-	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers}
+	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers, models: []string{}}
 	// The display fields are best-effort: a malformed one leaves them
 	// zero without touching the classification, which is decided by the
 	// minimal facts above.
@@ -329,6 +335,7 @@ func parseRecord(path string) (recordFacts, error) {
 		rec.startedAt = display.StartedAt
 		rec.workspace = display.Workspace
 		rec.tasks = len(display.Tasks)
+		rec.models = taskModels(display.Tasks)
 	}
 	var finish struct {
 		Event string `json:"event"`
@@ -348,6 +355,31 @@ func parseRecord(path string) (recordFacts, error) {
 		rec.resultOutcome = string(lastLine.Result.Outcome)
 	}
 	return rec, nil
+}
+
+// taskModels collects the models the start line's task elements
+// named, in task order and without repeats. An element whose model is
+// absent or empty contributes nothing. The result is never nil: a
+// start line whose task array carries no usable model, or carries no
+// task array at all, yields the empty slice, so an entry's models
+// field serialises as [] and never null.
+func taskModels(tasks []json.RawMessage) []string {
+	models := []string{}
+	seen := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		var element struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(task, &element); err != nil || element.Model == "" {
+			continue
+		}
+		if _, dup := seen[element.Model]; dup {
+			continue
+		}
+		seen[element.Model] = struct{}{}
+		models = append(models, element.Model)
+	}
+	return models
 }
 
 // recordProcessAlive answers the one liveness question the three
