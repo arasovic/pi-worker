@@ -401,8 +401,8 @@ func TestMalformedConfigRejectsEveryValidRunBeforeWorkerStarts(t *testing.T) {
 				return
 			}
 			if test.wantUsage {
-				if stdout != "" || !strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "missing required flag --model") {
-					t.Fatalf("missing default = (%q, %q), want usage and missing-model error", stdout, stderr)
+				if stdout != "" || strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "missing required flag --model") {
+					t.Fatalf("missing default = (%q, %q), want the missing-model error and no usage", stdout, stderr)
 				}
 				return
 			}

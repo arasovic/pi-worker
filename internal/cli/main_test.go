@@ -593,7 +593,6 @@ func TestRunUsageErrors(t *testing.T) {
 		stdin string
 	}{
 		{name: "unknown flag", args: []string{"run", "--model", "acme/m-1", "--bogus"}, stdin: ""},
-		{name: "missing model", args: []string{"run"}, stdin: "do it"},
 		{name: "model without value", args: []string{"run", "--model"}, stdin: ""},
 		{name: "model without provider", args: []string{"run", "--model", "/m-1"}, stdin: ""},
 		{name: "model without id", args: []string{"run", "--model", "acme/"}, stdin: ""},
@@ -648,6 +647,42 @@ func TestRunUsageErrors(t *testing.T) {
 				t.Fatalf("worker invoked %d times, want 0", fake.callCount())
 			}
 		})
+	}
+}
+
+// TestRunMissingModelAnswersWithRemedyNotUsage pins the one run
+// rejection that is not an argv-shape mistake: the argument shape was
+// legal and only the machine state was incomplete. It must answer with
+// the diagnosis and the two remedy lines naming both halves of the fix,
+// and must not reprint the synopsis.
+func TestRunMissingModelAnswersWithRemedyNotUsage(t *testing.T) {
+	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
+	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+
+	code, stdout, stderr := runCLI(t, []string{"run"}, "do it")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if strings.Contains(stderr, "usage:") {
+		t.Fatalf("stderr reprints the synopsis: %q", stderr)
+	}
+	const diagnosis = "pi-worker: missing required flag --model and no configured default model"
+	const remedyDefault = "pass --model <provider/model> on this run, or set a default once with: pi-worker config set default-model <provider/model>"
+	const remedySelectors = "pi-worker models lists the exact selectors both accept"
+	for _, want := range []string{diagnosis, remedyDefault, remedySelectors} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr = %q, want line %q", stderr, want)
+		}
+	}
+	want := diagnosis + "\n" + remedyDefault + "\n" + remedySelectors + "\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
+	}
+	if fake.callCount() != 0 {
+		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
 	}
 }
 
