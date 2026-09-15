@@ -29,6 +29,12 @@ import (
 // defaultRunTimeout bounds one foreground worker run.
 const defaultRunTimeout = 30 * time.Minute
 
+// errNoRunModel is the rejection for a run that needs a run-level model
+// but has neither --model nor a configured default. It is a sentinel so
+// reportRunInputError can answer with the remedy instead of the synopsis:
+// the argument shape was legal and only the machine state was incomplete.
+var errNoRunModel = errors.New("missing required flag --model and no configured default model")
+
 // newWorker is a private dependency-injection seam. Tests replace it with a
 // scripted fake so CLI tests never launch the user's real Pi profile.
 var newWorker = func() pi.Worker { return pi.New("pi") }
@@ -235,7 +241,7 @@ func resolveRunInput(args []string, stdin io.Reader) (runOptions, []run.Task, er
 		opts.admissionRoot = settings.admissionRoot
 		opts.model = settings.defaultModel
 		if opts.model == "" {
-			return opts, nil, errors.New("missing required flag --model and no configured default model")
+			return opts, nil, errNoRunModel
 		}
 	}
 	// The task list is resolved after the model decision above and
@@ -381,6 +387,11 @@ func reportRunInputError(err error, stderr io.Writer) int {
 	var configErr *configuredRunConfigError
 	if errors.As(err, &configErr) {
 		return 9
+	}
+	if errors.Is(err, errNoRunModel) {
+		fmt.Fprintln(stderr, "pass --model <provider/model> on this run, or set a default once with: pi-worker config set default-model <provider/model>")
+		fmt.Fprintln(stderr, "pi-worker models lists the exact selectors both accept")
+		return 2
 	}
 	printUsage(stderr)
 	return 2
