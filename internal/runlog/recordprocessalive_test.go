@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -159,8 +158,8 @@ func TestReusedStartPidWithDifferentCreateTimeClassifiesInterrupted(t *testing.T
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "interrupted", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "interrupted", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -185,8 +184,8 @@ func TestRecordWithoutCreateTimeStillClassifiesByPidAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -208,8 +207,8 @@ func TestCreationTimeLookupErrorMeansAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -235,8 +234,8 @@ func TestNegativeCreateTimeClassifiesLivePidAsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -259,8 +258,8 @@ func TestNonPositiveLookupResultMeansAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -288,8 +287,8 @@ func TestOutOfRangePidNeverReachesTheLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -311,8 +310,8 @@ func TestEpochFirstSecondCreateTimeClassifiesLivePidAsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -334,8 +333,8 @@ func TestFutureCreateTimeClassifiesLivePidAsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -357,8 +356,8 @@ func TestEpochFirstSecondLookupResultMeansAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
@@ -377,8 +376,8 @@ func TestFutureLookupResultMeansAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Outcome: "running", Path: path}}
-	if !slices.Equal(runs, want) {
+	want := []Run{{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Models: []string{}, Outcome: "running", Path: path}}
+	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }

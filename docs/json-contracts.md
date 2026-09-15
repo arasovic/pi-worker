@@ -165,6 +165,8 @@ array, ordered newest first. Each entry has exactly these fields:
 - `startedAt`: the start timestamp, or `""` when the start fields are unreadable
 - `workspace`: the recorded workspace, or `""` when unreadable
 - `tasks`: the number of recorded tasks, or `0` when unreadable
+- `models`: the models the run's tasks named, in task order and without
+  repeats, or `[]` when there are none or the start fields are unreadable
 - `outcome`: the recorded outcome, `error`, `running`, `interrupted`, or
   `unknown`
 - `path`: the record path

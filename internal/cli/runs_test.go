@@ -183,7 +183,7 @@ func TestRunsListJSONEndToEnd(t *testing.T) {
 	if strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
 		t.Fatalf("json output has multiple lines: %q", stdout)
 	}
-	want := fmt.Sprintf(`{"schemaVersion":1,"runs":[{"runId":"20260830T103000Z-3","startedAt":"2026-08-30T10:30:00Z","workspace":"/ws-gamma","tasks":3,"outcome":"interrupted","path":%q},{"runId":"20260830T102000Z-2","startedAt":"2026-08-30T10:20:00Z","workspace":"/ws-beta","tasks":1,"outcome":"running","path":%q},{"runId":"20260830T101500Z-1","startedAt":"2026-08-30T10:15:00Z","workspace":"/ws-alpha","tasks":2,"outcome":"completed","path":%q}]}`+"\n", p3, p2, p1)
+	want := fmt.Sprintf(`{"schemaVersion":1,"runs":[{"runId":"20260830T103000Z-3","startedAt":"2026-08-30T10:30:00Z","workspace":"/ws-gamma","tasks":3,"models":["acme/m-1"],"outcome":"interrupted","path":%q},{"runId":"20260830T102000Z-2","startedAt":"2026-08-30T10:20:00Z","workspace":"/ws-beta","tasks":1,"models":["acme/m-1"],"outcome":"running","path":%q},{"runId":"20260830T101500Z-1","startedAt":"2026-08-30T10:15:00Z","workspace":"/ws-alpha","tasks":2,"models":["acme/m-1"],"outcome":"completed","path":%q}]}`+"\n", p3, p2, p1)
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
