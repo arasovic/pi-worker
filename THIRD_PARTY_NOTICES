@@ -75,7 +75,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## golang.org/x/sys v0.47.0
+## golang.org/x/sys v0.48.0
 Targets: darwin, linux
 
 ### LICENSE
@@ -583,7 +583,7 @@ Targets: linux
    See the License for the specific language governing permissions and
    limitations under the License.
 
-## golang.org/x/term v0.45.0
+## golang.org/x/term v0.46.0
 Targets: darwin, linux
 
 ### LICENSE
