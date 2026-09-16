@@ -163,6 +163,16 @@ type recordFacts struct {
 	// finished reports whether the record carries its finish line: its
 	// last non-empty line decodes with event "finish".
 	finished bool
+	// finishedAtMillis is the finish line's instant in milliseconds
+	// since the Unix epoch, the ceiling the leftover reader places on
+	// a settled run's members: a genuine survivor was started by the
+	// run and so cannot have been created after the run ended. Zero
+	// means the record offers no instant — it carries no finish line,
+	// or its finishedAt is absent or unparseable — and the leftover
+	// reader then keeps its floor-only behaviour. A record with no
+	// finish line deliberately does not fall back to the file's
+	// modification time: that is a decision, not an oversight.
+	finishedAtMillis int64
 	// hasResult reports whether the finish line carries a result; when
 	// it does, resultOutcome is the result's outcome verbatim.
 	hasResult     bool
@@ -338,7 +348,8 @@ func parseRecord(path string) (recordFacts, error) {
 		rec.models = taskModels(display.Tasks)
 	}
 	var finish struct {
-		Event string `json:"event"`
+		Event      string `json:"event"`
+		FinishedAt string `json:"finishedAt"`
 	}
 	if err := json.Unmarshal([]byte(lines[last]), &finish); err != nil || finish.Event != "finish" {
 		// No finish line — including a torn last line that does not
@@ -347,6 +358,15 @@ func parseRecord(path string) (recordFacts, error) {
 		return rec, nil
 	}
 	rec.finished = true
+	// The finish instant is parsed best-effort, and only to bound the
+	// leftover reader's age test: an absent or malformed finishedAt
+	// leaves the ceiling at zero, the floor-only class, never an
+	// error and never a guess. time.RFC3339 accepts only a four-digit
+	// year, so a successfully parsed value always fits comfortably in
+	// the whole-second allowance the leftover reader adds.
+	if at, err := time.Parse(time.RFC3339, finish.FinishedAt); err == nil {
+		rec.finishedAtMillis = at.UnixMilli()
+	}
 	var lastLine struct {
 		Result *run.Result `json:"result"`
 	}

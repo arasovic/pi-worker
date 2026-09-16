@@ -382,6 +382,76 @@ func TestListIgnoresNonRecordFilesAndWritesNothing(t *testing.T) {
 	}
 }
 
+// TestParseRecordCarriesTheFinishInstant asserts the finish line's
+// finishedAt is carried into recordFacts as milliseconds since the
+// Unix epoch — the leftover reader's ceiling — and that the three
+// uncertain shapes leave it zero rather than guessing: no finish
+// line at all, a finish line whose finishedAt is absent, and one
+// whose finishedAt is present but unparseable. Zero is the sentinel
+// for "no instant", so these cases keep the ceiling off. This is the
+// guard the parse protects: dropping the field, or erroring on a
+// damaged one, would change what Leftovers can decide.
+func TestParseRecordCarriesTheFinishInstant(t *testing.T) {
+	write := func(t *testing.T, name string, lines ...map[string]any) string {
+		t.Helper()
+		var record strings.Builder
+		for _, line := range lines {
+			data, err := json.Marshal(line)
+			if err != nil {
+				t.Fatalf("marshal record line: %v", err)
+			}
+			record.Write(data)
+			record.WriteByte('\n')
+		}
+		path := filepath.Join(t.TempDir(), name+".jsonl")
+		if err := os.WriteFile(path, []byte(record.String()), 0o600); err != nil {
+			t.Fatalf("write record: %v", err)
+		}
+		return path
+	}
+
+	const want = int64(1788084930000) // 2026-08-30T10:15:30Z
+	start := map[string]any{"schemaVersion": schemaVersion, "event": "start", "runId": "r", "startedAt": "2026-08-30T10:15:00Z", "workspace": "/w", "pid": 4242, "tasks": []any{}}
+
+	tests := []struct {
+		name string
+		path string
+		want int64
+	}{
+		{
+			name: "finish line with a valid finishedAt",
+			path: write(t, "valid", start, map[string]any{"schemaVersion": schemaVersion, "event": "finish", "runId": "r", "finishedAt": "2026-08-30T10:15:30Z"}),
+			want: want,
+		},
+		{
+			name: "no finish line",
+			path: write(t, "unfinished", start),
+			want: 0,
+		},
+		{
+			name: "finish line without finishedAt",
+			path: write(t, "absent", start, map[string]any{"schemaVersion": schemaVersion, "event": "finish", "runId": "r"}),
+			want: 0,
+		},
+		{
+			name: "finish line with an unparseable finishedAt",
+			path: write(t, "damaged", start, map[string]any{"schemaVersion": schemaVersion, "event": "finish", "runId": "r", "finishedAt": "yesterday"}),
+			want: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, err := parseRecord(tc.path)
+			if err != nil {
+				t.Fatalf("parseRecord: %v", err)
+			}
+			if rec.finishedAtMillis != tc.want {
+				t.Fatalf("finishedAtMillis = %d, want %d", rec.finishedAtMillis, tc.want)
+			}
+		})
+	}
+}
+
 // TestListUnreadableRecordsDirReturnsError asserts a records directory
 // that exists but cannot be read returns the error and no runs, so the
 // CLI exits 9.
