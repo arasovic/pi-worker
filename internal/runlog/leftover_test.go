@@ -24,11 +24,27 @@ type workerSpec struct {
 
 // writeLeftoverRecord writes one hand-built record file into dir: a
 // start line carrying the start pid the test chose, the given worker
-// lines in order, and — when finished is true — a finish line. Pids
-// and creation times are chosen by the test, never read back out of a
-// record, so the process-table script's answers stay independent of
-// what the record carries.
+// lines in order, and — when finished is true — a finish line whose
+// finishedAt is the fixed instant every pre-ceiling test was written
+// against. Tests that need a chosen finish instant call
+// writeLeftoverRecordAt directly. Pids and creation times are chosen
+// by the test, never read back out of a record, so the process-table
+// script's answers stay independent of what the record carries.
 func writeLeftoverRecord(t *testing.T, dir, runID string, startPID int, finished bool, workers ...workerSpec) string {
+	t.Helper()
+	finishedAt := ""
+	if finished {
+		finishedAt = "2026-08-30T10:15:30Z"
+	}
+	return writeLeftoverRecordAt(t, dir, runID, startPID, finishedAt, workers...)
+}
+
+// writeLeftoverRecordAt is writeLeftoverRecord with the finish instant
+// chosen by the caller: an empty finishedAt writes no finish line at
+// all — the settled-because-its-writer-is-gone class, which offers the
+// leftover reader no ceiling — while any other value is written
+// verbatim as the finish line's finishedAt.
+func writeLeftoverRecordAt(t *testing.T, dir, runID string, startPID int, finishedAt string, workers ...workerSpec) string {
 	t.Helper()
 	lines := []map[string]any{
 		{
@@ -55,12 +71,12 @@ func writeLeftoverRecord(t *testing.T, dir, runID string, startPID int, finished
 		}
 		lines = append(lines, line)
 	}
-	if finished {
+	if finishedAt != "" {
 		lines = append(lines, map[string]any{
 			"schemaVersion": schemaVersion,
 			"event":         "finish",
 			"runId":         runID,
-			"finishedAt":    "2026-08-30T10:15:30Z",
+			"finishedAt":    finishedAt,
 		})
 	}
 	var record strings.Builder
@@ -265,7 +281,10 @@ func TestLeftoversSkipsWorkerWhoseRowCreateTimeIsUnusable(t *testing.T) {
 // earlier than the one it captures now. Such a process started
 // during the read and is legitimate, so it must be indexed and
 // reported, never thrown out as impossible — and never allowed to
-// mark the pid unconfirmed, which would skip the whole record.
+// mark the pid unconfirmed, which would skip the whole record. The
+// record's finish line is set far enough ahead that the new ceiling
+// does not also exclude the row: this test is about the "now"
+// instant, not the finish instant.
 func TestLeftoversIndexesProcessCreatedDuringTheTableRead(t *testing.T) {
 	original := liveProcesses
 	liveProcesses = func() ([]liveProcess, error) {
@@ -277,7 +296,7 @@ func TestLeftoversIndexesProcessCreatedDuringTheTableRead(t *testing.T) {
 	t.Cleanup(func() { liveProcesses = original })
 
 	dir := t.TempDir()
-	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true, workerSpec{pid: 5001, createTime: 1000})
+	path := writeLeftoverRecordAt(t, dir, "20260830T101500Z-1", 4242, "2026-12-31T23:59:59Z", workerSpec{pid: 5001, createTime: 1000})
 
 	leftovers, err := Leftovers(dir)
 	if err != nil {
@@ -631,5 +650,138 @@ func TestLeftoversIgnoresNonRecordFilesAndWritesNothing(t *testing.T) {
 	after := snapshotDir(t, dir)
 	if !maps.EqualFunc(before, after, bytes.Equal) {
 		t.Fatalf("records directory changed: before %#v, after %#v", before, after)
+	}
+}
+
+// The record the four finish-ceiling guards below share: its finish
+// line reads 2026-08-30T10:15:30Z, which is 1788084930000ms, so the
+// recorded second runs to 1788084930999ms. The worker is older than
+// every scripted member, so only the ceiling — never the floor —
+// decides each case, and the worker's own pid is absent from the
+// scripted table, the shape issue #305 measured: no live holder is
+// left to reveal a reused number.
+
+// TestLeftoversSkipsMemberCreatedAfterTheRecordedFinish asserts the
+// ceiling itself: a settled run whose worker is gone, with a live row
+// in the worker's group created after the run's recorded finish, did
+// not start that row — an unrelated process was given the recorded
+// worker's number, led a group under it, and outlived nothing of the
+// run — so nothing is reported. This is the guard the ceiling
+// protects: delete the upper comparison in leftover.go and the
+// six-day-late row below is reported again, reproducing issue #305.
+func TestLeftoversSkipsMemberCreatedAfterTheRecordedFinish(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: 1788084931000},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecordAt(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:30Z", workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
+// TestLeftoversReportsMemberCreatedBeforeTheRecordedFinish asserts the
+// ceiling is not applied backwards: a live row in the worker's group
+// created before the run's recorded finish was started by the run and
+// must still be reported. This is the guard against an inverted
+// comparison, which would reject exactly the survivors the reader
+// exists to find.
+func TestLeftoversReportsMemberCreatedBeforeTheRecordedFinish(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: 1788084929500},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecordAt(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:30Z", workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversReportsMemberInsideTheRecordedFinishSecond asserts the
+// finish line's one-second resolution is handled: finishedAt is
+// written to whole seconds, so a run that truly ended at
+// 10:15:30.900 records 10:15:30, and a genuine survivor created at
+// 10:15:30.500 — before the run ended, after the truncated instant —
+// must still be reported. The ceiling therefore takes the whole
+// recorded second, to its last millisecond. This is the guard the
+// whole-second allowance protects: take the ceiling literally and
+// this member is dropped.
+func TestLeftoversReportsMemberInsideTheRecordedFinishSecond(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: 1788084930500},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecordAt(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:30Z", workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversReportsMemberNewerThanWorkerWithoutFinishLine asserts a
+// record settled because its writer is gone — no finish line at all —
+// offers no instant and keeps exactly today's behaviour: the member,
+// newer than the worker and far later than any plausible run, is
+// still reported. The reader deliberately does not invent a ceiling
+// from the file's modification time. This is the guard constraint 2
+// protects: route an absent finish line through any ceiling and this
+// member is dropped.
+func TestLeftoversReportsMemberNewerThanWorkerWithoutFinishLine(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: 1788084931000},
+	}, nil)
+	withPidAlive(t, func(pid int32) (bool, error) { return false, nil })
+	dir := t.TempDir()
+	path := writeLeftoverRecordAt(t, dir, "20260830T101500Z-1", 4242, "", workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversReportsMemberWhenFinishedAtIsUnparseable asserts the
+// other half of constraint 2: a record that does carry a finish line
+// but whose finishedAt cannot be parsed is in the same class as one
+// with no finish line at all — no ceiling, floor only — never a
+// guessed instant. The member here is newer than the worker and
+// later than any instant the damaged field could have named, and it
+// is still reported. Every uncertainty about the ceiling resolves
+// toward silence about the ceiling, never toward dropping a member.
+func TestLeftoversReportsMemberWhenFinishedAtIsUnparseable(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 5010, pgid: 5001, createTime: 1788084931000},
+	}, nil)
+	dir := t.TempDir()
+	// A finish line whose finishedAt is present but not RFC3339.
+	path := writeLeftoverRecordAt(t, dir, "20260830T101500Z-1", 4242, "30 Aug 2026 10:15:30", workerSpec{pid: 5001, createTime: 1000})
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
 	}
 }

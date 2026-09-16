@@ -52,8 +52,22 @@ type liveProcess struct {
 // number equals the pid; a child inherits that group and keeps it when
 // it is reparented. The question asked of the process table is
 // therefore: which live processes carry one of the record's worker
-// pids as their group number, and are no older than the worker that
-// started them?
+// pids as their group number, were no older than the worker that
+// started them, and were no newer than the run itself? The last of
+// the three is the ceiling: a genuine survivor was started by the
+// run, so it cannot have been created after the record's finish
+// line. A record that carries a finish line whose finishedAt parses
+// therefore also rejects a group member created after the end of the
+// recorded second — the field's one-second resolution would otherwise
+// drop a survivor created in the truncated fraction of that second,
+// so the ceiling is the last instant of the recorded second, never
+// the instant it names literally. A record that offers no instant —
+// it has no finish line, or its finishedAt is absent or unparseable
+// — offers no ceiling and keeps the age test's floor alone; it does
+// not borrow the file's modification time, which is a decision, not
+// an oversight. Every uncertainty about the ceiling resolves toward
+// silence: a missing or damaged instant leaves the member admitted,
+// never dropped on a guess.
 //
 // A record is settled exactly when the interrupted-run reader
 // considers it over — it carries its finish line, or the process that
@@ -89,7 +103,7 @@ type liveProcess struct {
 //     recorded number, so it belongs to some other group. The
 //     recorded number's group, if any live process still carries it,
 //     holds the recorded worker's genuine survivors, which are
-//     inspected under the existing age floor.
+//     inspected under the existing age floor and the finish ceiling.
 //
 // A pid equal to its own pgid is the leader of that group, and only a
 // leader's number can name a group it owns; a pid that is not its own
@@ -101,9 +115,14 @@ type liveProcess struct {
 // the same way. The reader cannot tell a genuine survivor of the run
 // from a child of a dead leader that happened to take the number,
 // lead a group of its own, and die before the sweep: no live holder
-// remains to reveal the reuse. The cost is at most one wrong line of
-// text naming someone else's processes — the product never acts on
-// the numbers it reports.
+// remains to reveal the reuse. The finish ceiling is what narrows
+// this class — a member of the reused number's group created after
+// the recorded run ended is not the run's, exactly the shape issue
+// #305 measured, where the warning named a process started six days
+// after its run — but a member created before the finish instant
+// still cannot be attributed with certainty, so one wrong line of
+// text remains possible in that narrower window. The product never
+// acts on the numbers it reports.
 //
 // A record whose worker line carries no creation time is never
 // reportable, whatever the process table holds: the identity pair is
@@ -133,6 +152,13 @@ func Leftovers(dir string) ([]Leftover, error) {
 		runID   string
 		path    string
 		workers []workerFacts
+		// finishCeilingMillis is the last instant at which a member
+		// of this run's groups can still have been started by the
+		// run: the last millisecond of the whole second the record's
+		// finishedAt names. Zero means the record offers no instant
+		// — it has no finish line, or its finishedAt is absent or
+		// unparseable — and the age test keeps its floor alone.
+		finishCeilingMillis int64
 	}
 	var candidates []candidate
 	for _, entry := range entries {
@@ -169,6 +195,19 @@ func Leftovers(dir string) ([]Leftover, error) {
 			runID:   strings.TrimSuffix(name, ".jsonl"),
 			path:    path,
 			workers: workers,
+			// The finish line is written at one-second resolution, so
+			// finishedAt names a whole second, not the exact instant
+			// the run ended: a run that really ended at 23:01:22.900
+			// records 23:01:22. A genuine survivor created at
+			// 23:01:22.500 — before the run ended — would sit after a
+			// ceiling taken literally, so the ceiling is the last
+			// instant of the recorded second, and a member created
+			// anywhere inside that second is still the run's. A record
+			// with no finish line offers no instant and keeps today's
+			// floor-only behaviour: this reader does not fall back to
+			// the file's modification time, which is a decision, not an
+			// oversight.
+			finishCeilingMillis: wholeSecondEnd(rec.finishedAtMillis),
 		})
 	}
 	// The sweep is lazy: no settled record with a reportable worker
@@ -251,12 +290,18 @@ func Leftovers(dir string) ([]Leftover, error) {
 			// lead the group it names — the old group still holds its
 			// survivors — or is the same worker still alive. All three
 			// leave the group number live, so its members are inspected
-			// under the existing age floor.
+			// under the existing age floor and the finish ceiling.
 			for _, pid := range byGroup[w.pid] {
 				row := byPID[pid]
 				// A process that already existed before the worker
-				// started was not started by it.
-				if row.createTime < w.createTime || seen[pid] {
+				// started was not started by it, and a process created
+				// after the run ended was not started by the run either.
+				// The ceiling is zero for a record with no usable finish
+				// instant, which turns the upper test off; every
+				// uncertainty about the ceiling resolves toward silence,
+				// never toward dropping a member on a guess.
+				if row.createTime < w.createTime || seen[pid] ||
+					(candidate.finishCeilingMillis != 0 && row.createTime > candidate.finishCeilingMillis) {
 					continue
 				}
 				seen[pid] = true
@@ -287,6 +332,24 @@ func isSettled(rec recordFacts) bool {
 		return true
 	}
 	return !recordProcessAlive(rec.pid, rec.createTime)
+}
+
+// wholeSecondEnd returns the last instant of the whole second the
+// given millisecond instant falls in, or zero for zero. The finish
+// line records finishedAt at one-second resolution, so the instant it
+// names is a whole second, and a genuine survivor of the run may have
+// been created anywhere inside that same second — after the truncated
+// instant but before the run's true, sub-second end. Extending the
+// ceiling to the end of the recorded second admits those members
+// while still rejecting anything created in a later second; a run
+// that ended at 23:01:22.900 records 23:01:22, and the ceiling is
+// 23:01:22.999. Zero passes through unchanged: it is the "no finish
+// instant" sentinel, never a real instant to widen.
+func wholeSecondEnd(millis int64) int64 {
+	if millis == 0 {
+		return 0
+	}
+	return time.UnixMilli(millis).Truncate(time.Second).Add(time.Second - time.Millisecond).UnixMilli()
 }
 
 // usableCreateTime is the one rule that decides whether a creation
