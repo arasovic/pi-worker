@@ -47,6 +47,7 @@ const DETECTOR_ENVIRONMENT_SPECS = Object.freeze({
   hermesHome: { variable: "HERMES_HOME", fallback: ".hermes" },
   autohandHome: { variable: "AUTOHAND_HOME", fallback: ".autohand" },
   grokHome: { variable: "GROK_HOME", fallback: ".grok" },
+  sarvamHome: { variable: "SARVAM_HOME", fallback: ".sarvam" },
   zedAppDataHome: { variable: "APPDATA" },
   zedFlatpakConfigHome: { variable: "FLATPAK_XDG_CONFIG_HOME" },
 });
@@ -569,6 +570,7 @@ function assertRecognizedAnchors(source, expectedVersion) {
     'const hermesHome = process.env.HERMES_HOME?.trim() || join(home, ".hermes");',
     'const autohandHome = process.env.AUTOHAND_HOME?.trim() || join(home, ".autohand");',
     'const grokHome = process.env.GROK_HOME?.trim() || join(home, ".grok");',
+    'const sarvamHome = process.env.SARVAM_HOME?.trim() || join(home, ".sarvam");',
     'const zedAppDataHome = process.env.APPDATA?.trim();',
     'const zedFlatpakConfigHome = process.env.FLATPAK_XDG_CONFIG_HOME?.trim();',
   ];

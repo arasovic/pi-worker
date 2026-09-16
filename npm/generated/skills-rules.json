@@ -1,8 +1,8 @@
 {
   "schemaVersion": 3,
-  "skillsVersion": "1.5.23",
-  "agentCount": 77,
-  "globalTargetCount": 75,
+  "skillsVersion": "1.5.25",
+  "agentCount": 79,
+  "globalTargetCount": 77,
   "noGlobalTargetCount": 2,
   "agents": [
     {
@@ -454,7 +454,7 @@
     },
     {
       "id": "droid",
-      "usesUniversalTarget": false,
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
         "path": ".factory/skills"
@@ -518,6 +518,23 @@
           {
             "kind": "home-relative",
             "path": ".forge"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fx",
+      "usesUniversalTarget": false,
+      "rule": {
+        "kind": "home-relative",
+        "path": ".fx/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".fx"
           }
         ]
       }
@@ -687,14 +704,18 @@
     },
     {
       "id": "kilo",
-      "usesUniversalTarget": false,
+      "usesUniversalTarget": true,
       "rule": {
         "kind": "home-relative",
-        "path": ".kilocode/skills"
+        "path": ".kilo/skills"
       },
       "detector": {
         "kind": "any-existing",
         "paths": [
+          {
+            "kind": "home-relative",
+            "path": ".kilo"
+          },
           {
             "kind": "home-relative",
             "path": ".kilocode"
@@ -1104,6 +1125,24 @@
           {
             "kind": "home-relative",
             "path": ".roo"
+          }
+        ]
+      }
+    },
+    {
+      "id": "sarvam-code",
+      "usesUniversalTarget": true,
+      "rule": {
+        "kind": "home-relative",
+        "path": ".agents/skills"
+      },
+      "detector": {
+        "kind": "any-existing",
+        "paths": [
+          {
+            "kind": "environment-or-home",
+            "variable": "SARVAM_HOME",
+            "fallback": ".sarvam"
           }
         ]
       }

@@ -8,11 +8,11 @@ import {
 } from "node:fs";
 import { posix, win32 } from "node:path";
 
-export const PINNED_SKILLS_VERSION = "1.5.23";
+export const PINNED_SKILLS_VERSION = "1.5.25";
 export const RULE_SCHEMA_VERSION = 3;
 const MAX_EVE_PACKAGE_BYTES = 1024 * 1024;
-export const EXPECTED_AGENT_COUNT = 77;
-export const EXPECTED_GLOBAL_TARGET_COUNT = 75;
+export const EXPECTED_AGENT_COUNT = 79;
+export const EXPECTED_GLOBAL_TARGET_COUNT = 77;
 export const EXPECTED_NO_GLOBAL_TARGET_COUNT = 2;
 
 const RULE_KINDS = new Set([
@@ -49,6 +49,7 @@ const ENVIRONMENT_HOME_VARIABLES = new Set([
   "GROK_HOME",
   "VIBE_HOME",
   "AUTOHAND_HOME",
+  "SARVAM_HOME",
 ]);
 
 function invalid(message) {
