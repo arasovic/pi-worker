@@ -50,7 +50,7 @@ npm install -g pi-worker
 
 The npm package supports only macOS and Linux on arm64 and x64. It includes the
 native binary and provider-neutral skill. npm install attempts to install the
-skill for detected coding agents through pinned `skills@1.5.23`; it never
+skill for detected coding agents through pinned `skills@1.5.25`; it never
 overwrites an unrecognized existing skill.
 
 Native archives are available from
@@ -170,7 +170,7 @@ npm install -g --foreground-scripts pi-worker
 pi-worker skill status
 pi-worker skill status --json
 pi-worker skill receipt-path
-npx --yes skills@1.5.23 list -g
+npx --yes skills@1.5.25 list -g
 ```
 
 A separately installed recognized skill is externally managed and may be stale.
@@ -179,7 +179,7 @@ backing up and verifying every affected path as Pi Worker content, recovery may
 require:
 
 ```sh
-npx --yes skills@1.5.23 remove pi-worker -g -y
+npx --yes skills@1.5.25 remove pi-worker -g -y
 npm install -g --foreground-scripts pi-worker
 ```
 
