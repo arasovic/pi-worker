@@ -69,6 +69,8 @@ test("README is the concise public entry point with the approved contract", () =
     "pi-worker config set default-model provider/model",
     'pi-worker run --thinking high --task "Review this module and explain the main risks"',
     "Use pi-worker with provider/model at high effort to complete this task.",
+    "go install github.com/arasovic/pi-worker/cmd/pi-worker@latest",
+    "pi-worker skill status",
   ]) {
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
   }
@@ -134,7 +136,7 @@ test("README is the concise public entry point with the approved contract", () =
     assert.match(safetyCallout, new RegExp(safetyPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
 
-  for (const step of ["You keep your agent", "Small tasks go to cheaper models", "Results come back in order"]) {
+  for (const step of ["You keep your agent", "Small tasks go to cheaper models", "Results come back in order", "Your agent already knows how"]) {
     assert.ok(readme.includes(`- **${step}.**`), `README explains: ${step}`);
   }
 });

@@ -22,6 +22,7 @@
 - **You keep your agent.** Claude Code, Codex or Hermes stays the orchestrator.
 - **Small tasks go to cheaper models.** Pi Worker runs up to three [Pi](https://pi.dev/) workers in parallel, each on the exact model you asked for.
 - **Results come back in order.** Every worker returns its status and a final explanation, in request order.
+- **Your agent already knows how.** `npm install` also installs the `pi-worker` skill into Claude Code, Codex, Hermes and 70+ other detected coding agents, so the agent calls `pi-worker` itself.
 
 Already on Pi? This is `pi` with a queue, parallelism and a result contract.
 
@@ -29,11 +30,13 @@ Already on Pi? This is `pi` with a queue, parallelism and a result contract.
 
 Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider authentication, macOS or Linux on arm64 or x64.
 
-1. **Install**
+1. **Install.** This also installs the skill for every detected coding agent.
 
    ```sh
    npm install -g pi-worker
    ```
+
+   `go install github.com/arasovic/pi-worker/cmd/pi-worker@latest` gives you the binary without the skill.
 
 2. **Pick a model.** Replace `provider/model` with one exact selector printed by `pi-worker models`.
 
@@ -55,7 +58,7 @@ Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider authenti
    Use pi-worker with provider/model at high effort to complete this task.
    ```
 
-The requested model never silently changes. Repeat `--task` for up to three independent tasks that touch disjoint files. Thinking levels, source builds and other platforms are in [detailed usage](./docs/v0-usage.md).
+The requested model never silently changes. Repeat `--task` for up to three independent tasks that touch disjoint files. Thinking levels, `pi-worker skill status`, source builds and other platforms are in [detailed usage](./docs/v0-usage.md).
 
 > [!WARNING]
 > **Safety:** Pi Worker is not a sandbox. Workers can edit the current workspace and run `bash` with the current user's permissions. Parallel tasks must touch disjoint files.
