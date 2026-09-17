@@ -9,80 +9,67 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/MIT-green.svg" alt="MIT license"></a>
 </p>
 
-Let your coding agent hand small, well-defined tasks to a cheaper model.
-Pi Worker runs them through [Pi](https://pi.dev/) and brings the results back.
+<p align="center"><strong>Let your coding agent hand small, well-defined tasks to a cheaper model.</strong></p>
 
-## What is it?
-
-Pi Worker is a small CLI and coding-agent skill. Your primary agent stays the
-orchestrator; Pi Worker runs one to three workers in parallel and returns each
-worker's status and final explanation in request order.
-
-Already on Pi? This is `pi` with a queue, parallelism and a result contract.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="./docs/v0-usage.md">Detailed usage</a> ·
+  <a href="./ARCHITECTURE.md">Architecture</a>
+</p>
 
 ## How it works
 
-```text
-orchestrator (Claude Code / Codex / Hermes)
-      │  pi-worker run --task ... (1-3 tasks)
-      ▼
-pi-worker ── starts one Pi process per task, waits, collects
-      ▼
-status + final explanation per task, in request order
-```
+- **You keep your agent.** Claude Code, Codex or Hermes stays the orchestrator.
+- **Small tasks go to cheaper models.** Pi Worker runs up to three [Pi](https://pi.dev/) workers in parallel, each on the exact model you asked for.
+- **Results come back in order.** Every worker returns its status and a final explanation, in request order.
+- **Your agent already knows how.** `npm install` also installs the `pi-worker` skill into Claude Code, Codex, Hermes and 70+ other detected coding agents, so the agent calls `pi-worker` itself.
 
-Workers run concurrently, each on the exact model you asked for, and results
-stay in request order rather than completion order.
+Already on Pi? This is `pi` with a queue, parallelism and a result contract.
 
-## Install
+## Quick start
 
-Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider
-authentication, and macOS or Linux on arm64 or x64.
+Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider authentication, macOS or Linux on arm64 or x64.
 
-```sh
-npm install -g pi-worker
-```
+1. **Install.** This also installs the skill for every detected coding agent.
 
-`go install github.com/arasovic/pi-worker/cmd/pi-worker@latest` installs the
-binary without the skill; other platforms and source builds are in
-[detailed usage](./docs/v0-usage.md).
+   ```sh
+   npm install -g pi-worker
+   ```
 
-## First run
+   `go install github.com/arasovic/pi-worker/cmd/pi-worker@latest` gives you the binary without the skill.
 
-Run these commands, replacing `provider/model` with one exact selector printed
-by `pi-worker models`.
+2. **Pick a model.** Replace `provider/model` with one exact selector printed by `pi-worker models`.
 
-```sh
-pi-worker models
-pi-worker doctor
-pi-worker config set default-model provider/model
-pi-worker run --thinking high --task "Review this module and explain the main risks"
-```
+   ```sh
+   pi-worker models
+   pi-worker doctor
+   pi-worker config set default-model provider/model
+   ```
 
-The requested model never silently changes; thinking levels are in
-[detailed usage](./docs/v0-usage.md).
+3. **Run a task**
 
-## From a coding agent
+   ```sh
+   pi-worker run --thinking high --task "Review this module and explain the main risks"
+   ```
 
-```text
-Use pi-worker with provider/model at high effort to complete this task.
-```
+4. **Or let your agent do it.** Paste this into your coding agent:
 
-Repeat `--task` for up to three independent tasks that touch disjoint files.
+   ```text
+   Use pi-worker with provider/model at high effort to complete this task.
+   ```
 
-> **Safety:** Pi Worker is not a sandbox. Workers can edit the current workspace
-> and run `bash` with the current user's permissions. Parallel tasks must touch
-> disjoint files.
+The requested model never silently changes. Repeat `--task` for up to three independent tasks that touch disjoint files. Thinking levels, `pi-worker skill status`, source builds and other platforms are in [detailed usage](./docs/v0-usage.md).
+
+> [!WARNING]
+> **Safety:** Pi Worker is not a sandbox. Workers can edit the current workspace and run `bash` with the current user's permissions. Parallel tasks must touch disjoint files.
 
 ## Documentation
 
-- [Detailed usage](./docs/v0-usage.md)
-- [Versioned JSON contracts](./docs/json-contracts.md)
-- [Architecture](./ARCHITECTURE.md)
-- [Pi compatibility surface](./docs/pi-cli-surface.md)
-- [Release snapshot runbook](./docs/releasing.md)
-- [Contributing](./CONTRIBUTING.md)
-- [Security](./SECURITY.md)
+- [Detailed usage](./docs/v0-usage.md) — every command, flag, exit code and edge case.
+- [JSON contracts](./docs/json-contracts.md) — the versioned `--json` output shapes.
+- [Architecture](./ARCHITECTURE.md) — how a run is admitted, supervised and measured.
+
+Also: [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md) · [Release runbook](./docs/releasing.md) · [Pi compatibility surface](./docs/pi-cli-surface.md)
 
 ## License
 
