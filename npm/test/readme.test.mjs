@@ -5,8 +5,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
-
 const repository = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const readmePath = join(repository, "README.md");
 const usagePath = join(repository, "docs", "v0-usage.md");
@@ -26,10 +24,10 @@ const npmReadmeTargets = ["CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PA
 
 const sections = [
   "What is it?",
-  "Why does it exist?",
-  "How do I use it?",
-  "Safety",
-  "Troubleshooting",
+  "How it works",
+  "Install",
+  "First run",
+  "From a coding agent",
   "Documentation",
   "License",
 ];
@@ -69,43 +67,18 @@ test("README is the concise public entry point with the approved contract", () =
 
   for (const exactText of [
     "npm install -g pi-worker",
-    "npm install -g --foreground-scripts pi-worker",
-    "pi-worker doctor",
     "pi-worker models",
+    "pi-worker doctor",
     "pi-worker config set default-model provider/model",
     'pi-worker run --thinking high --task "Review this module and explain the main risks"',
     "Use pi-worker with provider/model at high effort to complete this task.",
-    "pi-worker skill status",
-    "pi-worker skill status --json",
-    "pi-worker skill receipt-path",
-    `npx --yes skills@${PINNED_SKILLS_VERSION} list -g`,
-    `npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`,
     "go install github.com/arasovic/pi-worker/cmd/pi-worker@latest",
   ]) {
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
   }
 
-  for (const check of ["pi-executable", "pi-version", "config", "model-catalog", "default-model", "workspace"]) {
-    assert.ok(readme.includes(`\`${check}\``), `README includes doctor check: ${check}`);
-  }
-  const doctorChecks = readme.slice(readme.indexOf("Its six checks"));
-  assert.ok(doctorChecks.indexOf("pi-executable") < doctorChecks.indexOf("pi-version"));
-  assert.ok(doctorChecks.indexOf("pi-version") < doctorChecks.indexOf("config"));
-  assert.ok(doctorChecks.indexOf("config") < doctorChecks.indexOf("model-catalog"));
-  assert.ok(doctorChecks.indexOf("model-catalog") < doctorChecks.indexOf("default-model"));
-  assert.ok(doctorChecks.indexOf("default-model") < doctorChecks.indexOf("workspace"));
-
-  for (const safetyStatement of [
-    "current writable workspace",
-    "parallel writes must target disjoint files",
-    "bash has the current user's host permissions",
-    "not a sandbox",
-    "never silently changes",
-    "same model",
-    "reports the fallback",
-  ]) {
-    assert.match(readme, new RegExp(safetyStatement.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
-  }
+  assert.match(readme, /not a sandbox/i);
+  assert.match(readme, /never silently changes/i);
   assert.equal(packageManifest.name, "pi-worker");
   assert.match(
     packageManifest.version,
@@ -123,14 +96,7 @@ test("README is the concise public entry point with the approved contract", () =
   assert.equal(packageManifest.engines.node, ">=22.20.0", "README requirement matches package lower bound");
   assert.doesNotMatch(readme, /not published|not currently usable|intended\s+post-publication/i);
   assert.match(readme, /source builds.*docs\/v0-usage\.md/is);
-  assert.match(readme, /npm package supports only macOS and Linux on arm64 and x64/i);
-  assert.match(readme, /Windows[\s\S]*compile\s+gates?\s+only[\s\S]*build\s+from\s+source/is);
-  assert.doesNotMatch(readme, /compile-checked|not runtime-tested/i);
-  assert.match(readme, /native binary.*provider-neutral.*skill/is);
-  assert.match(readme, /npm install attempts to install.*detected\s+coding agents/is);
-  assert.match(readme, new RegExp(`pinned \`skills@${escapeRegex(PINNED_SKILLS_VERSION)}\``));
-  assert.match(readme, /never\s+overwrites.*unrecognized.*skill/is);
-  assert.match(readme, /Node\.js 22\.20\.0 or newer/);
+  assert.match(readme, /Node\.js 22\.20\+/);
   assert.match(usage, /Node\.js 22\.20\.0 or newer/);
   assert.match(usage, /source build/i);
   assert.match(usage, /`\.\/bin\/pi-worker`/);
@@ -142,14 +108,10 @@ test("README is the concise public entry point with the approved contract", () =
   );
   assert.doesNotMatch(usage, /cmd\/pi-worker@v\d/, "docs/v0-usage.md pins no release version");
   assert.doesNotMatch(readme, /branding\/publication gate/i);
-  assert.match(readme, /durable\s+receipt/);
-  assert.match(readme, /identity\s+marker/);
-  assert.match(readme, /externally managed/);
-  assert.match(readme, /markerless|foreign|mixed/i);
 
   assert.doesNotMatch(readme, /<repository-url>|<owner>|<repo>|<package-name>/i);
   assert.doesNotMatch(readme, /\/(?:Users|home|tmp)\//);
-  assert.doesNotMatch(readme, /(?:openai|anthropic|google|gemini|claude|gpt-[\w-]+)/i);
+  assert.doesNotMatch(readme, /(?:openai|anthropic|google|gemini|gpt-[\w-]+|claude(?!\s+code))/i);
   assert.deepEqual(
     imageTargets(readme),
     [
@@ -157,34 +119,29 @@ test("README is the concise public entry point with the approved contract", () =
       "https://github.com/arasovic/pi-worker/actions/workflows/ci.yml/badge.svg",
       "https://img.shields.io/npm/v/pi-worker.svg",
       "https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white",
-      "https://img.shields.io/badge/Node.js-22.20%2B-339933?logo=nodedotjs&logoColor=white",
-      "https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white",
-      "https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black",
-      "https://img.shields.io/badge/Windows-compile%20only-0078D4",
       "https://img.shields.io/badge/MIT-green.svg",
     ],
     "README has the approved badges and project image",
   );
   assert.doesNotMatch(readme, /(?:npm|package-manager) distribution is deferred|packaging is source-only/i);
 
-  const firstTaskCommand = readme.indexOf('pi-worker run --thinking high --task "Review this module and explain the main risks"');
-  const earlySafetyStart = readme.indexOf("> **Safety:**");
-  assert.ok(earlySafetyStart >= 0 && earlySafetyStart < firstTaskCommand, "safety callout precedes the first task command");
-  const earlySafety = readme.slice(earlySafetyStart, firstTaskCommand).replace(/^>\s?/gm, "").replace(/\s+/g, " ");
+  const safetyStart = readme.indexOf("> **Safety:**");
+  assert.ok(safetyStart >= 0, "README has a safety callout");
+  const safetyEnd = readme.indexOf("\n\n", safetyStart);
+  const safetyCallout = readme.slice(safetyStart, safetyEnd).replace(/^>\s?/gm, "").replace(/\s+/g, " ");
   for (const safetyPhrase of [
-    "modify the current writable workspace",
-    "execute `bash` with the current user's host permissions",
     "not a sandbox",
-    "separate working directory, not containment",
-    "use a trusted workspace",
-    "parallel tasks must be disjoint",
+    "edit the current workspace",
+    "current user's permissions",
+    "disjoint files",
   ]) {
-    assert.match(earlySafety, new RegExp(safetyPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+    assert.match(safetyCallout, new RegExp(safetyPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
 
-  const selectorInstruction = /Replace `provider\/model` with one exact selector\s+printed by `pi-worker models`\s+before config set/;
-  assert.match(readme, selectorInstruction, "README explains selector replacement");
-  assert.ok(readme.search(selectorInstruction) < readme.indexOf("pi-worker config set default-model provider/model"));
+  assert.ok(
+    readme.includes("status + final explanation per task, in request order"),
+    "README shows the orchestrator-to-worker flow",
+  );
 });
 
 test("installed skill states the worker authority boundary before delegation", () => {

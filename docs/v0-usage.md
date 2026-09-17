@@ -27,7 +27,8 @@ distributed runtime targets. Windows, FreeBSD, OpenBSD, NetBSD, Solaris, and
 Plan 9 are compile gates only — CI cross-compiles the Windows binary and its
 test packages and compile-checks the other targets' binaries, but none is
 runtime-tested in the current release gates or a released platform. Windows
-requires a source build.
+requires a source build. Native archives for those runtime targets are
+published on [GitHub Releases](https://github.com/arasovic/pi-worker/releases).
 
 Install the public package normally, or keep installer diagnostics visible:
 
@@ -207,7 +208,13 @@ pi-worker skill status [--json]
   findings. Missing paths are successful absence.
 - External findings are informational and never change the receipt-derived
   exit code. Known identity markers are externally managed and may be stale;
-  unknown or absent markers require manual inspection.
+  unknown or absent markers require manual inspection. Markerless, foreign,
+  or mixed content is never overwritten automatically; recovery from a
+  blocked, skipped, or failed install — after backing up and verifying every
+  affected path as recognized content — is
+  `npx --yes skills@1.5.25 remove pi-worker -g -y` followed by
+  `npm install -g --foreground-scripts pi-worker`. Never use the global
+  remove command on unrecognized content.
 - Exit code `0` means the inspection reports `verified`. Missing receipts,
   missing or drifted targets, blocked, skipped, and failed completions, and
   `stale` reports exit `3`.
@@ -844,6 +851,7 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 ```
 
 - Assign disjoint files, or use only one worker; `--worktree` (below) is the way to give one run a workspace of its own.
+- Selecting a workspace scopes where Pi's own tools resolve relative paths; it is not a filesystem boundary.
 - Every v0 worker always enables `read,grep,find,ls,edit,write,bash` with `--no-approve`; `bash` can execute arbitrary shell commands with the current user's host permissions, and this is not a sandbox.
 
 ### Isolated run workspace
