@@ -23,11 +23,8 @@ const piVersion = piPin.dependencies["@earendil-works/pi-coding-agent"];
 const npmReadmeTargets = ["CONTRIBUTING.md", "SECURITY.md", "LICENSE", "THIRD_PARTY_NOTICES"];
 
 const sections = [
-  "What is it?",
   "How it works",
-  "Install",
-  "First run",
-  "From a coding agent",
+  "Quick start",
   "Documentation",
   "License",
 ];
@@ -72,7 +69,6 @@ test("README is the concise public entry point with the approved contract", () =
     "pi-worker config set default-model provider/model",
     'pi-worker run --thinking high --task "Review this module and explain the main risks"',
     "Use pi-worker with provider/model at high effort to complete this task.",
-    "go install github.com/arasovic/pi-worker/cmd/pi-worker@latest",
   ]) {
     assert.ok(readme.includes(exactText), `README includes: ${exactText}`);
   }
@@ -125,7 +121,7 @@ test("README is the concise public entry point with the approved contract", () =
   );
   assert.doesNotMatch(readme, /(?:npm|package-manager) distribution is deferred|packaging is source-only/i);
 
-  const safetyStart = readme.indexOf("> **Safety:**");
+  const safetyStart = readme.indexOf("> [!WARNING]");
   assert.ok(safetyStart >= 0, "README has a safety callout");
   const safetyEnd = readme.indexOf("\n\n", safetyStart);
   const safetyCallout = readme.slice(safetyStart, safetyEnd).replace(/^>\s?/gm, "").replace(/\s+/g, " ");
@@ -138,10 +134,9 @@ test("README is the concise public entry point with the approved contract", () =
     assert.match(safetyCallout, new RegExp(safetyPhrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   }
 
-  assert.ok(
-    readme.includes("status + final explanation per task, in request order"),
-    "README shows the orchestrator-to-worker flow",
-  );
+  for (const step of ["You keep your agent", "Small tasks go to cheaper models", "Results come back in order"]) {
+    assert.ok(readme.includes(`- **${step}.**`), `README explains: ${step}`);
+  }
 });
 
 test("installed skill states the worker authority boundary before delegation", () => {
