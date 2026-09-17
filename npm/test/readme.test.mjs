@@ -123,7 +123,7 @@ test("README is the concise public entry point with the approved contract", () =
   );
   assert.doesNotMatch(readme, /(?:npm|package-manager) distribution is deferred|packaging is source-only/i);
 
-  const safetyStart = readme.indexOf("> [!WARNING]");
+  const safetyStart = readme.indexOf("> **Safety:**");
   assert.ok(safetyStart >= 0, "README has a safety callout");
   const safetyEnd = readme.indexOf("\n\n", safetyStart);
   const safetyCallout = readme.slice(safetyStart, safetyEnd).replace(/^>\s?/gm, "").replace(/\s+/g, " ");
