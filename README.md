@@ -60,7 +60,6 @@ Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider authenti
 
 The requested model never silently changes. Repeat `--task` for up to three independent tasks that touch disjoint files. Thinking levels, `pi-worker skill status`, source builds and other platforms are in [detailed usage](./docs/v0-usage.md).
 
-> [!WARNING]
 > **Safety:** Pi Worker is not a sandbox. Workers can edit the current workspace and run `bash` with the current user's permissions. Parallel tasks must touch disjoint files.
 
 ## Documentation
