@@ -103,6 +103,16 @@ there; report it, fix the workspace, and re-run. Any other word means report
 it with its object when one exists (`writes`, `verification`, or the worker's
 `error`) and stop.
 
+`completed` means the workers' turns ended normally and every configured check
+passed; it does not prove the task's deliverable exists or is finished. A
+worker's final text can be a mid-work sentence — for example when an upstream
+response was cut short but reported as a normal ending — and a declared file can
+exist with only a header. When the deliverable matters, pass a `--verify` command
+that inspects its content: a file's existence or non-emptiness is not enough, and
+an unrelated green test suite says nothing about it. Read the deliverable
+yourself before accepting the run, and treat a worker `warning` that names a
+continuation as a reason to inspect the deliverable before trusting `completed`.
+
 ## Boundaries
 
 - Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a checkout of its own: a separate working directory, not containment — a worker can still reach outside it. Without the flag, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed. Runs never automatically remove leftover checkouts or branches; removal is only via the explicit safe `pi-worker worktrees remove` command which requires a clean, merged pair.

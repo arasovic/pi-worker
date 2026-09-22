@@ -691,6 +691,14 @@ two runs from distinct configuration files do not share a gate.
 - A context that expires while the check runs is not a verification
   failure: the run ran out of time and exits the way a timed-out run
   exits (`7`).
+- `completed` means the workers' turns ended normally and every configured
+  check passed, not that the deliverable is done. A worker's final text can
+  be a mid-work sentence, as when an upstream response was cut short but
+  reported as a normal ending; a declared file can hold only its header.
+  When the deliverable matters, pass a `--verify` command that inspects its
+  content: existence or non-emptiness is not enough, and an unrelated green
+  suite says nothing. Read the deliverable yourself before trusting
+  `completed`, and inspect it when a worker `warning` names a continuation.
 
 ### Workspace git state
 
