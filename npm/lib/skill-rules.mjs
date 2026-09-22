@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { posix, win32 } from "node:path";
 
-export const PINNED_SKILLS_VERSION = "1.5.25";
+export const PINNED_SKILLS_VERSION = "1.7.0";
 export const RULE_SCHEMA_VERSION = 3;
 const MAX_EVE_PACKAGE_BYTES = 1024 * 1024;
 export const EXPECTED_AGENT_COUNT = 79;

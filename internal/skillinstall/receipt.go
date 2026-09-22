@@ -23,7 +23,7 @@ const IdentityFile = "PI_WORKER_IDENTITY"
 
 const IdentityContent = "pi-worker-skill/v1\n"
 
-const PinnedSkillsVersion = "1.5.25"
+const PinnedSkillsVersion = "1.7.0"
 
 const SafeRecoveryCommand = "npm install -g --foreground-scripts pi-worker"
 
