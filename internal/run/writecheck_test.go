@@ -156,6 +156,63 @@ func TestControllerWritesFromSubdirectoryReanchorDeclarations(t *testing.T) {
 	}
 }
 
+func TestControllerWritesWorkspaceSpelledInOtherCase(t *testing.T) {
+	// A workspace whose spelling differs from git's canonical root only
+	// in letter case must still anchor declarations inside the repository.
+	// The manifest is rooted at git's spelling, so the write check has to
+	// re-spell the workspace from git's root and prefix rather than from
+	// req.Workspace. The skip keeps Linux CI green: a case-sensitive
+	// filesystem cannot express the differing spelling at all.
+	t.Run("root", func(t *testing.T) {
+		repo := newGitRepo(t)
+		workspace := strings.ToUpper(repo)
+		real, err := os.Stat(repo)
+		if err != nil {
+			t.Fatalf("stat repo: %v", err)
+		}
+		respelled, err := os.Stat(workspace)
+		if err != nil || !os.SameFile(real, respelled) {
+			t.Skip("filesystem is case-sensitive")
+		}
+		result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644)
+		}}, workspace, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
+		writes := result.Writes
+		if writes == nil {
+			t.Fatalf("writes = nil, want a verdict")
+		}
+		if writes.Skipped != "" || writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
+			t.Fatalf("writes = %#v, want checked-clean", writes)
+		}
+	})
+	t.Run("subdirectory", func(t *testing.T) {
+		repo := newGitRepo(t)
+		realSubdir := filepath.Join(repo, "sub")
+		if err := os.MkdirAll(realSubdir, 0o755); err != nil {
+			t.Fatalf("mkdir sub: %v", err)
+		}
+		workspace := filepath.Join(repo, "SUB")
+		real, err := os.Stat(realSubdir)
+		if err != nil {
+			t.Fatalf("stat sub: %v", err)
+		}
+		respelled, err := os.Stat(workspace)
+		if err != nil || !os.SameFile(real, respelled) {
+			t.Skip("filesystem is case-sensitive")
+		}
+		result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644)
+		}}, workspace, []string{"a"}, []WriteDeclaration{declaredPaths("file.txt")})
+		writes := result.Writes
+		if writes == nil {
+			t.Fatalf("writes = nil, want a verdict")
+		}
+		if writes.Skipped != "" || writes.UndeclaredCount != 0 || len(writes.Undeclared) != 0 {
+			t.Fatalf("writes = %#v, want checked-clean", writes)
+		}
+	})
+}
+
 func TestControllerWritesUndeclaredPathReported(t *testing.T) {
 	dir := newGitRepo(t)
 	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {

@@ -328,15 +328,25 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	var dirtyStamps map[string]fileStamp
 	var metadata *gitMetadataSnapshot
 	var repoRootVal string
+	measureWorkspace := req.Workspace
 	if before != nil && beforeErr == nil && before.Head != "" {
 		root, err := repoRoot(ctx, req.Workspace)
 		if err != nil {
 			beforeErr = err
 		} else {
 			repoRootVal = root
-			metadata, beforeErr = snapshotGitMetadata(ctx, root)
-			if beforeErr == nil && before.Dirty {
-				dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
+			prefixOut, prefixErr := gitOutput(ctx, req.Workspace, "rev-parse", "--show-prefix")
+			if prefixErr != nil {
+				beforeErr = fmt.Errorf("git rev-parse --show-prefix: %w", prefixErr)
+			} else {
+				// Re-spell the workspace from git's root and prefix so
+				// declarations anchor correctly when req.Workspace differs
+				// from git's spelling only in letter case.
+				measureWorkspace = filepath.Join(root, strings.TrimSuffix(prefixOut, "\n"))
+				metadata, beforeErr = snapshotGitMetadata(ctx, root)
+				if beforeErr == nil && before.Dirty {
+					dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
+				}
 			}
 		}
 	}
@@ -427,7 +437,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			if snapErr != nil && settlementErr == nil {
 				settlementErr = fmt.Errorf("controller: settlement snapshot task %d: %w", index+1, snapErr)
 			} else if snapErr == nil {
-				settledProjections[index] = projectedTaskStamps(stamps, task, repoRootVal, req.Workspace)
+				settledProjections[index] = projectedTaskStamps(stamps, task, repoRootVal, measureWorkspace)
 				captured = true
 			}
 			settlementMu.Unlock()
@@ -534,7 +544,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		for idx := range req.Tasks {
 			settled := settledProjections[idx]
-			finalProj := projectedTaskStamps(finalStamps, req.Tasks[idx], repoRootVal, req.Workspace)
+			finalProj := projectedTaskStamps(finalStamps, req.Tasks[idx], repoRootVal, measureWorkspace)
 			diff := diffProjectedStamps(settled, finalProj)
 			extraUndeclared = append(extraUndeclared, diff...)
 		}
@@ -605,9 +615,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// silence means the caller never asked.
 	if anyWritesDeclared(req.Tasks) {
 		if monitoringEnabled {
-			result.Writes = checkWritesWithExtra(result.Changes, req.Tasks, req.Workspace, extraUndeclared)
+			result.Writes = checkWritesWithExtra(result.Changes, req.Tasks, measureWorkspace, extraUndeclared)
 		} else {
-			result.Writes = checkWrites(result.Changes, req.Tasks, req.Workspace)
+			result.Writes = checkWrites(result.Changes, req.Tasks, measureWorkspace)
 		}
 	}
 	// Verification runs once for the whole run after every worker has
