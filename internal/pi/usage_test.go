@@ -33,6 +33,130 @@ func messageUpdate(usage, subtype string) Event {
 	}
 }
 
+// warmEntry builds one entry_appended cache-warm frame carrying the given
+// raw usage JSON token. Tests pass their own expected numbers as literals
+// and never read them back out of this helper. The optional note field Pi
+// may attach is exercised inline where a test needs it.
+func warmEntry(usage string) Event {
+	return Event{
+		Type: "entry_appended",
+		Raw:  json.RawMessage(`{"type":"entry_appended","entry":{"type":"usage","id":"a1b2c3d4","parentId":"e5f6a7b8","timestamp":"2026-09-23T10:00:00.000Z","kind":"cache_warm","provider":"acme","model":"m-1","usage":` + usage + `}}`),
+	}
+}
+
+func TestCacheWarmAccumulatorSumsWarmEntries(t *testing.T) {
+	// Two warm frames with different literal figures, the second carrying
+	// the optional note Pi may attach. The accumulator adds every warm
+	// frame rather than letting the latest replace the earlier ones. Cost
+	// figures are binary-exact so the float64 sums compare literally.
+	first := `{"input":245,"output":1,"cacheRead":2048,"cacheWrite":0,"totalTokens":2294,"cost":{"input":0.5,"output":0.25,"cacheRead":0.125,"cacheWrite":0,"total":0.875}}`
+	second := `{"input":100,"output":2,"cacheRead":1024,"cacheWrite":4,"totalTokens":1130,"cost":{"input":0.25,"output":0.0625,"cacheRead":0.0625,"cacheWrite":0.125,"total":0.5}}`
+	a := &cacheWarmAccumulator{}
+	stream := []Event{
+		warmEntry(first),
+		{
+			Type: "entry_appended",
+			Raw:  json.RawMessage(`{"type":"entry_appended","entry":{"type":"usage","kind":"cache_warm","note":"extension override","usage":` + second + `}}`),
+		},
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 345, Output: 3, CacheRead: 3072, CacheWrite: 4, TotalTokens: 3424,
+		Cost: UsageCost{Input: 0.75, Output: 0.3125, CacheRead: 0.1875, CacheWrite: 0.125, Total: 1.375},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want the sum of both warm frames %#v", got, want)
+	}
+}
+
+func TestCacheWarmAccumulatorSkipsOtherAndBadFrames(t *testing.T) {
+	// Every case alone is not a warm measurement: it is skipped silently
+	// and never errors, so the snapshot stays nil.
+	validWarm := `{"input":245,"output":1,"cacheRead":2048,"cacheWrite":0,"totalTokens":2294,"cost":{"input":0.5,"output":0.25,"cacheRead":0.125,"cacheWrite":0,"total":0.875}}`
+	cases := []struct {
+		name  string
+		event Event
+	}{
+		{name: "message_update with non-zero usage", event: messageUpdate(validWarm, "text_end")},
+		{name: "entry type message", event: Event{Type: "entry_appended", Raw: json.RawMessage(`{"type":"entry_appended","entry":{"type":"message","kind":"cache_warm","usage":` + validWarm + `}}`)}},
+		{name: "entry kind other", event: Event{Type: "entry_appended", Raw: json.RawMessage(`{"type":"entry_appended","entry":{"type":"usage","kind":"other","usage":` + validWarm + `}}`)}},
+		{name: "no usage key", event: Event{Type: "entry_appended", Raw: json.RawMessage(`{"type":"entry_appended","entry":{"type":"usage","kind":"cache_warm"}}`)}},
+		{name: "usage null", event: warmEntry(`null`)},
+		{name: "usage string", event: warmEntry(`"x"`)},
+		{name: "usage negative", event: warmEntry(`{"input":-1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`)},
+		{name: "all-zero usage", event: warmEntry(zeroUsage)},
+		{name: "invalid frame JSON", event: Event{Type: "entry_appended", Raw: json.RawMessage(`{"type":"entry_appended","entry":`)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &cacheWarmAccumulator{}
+			if err := a.OnEvent(tc.event); err != nil {
+				t.Fatalf("OnEvent = %v, want nil: a warm frame problem must never fail the run", err)
+			}
+			if got := a.snapshot(); got != nil {
+				t.Fatalf("snapshot = %#v, want nil: the frame is not a warm measurement", got)
+			}
+		})
+	}
+}
+
+func TestCacheWarmAccumulatorBadFrameDoesNotEraseEarlierWarm(t *testing.T) {
+	// A skipped frame is skipped, not remembered and not allowed to erase
+	// the warm total already accumulated.
+	good := `{"input":245,"output":1,"cacheRead":2048,"cacheWrite":0,"totalTokens":2294,"cost":{"input":0.5,"output":0.25,"cacheRead":0.125,"cacheWrite":0,"total":0.875}}`
+	a := &cacheWarmAccumulator{}
+	stream := []Event{
+		warmEntry(good),
+		warmEntry(`{"input":-1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 245, Output: 1, CacheRead: 2048, CacheWrite: 0, TotalTokens: 2294,
+		Cost: UsageCost{Input: 0.5, Output: 0.25, CacheRead: 0.125, CacheWrite: 0, Total: 0.875},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want the earlier warm frame %#v", got, want)
+	}
+}
+
+func TestUsageAccumulatorIgnoresCacheWarmEntries(t *testing.T) {
+	// The assistant-message accumulator must keep ignoring entry_appended:
+	// the warm request is measured separately and never folded into the
+	// message usage total.
+	message := `{"input":55,"output":8,"cacheRead":0,"cacheWrite":0,"totalTokens":63,"cost":{"input":0.00055,"output":0.00008,"cacheRead":0,"cacheWrite":0,"total":0.00063}}`
+	warm := `{"input":245,"output":1,"cacheRead":2048,"cacheWrite":0,"totalTokens":2294,"cost":{"input":0.5,"output":0.25,"cacheRead":0.125,"cacheWrite":0,"total":0.875}}`
+	a := &usageAccumulator{}
+	stream := []Event{
+		event("message_start"),
+		messageUpdate(message, "text_end"),
+		event("message_end"),
+		warmEntry(warm),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 55, Output: 8, CacheRead: 0, CacheWrite: 0, TotalTokens: 63,
+		Cost: UsageCost{Input: 0.00055, Output: 0.00008, CacheRead: 0, CacheWrite: 0, Total: 0.00063},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want only the message's numbers %#v", got, want)
+	}
+}
+
 func TestUsageAccumulatorMeasuredTraceEndToEnd(t *testing.T) {
 	// The exact measured stream observed on the wire against Pi
 	// 0.84.4, frame for frame. The first message carries no message_update
@@ -580,5 +704,53 @@ func TestWorkerCompletedRunReportsUsage(t *testing.T) {
 	}
 	if result.Usage.CacheWrite1h != nil || result.Usage.Reasoning != nil {
 		t.Fatalf("optional fields = %v/%v, want absent", result.Usage.CacheWrite1h, result.Usage.Reasoning)
+	}
+	if result.CacheWarmUsage != nil {
+		t.Fatalf("cacheWarmUsage = %#v, want nil: the script reported no warm request", result.CacheWarmUsage)
+	}
+}
+
+func TestWorkerReportsCacheWarmUsageSeparately(t *testing.T) {
+	// The prompt stream carries one assistant message and two warm frames.
+	// The message usage is reported under Usage and the warm frames under
+	// CacheWarmUsage: the two totals stay apart, and the warm sum does not
+	// leak into the message figure.
+	message := `{"input":40,"output":8,"cacheRead":0,"cacheWrite":0,"totalTokens":48,"cost":{"input":0.5,"output":0.25,"cacheRead":0,"cacheWrite":0,"total":0.75}}`
+	first := `{"input":245,"output":1,"cacheRead":2048,"cacheWrite":0,"totalTokens":2294,"cost":{"input":0.5,"output":0.25,"cacheRead":0.125,"cacheWrite":0,"total":0.875}}`
+	second := `{"input":100,"output":2,"cacheRead":1024,"cacheWrite":4,"totalTokens":1130,"cost":{"input":0.25,"output":0.0625,"cacheRead":0.0625,"cacheWrite":0.125,"total":0.5}}`
+	scriptConfig := happyPathScript("answer")
+	scriptConfig.Triggers["prompt"] = []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_update","usage":` + message + `,"assistantMessageEvent":{"type":"text_end","contentIndex":0}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`)},
+		{Event: warmEntry(first).Raw},
+		{Event: warmEntry(second).Raw},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, error = %q", result.Status, result.Error)
+	}
+	wantUsage := &Usage{
+		Input: 40, Output: 8, CacheRead: 0, CacheWrite: 0, TotalTokens: 48,
+		Cost: UsageCost{Input: 0.5, Output: 0.25, CacheRead: 0, CacheWrite: 0, Total: 0.75},
+	}
+	if !reflect.DeepEqual(result.Usage, wantUsage) {
+		t.Fatalf("usage = %#v, want only the message's numbers %#v", result.Usage, wantUsage)
+	}
+	wantWarm := &Usage{
+		Input: 345, Output: 3, CacheRead: 3072, CacheWrite: 4, TotalTokens: 3424,
+		Cost: UsageCost{Input: 0.75, Output: 0.3125, CacheRead: 0.1875, CacheWrite: 0.125, Total: 1.375},
+	}
+	if !reflect.DeepEqual(result.CacheWarmUsage, wantWarm) {
+		t.Fatalf("cacheWarmUsage = %#v, want the summed warm frames %#v", result.CacheWarmUsage, wantWarm)
 	}
 }
