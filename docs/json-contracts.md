@@ -361,6 +361,10 @@ Worker fields are conditionally present:
 - `usage`: present only when at least one assistant message reported a
   non-zero usage figure; the token counts and dollar figures Pi
   computed, passed through unchanged
+- `cacheWarmUsage`: present only when Pi reported at least one
+  cache-warm request with a non-zero figure; the same fields as `usage`;
+  Pi's figures for the requests Pi sent on its own to keep the
+  provider's prompt cache alive while a tool ran; not part of `usage`
 - `acceptedAt`, `startedAt`, `finishedAt`: the run layer's own timeline
   record, stamped from what the controller accepted and executed rather
   than reported by the worker, RFC 3339 in UTC. `acceptedAt` is present
@@ -405,6 +409,14 @@ non-zero figure, and absent otherwise — including when the provider
 reported nothing but zeros: a completed run cannot genuinely consume
 zero tokens, so an all-zero report is no measurement. `cacheWrite1h`
 and `reasoning` are present only when some message reported them.
+
+Cache-warm reporting is additive and optional, so `schemaVersion` stays
+`1`. Whether Pi warms at all is Pi's own global setting, which pi-worker
+neither reads nor changes. Worker `cacheWarmUsage` appears only when Pi
+reported at least one cache-warm request with a non-zero figure; it is
+absent when no warm request was reported, and a warm frame with missing,
+malformed or negative figures is skipped rather than reported. The run's
+full spend is `usage` plus `cacheWarmUsage`.
 
 Verification is additive and optional, so `schemaVersion` stays `1`. Root
 `verification` appears only when `--verify` ran on a completed run; a run

@@ -180,3 +180,49 @@ func (a *usageAccumulator) snapshot() *Usage {
 	total := a.total
 	return &total
 }
+
+// cacheWarmAccumulator measures the cache-warm requests Pi sends on its
+// own to keep the provider's prompt cache alive while a tool runs. Those
+// requests cost money but carry no assistant message, so their reported
+// usage is summed apart from usageAccumulator and never enters the
+// assistant messages' total. It implements EventHandler.
+type cacheWarmAccumulator struct {
+	usageAccumulator
+}
+
+// OnEvent tracks one completed cache-warm request. It acts only on
+// entry_appended frames whose entry is a usage entry of kind cache_warm,
+// decodes the entry's usage, and adds it to the running warm total. Any
+// other frame, and a frame whose usage is missing, null, unparseable, or
+// negative, is skipped silently and never returned as an error: a
+// measurement problem must never fail a run that otherwise worked.
+func (a *cacheWarmAccumulator) OnEvent(event Event) error {
+	if event.Type != "entry_appended" {
+		return nil
+	}
+	var frame struct {
+		Entry struct {
+			Type  string          `json:"type"`
+			Kind  string          `json:"kind"`
+			Usage json.RawMessage `json:"usage"`
+		} `json:"entry"`
+	}
+	if err := json.Unmarshal(event.Raw, &frame); err != nil {
+		return nil
+	}
+	if frame.Entry.Type != "usage" || frame.Entry.Kind != "cache_warm" {
+		return nil
+	}
+	if len(frame.Entry.Usage) == 0 || isJSONNull(frame.Entry.Usage) {
+		return nil
+	}
+	var usage Usage
+	if err := json.Unmarshal(frame.Entry.Usage, &usage); err != nil {
+		return nil
+	}
+	if usageNegative(usage) {
+		return nil
+	}
+	a.add(usage)
+	return nil
+}

@@ -148,6 +148,12 @@ type WorkerResult struct {
 	// or only zeros reported — so a provider that reports no numbers
 	// leaves the field absent rather than claiming a free run.
 	Usage *Usage `json:"usage,omitempty"`
+	// CacheWarmUsage is Pi's own figures for the cache-warm requests Pi
+	// sent on its own during this worker, passed through unchanged. Those
+	// requests are not included in Usage: the full spend is the two
+	// added together. It is nil when Pi reported no warm request with a
+	// non-zero figure.
+	CacheWarmUsage *Usage `json:"cacheWarmUsage,omitempty"`
 }
 
 // Worker runs one foreground worker through Pi JSONL RPC.
@@ -182,6 +188,13 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// created snapshot nil: no frame was observed, so usage is absent
 	// rather than zero.
 	usage := &usageAccumulator{}
+	// cacheWarm measures the cache-warm requests Pi sends on its own to
+	// keep the provider's prompt cache alive while a tool runs. They are
+	// kept apart from usage so the assistant messages' total stays the
+	// assistant messages' total, and the caller can add the two figures
+	// for the full spend. It obeys the same rule as usage: every return
+	// after the model guard funnels through withThinking.
+	cacheWarm := &cacheWarmAccumulator{}
 	// transcript holds the last assistant message's text as it streams,
 	// the partial counterpart of explanation: withThinking reports it when
 	// the run ends without a final text, so a failed or timed-out run
@@ -192,6 +205,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	transcript := &transcriptAccumulator{}
 	withThinking := func(result WorkerResult) WorkerResult {
 		result.Usage = usage.snapshot()
+		result.CacheWarmUsage = cacheWarm.snapshot()
 		if result.Explanation == "" {
 			result.PartialExplanation = transcript.snapshot()
 		}
@@ -286,7 +300,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 			}
 		}
 
-		client = NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript}, debug)
+		client = NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript, cacheWarm}, debug)
 		attemptThinking, failure, retryable, ok := w.prePromptAttempt(ctx, req, provider, id, client)
 		if ok {
 			successProc = proc
