@@ -324,6 +324,56 @@ func TestWorkerProcessAppendsThirdLine(t *testing.T) {
 	}
 }
 
+// TestDescendantAppendsLine asserts Descendant appends one line carrying
+// the descendant event, the worker id, the pid and the caller-supplied
+// creation time, with the run's id and schema version, between the
+// worker line and the finish line. There is no process lookup to script:
+// the creation time is passed in and written verbatim.
+func TestDescendantAppendsLine(t *testing.T) {
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Date(2026, 8, 30, 4, 15, 30, 0, time.UTC), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Date(2026, 8, 30, 4, 15, 35, 0, time.UTC), 2, 4832)
+	recorder.Descendant(time.Date(2026, 8, 30, 4, 15, 36, 0, time.UTC), 2, 4321, 1700000000123)
+	result := run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}
+	if err := recorder.Finish(time.Date(2026, 8, 30, 4, 15, 40, 0, time.UTC), &result, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	lines := recordLines(t, readRecord(t, dir))
+	if len(lines) != 4 {
+		t.Fatalf("record lines = %d, want 4", len(lines))
+	}
+	start := decodeLine(t, lines[0])
+	if start["event"] != "start" {
+		t.Fatalf("start line event = %v, want start", start["event"])
+	}
+	descendant := decodeLine(t, lines[2])
+	if descendant["event"] != "descendant" {
+		t.Fatalf("third line event = %v, want descendant", descendant["event"])
+	}
+	if descendant["runId"] != start["runId"] {
+		t.Fatalf("descendant runId = %v, start runId = %v", descendant["runId"], start["runId"])
+	}
+	if descendant["at"] != "2026-08-30T04:15:36Z" {
+		t.Fatalf("at = %v, want 2026-08-30T04:15:36Z", descendant["at"])
+	}
+	if descendant["workerId"] != float64(2) {
+		t.Fatalf("workerId = %v, want 2", descendant["workerId"])
+	}
+	if descendant["pid"] != float64(4321) {
+		t.Fatalf("pid = %v, want 4321", descendant["pid"])
+	}
+	if descendant["createTime"] != float64(1700000000123) {
+		t.Fatalf("createTime = %v, want 1700000000123", descendant["createTime"])
+	}
+	if descendant["schemaVersion"] != float64(1) {
+		t.Fatalf("schemaVersion = %v, want 1", descendant["schemaVersion"])
+	}
+}
+
 // TestStartLineOmitsNonZeroCreateTimeOnLookupError asserts a
 // pidCreateTime call that returns a non-zero value together with an
 // error still leaves the createTime key off the start line: the value
@@ -489,6 +539,13 @@ func TestWorkerLineSchemaVersionIsOne(t *testing.T) {
 func TestWorkerProcessNilRecorderIsNoOp(t *testing.T) {
 	var recorder *Recorder
 	recorder.WorkerProcess(time.Now(), 1, 4832)
+}
+
+// TestDescendantNilRecorderIsNoOp asserts Descendant on a nil Recorder
+// is a no-op and panics on nothing.
+func TestDescendantNilRecorderIsNoOp(t *testing.T) {
+	var recorder *Recorder
+	recorder.Descendant(time.Now(), 1, 4321, 1700000000123)
 }
 
 // TestConcurrentWorkerProcessLinesRemainOneJSONObjectEach asserts many

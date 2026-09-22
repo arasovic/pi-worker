@@ -129,11 +129,11 @@ func List(dir string) ([]Run, error) {
 // recordFacts is the shared parse of one record file, answering
 // everything the three readers ask of it: the process identity and
 // the display fields from the start line, the completion facts from
-// the finish line, and every worker line's process identity. List
-// reads all of it; InspectRecord needs only the pid and the finished
-// flag, and the readers must agree on those facts — the interrupted-
-// run warning, the list, and the leftover report classify the same
-// record the same way.
+// the finish line, and every worker and descendant line's process
+// identity. List reads all of it; InspectRecord needs only the pid and
+// the finished flag, and the readers must agree on those facts — the
+// interrupted-run warning, the list, and the leftover report classify
+// the same record the same way.
 type recordFacts struct {
 	// pid is the process that wrote the record, from the start line.
 	pid int
@@ -153,6 +153,13 @@ type recordFacts struct {
 	// under the run — a leftover in the second worker's group must
 	// still be found.
 	workers []workerFacts
+	// descendants holds every descendant line's process identity, in
+	// record order: the pid a worker's recorded descendant ran as
+	// paired with its creation time. The leftover reader reports one on
+	// that exact pair alone, with no group or age test, so the identity
+	// must be collected wherever it sits between the first and last
+	// lines.
+	descendants []workerFacts
 	// startedAt, workspace, tasks, and models are the start line's
 	// display fields, copied verbatim. models holds the distinct
 	// models the tasks named, in task order.
@@ -303,6 +310,7 @@ func parseRecord(path string) (recordFacts, error) {
 	lines := strings.Split(string(data), "\n")
 	first, last := -1, -1
 	var workers []workerFacts
+	var descendants []workerFacts
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -311,14 +319,20 @@ func parseRecord(path string) (recordFacts, error) {
 			first = i
 		}
 		last = i
-		// Every non-empty line is a potential worker line, collected
-		// independently of the classification facts: a record can
-		// carry up to three of them, and a worker line between the
-		// first and the last must still be collected, or a leftover
-		// in its group would be invisible.
+		// Every non-empty line is a potential worker or descendant
+		// line, collected independently of the classification facts: a
+		// record can carry up to three workers, and a worker or
+		// descendant line between the first and the last must still be
+		// collected, or a leftover in its group would be invisible.
+		// Both kinds require a positive pid to name anything.
 		var worker workerLine
-		if err := json.Unmarshal([]byte(line), &worker); err == nil && worker.Event == "worker" && worker.PID > 0 {
-			workers = append(workers, workerFacts{pid: worker.PID, createTime: worker.CreateTime})
+		if err := json.Unmarshal([]byte(line), &worker); err == nil && worker.PID > 0 {
+			switch worker.Event {
+			case "worker":
+				workers = append(workers, workerFacts{pid: worker.PID, createTime: worker.CreateTime})
+			case "descendant":
+				descendants = append(descendants, workerFacts{pid: worker.PID, createTime: worker.CreateTime})
+			}
 		}
 	}
 	if first == -1 {
@@ -332,7 +346,7 @@ func parseRecord(path string) (recordFacts, error) {
 	if err := json.Unmarshal([]byte(lines[first]), &start); err != nil || start.Event != "start" || start.PID <= 0 {
 		return recordFacts{}, errors.New("record has no usable start line")
 	}
-	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers, models: []string{}}
+	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers, descendants: descendants, models: []string{}}
 	// The display fields are best-effort: a malformed one leaves them
 	// zero without touching the classification, which is decided by the
 	// minimal facts above.

@@ -5,10 +5,10 @@
 // code of ours runs afterwards, so no signal handler can save the run.
 // The only design that survives that is a record written as the run
 // progresses and left on disk: the start line is written before the run
-// starts, one worker line per started worker while the run is in
-// flight, the finish line after the run returns, and a record whose
-// finish line never arrived is how a later reader learns the run was
-// interrupted.
+// starts, one worker line per started worker and one descendant line
+// per recorded descendant process while the run is in flight, the
+// finish line after the run returns, and a record whose finish line
+// never arrived is how a later reader learns the run was interrupted.
 //
 // This package both writes and reads records. The writer stores one
 // record per run while the run is in flight; Interrupted, the reader,
@@ -74,9 +74,10 @@ func Dir() (string, error) {
 	return filepath.Join(userDir, "runs"), nil
 }
 
-// Recorder writes the three kinds of lines of one run's record: the
+// Recorder writes the four kinds of lines of one run's record: the
 // start line at Start, one worker line per started worker while the run
-// is in flight, and the finish line at Finish. A Recorder is shared
+// is in flight, one descendant line per recorded descendant process,
+// and the finish line at Finish. A Recorder is shared
 // between the goroutine that called Start and will call Finish and up
 // to three worker goroutines calling WorkerProcess concurrently. The
 // mutex guards the shared write-error slot and the ordering between a
@@ -232,6 +233,43 @@ func (r *Recorder) WorkerProcess(at time.Time, workerID int, pid int) {
 	}
 }
 
+// Descendant appends the descendant line of the run's record: the
+// identity of one process descended from a worker, written while the
+// run is in flight. The caller passes the process's creation time, so
+// no process lookup runs here and the line is one already-known
+// identity, unlike WorkerProcess. It appends one line and returns
+// nothing; a write failure is kept as the recorder's first write error
+// and surfaced once by Finish, never printed from the concurrent worker
+// goroutine. Descendant on a nil Recorder is a no-op, like Finish.
+func (r *Recorder) Descendant(at time.Time, workerID int, pid int, createTime int64) {
+	if r == nil {
+		return
+	}
+	line := workerLine{
+		SchemaVersion: schemaVersion,
+		Event:         "descendant",
+		RunID:         r.runID,
+		At:            at.UTC().Format(time.RFC3339),
+		WorkerID:      workerID,
+		PID:           pid,
+		CreateTime:    createTime,
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		r.mu.Lock()
+		if r.writeErr == nil {
+			r.writeErr = err
+		}
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.file.Write(append(data, '\n')); err != nil && r.writeErr == nil {
+		r.writeErr = err
+	}
+}
+
 // Finish appends the finish line of the run's record, the only
 // completion marker: the run's result marshalled exactly as the run
 // already marshals it, or the run-level error text when the run
@@ -299,7 +337,9 @@ type startLine struct {
 // flight, one per started worker, carrying the identity of the process
 // that worker launched: the pid paired with the process's creation
 // time, the pair being the identity — a pid alone is reused, so it
-// cannot name a process on its own.
+// cannot name a process on its own. The same struct carries a
+// descendant line too: its Event is "descendant" and its pid names one
+// process descended from the worker.
 type workerLine struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Event         string `json:"event"`

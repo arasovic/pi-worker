@@ -69,6 +69,14 @@ type liveProcess struct {
 // silence: a missing or damaged instant leaves the member admitted,
 // never dropped on a guess.
 //
+// A descendant line names one process directly, by the pid paired with
+// its creation time, and that pair is reported whenever the process is
+// still alive. Because the pair is an exact identity recorded while the
+// run was alive, it needs neither the group's age floor nor the run's
+// finish ceiling: a match is that very process, and a reused pid cannot
+// supply the same creation time by accident. A descendant whose row is
+// unreadable establishes no identity and is not reported.
+//
 // A record is settled exactly when the interrupted-run reader
 // considers it over — it carries its finish line, or the process that
 // wrote it is no longer the process it was — the start line's pid
@@ -152,6 +160,11 @@ func Leftovers(dir string) ([]Leftover, error) {
 		runID   string
 		path    string
 		workers []workerFacts
+		// descendants holds the record's descendant lines with a usable
+		// creation time: each is an exact identity reported when that
+		// pid is still alive with the same creation time, independent
+		// of any worker's group.
+		descendants []workerFacts
 		// finishCeilingMillis is the last instant at which a member
 		// of this run's groups can still have been started by the
 		// run: the last millisecond of the whole second the record's
@@ -188,13 +201,24 @@ func Leftovers(dir string) ([]Leftover, error) {
 				workers = append(workers, w)
 			}
 		}
-		if len(workers) == 0 {
+		descendants := make([]workerFacts, 0, len(rec.descendants))
+		for _, d := range rec.descendants {
+			// A descendant is named by its pid and creation time
+			// together; a non-positive creation time is no identity and
+			// is dropped, while a worker line without one is no longer
+			// needed for the candidate to survive.
+			if d.createTime > 0 {
+				descendants = append(descendants, d)
+			}
+		}
+		if len(workers) == 0 && len(descendants) == 0 {
 			continue
 		}
 		candidates = append(candidates, candidate{
-			runID:   strings.TrimSuffix(name, ".jsonl"),
-			path:    path,
-			workers: workers,
+			runID:       strings.TrimSuffix(name, ".jsonl"),
+			path:        path,
+			workers:     workers,
+			descendants: descendants,
 			// The finish line is written at one-second resolution, so
 			// finishedAt names a whole second, not the exact instant
 			// the run ended: a run that really ended at 23:01:22.900
@@ -210,8 +234,8 @@ func Leftovers(dir string) ([]Leftover, error) {
 			finishCeilingMillis: wholeSecondEnd(rec.finishedAtMillis),
 		})
 	}
-	// The sweep is lazy: no settled record with a reportable worker
-	// means the process table never has to be read.
+	// The sweep is lazy: no settled record with a reportable worker or
+	// descendant means the process table never has to be read.
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -307,6 +331,22 @@ func Leftovers(dir string) ([]Leftover, error) {
 				seen[pid] = true
 				pids = append(pids, pid)
 			}
+		}
+		for _, d := range candidate.descendants {
+			// A descendant is reported on its exact recorded identity
+			// alone: the pid is alive and its creation time is the one
+			// recorded. No age floor and no finish ceiling apply — the
+			// pair was recorded while the run was alive, so a match is
+			// the process itself, not a group member inferred to be the
+			// run's. An unreadable row is already absent from byPID, so
+			// it is not reported; seen keeps a pid the worker sweep
+			// already reported from appearing twice.
+			row, ok := byPID[d.pid]
+			if !ok || row.createTime != d.createTime || seen[d.pid] {
+				continue
+			}
+			seen[d.pid] = true
+			pids = append(pids, d.pid)
 		}
 		if len(pids) == 0 {
 			// A run with no leftovers is absent, never present with
