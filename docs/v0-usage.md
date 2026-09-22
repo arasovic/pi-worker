@@ -72,7 +72,7 @@ commands in this document.
 ## npm postinstall
 
 During `npm install`, npm attempts to install the bundled provider-neutral
-`pi-worker` skill for detected agent targets via pinned `skills@1.5.25`. It
+`pi-worker` skill for detected agent targets via pinned `skills@1.7.0`. It
 records an `installed`, `blocked`, `skipped`, or `failed` outcome in the durable
 receipt. Existing conflicts may block, skip, or fail without overwriting them.
 On an unsupported npm platform or architecture, setup can skip before the
@@ -212,7 +212,7 @@ pi-worker skill status [--json]
   or mixed content is never overwritten automatically; recovery from a
   blocked, skipped, or failed install — after backing up and verifying every
   affected path as recognized content — is
-  `npx --yes skills@1.5.25 remove pi-worker -g -y` followed by
+  `npx --yes skills@1.7.0 remove pi-worker -g -y` followed by
   `npm install -g --foreground-scripts pi-worker`. Never use the global
   remove command on unrecognized content.
 - Exit code `0` means the inspection reports `verified`. Missing receipts,
