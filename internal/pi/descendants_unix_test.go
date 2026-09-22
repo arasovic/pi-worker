@@ -31,6 +31,52 @@ func spawnHold(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
+// TestLiveDescendantsAnswersEveryRootFromOneLookup is the positive
+// regression for the recorder's lookup seam: a root named with its real
+// creation time yields its live child, while a root whose recorded
+// creation time does not match the process in the table yields nothing.
+// The child is a real process started by this test, so the test proves
+// the seam reaches real descendants, not a synthetic table.
+func TestLiveDescendantsAnswersEveryRootFromOneLookup(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	self, err := process.NewProcess(int32(os.Getpid()))
+	if err != nil {
+		t.Fatalf("inspect self: %v", err)
+	}
+	created, err := self.CreateTime()
+	if err != nil {
+		t.Fatalf("create time of self: %v", err)
+	}
+
+	got := LiveDescendants([]ProcessIdentity{
+		{PID: os.Getpid(), CreateTime: created},
+		{PID: os.Getpid(), CreateTime: created + 1},
+	})
+	if len(got) != 2 {
+		t.Fatalf("results = %d, want 2 roots", len(got))
+	}
+	found := false
+	for _, identity := range got[0] {
+		if identity.PID == cmd.Process.Pid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("descendants of the real root = %+v, want child %d", got[0], cmd.Process.Pid)
+	}
+	if len(got[1]) != 0 {
+		t.Fatalf("descendants of the mismatched root = %+v, want none", got[1])
+	}
+}
+
 // TestBuildDescendantTargetsWalksWholeTree is the traversal regression: the
 // walk must reach descendants at any depth and every branch, carry their
 // creation times, and exclude the root and unrelated processes.

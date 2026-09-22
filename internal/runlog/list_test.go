@@ -100,6 +100,86 @@ func TestListClassifiesFinishedRecordsFromTheFinishLine(t *testing.T) {
 	}
 }
 
+// TestListClassifiesRecordWithDescendantLines asserts a record carrying
+// a descendant line is classified exactly as one without it: the extra
+// line kind is collected for the leftover reader, never allowed to
+// change the finish-line or liveness decision — a finished record lists
+// as finished, and an unfinished record whose writer is gone lists as
+// interrupted.
+func TestListClassifiesRecordWithDescendantLines(t *testing.T) {
+	withPidAlive(t, func(pid int32) (bool, error) { return pid == 4242, nil })
+	dir := t.TempDir()
+	write := func(t *testing.T, runID string, pid int, finished bool) string {
+		t.Helper()
+		lines := []map[string]any{
+			{
+				"schemaVersion": schemaVersion,
+				"event":         "start",
+				"runId":         runID,
+				"startedAt":     "2026-08-30T10:15:00Z",
+				"workspace":     "/workspace",
+				"pid":           pid,
+				"tasks":         []any{},
+			},
+			{
+				"schemaVersion": schemaVersion,
+				"event":         "worker",
+				"runId":         runID,
+				"at":            "2026-08-30T10:15:00Z",
+				"workerId":      1,
+				"pid":           100,
+				"createTime":    1000,
+			},
+			{
+				"schemaVersion": schemaVersion,
+				"event":         "descendant",
+				"runId":         runID,
+				"at":            "2026-08-30T10:15:00Z",
+				"workerId":      1,
+				"pid":           200,
+				"createTime":    1500,
+			},
+		}
+		if finished {
+			lines = append(lines, map[string]any{
+				"schemaVersion": schemaVersion,
+				"event":         "finish",
+				"runId":         runID,
+				"finishedAt":    "2026-08-30T10:15:30Z",
+				"result":        map[string]any{"schemaVersion": 1, "outcome": "completed"},
+			})
+		}
+		var record strings.Builder
+		for _, line := range lines {
+			data, err := json.Marshal(line)
+			if err != nil {
+				t.Fatalf("marshal record line: %v", err)
+			}
+			record.Write(data)
+			record.WriteByte('\n')
+		}
+		path := filepath.Join(dir, runID+".jsonl")
+		if err := os.WriteFile(path, []byte(record.String()), 0o600); err != nil {
+			t.Fatalf("write record: %v", err)
+		}
+		return path
+	}
+	finishedPath := write(t, "20260830T101500Z-1", 4242, true)
+	interruptedPath := write(t, "20260830T102000Z-2", 4243, false)
+
+	runs, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := []Run{
+		{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Models: []string{}, Outcome: "interrupted", Path: interruptedPath},
+		{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/workspace", Tasks: 0, Models: []string{}, Outcome: "completed", Path: finishedPath},
+	}
+	if !reflect.DeepEqual(runs, want) {
+		t.Fatalf("runs = %#v, want %#v", runs, want)
+	}
+}
+
 // TestListClassifiesRunningAndInterruptedThroughTheLivenessSeam
 // asserts the unfinished arm: no finish line, and the start line's
 // process — scripted through the same pidAlive seam the

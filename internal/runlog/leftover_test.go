@@ -13,13 +13,16 @@ import (
 	"time"
 )
 
-// workerSpec is one worker line of a test record: the pid the worker
+// workerSpec is one line of a test record: the pid the worker
 // launched and, when nonzero, its creation time. A zero creation time
 // writes the line without the createTime key — the exact shape of
-// every record written before the field existed.
+// every record written before the field existed. When descendant is
+// true the line carries event "descendant" instead of "worker",
+// naming the process directly by pid and creation time.
 type workerSpec struct {
 	pid        int
 	createTime int64
+	descendant bool
 }
 
 // writeLeftoverRecord writes one hand-built record file into dir: a
@@ -58,9 +61,13 @@ func writeLeftoverRecordAt(t *testing.T, dir, runID string, startPID int, finish
 		},
 	}
 	for i, w := range workers {
+		event := "worker"
+		if w.descendant {
+			event = "descendant"
+		}
 		line := map[string]any{
 			"schemaVersion": schemaVersion,
-			"event":         "worker",
+			"event":         event,
 			"runId":         runID,
 			"at":            "2026-08-30T10:15:00Z",
 			"workerId":      i + 1,
@@ -781,6 +788,149 @@ func TestLeftoversReportsMemberWhenFinishedAtIsUnparseable(t *testing.T) {
 		t.Fatalf("Leftovers: %v", err)
 	}
 	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{5010}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversReportsLiveRecordedDescendant asserts the descendant
+// rule: a descendant line names one process directly by the pid and
+// creation-time pair recorded while the run was alive, and a live
+// process carrying that exact pair is reported on the identity alone.
+// The process sits in its own group, outside the worker's, so the
+// worker/group sweep would never see it — this is the guard the whole
+// issue hangs on.
+func TestLeftoversReportsLiveRecordedDescendant(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 200, pgid: 200, createTime: 1500},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 100, createTime: 1000},
+		workerSpec{pid: 200, createTime: 1500, descendant: true},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{200}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversSkipsDescendantWithOtherCreateTime asserts the pair is
+// an exact identity: a live process holding the recorded pid but a
+// different creation time is a reused number, not the recorded
+// descendant, and is not reported.
+func TestLeftoversSkipsDescendantWithOtherCreateTime(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 200, pgid: 200, createTime: 1501},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 100, createTime: 1000},
+		workerSpec{pid: 200, createTime: 1500, descendant: true},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
+// TestLeftoversSkipsUnreadableDescendant asserts a process-table row
+// that cannot be read confirms no identity, so the recorded descendant
+// is not reported: the reader resolves toward silence, never toward a
+// pid whose identity it could not confirm.
+func TestLeftoversSkipsUnreadableDescendant(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 200, pgid: 200, createTime: 1500, unreadable: true},
+	}, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 100, createTime: 1000},
+		workerSpec{pid: 200, createTime: 1500, descendant: true},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
+// TestLeftoversSkipsAbsentDescendant asserts a recorded descendant
+// whose pid is absent from the process table has exited and is not
+// reported.
+func TestLeftoversSkipsAbsentDescendant(t *testing.T) {
+	withLiveProcesses(t, nil, nil)
+	dir := t.TempDir()
+	writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 100, createTime: 1000},
+		workerSpec{pid: 200, createTime: 1500, descendant: true},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("leftovers = %#v, want none", leftovers)
+	}
+}
+
+// TestLeftoversReportsDescendantWhenWorkerHasNoCreateTime asserts the
+// descendant rule does not depend on any worker line being reportable:
+// the worker line without a creation time drops out, but the candidate
+// survives on its descendant line alone and the live descendant is
+// still reported.
+func TestLeftoversReportsDescendantWhenWorkerHasNoCreateTime(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 200, pgid: 200, createTime: 1500},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 100},
+		workerSpec{pid: 200, createTime: 1500, descendant: true},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{200}}}
+	if !reflect.DeepEqual(leftovers, want) {
+		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
+	}
+}
+
+// TestLeftoversListsDescendantInWorkerGroupOnce asserts the same live
+// process is reported once even when the worker's group sweep already
+// found it and the descendant line names it too: the shared seen map
+// deduplicates across the two rules.
+func TestLeftoversListsDescendantInWorkerGroupOnce(t *testing.T) {
+	withLiveProcesses(t, []liveProcess{
+		{pid: 100, pgid: 100, createTime: 1000},
+		{pid: 200, pgid: 100, createTime: 1500},
+	}, nil)
+	dir := t.TempDir()
+	path := writeLeftoverRecord(t, dir, "20260830T101500Z-1", 4242, true,
+		workerSpec{pid: 100, createTime: 1000},
+		workerSpec{pid: 200, createTime: 1500, descendant: true},
+	)
+
+	leftovers, err := Leftovers(dir)
+	if err != nil {
+		t.Fatalf("Leftovers: %v", err)
+	}
+	want := []Leftover{{RunID: "20260830T101500Z-1", Path: path, PIDs: []int{100, 200}}}
 	if !reflect.DeepEqual(leftovers, want) {
 		t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
 	}
