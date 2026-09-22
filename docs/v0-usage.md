@@ -362,6 +362,11 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   confirmed, so those old records stay unreportable by design. A worker
   process-table row that cannot be read skips only that worker; the
   other workers of the same run are still scanned.
+- At the end of every run, pi-worker also lists processes that this run
+  started and that are still running: one stderr warning line in human
+  mode, and root `leftoverProcesses` in JSON. It only reports them; it
+  never ends, signals, or waits on them. The limits of what it can see
+  are in [the run JSON contract](json-contracts.md#run---json).
 
 ## Background runs
 

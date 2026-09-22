@@ -2482,6 +2482,39 @@ func TestPrintGitChangeStashListCapsAtThreeEntries(t *testing.T) {
 	}
 }
 
+func TestPrintRunLeftoversNamesEachProcess(t *testing.T) {
+	var stderr bytes.Buffer
+	printRunLeftovers([]run.LeftoverProcess{
+		{PID: 88143, Name: "node"},
+		{PID: 88144},
+	}, &stderr)
+	want := "pi-worker: warning: this run left processes running: node (pid 88143), pid 88144\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}
+
+func TestPrintRunLeftoversCapsAtTen(t *testing.T) {
+	var stderr bytes.Buffer
+	processes := make([]run.LeftoverProcess, 0, 12)
+	for pid := 1; pid <= 12; pid++ {
+		processes = append(processes, run.LeftoverProcess{PID: pid, Name: "p"})
+	}
+	printRunLeftovers(processes, &stderr)
+	want := "pi-worker: warning: this run left processes running: p (pid 1), p (pid 2), p (pid 3), p (pid 4), p (pid 5), p (pid 6), p (pid 7), p (pid 8), p (pid 9), p (pid 10) and 2 more\n"
+	if got := stderr.String(); got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}
+
+func TestPrintRunLeftoversEmptyPrintsNothing(t *testing.T) {
+	var stderr bytes.Buffer
+	printRunLeftovers(nil, &stderr)
+	if got := stderr.String(); got != "" {
+		t.Fatalf("output = %q, want empty", got)
+	}
+}
+
 // TestPrintChanges* build the run.Changes struct directly and pin the
 // exact human rendering: printChanges renders, it does not sort, so every
 // fixture is already in the order the manifest produces (most churn
