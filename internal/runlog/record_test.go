@@ -920,3 +920,165 @@ func TestStartWithIDRecordIsOwnerOnly(t *testing.T) {
 		t.Fatalf("record mode = %v, want -rw-------", info.Mode())
 	}
 }
+
+// TestRecorderRecordsEachDescendantOnce is the sweeper regression: once a
+// worker with a known creation time is recorded, the recorder looks up the
+// worker's descendants on every tick, records each newly seen identity
+// exactly once, adopts it as a root so its own later children are still
+// found, and stops before the finish line. The seams are scripted so no
+// real process table or ticker is involved.
+func TestRecorderRecordsEachDescendantOnce(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 1500, nil }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	oldInterval := descendantSweepInterval
+	descendantSweepInterval = 5 * time.Millisecond
+	t.Cleanup(func() { descendantSweepInterval = oldInterval })
+
+	worker := pi.ProcessIdentity{PID: 100, CreateTime: 1500}
+	child := pi.ProcessIdentity{PID: 200, CreateTime: 1600}
+	var mu sync.Mutex
+	calls := 0
+	sawChildRoot := false
+	oldLive := liveDescendants
+	liveDescendants = func(roots []pi.ProcessIdentity) [][]pi.ProcessIdentity {
+		mu.Lock()
+		calls++
+		for _, root := range roots {
+			if root == child {
+				sawChildRoot = true
+			}
+		}
+		mu.Unlock()
+		results := make([][]pi.ProcessIdentity, len(roots))
+		for i, root := range roots {
+			if root == worker {
+				results[i] = []pi.ProcessIdentity{child}
+			}
+		}
+		return results
+	}
+	t.Cleanup(func() { liveDescendants = oldLive })
+
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Now(), 1, worker.PID)
+
+	// Poll for the first descendant line, then let several more ticks
+	// pass: a duplicate-recording bug would have written a second line by
+	// the time Finish runs.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		content := readRecord(t, dir)
+		if bytes.Contains(content, []byte(`"event":"descendant"`)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no descendant line appeared within 2s: %s", content)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	result := run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}
+	if err := recorder.Finish(time.Now(), &result, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	lines := recordLines(t, readRecord(t, dir))
+	descendantIndex, finishIndex := -1, -1
+	var descendant map[string]any
+	for i, line := range lines {
+		object := decodeLine(t, line)
+		switch object["event"] {
+		case "descendant":
+			if descendantIndex != -1 {
+				t.Fatalf("record carries more than one descendant line: %v", lines)
+			}
+			descendantIndex = i
+			descendant = object
+		case "finish":
+			finishIndex = i
+		}
+	}
+	if descendantIndex == -1 {
+		t.Fatalf("record has no descendant line: %v", lines)
+	}
+	if finishIndex == -1 || descendantIndex > finishIndex {
+		t.Fatalf("descendant line at %d is not before finish line at %d: %v", descendantIndex, finishIndex, lines)
+	}
+	if descendant["pid"] != float64(child.PID) {
+		t.Fatalf("descendant pid = %v, want %d", descendant["pid"], child.PID)
+	}
+	if descendant["createTime"] != float64(child.CreateTime) {
+		t.Fatalf("descendant createTime = %v, want %d", descendant["createTime"], child.CreateTime)
+	}
+	if descendant["workerId"] != float64(1) {
+		t.Fatalf("descendant workerId = %v, want 1", descendant["workerId"])
+	}
+
+	mu.Lock()
+	if !sawChildRoot {
+		mu.Unlock()
+		t.Fatalf("no script call saw the discovered descendant among its roots")
+	}
+	afterFinish := calls
+	mu.Unlock()
+
+	// Once Finish returns no sweep may run: the finish line is the last
+	// line, so the call count must be frozen.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	later := calls
+	mu.Unlock()
+	if later != afterFinish {
+		t.Fatalf("liveDescendants calls after Finish = %d, want %d", later, afterFinish)
+	}
+}
+
+// TestRecorderWithoutWorkerCreateTimeStartsNoSweeper asserts a worker
+// whose creation time could not be looked up never becomes a sweeper root:
+// without the identity pair there is nothing to sweep, so the lookup seam
+// must never run.
+func TestRecorderWithoutWorkerCreateTimeStartsNoSweeper(t *testing.T) {
+	oldPidCreateTime := pidCreateTime
+	pidCreateTime = func(pid int) (int64, error) { return 0, errors.New("no process table entry") }
+	t.Cleanup(func() { pidCreateTime = oldPidCreateTime })
+
+	oldInterval := descendantSweepInterval
+	descendantSweepInterval = 5 * time.Millisecond
+	t.Cleanup(func() { descendantSweepInterval = oldInterval })
+
+	var mu sync.Mutex
+	calls := 0
+	oldLive := liveDescendants
+	liveDescendants = func(roots []pi.ProcessIdentity) [][]pi.ProcessIdentity {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		return make([][]pi.ProcessIdentity, len(roots))
+	}
+	t.Cleanup(func() { liveDescendants = oldLive })
+
+	dir := t.TempDir()
+	recorder, err := Start(dir, time.Now(), "/workspace", []run.Task{{Prompt: "p", Model: "acme/m-1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	recorder.WorkerProcess(time.Now(), 1, 100)
+	time.Sleep(50 * time.Millisecond)
+	if err := recorder.Finish(time.Now(), &run.Result{SchemaVersion: 1, Status: "completed", Outcome: "completed"}, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 0 {
+		t.Fatalf("liveDescendants calls = %d, want none when the worker creation time is unknown", gotCalls)
+	}
+}

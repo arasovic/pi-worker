@@ -18,6 +18,14 @@ type descendantTarget struct {
 	createTime int64
 }
 
+// ProcessIdentity names a process by pid plus its creation time. The pair is
+// the identity — a pid alone is reused — so it is what the recorder stores
+// for a worker root and for each descendant it records.
+type ProcessIdentity struct {
+	PID        int
+	CreateTime int64
+}
+
 // procRow is one row of a process-table snapshot: identity plus parent pid.
 // Keeping the walk over plain rows makes the traversal testable with
 // synthetic tables (cycles, duplicate pids, self-parents) that the live
@@ -37,9 +45,21 @@ type procRow struct {
 var inspectDescendantTargets = inspectDescendantTargetsImpl
 
 func inspectDescendantTargetsImpl(root descendantTarget) []descendantTarget {
-	procs, err := process.Processes()
+	table, err := readProcTable()
 	if err != nil {
 		return nil
+	}
+	return buildDescendantTargets(root, table)
+}
+
+// readProcTable takes one process-table snapshot as plain rows. Rows whose
+// parent pid or creation time cannot be read are skipped: a vanishing
+// process is not part of the tree anymore, and an unreadable identity is
+// never used to kill anything.
+func readProcTable() ([]procRow, error) {
+	procs, err := process.Processes()
+	if err != nil {
+		return nil, err
 	}
 	table := make([]procRow, 0, len(procs))
 	for _, p := range procs {
@@ -53,7 +73,34 @@ func inspectDescendantTargetsImpl(root descendantTarget) []descendantTarget {
 		}
 		table = append(table, procRow{pid: p.Pid, ppid: ppid, createTime: created})
 	}
-	return buildDescendantTargets(root, table)
+	return table, nil
+}
+
+// LiveDescendants returns, for each root in roots, the identities of every
+// live descendant of that root, all found over one process-table snapshot.
+// The result at index i belongs to roots[i]; a root with no live descendants
+// yields an empty slice, and a table read error yields nil for every root. A
+// root whose recorded identity does not match the process-table row — an
+// exited or reused pid — yields no descendants, the same identity check the
+// teardown sweep uses.
+func LiveDescendants(roots []ProcessIdentity) [][]ProcessIdentity {
+	table, err := readProcTable()
+	if err != nil {
+		return nil
+	}
+	result := make([][]ProcessIdentity, len(roots))
+	for i, root := range roots {
+		targets := buildDescendantTargets(descendantTarget{pid: int32(root.PID), createTime: root.CreateTime}, table)
+		if len(targets) == 0 {
+			continue
+		}
+		identities := make([]ProcessIdentity, len(targets))
+		for j, target := range targets {
+			identities[j] = ProcessIdentity{PID: int(target.pid), CreateTime: target.createTime}
+		}
+		result[i] = identities
+	}
+	return result
 }
 
 // buildDescendantTargets walks the descendant tree of root over one table

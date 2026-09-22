@@ -231,7 +231,8 @@ pi-worker runs prune --keep <n> [--yes] [--json]
 
 - A run record is one `.jsonl` file per run, one line per event: the
   start line written before any worker starts, one line per started
-  worker, and the finish line when the run completes. Records live in
+  worker, one line per descendant process of a worker found while the
+  run is alive, and the finish line when the run completes. Records live in
   the `runs` directory inside pi-worker's user configuration directory
   — the operating system's user configuration directory plus
   `pi-worker/runs`, the location `runlog.Dir()` resolves. Only
@@ -340,10 +341,12 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   they are: the scan cannot distinguish every shape it sees (below), so
   the line must not promise an attribution stronger than it can
   support.
-- A process the worker started in a group of its own is not reported:
-  the warning finds survivors by the process group the run's worker
-  led, and a command started in a fresh group carries no link back to
-  the run once the worker is gone.
+- While a run is alive, pi-worker looks up the worker's descendant
+  processes about once a second and records each one. A recorded
+  descendant that is still alive, with the same process identity, is
+  reported even when it left the worker's group. A process that starts
+  and loses its link to the worker within about a second can still be
+  missed, and runs started with `--background` do not record descendants.
 - When a run's group has fully emptied, the operating system may hand
   its number to something else. If the new holder leads a process group
   of its own under that number — its process-group id equals its pid —
