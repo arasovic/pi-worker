@@ -4,7 +4,7 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `0.85.1`.
+Observed version: `0.87.0`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
@@ -123,9 +123,46 @@ verification, and completed normally. No Pi Worker production adaptation
 was needed; GPT-6 Astra appearing in the catalog does not add a Pi Worker
 special case.
 
+The surface was re-probed on 2026-09-22 against 0.87.0; 0.86.0 (2026-09-19),
+0.86.1 (2026-09-20), and 0.87.0 (2026-09-21) are covered together, and 0.86.x
+was never pinned. Both local global installations (including the
+PATH-selected `/opt/homebrew/bin/pi` and the NVM `pi` path) report exactly
+0.87.0. `dist/modes/rpc/` is byte-identical between the installed 0.86.0 and
+0.87.0 packages. `pi --help` differs from 0.86.0 only by the new
+`META_API_KEY` line and retains every flag Pi Worker passes (the same flags
+listed in the 0.85.1 paragraph). Built-in tool names are unchanged. Package
+exports remain `.` and `./rpc-entry`; `./client` and `./experimental/plugin`
+remain source-only. `pi auth --help` retains `print-api-key`,
+`print-bearer-token`, and `check`; none was run. 0.86.0 made the built-in
+`read`, `bash`, `edit`, and `write` tools request strict JSON-schema tool
+calls; 0.87.0 turned that off for OpenAI-compatible endpoints that do not set
+`compat.supportsStrictMode`. Measured on the wire by pointing a `models.json`
+provider at a local capture server: 0.86.0 sent `strict: true` for `read`,
+`edit`, `write`, and `bash`; 0.87.0 sent no `strict` field on any tool. A
+`bash` tool call killed by a signal now reports exit code `128 + signal`
+instead of success (since 0.86.0). Prompt-cache warming (since 0.86.0) also
+runs in RPC mode; it is a global Pi setting with no per-run flag, and its
+requests are not in Pi Worker's run usage; tracked as issue #314. The 0.87.0
+breaking changes (`shouldStopAfterTurn` removal, `ContextEditEntry`,
+`TurnEndEvent` and `AgentBeforeSettleEvent`, deferred runs from
+`agent_settled` handlers) are SDK and extension surfaces; Pi Worker runs
+`--no-extensions` and ignores `turn_end`. A promptless/no-inference direct RPC
+session confirmed success for `get_state`, `get_available_models`,
+`get_available_thinking_levels` (returned `high`,`max` for Command Code
+DeepSeek), `set_model` (exact provider/id), `set_thinking_level high` followed
+by `get_state` confirmation, and `get_last_assistant_text` returning `data:{}`
+for empty history. Idle `steer` accepted `pi-worker-0.87.0-probe` and emitted
+`queue_update`; `clear_queue` returned that exact steering text and emptied
+the queue; `abort` returned success; the RPC process exited 0. A real
+tool-calling Pi Worker task on `local/ornith-1.5-9b` used `read`, `write`,
+`bash`, and `edit`, passed its `--verify` check and declared writes, and
+completed. This pin change was made by a Pi Worker dogfood task on local Pi
+0.87.0 using paid `opencodex/command-code/deepseek-deepseek-v4-flash`,
+thinking `high`. No Pi Worker production adaptation was needed.
+
 ## Compatibility gate
 
-**Gate result: pass for Pi 0.85.1.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 0.87.0.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.
@@ -275,7 +312,7 @@ The `get_available_models` success container is exactly
 data:{models: Model[]}}`. The `set_model` success container is exactly
 `{type:"response", command:"set_model", success:true, data:Model}`. The
 full version-pinned upstream `Model` declaration is in
-`@earendil-works/pi-coding-agent@0.85.1/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
+`@earendil-works/pi-coding-agent@0.87.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
 it is not duplicated here because v0 must not validate or reconstruct it.
 
 V0 decodes each catalog entry as this projection only:
@@ -297,7 +334,7 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 0.85.1 observes the `get_available_thinking_levels` success container as
+Pi 0.87.0 observes the `get_available_thinking_levels` success container as
 `data:{levels: ThinkingLevel[]}`, where the levels are the active model's
 supported subset of the recognized seven levels (`off`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, `max`), not always all seven. V0 requires a non-null
@@ -306,13 +343,13 @@ levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
 malformed responses remain failures.
 
-Pi 0.85.1 observes the `get_state` success container exactly as
+Pi 0.87.0 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
 V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
 required after model activation; the model must equal the selected catalog
 entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
-`@earendil-works/pi-coding-agent@0.85.1/dist/modes/rpc/rpc-types.d.ts`; V0
+`@earendil-works/pi-coding-agent@0.87.0/dist/modes/rpc/rpc-types.d.ts`; V0
 does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
@@ -334,7 +371,7 @@ response correlation, it emits only these request shapes:
 | `get_last_assistant_text` | `type` |
 
 Pi-worker must reject every other RPC type. In particular,
-it must reject direct RPC `bash`: Pi 0.85.1 dispatches that command directly,
+it must reject direct RPC `bash`: Pi 0.87.0 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
 ### Debug observability
@@ -420,7 +457,7 @@ into the fixed continuation prompt, the warning, or the debug stream.
 
 ## Tool semantics
 
-Built-in tool names reported by `pi --help` as of Pi 0.85.1 are `read`,
+Built-in tool names reported by `pi --help` as of Pi 0.87.0 are `read`,
 `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell`. Pi-worker
 intentionally continues enabling only its established seven
 (`read,grep,find,ls,edit,write,bash`) and does not enable `powershell` in
