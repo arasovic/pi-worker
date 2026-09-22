@@ -125,29 +125,35 @@ special case.
 
 The surface was re-probed on 2026-09-22 against 0.87.0; 0.86.0 (2026-09-19),
 0.86.1 (2026-09-20), and 0.87.0 (2026-09-21) are covered together, and 0.86.x
-was never pinned. Both local global installations (including the
-PATH-selected `/opt/homebrew/bin/pi` and the NVM `pi` path) report exactly
-0.87.0. `dist/modes/rpc/` is byte-identical between the installed 0.86.0 and
-0.87.0 packages. `pi --help` differs from 0.86.0 only by the new
-`META_API_KEY` line and retains every flag Pi Worker passes (the same flags
-listed in the 0.85.1 paragraph). Built-in tool names are unchanged. Package
-exports remain `.` and `./rpc-entry`; `./client` and `./experimental/plugin`
-remain source-only. `pi auth --help` retains `print-api-key`,
-`print-bearer-token`, and `check`; none was run. 0.86.0 made the built-in
-`read`, `bash`, `edit`, and `write` tools request strict JSON-schema tool
-calls; 0.87.0 turned that off for OpenAI-compatible endpoints that do not set
-`compat.supportsStrictMode`. Measured on the wire by pointing a `models.json`
-provider at a local capture server: 0.86.0 sent `strict: true` for `read`,
-`edit`, `write`, and `bash`; 0.87.0 sent no `strict` field on any tool. A
-`bash` tool call killed by a signal now reports exit code `128 + signal`
-instead of success (since 0.86.0). Prompt-cache warming (since 0.86.0) also
-runs in RPC mode; it is a global Pi setting with no per-run flag, and its
-requests are not in Pi Worker's run usage; tracked as issue #314. The 0.87.0
-breaking changes (`shouldStopAfterTurn` removal, `ContextEditEntry`,
-`TurnEndEvent` and `AgentBeforeSettleEvent`, deferred runs from
-`agent_settled` handlers) are SDK and extension surfaces; Pi Worker runs
-`--no-extensions` and ignores `turn_end`. A promptless/no-inference direct RPC
-session confirmed success for `get_state`, `get_available_models`,
+was never pinned. Both local global installations (including the PATH-selected
+`/opt/homebrew/bin/pi` and the NVM `pi` path) report exactly 0.87.0.
+`dist/modes/rpc/` is byte-identical between the installed 0.86.0 and 0.87.0
+packages. `pi --help` differs from 0.86.0 only by the new `META_API_KEY` line
+and retains every flag Pi Worker passes: `--mode rpc`, `--model`,
+`--session-dir`, `--name`, `--no-context-files`, `--no-extensions`,
+`--no-skills`, `--no-prompt-templates`, `--no-themes`, `--no-approve`, and
+`--tools`. Built-in tool names are unchanged. Package exports remain `.` and
+`./rpc-entry`; `./client` and `./experimental/plugin` remain source-only.
+`pi auth --help` retains `print-api-key`, `print-bearer-token`, and `check`;
+none was run. 0.86.0 made the built-in `read`, `bash`, `edit`, and `write`
+tools request strict JSON-schema tool calls; 0.87.0 turned that off for
+OpenAI-compatible endpoints that do not set `compat.supportsStrictMode`.
+Measured on the wire by pointing a `models.json` provider at a local capture
+server: 0.86.0 sent `strict: true` for `read`, `edit`, `write`, and `bash`;
+0.87.0 sent no `strict` field on any tool. A `bash` tool call killed by a
+signal now reports exit code `128 + signal` instead of success (since 0.86.0).
+Prompt-cache warming (since 0.86.0) also runs in RPC mode; it is a global Pi
+setting with no per-run flag, and its requests are not in Pi Worker's run
+usage; tracked as issue #314. The 0.87.0 breaking changes
+(`shouldStopAfterTurn` removal, `ContextEditEntry`, `TurnEndEvent` and
+`AgentBeforeSettleEvent`, deferred runs from `agent_settled` handlers) are SDK
+and extension surfaces; Pi Worker runs `--no-extensions` and ignores
+`turn_end`. 0.86.0 also routes direct RPC `steer` and `follow_up` through
+extension `input` handlers, a no-op under `--no-extensions`. The 0.86.1
+changes (Meta provider login, `/bug`, clipboard, z.ai overflow detection, and
+Cerebras strict schemas) are interactive-mode or provider-specific and do not
+reach Pi Worker. A promptless/no-inference direct RPC session confirmed
+success for `get_state`, `get_available_models`,
 `get_available_thinking_levels` (returned `high`,`max` for Command Code
 DeepSeek), `set_model` (exact provider/id), `set_thinking_level high` followed
 by `get_state` confirmation, and `get_last_assistant_text` returning `data:{}`
@@ -158,7 +164,11 @@ tool-calling Pi Worker task on `local/ornith-1.5-9b` used `read`, `write`,
 `bash`, and `edit`, passed its `--verify` check and declared writes, and
 completed. This pin change was made by a Pi Worker dogfood task on local Pi
 0.87.0 using paid `opencodex/command-code/deepseek-deepseek-v4-flash`,
-thinking `high`. No Pi Worker production adaptation was needed.
+thinking `high`. A Pi Worker candidate built with VerifiedVersion 0.87.0
+reports `Pi version 0.87.0 is supported` and `ready: yes` from `doctor`,
+`pi-worker models` lists the catalog, and the same bounded
+`local/ornith-1.5-9b` task completed with its `--verify` check passing and no
+undeclared writes. No Pi Worker production adaptation was needed.
 
 ## Compatibility gate
 
