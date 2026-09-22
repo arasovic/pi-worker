@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -140,6 +141,12 @@ type Result struct {
 	// the usual omitempty reading — a declared run that answered with
 	// silence would look checked when it was not.
 	Writes *WriteCheck `json:"writes,omitempty"`
+	// LeftoverProcesses are live processes that still carried this run's
+	// marker when the run ended, found by pi-worker and never ended by it;
+	// nil when none were found or the run had no run id. Absence does not
+	// mean nothing was left behind: a process that dropped the marker
+	// cannot be seen.
+	LeftoverProcesses []LeftoverProcess `json:"leftoverProcesses,omitempty"`
 	// Worktree is the private checkout the CLI gave this run through
 	// --worktree; nil when the run worked in the caller's current
 	// directory. The CLI fills it after Run returns, so the controller
@@ -277,6 +284,15 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		}
 		if c.executionTimeout <= 0 {
 			return Result{}, fmt.Errorf("foreground admission: executionTimeout must be positive")
+		}
+	}
+	// The run marker is planted in pi-worker's own environment after
+	// validation and before any worker starts: every process the run
+	// starts inherits it, so the controller can find the ones still alive
+	// when the run ends. cmd.Env stays nil everywhere.
+	if c.runID != "" {
+		if err := os.Setenv(RunMarkerEnv, c.runID); err != nil {
+			return Result{}, err
 		}
 	}
 	// The before state is recorded after validation and before the first
@@ -640,6 +656,13 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			return result, fmt.Errorf("verification: %w", err)
 		}
 		result.Verification = &verification
+	}
+	// The leftover scan runs on every terminal status, like Git and
+	// Changes: a process that outlives a failed or timed-out run is
+	// exactly the one a caller most needs to know about. It only reports;
+	// the caller decides what to do.
+	if c.runID != "" {
+		result.LeftoverProcesses = runProcesses(c.runID, c.acceptedAt)
 	}
 	return result, internalErr
 }
