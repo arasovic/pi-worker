@@ -54,35 +54,54 @@ func hasRunMarker(env []string, runID string) bool {
 }
 
 // procargsEnvironment parses a kern.procargs2 buffer and returns only
-// the environment entries. Layout: a 4-byte little-endian argc, then
-// the exec path, NUL padding, argc argument strings each NUL-terminated,
-// then the environment strings each NUL-terminated, then trailing NULs.
+// the environment entries. Layout, measured on macOS: a 4-byte
+// little-endian argc, then the exec path, its NUL terminator, NUL
+// padding up to roundup(len(path)+1, 8) bytes counted from offset 4,
+// then argc argument strings each NUL-terminated, then the environment
+// strings each NUL-terminated, then trailing NULs. The path, its NUL,
+// and the padding always occupy that rounded-up size, so argv[0] starts
+// at buffer offset 4 + roundup(len(path)+1, 8) even when argv[0] is the
+// empty string.
 //
-// The buffer is split on NUL the same way gopsutil's parseCmdline does.
-// The exec path and the empty padding chunks up to the first non-empty
-// chunk — argument 0 — are skipped, then exactly argc chunks are
-// skipped counting empty ones: an empty argument must not shift an
+// The buffer is split on NUL. Exactly argc chunks are skipped from
+// argv[0], counting empty ones: an empty argument must not shift an
 // argument into the environment. The remaining chunks up to the first
 // empty one are the environment.
 //
-// A buffer shorter than 4 bytes, or one that ends before argc arguments
-// were read, returns nil. It never panics on any input.
+// A buffer shorter than 4 bytes, one without a NUL after the argc, one
+// that ends before argv[0] starts, one with a non-NUL byte in the
+// padding, or one that ends before argc arguments were read, returns
+// nil. An unrecognised layout reports nothing rather than guessing, so
+// it can never produce a false match. It never panics on any input.
 func procargsEnvironment(buf []byte) []string {
 	if len(buf) < 4 {
 		return nil
 	}
 	argc := int64(binary.LittleEndian.Uint32(buf[:4]))
-	chunks := bytes.Split(buf[4:], []byte{0})
-	// chunks[0] is the exec path; skip it and any padding NULs before
-	// argv[0], the first non-empty chunk.
-	i := 1
-	for ; i < len(chunks) && len(chunks[i]) == 0; i++ {
-	}
-	// Skip exactly argc argument chunks, counting empty ones.
-	if argc < 0 || argc > int64(len(chunks)-i) {
+	// The exec path ends at the first NUL at or after offset 4.
+	pathEnd := bytes.IndexByte(buf[4:], 0)
+	if pathEnd < 0 {
 		return nil
 	}
-	i += int(argc)
+	pathEnd += 4
+	// argv[0] starts after the path's NUL and its NUL padding, rounded
+	// up to an 8-byte boundary counted from offset 4.
+	argvStart := 4 + roundup(pathEnd-4+1, 8)
+	if argvStart > len(buf) {
+		return nil
+	}
+	// Every byte between the path's NUL and argv[0] is padding NUL.
+	for _, b := range buf[pathEnd:argvStart] {
+		if b != 0 {
+			return nil
+		}
+	}
+	chunks := bytes.Split(buf[argvStart:], []byte{0})
+	// Skip exactly argc argument chunks, counting empty ones.
+	if argc < 0 || argc > int64(len(chunks)) {
+		return nil
+	}
+	i := int(argc)
 	// The environment starts here and ends at the first empty chunk,
 	// which is the first of the trailing NULs.
 	var env []string
@@ -90,6 +109,11 @@ func procargsEnvironment(buf []byte) []string {
 		env = append(env, string(chunks[i]))
 	}
 	return env
+}
+
+// roundup returns n rounded up to the next multiple of multiple.
+func roundup(n, multiple int) int {
+	return (n + multiple - 1) / multiple * multiple
 }
 
 // processEnviron reads one process's environment. It is a seam for

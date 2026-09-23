@@ -32,7 +32,16 @@ func startLeftoverHelper(t *testing.T, marker string) *exec.Cmd {
 	if marker != "" {
 		env = append(env, marker)
 	}
+	return startLeftoverHelperArgs(t, os.Args[0], env)
+}
+
+// startLeftoverHelperArgs starts this test binary as a detached helper
+// in its own session, with argv0 as argument zero and env as its
+// environment, and registers cleanup that kills and reaps it.
+func startLeftoverHelperArgs(t *testing.T, argv0 string, env []string) *exec.Cmd {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestLeftoverHelperProcess$")
+	cmd.Args[0] = argv0
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -101,4 +110,30 @@ func TestFindRunProcessesSkipsProcessesOlderThanSince(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("processEnviron called %d times, want 0", calls)
 	}
+}
+
+// TestProcessEnvironReadsFirstEntryWithEmptyArgv0 is a regression test
+// for macOS: with an empty argv[0] the parser must not treat that empty
+// chunk as padding and skip a real environment entry. The marker is the
+// first environment entry, so a mis-parse hides it.
+func TestProcessEnvironReadsFirstEntryWithEmptyArgv0(t *testing.T) {
+	id := "leftover-argv0-" + strconv.Itoa(os.Getpid())
+	marker := RunMarkerEnv + "=" + id
+	env := append([]string{marker}, os.Environ()...)
+	env = append(env, "PI_WORKER_LEFTOVER_TEST_HELPER=1")
+	cmd := startLeftoverHelperArgs(t, "", env)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := processEnviron(int32(cmd.Process.Pid))
+		if err == nil {
+			for _, entry := range got {
+				if entry == marker {
+					return
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("processEnviron never returned %q", marker)
 }
