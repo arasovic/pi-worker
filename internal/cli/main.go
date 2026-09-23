@@ -170,6 +170,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer stop()
 		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
+		fmt.Fprintf(stderr, "pi-worker: unknown command %q\n", args[0])
 		printUsage(stderr)
 		return 2
 	}
@@ -205,6 +206,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "worktrees":
 		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	default:
+		fmt.Fprintf(stderr, "pi-worker: unknown command %q\n", args[0])
 		printUsage(stderr)
 		return 2
 	}

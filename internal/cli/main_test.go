@@ -2378,6 +2378,63 @@ func TestMainUsageIncludesSkillCommands(t *testing.T) {
 	}
 }
 
+// TestMainNamesUnknownTopLevelCommand pins that an unknown top-level
+// command is named before the usage text on stderr, through both the
+// public Main entry point and the private mainWithContext test seam. An
+// empty argv is not an unknown command: it prints usage alone.
+func TestMainNamesUnknownTopLevelCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		// wantLine is the exact diagnostic line expected at the start of
+		// stderr. Empty means the arguments are not an unknown command
+		// and stderr must not carry the diagnostic at all.
+		wantLine string
+	}{
+		{name: "version flag", args: []string{"--version"}, wantLine: "pi-worker: unknown command \"--version\"\n"},
+		{name: "unknown word", args: []string{"bogus"}, wantLine: "pi-worker: unknown command \"bogus\"\n"},
+		{name: "short help flag", args: []string{"-h"}, wantLine: "pi-worker: unknown command \"-h\"\n"},
+		{name: "long help flag", args: []string{"--help"}, wantLine: "pi-worker: unknown command \"--help\"\n"},
+		{name: "empty argv", args: []string{}},
+	}
+	helpers := []struct {
+		name string
+		run  func(*testing.T, []string) (int, string, string)
+	}{
+		{name: "Main", run: func(t *testing.T, args []string) (int, string, string) {
+			return runCLI(t, args, "")
+		}},
+		{name: "mainWithContext", run: func(t *testing.T, args []string) (int, string, string) {
+			return runCLIWithContext(t, context.Background(), args, "")
+		}},
+	}
+	for _, helper := range helpers {
+		for _, tc := range tests {
+			t.Run(helper.name+"/"+tc.name, func(t *testing.T) {
+				code, stdout, stderr := helper.run(t, tc.args)
+				if code != 2 {
+					t.Fatalf("code = %d, want 2; stderr = %q", code, stderr)
+				}
+				if stdout != "" {
+					t.Fatalf("stdout = %q, want empty", stdout)
+				}
+				if !strings.Contains(stderr, "usage: pi-worker version [--json]") {
+					t.Fatalf("stderr = %q, want the usage text", stderr)
+				}
+				if tc.wantLine == "" {
+					if strings.Contains(stderr, "unknown command") {
+						t.Fatalf("stderr = %q, want no unknown command diagnostic", stderr)
+					}
+					return
+				}
+				if !strings.HasPrefix(stderr, tc.wantLine) {
+					t.Fatalf("stderr = %q, want it to start with %q", stderr, tc.wantLine)
+				}
+			})
+		}
+	}
+}
+
 func TestMainSupportsSkillStatusCommand(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
