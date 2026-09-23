@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ import (
 // line. Pids and creation times are chosen by the test, never read
 // back out of a record, so the scripted seams' answers stay
 // independent of what the record carries.
-func writeStartRecord(t *testing.T, dir, runID string, pid int, startCreateTime int64, finished bool, workers ...workerSpec) string {
+func writeStartRecord(t *testing.T, dir, runID string, pid int64, startCreateTime int64, finished bool, workers ...workerSpec) string {
 	t.Helper()
 	lines := []map[string]any{
 		{
@@ -273,8 +274,15 @@ func TestNonPositiveLookupResultMeansAlive(t *testing.T) {
 // of whatever process holds pid 1 — so the seam fails the test if it
 // is consulted at all. The writer only ever records its own pid,
 // which always fits the range; this guard is for a record corrupted
-// or edited by hand, never one the product wrote.
+// or edited by hand, never one the product wrote. It only runs where
+// int is 64 bits, because on a 32-bit target the record's pid cannot
+// be decoded into an int at all, so the lookup is never reached for a
+// different reason and there is nothing to guard.
 func TestOutOfRangePidNeverReachesTheLookup(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("an out-of-range pid cannot be decoded into a 32-bit int, so there is no lookup to guard")
+	}
+
 	withPidAlive(t, func(pid int32) (bool, error) {
 		t.Fatalf("pidAlive consulted with %d for an out-of-range record pid", pid)
 		return false, nil
