@@ -1209,7 +1209,7 @@ It does **not** print:
 - Ctrl-C and timeout cancel the shared run context.
 - macOS/Linux: each child runs in its own process group, but cleanup avoids signalling that reusable numeric group; it kills Pi through Go's process handle and performs a best-effort, creation-time-verified descendant sweep.
 - Windows: children are placed in a Job Object with kill-on-close.
-- This is recovery, not a sandbox. Deliberately daemonized/reparented processes, processes spawned during the post-snapshot window, and the short Windows pre-assignment window can escape.
+- This is recovery, not a sandbox. Deliberately daemonized/reparented processes, processes spawned during the post-snapshot window, and the short Windows pre-assignment window can escape. A run reports those of them that still carry its marker in root `leftoverProcesses`; see the run JSON contract for what it cannot see.
 - If Pi exits and is reaped before cleanup can snapshot its lineage, surviving descendants may also escape; v0 does not continuously track descendants.
 
 ## Examples

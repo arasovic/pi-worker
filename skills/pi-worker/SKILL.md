@@ -46,7 +46,7 @@ returns a run id at once instead of blocking. Wait in slices under that bound:
 `pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out leaves
 the run going; wait again. Cancel with `pi-worker runs cancel <id> --json`.
 
-Without `--json`, `pi-worker runs status <id>` and `pi-worker runs wait <id>` print one aligned summary table: a run row, one row per worker with its state, model, and answer, plus `outcome=` for a finished run; no task prompt appears. With `--json`, each task's prompt is carried in the document up to 4096 bytes, so poll plain output and use JSON for the machine-readable document. For `pi-worker runs status <id> --json`, `pi-worker runs wait <id> --json`, and `pi-worker run --background --json`, the document is a run snapshot with its result under `result`: read `result.changes`, `result.writes`, and `result.verification`; foreground `pi-worker run --json` keeps those fields at the root.
+Without `--json`, `pi-worker runs status <id>` and `pi-worker runs wait <id>` print one aligned summary table: a run row, one row per worker with its state, model, and answer, plus `outcome=` for a finished run; no task prompt appears. With `--json`, each task's prompt is carried in the document up to 4096 bytes, so poll plain output and use JSON for the machine-readable document. For `pi-worker runs status <id> --json`, `pi-worker runs wait <id> --json`, and `pi-worker run --background --json`, the document is a run snapshot with its result under `result`: read `result.changes`, `result.writes`, `result.verification`, and `result.leftoverProcesses`; foreground `pi-worker run --json` keeps those fields at the root.
 
 Parse the single JSON document; if none comes back, the exit code is the signal.
 Exit 2 always means the command was rejected — fix your argv and re-run; exit 9
@@ -54,9 +54,14 @@ is an internal failure; an exit of 7 or 8 means it was cut short: without a
 document, report interruption and stop. Whatever the outcome, read and report
 each worker's `model`, effective `thinkingLevel`, `status`, `explanation`,
 `partialExplanation` when present, and `error`, plus root `changes`, `writes`,
-and `verification` when present; a failed run's `changes` still lists what the
-workers wrote; nothing is rolled back, so inspect the workspace before cleaning.
-Stderr carries the rejection and debug output; read it when no document appears.
+`verification`, and `leftoverProcesses` when present; a failed run's `changes`
+still lists what the workers wrote; nothing is rolled back, so inspect the
+workspace before cleaning. `leftoverProcesses` lists processes the run started
+that were still running when it ended, by `pid` and `name`; pi-worker never ends
+them, so decide whether to stop each one, and treat its absence as unknown
+rather than clean, because a process handed to a service manager or container,
+or one that cleared its environment, is not seen. Stderr carries the rejection
+and debug output; read it when no document appears.
 7. For checkouts created by `run --worktree <name>`, manage only the exact
 Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on
 branch `run/<same-name>`: `pi-worker worktrees list [--json]` is read-only,
