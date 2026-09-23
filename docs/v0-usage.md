@@ -109,6 +109,9 @@ packages you already allow in the comma-separated list.
 - `pi-worker worktrees list [--json]`
 - `pi-worker worktrees remove <name> [--yes] [--json]`
 - `pi-worker run ...`
+- `pi-worker -h` / `pi-worker --help` print this usage to stdout and exit `0`;
+  any other unknown command names itself on stderr before the usage and exits
+  `2`.
 
 ## Version
 
@@ -121,6 +124,7 @@ pi-worker version [--json]
 - `--json` emits one complete `schemaVersion: 1` document with `version`,
   `commit`, and `buildDate`. Source builds report `dev`, `unknown`, and
   `unknown` explicitly.
+- `pi-worker --version` is the same command and accepts the same `--json`.
 
 ## Model catalog
 
