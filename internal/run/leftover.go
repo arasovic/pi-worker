@@ -138,9 +138,9 @@ func createdFloor(since time.Time) int64 {
 // were created at or after since and still carry runID's marker, sorted
 // by pid ascending. A process created more than about two seconds before
 // since is skipped before its environment is read, because it cannot
-// carry this run's marker. It returns nil when listing fails or nothing
-// matches, and it never returns an error: a lookup problem must never
-// fail a run.
+// carry this run's marker. Git's filesystem-monitor daemon is skipped
+// too. It returns nil when listing fails or nothing matches, and it
+// never returns an error: a lookup problem must never fail a run.
 func findRunProcesses(runID string, since time.Time) []LeftoverProcess {
 	procs, err := process.Processes()
 	if err != nil {
@@ -160,10 +160,20 @@ func findRunProcesses(runID string, since time.Time) []LeftoverProcess {
 		if !hasRunMarker(env, runID) {
 			continue
 		}
+		if args, err := p.CmdlineSlice(); err == nil && isGitFsmonitorDaemon(args) {
+			continue
+		}
 		exe, exeErr := p.Exe()
 		name, nameErr := p.Name()
 		found = append(found, LeftoverProcess{PID: int(p.Pid), Name: leftoverName(exe, exeErr, name, nameErr)})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].PID < found[j].PID })
 	return found
+}
+
+// isGitFsmonitorDaemon reports whether args is the command line of git's
+// filesystem-monitor daemon. Git starts and stops this daemon by itself,
+// and the user enabled it, so it is never reported as a leftover.
+func isGitFsmonitorDaemon(args []string) bool {
+	return len(args) >= 2 && filepath.Base(args[0]) == "git" && args[1] == "fsmonitor--daemon"
 }
