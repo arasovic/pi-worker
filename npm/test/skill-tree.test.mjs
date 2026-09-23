@@ -258,7 +258,7 @@ test("classifyTarget distinguishes absent, owned, unmanaged, drifted, and confli
   );
 });
 
-test("a structurally valid receipt from another skills version cannot confer ownership", async (t) => {
+test("a receipt from another skills version confers ownership when the files match", async (t) => {
   const bundled = makeTree(t, {
     [IDENTITY_FILE]: IDENTITY_CONTENT,
     "SKILL.md": "---\nname: pi-worker\n---\n",
@@ -271,7 +271,71 @@ test("a structurally valid receipt from another skills version cannot confer own
 
   assert.equal(
     await classifyTarget({ target: { path: targetRoot }, bundledTree, receipt }),
+    "owned",
+  );
+});
+
+test("a blocked receipt whose affected targets are all unmanaged confers ownership when the files match", async (t) => {
+  const bundled = makeTree(t, {
+    [IDENTITY_FILE]: IDENTITY_CONTENT,
+    "SKILL.md": "---\nname: pi-worker\n---\n",
+  });
+  const bundledTree = await hashSkillTree(bundled);
+  const targetRoot = makeTree(t);
+  cpSync(bundled, targetRoot, { recursive: true });
+  const receipt = receiptFor(targetRoot, bundledTree);
+  receipt.skillsVersion = "1.5.25";
+  receipt.outcome = "blocked";
+  receipt.affectedTargets = [{
+    path: targetRoot,
+    state: "unmanaged",
+    recovery: [`Inspect and back up ${targetRoot} before retrying.`],
+  }];
+
+  assert.equal(
+    await classifyTarget({ target: { path: targetRoot }, bundledTree, receipt }),
+    "owned",
+  );
+});
+
+test("a blocked receipt with a conflicting affected target confers no ownership", async (t) => {
+  const bundled = makeTree(t, {
+    [IDENTITY_FILE]: IDENTITY_CONTENT,
+    "SKILL.md": "---\nname: pi-worker\n---\n",
+  });
+  const bundledTree = await hashSkillTree(bundled);
+  const targetRoot = makeTree(t);
+  cpSync(bundled, targetRoot, { recursive: true });
+  const receipt = receiptFor(targetRoot, bundledTree);
+  receipt.skillsVersion = "1.5.25";
+  receipt.outcome = "blocked";
+  receipt.affectedTargets = [{
+    path: targetRoot,
+    state: "conflicting",
+    recovery: [`Inspect and back up ${targetRoot} before retrying.`],
+  }];
+
+  assert.equal(
+    await classifyTarget({ target: { path: targetRoot }, bundledTree, receipt }),
     "unmanaged",
+  );
+});
+
+test("a receipt from another skills version does not own changed files", async (t) => {
+  const bundled = makeTree(t, {
+    [IDENTITY_FILE]: IDENTITY_CONTENT,
+    "SKILL.md": "---\nname: pi-worker\n---\n",
+  });
+  const bundledTree = await hashSkillTree(bundled);
+  const targetRoot = makeTree(t);
+  cpSync(bundled, targetRoot, { recursive: true });
+  const receipt = receiptFor(targetRoot, bundledTree);
+  receipt.skillsVersion = "1.5.21";
+  writeFileSync(join(targetRoot, "SKILL.md"), "---\nname: pi-worker\n---\nchanged\n");
+
+  assert.equal(
+    await classifyTarget({ target: { path: targetRoot }, bundledTree, receipt }),
+    "drifted",
   );
 });
 

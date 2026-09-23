@@ -10,7 +10,6 @@ import {
 import path from "node:path";
 
 import { validateReceipt } from "./skill-receipt.mjs";
-import { PINNED_SKILLS_VERSION } from "./skill-rules.mjs";
 
 export const IDENTITY_FILE = "PI_WORKER_IDENTITY";
 export const IDENTITY_CONTENT = "pi-worker-skill/v1\n";
@@ -603,6 +602,13 @@ export async function inspectSkillIdentity(targetPath) {
   return "unknown";
 }
 
+/**
+ * Ownership rests on the recorded hashes, which the installer records only
+ * for files it verified after writing them. A receipt from another skills
+ * version, or one blocked only because such a receipt was not recognised,
+ * therefore carries the same hashes. A target still counts as owned only when
+ * its files match them.
+ */
 function validatedOwnershipReceipt(value) {
   if (value === undefined || value === null) return null;
   let validated;
@@ -612,10 +618,12 @@ function validatedOwnershipReceipt(value) {
     return null;
   }
   const canonicals = validated.targets.filter((candidate) => candidate.kind === "canonical");
+  const installed = validated.outcome === "installed" && validated.affectedTargets.length === 0;
+  const blockedUnmanaged = validated.outcome === "blocked" &&
+    validated.affectedTargets.length !== 0 &&
+    validated.affectedTargets.every((entry) => entry.state === "unmanaged");
   if (
-    validated.skillsVersion !== PINNED_SKILLS_VERSION ||
-    validated.outcome !== "installed" ||
-    validated.affectedTargets.length !== 0 ||
+    (!installed && !blockedUnmanaged) ||
     canonicals.length !== 1 ||
     !recordsIdentity(canonicals[0])
   ) {
