@@ -745,6 +745,9 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		}
 		printWrites(result.Writes, w)
 	}
+	if len(result.LeftoverProcesses) > 0 {
+		printRunLeftovers(result.LeftoverProcesses, stderr)
+	}
 	fmt.Fprintf(stdout, "outcome=%s\n", result.Outcome)
 	return code
 }
@@ -821,6 +824,33 @@ func leftoverPidList(pids []int) string {
 		line += fmt.Sprintf(" and %d more", len(pids)-limit)
 	}
 	return line
+}
+
+// printRunLeftovers prints one stderr warning line naming the processes
+// this run started and left running when it ended: up to ten entries in
+// the order the scan returned them — the program name and pid, or the
+// pid alone when the name could not be read — then a count of the rest
+// with no separator before it, in the shape of leftoverPidList. The run
+// status stays unchanged: this is a notification, not a restriction, and
+// pi-worker never ends, signals, or waits on the processes it names.
+func printRunLeftovers(processes []run.LeftoverProcess, stderr io.Writer) {
+	if len(processes) == 0 {
+		return
+	}
+	limit := min(len(processes), 10)
+	parts := make([]string, 0, limit)
+	for _, p := range processes[:limit] {
+		if p.Name == "" {
+			parts = append(parts, fmt.Sprintf("pid %d", p.PID))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (pid %d)", p.Name, p.PID))
+	}
+	line := strings.Join(parts, ", ")
+	if len(processes) > limit {
+		line += fmt.Sprintf(" and %d more", len(processes)-limit)
+	}
+	fmt.Fprintf(stderr, "pi-worker: warning: this run left processes running: %s\n", line)
 }
 
 // printVerification prints the run-level verification outcome after the

@@ -722,6 +722,32 @@ reason it could not run or the verdict, never both:
   entries
 - `truncated`: present and `true` only when the cap dropped entries
 
+Leftover-process reporting is additive and optional, so `schemaVersion` stays
+`1`. Root `leftoverProcesses` is present only when, at the end of the run,
+pi-worker found live processes that still carry the run's marker. It is an
+array sorted by `pid` ascending. pi-worker never ends, signals, or waits on
+these processes. Each entry has:
+
+- `pid`: always present
+- `name`: the program name only, never its arguments; absent when unreadable
+
+Every process a run starts inherits `PI_WORKER_RUN=<runId>` in its environment.
+When the run ends, pi-worker looks only at processes created since the run
+started. For each one, it only checks whether that exact entry is present.
+Nothing else from the environment is kept, printed or stored. Absence does not
+mean nothing was left. A process is not seen when:
+
+- it was handed to a service manager (`launchctl`, `systemd-run`), a container
+  runtime such as Docker, or a daemon that was already running (for example an
+  existing pm2);
+- it cleared or replaced its environment (`env -i`, or unsetting the variable);
+- it is an Apple system program on macOS (such as `/bin/sleep` or `/bin/bash`),
+  which does not expose its environment to other processes;
+- it runs on an operating system other than macOS or Linux, where the check is
+  not performed;
+- it belongs to a pi-worker run started inside a worker, which replaces the
+  marker with its own.
+
 Thinking values are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
 `max`.
 
