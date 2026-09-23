@@ -43,6 +43,7 @@ func (w *admissionOrderWorker) Run(ctx context.Context, req pi.WorkerRequest) pi
 }
 
 func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	gate, err := admission.Open(t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("open gate: %v", err)
@@ -162,6 +163,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 // controller's admitted tasks have completed and released their leases.
 // With maxLive=1 the sequence is: blocker → task-1 → task-2 → outsider.
 func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	type outsiderResult struct {
 		lease *admission.Lease
 		err   error
@@ -383,6 +385,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 }
 
 func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	boundedProbe := func(t *testing.T, gate *admission.Gate) {
 		t.Helper()
 		tk, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
@@ -497,6 +500,7 @@ func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
 // worker is never called, and a bounded probe afterwards proves both queued
 // tickets were removed.
 func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 
 	// Step 1: gate with capacity 1.
@@ -630,6 +634,7 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 // — fails after the worker has settled. The root is test-scoped, so the
 // intentionally corrupt ticket state is removed by t.TempDir cleanup.
 func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	// A real gate rooted at a test-scoped temp dir, with capacity one.
 	root := t.TempDir()
 	gate, err := admission.Open(root, 1)
@@ -687,6 +692,7 @@ func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
 // fresh verification budget collapses the factory to one call or hands
 // the verifier the wrong context.
 func TestControllerForegroundAdmissionStartsFreshVerificationClock(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	// Real gate with capacity one, one scripted worker and verifier, and
 	// a controller admitted with a distinctive execution timeout.
 	gate, err := admission.Open(t.TempDir(), 1)
