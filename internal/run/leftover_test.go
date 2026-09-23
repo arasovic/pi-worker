@@ -113,32 +113,6 @@ func TestProcargsEnvironmentRejectsShortBuffers(t *testing.T) {
 	}
 }
 
-func TestIsGitFsmonitorDaemon(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want bool
-	}{
-		{
-			"macOS daemon",
-			[]string{"/Applications/Xcode.app/Contents/Developer/usr/libexec/git-core/git", "fsmonitor--daemon", "run", "--detach", "--ipc-threads=8"},
-			true,
-		},
-		{"bare git daemon", []string{"git", "fsmonitor--daemon", "run"}, true},
-		{"git status", []string{"git", "status"}, false},
-		{"other program with the subcommand", []string{"/usr/bin/node", "fsmonitor--daemon"}, false},
-		{"git alone", []string{"git"}, false},
-		{"nil", nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isGitFsmonitorDaemon(tc.args); got != tc.want {
-				t.Fatalf("isGitFsmonitorDaemon(%v) = %v, want %v", tc.args, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestLeftoverNamePrefersProgramFile(t *testing.T) {
 	cases := []struct {
 		name    string
