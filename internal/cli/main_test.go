@@ -2378,6 +2378,131 @@ func TestMainUsageIncludesSkillCommands(t *testing.T) {
 	}
 }
 
+// TestMainNamesUnknownTopLevelCommand pins that an unknown top-level
+// command is named before the usage text on stderr, through both the
+// public Main entry point and the private mainWithContext test seam. An
+// empty argv is not an unknown command: it prints usage alone.
+func TestMainNamesUnknownTopLevelCommand(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		// wantLine is the exact diagnostic line expected at the start of
+		// stderr. Empty means the arguments are not an unknown command
+		// and stderr must not carry the diagnostic at all.
+		wantLine string
+	}{
+		{name: "unknown flag", args: []string{"--bogus"}, wantLine: "pi-worker: unknown command \"--bogus\"\n"},
+		{name: "unknown word", args: []string{"bogus"}, wantLine: "pi-worker: unknown command \"bogus\"\n"},
+		{name: "empty argv", args: []string{}},
+	}
+	helpers := []struct {
+		name string
+		run  func(*testing.T, []string) (int, string, string)
+	}{
+		{name: "Main", run: func(t *testing.T, args []string) (int, string, string) {
+			return runCLI(t, args, "")
+		}},
+		{name: "mainWithContext", run: func(t *testing.T, args []string) (int, string, string) {
+			return runCLIWithContext(t, context.Background(), args, "")
+		}},
+	}
+	for _, helper := range helpers {
+		for _, tc := range tests {
+			t.Run(helper.name+"/"+tc.name, func(t *testing.T) {
+				code, stdout, stderr := helper.run(t, tc.args)
+				if code != 2 {
+					t.Fatalf("code = %d, want 2; stderr = %q", code, stderr)
+				}
+				if stdout != "" {
+					t.Fatalf("stdout = %q, want empty", stdout)
+				}
+				if !strings.Contains(stderr, "usage: pi-worker version [--json]") {
+					t.Fatalf("stderr = %q, want the usage text", stderr)
+				}
+				if tc.wantLine == "" {
+					if strings.Contains(stderr, "unknown command") {
+						t.Fatalf("stderr = %q, want no unknown command diagnostic", stderr)
+					}
+					return
+				}
+				if !strings.HasPrefix(stderr, tc.wantLine) {
+					t.Fatalf("stderr = %q, want it to start with %q", stderr, tc.wantLine)
+				}
+			})
+		}
+	}
+}
+
+func TestMainAcceptsConventionalVersionAndHelpFlags(t *testing.T) {
+	helpers := []struct {
+		name string
+		run  func(*testing.T, []string) (int, string, string)
+	}{
+		{name: "Main", run: func(t *testing.T, args []string) (int, string, string) {
+			return runCLI(t, args, "")
+		}},
+		{name: "mainWithContext", run: func(t *testing.T, args []string) (int, string, string) {
+			return runCLIWithContext(t, context.Background(), args, "")
+		}},
+	}
+	for _, helper := range helpers {
+		t.Run(helper.name, func(t *testing.T) {
+			t.Run("--version", func(t *testing.T) {
+				code, stdout, stderr := helper.run(t, []string{"--version"})
+				if code != 0 {
+					t.Fatalf("code = %d, want 0; stderr = %q", code, stderr)
+				}
+				if stderr != "" {
+					t.Fatalf("stderr = %q, want empty", stderr)
+				}
+				wantCode, wantStdout, wantStderr := helper.run(t, []string{"version"})
+				if wantCode != 0 || wantStderr != "" {
+					t.Fatalf("version baseline: code = %d, stderr = %q", wantCode, wantStderr)
+				}
+				if stdout != wantStdout {
+					t.Fatalf("stdout = %q, want the version stdout %q", stdout, wantStdout)
+				}
+				if !strings.HasPrefix(stdout, "pi-worker ") {
+					t.Fatalf("stdout = %q, want it to start with %q", stdout, "pi-worker ")
+				}
+			})
+			t.Run("--version --json", func(t *testing.T) {
+				code, stdout, stderr := helper.run(t, []string{"--version", "--json"})
+				if code != 0 {
+					t.Fatalf("code = %d, want 0; stderr = %q", code, stderr)
+				}
+				if stderr != "" {
+					t.Fatalf("stderr = %q, want empty", stderr)
+				}
+				wantCode, wantStdout, wantStderr := helper.run(t, []string{"version", "--json"})
+				if wantCode != 0 || wantStderr != "" {
+					t.Fatalf("version --json baseline: code = %d, stderr = %q", wantCode, wantStderr)
+				}
+				if stdout != wantStdout {
+					t.Fatalf("stdout = %q, want the version --json stdout %q", stdout, wantStdout)
+				}
+			})
+			for _, arg := range []string{"-h", "--help"} {
+				t.Run(arg, func(t *testing.T) {
+					code, stdout, stderr := helper.run(t, []string{arg})
+					if code != 0 {
+						t.Fatalf("code = %d, want 0; stderr = %q", code, stderr)
+					}
+					if stderr != "" {
+						t.Fatalf("stderr = %q, want empty", stderr)
+					}
+					if !strings.Contains(stdout, "usage: pi-worker version [--json]") {
+						t.Fatalf("stdout = %q, want the usage text", stdout)
+					}
+					if strings.Contains(stdout, "unknown command") {
+						t.Fatalf("stdout = %q, want no unknown command diagnostic", stdout)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestMainSupportsSkillStatusCommand(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")

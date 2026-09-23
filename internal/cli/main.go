@@ -135,7 +135,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 	switch args[0] {
-	case "version":
+	case "version", "--version":
 		return versionCommand(args[1:], stdout, stderr)
 	case "models":
 		ctx, stop := interruptContext()
@@ -169,7 +169,11 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ctx, stop := interruptContext()
 		defer stop()
 		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "-h", "--help":
+		printUsage(stdout)
+		return 0
 	default:
+		fmt.Fprintf(stderr, "pi-worker: unknown command %q\n", args[0])
 		printUsage(stderr)
 		return 2
 	}
@@ -184,7 +188,7 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		return 2
 	}
 	switch args[0] {
-	case "version":
+	case "version", "--version":
 		return versionCommand(args[1:], stdout, stderr)
 	case "models":
 		return modelsCommand(ctx, args[1:], stdout, stderr)
@@ -204,7 +208,11 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "worktrees":
 		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "-h", "--help":
+		printUsage(stdout)
+		return 0
 	default:
+		fmt.Fprintf(stderr, "pi-worker: unknown command %q\n", args[0])
 		printUsage(stderr)
 		return 2
 	}
