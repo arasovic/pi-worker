@@ -88,9 +88,19 @@ func LiveDescendants(roots []ProcessIdentity) [][]ProcessIdentity {
 	if err != nil {
 		return nil
 	}
+	return descendantsOfRoots(roots, table)
+}
+
+// descendantsOfRoots returns, for each root in roots, the identities of its
+// live descendants. The process index is built once and shared across every
+// root, so a sweep costs one table pass rather than one pass per root. The
+// result at index i belongs to roots[i]; a root with no descendants yields a
+// nil entry.
+func descendantsOfRoots(roots []ProcessIdentity, table []procRow) [][]ProcessIdentity {
+	idx := newProcIndex(table)
 	result := make([][]ProcessIdentity, len(roots))
 	for i, root := range roots {
-		targets := buildDescendantTargets(descendantTarget{pid: int32(root.PID), createTime: root.CreateTime}, table)
+		targets := idx.descendants(descendantTarget{pid: int32(root.PID), createTime: root.CreateTime})
 		if len(targets) == 0 {
 			continue
 		}
@@ -103,22 +113,34 @@ func LiveDescendants(roots []ProcessIdentity) [][]ProcessIdentity {
 	return result
 }
 
-// buildDescendantTargets walks the descendant tree of root over one table
-// snapshot and returns the identity of every reachable descendant. The walk
-// is breadth-first over a pid->children map and visits each pid at most
-// once, so corrupt rows (self-parents, cycles, duplicate pids) cannot loop
-// or duplicate: the sweep is bounded by the table size. The walk descends
-// only through parents present in the snapshot: a child whose parent pid is
-// absent belongs to a dead-or-reused pid, not to a live lineage, and is not
-// attributable to root.
-func buildDescendantTargets(root descendantTarget, table []procRow) []descendantTarget {
+// procIndex is the child adjacency and pid->row lookup for one process-table
+// snapshot, built once so many roots can be walked without re-scanning it.
+type procIndex struct {
+	children map[int32][]int32
+	byPID    map[int32]procRow
+}
+
+// newProcIndex builds the child adjacency and pid lookup for table in one pass.
+func newProcIndex(table []procRow) procIndex {
 	children := make(map[int32][]int32, len(table))
 	byPID := make(map[int32]procRow, len(table))
 	for _, row := range table {
 		children[row.ppid] = append(children[row.ppid], row.pid)
 		byPID[row.pid] = row
 	}
-	rootRow, ok := byPID[root.pid]
+	return procIndex{children: children, byPID: byPID}
+}
+
+// descendants walks the descendant tree of root over one indexed table and
+// returns the identity of every reachable descendant. The walk is
+// breadth-first over a pid->children map and visits each pid at most once,
+// so corrupt rows (self-parents, cycles, duplicate pids) cannot loop or
+// duplicate: the sweep is bounded by the table size. The walk descends only
+// through parents present in the snapshot: a child whose parent pid is
+// absent belongs to a dead-or-reused pid, not to a live lineage, and is not
+// attributable to root.
+func (idx procIndex) descendants(root descendantTarget) []descendantTarget {
+	rootRow, ok := idx.byPID[root.pid]
 	if !ok || root.pid <= 1 || rootRow.createTime != root.createTime {
 		return nil
 	}
@@ -128,23 +150,30 @@ func buildDescendantTargets(root descendantTarget, table []procRow) []descendant
 	for len(queue) > 0 {
 		pid := queue[0]
 		queue = queue[1:]
-		if _, ok := byPID[pid]; !ok {
+		if _, ok := idx.byPID[pid]; !ok {
 			// Root or an intermediate parent absent from the snapshot:
 			// its claimed children cannot be verified as descendants.
 			continue
 		}
-		for _, child := range children[pid] {
+		for _, child := range idx.children[pid] {
 			if seen[child] {
 				continue
 			}
 			seen[child] = true
 			queue = append(queue, child)
-			if row, ok := byPID[child]; ok {
+			if row, ok := idx.byPID[child]; ok {
 				targets = append(targets, descendantTarget{pid: row.pid, createTime: row.createTime})
 			}
 		}
 	}
 	return targets
+}
+
+// buildDescendantTargets walks the descendant tree of a single root over one
+// table snapshot. Callers sweeping many roots should build one procIndex and
+// reuse it instead.
+func buildDescendantTargets(root descendantTarget, table []procRow) []descendantTarget {
+	return newProcIndex(table).descendants(root)
 }
 
 // killDescendantTargets best-effort terminates every target whose identity

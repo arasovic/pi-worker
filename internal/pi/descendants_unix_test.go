@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"reflect"
 	"sync"
 	"syscall"
 	"testing"
@@ -146,6 +147,40 @@ func TestBuildDescendantTargetsRejectsReusedRootIdentity(t *testing.T) {
 
 	if got := buildDescendantTargets(root, table); len(got) != 0 {
 		t.Fatalf("targets = %+v, want none for a reused root pid", got)
+	}
+}
+
+// TestDescendantsOfRootsMatchesOneWalkPerRoot pins the batched sweep: the
+// shared index must answer every root exactly as one buildDescendantTargets
+// walk per root would, including a descendant promoted to a root, an absent
+// root, and a reused-pid root. The expected result is a literal so the test
+// does not recompute the answer with the code under test.
+func TestDescendantsOfRootsMatchesOneWalkPerRoot(t *testing.T) {
+	table := []procRow{
+		{pid: 100, ppid: 99, createTime: 1000},  // root A
+		{pid: 101, ppid: 100, createTime: 1001}, // A's child, also passed as a root
+		{pid: 102, ppid: 101, createTime: 1002}, // A's grandchild
+		{pid: 200, ppid: 99, createTime: 2000},  // root B
+		{pid: 201, ppid: 200, createTime: 2001}, // B's child
+	}
+	roots := []ProcessIdentity{
+		{PID: 100, CreateTime: 1000},
+		{PID: 200, CreateTime: 2000},
+		{PID: 101, CreateTime: 1001}, // descendant promoted to a root
+		{PID: 900, CreateTime: 9000}, // absent from the table
+		{PID: 200, CreateTime: 2001}, // pid reused: wrong creation time
+	}
+	want := [][]ProcessIdentity{
+		{{PID: 101, CreateTime: 1001}, {PID: 102, CreateTime: 1002}},
+		{{PID: 201, CreateTime: 2001}},
+		{{PID: 102, CreateTime: 1002}},
+		nil,
+		nil,
+	}
+
+	got := descendantsOfRoots(roots, table)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("descendantsOfRoots = %#v, want %#v", got, want)
 	}
 }
 
