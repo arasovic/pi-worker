@@ -58,10 +58,12 @@ each worker's `model`, effective `thinkingLevel`, `status`, `explanation`,
 still lists what the workers wrote; nothing is rolled back, so inspect the
 workspace before cleaning. `leftoverProcesses` lists processes the run started
 that were still running when it ended, by `pid` and `name`; pi-worker never ends
-them, so decide whether to stop each one, and treat its absence as unknown
-rather than clean, because a process handed to a service manager or container,
-or one that cleared its environment, is not seen. Stderr carries the rejection
-and debug output; read it when no document appears.
+them, so decide whether to stop each one (a helper a tool keeps running by
+design, such as git's filesystem monitor reported as `git`, is usually safe to
+leave), and treat its absence as unknown rather than clean, because a process
+handed to a service manager or container, or one that cleared its environment,
+is not seen. Stderr carries the rejection and debug output; read it when no
+document appears.
 7. For checkouts created by `run --worktree <name>`, manage only the exact
 Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on
 branch `run/<same-name>`: `pi-worker worktrees list [--json]` is read-only,

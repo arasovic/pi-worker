@@ -8,12 +8,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 // TestLeftoverHelperProcess is the helper entry point the leftover tests
@@ -112,72 +109,6 @@ func TestFindRunProcessesSkipsProcessesOlderThanSince(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("processEnviron called %d times, want 0", calls)
-	}
-}
-
-func TestFindRunProcessesSkipsGitFsmonitorDaemon(t *testing.T) {
-	buildOptions, err := exec.Command("git", "version", "--build-options").Output()
-	if err != nil || !strings.Contains(string(buildOptions), "fsmonitor--daemon") {
-		t.Skip("git was not built with fsmonitor--daemon; skipping")
-	}
-
-	dir := t.TempDir()
-	t.Cleanup(func() {
-		stop := exec.Command("git", "fsmonitor--daemon", "stop")
-		stop.Dir = dir
-		_ = stop.Run()
-	})
-	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, out)
-	}
-
-	id := "leftover-fsmonitor-" + strconv.Itoa(os.Getpid())
-	since := time.Now()
-	cmd := exec.Command("git", "-C", dir, "-c", "core.fsmonitor=true", "status")
-	cmd.Env = append(os.Environ(), RunMarkerEnv+"="+id)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git status: %v: %s", err, out)
-	}
-
-	// Positive control: the marked daemon must really be alive, or the
-	// assertion below would pass for the wrong reason.
-	marked := RunMarkerEnv + "=" + id
-	deadline := time.Now().Add(5 * time.Second)
-	foundDaemon := false
-	for time.Now().Before(deadline) && !foundDaemon {
-		procs, err := process.Processes()
-		if err != nil {
-			t.Fatalf("process.Processes: %v", err)
-		}
-		for _, p := range procs {
-			args, err := p.CmdlineSlice()
-			if err != nil || !isGitFsmonitorDaemon(args) {
-				continue
-			}
-			env, err := processEnviron(p.Pid)
-			if err != nil {
-				continue
-			}
-			for _, entry := range env {
-				if entry == marked {
-					foundDaemon = true
-					break
-				}
-			}
-			if foundDaemon {
-				break
-			}
-		}
-		if !foundDaemon {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	if !foundDaemon {
-		t.Fatal("the marked git fsmonitor daemon was never found")
-	}
-
-	if got := findRunProcesses(id, since); len(got) != 0 {
-		t.Fatalf("findRunProcesses = %+v, want empty", got)
 	}
 }
 

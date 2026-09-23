@@ -736,11 +736,12 @@ When the run ends, pi-worker looks only at processes created since shortly
 before the run started (up to three seconds earlier, because some systems
 report creation times only to the second). For each one, it only checks whether
 that exact entry is present. Nothing else from the environment is kept, printed
-or stored. Git's own filesystem-monitor daemon (`git fsmonitor--daemon`), which
-git starts and stops by itself when `core.fsmonitor` is on, is not reported; to
-recognise it, pi-worker compares the command line of a process that carries the
-marker, and never keeps, prints or stores it. Absence does not mean nothing was
-left. A process is not seen when:
+or stored. Every live process that carries the marker is reported, including a
+helper a tool keeps running by design, such as git's filesystem-monitor daemon
+(`git fsmonitor--daemon`, reported as `git`) in a repository with
+`core.fsmonitor` on; git starts it again when needed, so leaving or stopping it
+is harmless. Absence does not mean nothing was left. A process is not seen
+when:
 
 - it was handed to a service manager (`launchctl`, `systemd-run`), a container
   runtime such as Docker, or a daemon that was already running (for example an
