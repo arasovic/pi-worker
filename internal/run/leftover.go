@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"encoding/binary"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -18,10 +19,25 @@ const RunMarkerEnv = "PI_WORKER_RUN"
 
 // LeftoverProcess is a live process that still carries this run's
 // marker after the run ended. It is reported, never ended; Name is the
-// program name only, never its arguments.
+// base name of the program file, or the process name when the file
+// cannot be read, and never its arguments.
 type LeftoverProcess struct {
 	PID  int    `json:"pid"`
 	Name string `json:"name,omitempty"`
+}
+
+// leftoverName picks a display name for a leftover process. The
+// program file names the process; the process name is only a fallback,
+// because on Linux it is the main thread's name, which a program can
+// change (node reports "MainThread").
+func leftoverName(exe string, exeErr error, name string, nameErr error) string {
+	if exeErr == nil && exe != "" {
+		return filepath.Base(exe)
+	}
+	if nameErr == nil {
+		return name
+	}
+	return ""
 }
 
 // hasRunMarker reports whether env carries exactly RunMarkerEnv=runID.
@@ -109,11 +125,9 @@ func findRunProcesses(runID string, since time.Time) []LeftoverProcess {
 		if !hasRunMarker(env, runID) {
 			continue
 		}
-		name, err := p.Name()
-		if err != nil {
-			name = ""
-		}
-		found = append(found, LeftoverProcess{PID: int(p.Pid), Name: name})
+		exe, exeErr := p.Exe()
+		name, nameErr := p.Name()
+		found = append(found, LeftoverProcess{PID: int(p.Pid), Name: leftoverName(exe, exeErr, name, nameErr)})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].PID < found[j].PID })
 	return found

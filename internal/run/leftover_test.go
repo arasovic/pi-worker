@@ -1,6 +1,7 @@
 package run
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -69,6 +70,29 @@ func TestProcargsEnvironmentRejectsShortBuffers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := procargsEnvironment(buf); got != nil {
 				t.Fatalf("procargsEnvironment = %v, want nil", got)
+			}
+		})
+	}
+}
+
+func TestLeftoverNamePrefersProgramFile(t *testing.T) {
+	cases := []struct {
+		name    string
+		exe     string
+		exeErr  error
+		proc    string
+		nameErr error
+		want    string
+	}{
+		{"program file wins over thread name", "/usr/bin/node", nil, "MainThread", nil, "node"},
+		{"empty program file falls back to name", "", nil, "node", nil, "node"},
+		{"program file error falls back to name", "/usr/bin/node", errors.New("x"), "node", nil, "node"},
+		{"both errors yield empty", "", errors.New("x"), "node", errors.New("y"), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := leftoverName(tc.exe, tc.exeErr, tc.proc, tc.nameErr); got != tc.want {
+				t.Fatalf("leftoverName(%q, %v, %q, %v) = %q, want %q", tc.exe, tc.exeErr, tc.proc, tc.nameErr, got, tc.want)
 			}
 		})
 	}
