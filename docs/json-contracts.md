@@ -240,11 +240,14 @@ exit `2`, resolution or mutation failures exit `9`.
 
 ## `run --background --json`, `runs status --json`, `runs wait --json`, `runs cancel --json`
 
-All four print the same document: the background run snapshot the
-supervisor persisted, verbatim, on one line. There is no second shape —
-`run --background` prints the accepted state, the read commands print whatever
-state is durable when they read, and `runs cancel` prints the one snapshot it
-read before requesting a stop.
+All four print the background run snapshot the supervisor persisted, on one
+line. There is no second shape — `run --background` prints the accepted state,
+the read commands print whatever state is durable when they read, and
+`runs cancel` prints the one snapshot it read before requesting a stop. The one
+difference is that the `run --background --json` acceptance document leaves out
+each task's `prompt` and `promptTruncated`, because the caller has just supplied
+them; `runs status --json`, `runs wait --json`, and `runs cancel --json` print
+the stored snapshot with them.
 
 Required root fields are `schemaVersion` (`1`), `runId`, `state`,
 `terminal`, `acceptedAt`, `updatedAt`, `workspace`, `supervisor`, and

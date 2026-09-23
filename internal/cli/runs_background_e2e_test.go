@@ -107,8 +107,9 @@ func writeAlwaysFailingVerifyCommand(t *testing.T) []string {
 // comes back while the run is unmistakably in flight, says the run is not
 // finished, and returns without waiting for anything.
 func TestRunsStatusOfARunInFlightAnswersImmediatelyAndReportsItGoing(t *testing.T) {
+	const taskText = "status-marker-1a2b"
 	manager, _ := setupBackgroundRun(t, slowBackgroundScript("in flight", backgroundRunDelayStep))
-	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
+	runID := startBackgroundRun(t, manager, "--task", taskText, "--timeout", "5m")
 
 	started := time.Now()
 	code, stdout, stderr := runCLI(t, []string{"runs", "status", runID}, "")
@@ -165,6 +166,23 @@ func TestRunsStatusOfARunInFlightAnswersImmediatelyAndReportsItGoing(t *testing.
 	}
 	if document["runId"] != runID {
 		t.Fatalf("runId = %#v, want %q", document["runId"], runID)
+	}
+	// A read command prints the stored snapshot unchanged, prompt included:
+	// the prompt the caller sent when it started the run is still there.
+	workers, _ := document["workers"].([]any)
+	if len(workers) != 1 {
+		t.Fatalf("workers = %#v, want one", document["workers"])
+	}
+	worker, ok := workers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("worker = %#v, want an object", workers[0])
+	}
+	task, ok := worker["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("task = %#v, want an object", worker["task"])
+	}
+	if task["prompt"] != taskText {
+		t.Fatalf("workers[0].task.prompt = %#v, want %q", task["prompt"], taskText)
 	}
 }
 
