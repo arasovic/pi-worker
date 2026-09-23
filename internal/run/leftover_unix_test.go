@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -119,7 +120,13 @@ func TestFindRunProcessesSkipsProcessesOlderThanSince(t *testing.T) {
 func TestProcessEnvironReadsFirstEntryWithEmptyArgv0(t *testing.T) {
 	id := "leftover-argv0-" + strconv.Itoa(os.Getpid())
 	marker := RunMarkerEnv + "=" + id
-	env := append([]string{marker}, os.Environ()...)
+	env := []string{marker}
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, RunMarkerEnv+"=") {
+			continue
+		}
+		env = append(env, entry)
+	}
 	env = append(env, "PI_WORKER_LEFTOVER_TEST_HELPER=1")
 	cmd := startLeftoverHelperArgs(t, "", env)
 
