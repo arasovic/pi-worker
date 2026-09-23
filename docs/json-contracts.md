@@ -732,10 +732,11 @@ these processes. Each entry has:
 - `name`: the program name only, never its arguments; absent when unreadable
 
 Every process a run starts inherits `PI_WORKER_RUN=<runId>` in its environment.
-When the run ends, pi-worker looks only at processes created since the run
-started. For each one, it only checks whether that exact entry is present.
-Nothing else from the environment is kept, printed or stored. Absence does not
-mean nothing was left. A process is not seen when:
+When the run ends, pi-worker looks only at processes created since shortly
+before the run started (up to three seconds earlier, because some systems
+report creation times only to the second). For each one, it only checks whether
+that exact entry is present. Nothing else from the environment is kept, printed
+or stored. Absence does not mean nothing was left. A process is not seen when:
 
 - it was handed to a service manager (`launchctl`, `systemd-run`), a container
   runtime such as Docker, or a daemon that was already running (for example an
