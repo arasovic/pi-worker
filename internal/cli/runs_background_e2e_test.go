@@ -270,9 +270,24 @@ func TestRunsCancelFinishedRunReportsItsOwnExitCodeAndDoesNotSignal(t *testing.T
 func TestRunsCancelStaleSupervisorRefusesToSignal(t *testing.T) {
 	manager, root := setupBackgroundRun(t, slowBackgroundScript("stale identity", backgroundRunDelayStep))
 	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
-	snap, err := manager.Status(runID)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
+	// The supervisor rewrites the snapshot from its own copy when the worker
+	// launches, so the stale identity below must be planted only after that
+	// write: wait for the launch to be durably visible first.
+	deadline := time.Now().Add(10 * time.Second)
+	var snap background.Snapshot
+	for {
+		var err error
+		snap, err = manager.Status(runID)
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if len(snap.Workers) == 1 && snap.Workers[0].State == background.WorkerRunning && snap.Workers[0].Process != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker never reached running state; last snapshot = %+v", snap)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	snap.Supervisor.CreateTime++
 	store, err := background.NewStore(root)
