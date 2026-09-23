@@ -138,14 +138,18 @@ func TestRunBackgroundReturnsAcceptedAndTheRunFinishesAfterwards(t *testing.T) {
 }
 
 // TestRunBackgroundJSONIsTheAcceptedSnapshot requires that the machine format
-// is exactly the run's own stored state, not a second shape invented for the
-// command.
+// is the run's own stored state with each task's prompt left out — the caller
+// has just sent it — not a second shape invented for the command.
 func TestRunBackgroundJSONIsTheAcceptedSnapshot(t *testing.T) {
 	manager := setupBackgroundCLI(t, "background answer")
+	const taskText = "accept-marker-7f3a"
 
-	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--json", "--model", "acme/m-1", "--task", taskText, "--timeout", "5m"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, taskText) {
+		t.Fatalf("stdout = %q, want the prompt the caller just sent left out", stdout)
 	}
 	document := decodeJSONObject(t, stdout)
 	runID, ok := document["runId"].(string)
@@ -158,18 +162,44 @@ func TestRunBackgroundJSONIsTheAcceptedSnapshot(t *testing.T) {
 	if terminal, _ := document["terminal"].(bool); terminal {
 		t.Fatal("terminal = true: the command must return while the run is still going")
 	}
-	if workers, _ := document["workers"].([]any); len(workers) != 1 {
+	workers, _ := document["workers"].([]any)
+	if len(workers) != 1 {
 		t.Fatalf("workers = %#v, want one", document["workers"])
 	}
+	// Each task drops exactly its prompt; every other field is the stored
+	// projection's own and stays in the document.
+	worker, ok := workers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("worker = %#v, want an object", workers[0])
+	}
+	task, ok := worker["task"].(map[string]any)
+	if !ok {
+		t.Fatalf("task = %#v, want an object", worker["task"])
+	}
+	if _, present := task["prompt"]; present {
+		t.Fatalf("task = %#v, want no prompt key", task)
+	}
+	if _, present := task["promptTruncated"]; present {
+		t.Fatalf("task = %#v, want no promptTruncated key", task)
+	}
+	if task["model"] != "acme/m-1" {
+		t.Fatalf("task.model = %#v, want %q", task["model"], "acme/m-1")
+	}
+	if _, present := task["writesDeclared"]; !present {
+		t.Fatalf("task = %#v, want writesDeclared kept", task)
+	}
 
-	// It is the stored snapshot, byte for byte: the same document the run's
-	// own state file holds at acceptance.
+	// It is the stored snapshot with each task's prompt left out: the run's
+	// own state file still holds the prompt, byte for byte.
 	stored, err := manager.Status(runID)
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
 	if stored.RunID != runID || stored.Supervisor.PID <= 0 {
 		t.Fatalf("stored snapshot = %+v, want the accepted run bound to its supervisor", stored)
+	}
+	if len(stored.Workers) != 1 || stored.Workers[0].Task.Prompt != taskText {
+		t.Fatalf("stored workers = %+v, want the prompt %q kept", stored.Workers, taskText)
 	}
 	t.Cleanup(func() {
 		if _, waitErr := manager.Wait(context.Background(), runID, 90*time.Second); waitErr != nil {

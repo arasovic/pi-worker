@@ -395,7 +395,9 @@ pi-worker runs cancel <id> [--json]
   process, and returns as soon as that supervisor has written the
   accepted state durably. The tasks keep going after the command exits.
   Human output is one line naming the run identity and the number of
-  workers; `--json` prints the accepted run document instead. Exit `0`
+  workers; `--json` prints the accepted run document instead. It leaves out
+  each task's prompt, which the caller has just sent; `runs status --json`
+  shows it. Exit `0`
   means accepted, not finished: no task has produced a result yet.
 - A start that was refused exits non-zero without leaving a run behind:
   `2` when the workspace or the requested private checkout is refused,

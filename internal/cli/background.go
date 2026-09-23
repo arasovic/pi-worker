@@ -32,6 +32,45 @@ var newBackgroundManager = func(admissionRoot string, maxModelWorkers int) (*bac
 	return background.NewManager("", admissionRoot, maxModelWorkers)
 }
 
+// acceptedTask hides the prompt the caller has just sent; every other task
+// field is the stored projection's own. The shadowing field wins over the
+// embedded one because it sits at the shallower depth, so the marshalled
+// document carries no prompt and no promptTruncated key.
+type acceptedTask struct {
+	run.TaskProjection
+	Prompt          *struct{} `json:"prompt,omitempty"`
+	PromptTruncated *struct{} `json:"promptTruncated,omitempty"`
+}
+
+// acceptedWorker is one worker in the acceptance document: the stored worker
+// with its task projected through acceptedTask.
+type acceptedWorker struct {
+	background.WorkerSnapshot
+	Task acceptedTask `json:"task"`
+}
+
+// acceptedSnapshot is the acceptance document: the stored snapshot with every
+// worker's task prompt left out.
+type acceptedSnapshot struct {
+	background.Snapshot
+	Workers []acceptedWorker `json:"workers"`
+}
+
+// acceptSnapshot projects s into the document `run --background --json` prints.
+func acceptSnapshot(s background.Snapshot) acceptedSnapshot {
+	accepted := acceptedSnapshot{
+		Snapshot: s,
+		Workers:  make([]acceptedWorker, 0, len(s.Workers)),
+	}
+	for _, worker := range s.Workers {
+		accepted.Workers = append(accepted.Workers, acceptedWorker{
+			WorkerSnapshot: worker,
+			Task:           acceptedTask{TaskProjection: worker.Task},
+		})
+	}
+	return accepted
+}
+
 // backgroundRunCommand starts one run in the background and returns as soon as
 // it is accepted, while the run keeps going in a process of its own. Every
 // option a foreground run takes keeps its meaning here: --background changes
@@ -39,8 +78,8 @@ var newBackgroundManager = func(admissionRoot string, maxModelWorkers int) (*bac
 //
 // The accepted run's identity is what the caller needs afterwards — it is the
 // argument every later question about the run takes — so it is printed on
-// stdout, and with --json the accepted snapshot is printed there instead,
-// exactly as it is stored.
+// stdout, and with --json the accepted snapshot is printed there instead, with
+// each task's prompt left out because the caller has just sent it.
 func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
 	workspace, err := os.Getwd()
 	if err != nil {
@@ -79,7 +118,7 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 	}
 
 	if opts.json {
-		data, err := json.Marshal(started.Snapshot)
+		data, err := json.Marshal(acceptSnapshot(started.Snapshot))
 		if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: encode accepted run: %v\n", err)
 			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
