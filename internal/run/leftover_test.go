@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestProcargsEnvironmentReturnsOnlyEnvironment(t *testing.T) {
@@ -95,6 +96,14 @@ func TestLeftoverNamePrefersProgramFile(t *testing.T) {
 				t.Fatalf("leftoverName(%q, %v, %q, %v) = %q, want %q", tc.exe, tc.exeErr, tc.proc, tc.nameErr, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCreatedFloorAllowsCoarseCreationTimes(t *testing.T) {
+	since := time.UnixMilli(10_300)
+	want := int64(8_000)
+	if got := createdFloor(since); got != want {
+		t.Fatalf("createdFloor(%v) = %d, want %d", since, got, want)
 	}
 }
 

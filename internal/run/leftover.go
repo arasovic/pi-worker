@@ -100,18 +100,29 @@ var processEnviron = defaultProcessEnviron
 // seam for tests.
 var runProcesses = findRunProcesses
 
+// createdFloor returns the earliest creation time, in Unix
+// milliseconds, that can belong to a process started at or after since.
+// On Linux a creation time is derived from a boot time counted in whole
+// seconds, so it can read up to a second early; the two-second margin
+// keeps a process started just after since from being skipped, and costs
+// only a few extra reads.
+func createdFloor(since time.Time) int64 {
+	return since.Truncate(time.Second).Add(-2 * time.Second).UnixMilli()
+}
+
 // findRunProcesses lists the live processes and returns the ones that
 // were created at or after since and still carry runID's marker, sorted
-// by pid ascending. A process created before since is skipped before
-// its environment is read, because it cannot carry this run's marker.
-// It returns nil when listing fails or nothing matches, and it never
-// returns an error: a lookup problem must never fail a run.
+// by pid ascending. A process created more than about two seconds before
+// since is skipped before its environment is read, because it cannot
+// carry this run's marker. It returns nil when listing fails or nothing
+// matches, and it never returns an error: a lookup problem must never
+// fail a run.
 func findRunProcesses(runID string, since time.Time) []LeftoverProcess {
 	procs, err := process.Processes()
 	if err != nil {
 		return nil
 	}
-	cutoff := since.Truncate(time.Second).UnixMilli()
+	cutoff := createdFloor(since)
 	var found []LeftoverProcess
 	for _, p := range procs {
 		created, err := p.CreateTime()
