@@ -1183,6 +1183,7 @@ func (f *funcWorker) Run(ctx context.Context, req pi.WorkerRequest) pi.WorkerRes
 // execution budget, ordered accepted <= started <= finished per worker. The
 // worker process never supplies these facts; the controller records them.
 func TestControllerReportsWorkerTimeline(t *testing.T) {
+	t.Setenv(RunMarkerEnv, "")
 	gate, err := admission.Open(t.TempDir(), MaxTasks)
 	if errors.Is(err, admission.ErrUnsupported) {
 		t.Skipf("admission is unsupported on this platform: %v", err)
