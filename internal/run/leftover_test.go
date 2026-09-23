@@ -12,7 +12,7 @@ func TestProcargsEnvironmentReturnsOnlyEnvironment(t *testing.T) {
 		var buf []byte
 		buf = append(buf, 2, 0, 0, 0) // argc 2, little-endian
 		buf = append(buf, "/bin/x"...)
-		buf = append(buf, 0, 0, 0, 0) // exec path terminator plus padding
+		buf = append(buf, 0, 0) // exec path terminator plus padding
 		buf = append(buf, "x"...)
 		buf = append(buf, 0)
 		buf = append(buf, "PI_WORKER_RUN=abc"...)
@@ -34,7 +34,7 @@ func TestProcargsEnvironmentReturnsOnlyEnvironment(t *testing.T) {
 		var buf []byte
 		buf = append(buf, 3, 0, 0, 0) // argc 3, little-endian
 		buf = append(buf, "/bin/x"...)
-		buf = append(buf, 0, 0, 0) // exec path terminator plus padding
+		buf = append(buf, 0, 0) // exec path terminator plus padding
 		buf = append(buf, "x"...)
 		buf = append(buf, 0)
 		buf = append(buf, 0) // empty argument, still counted by argc
@@ -46,6 +46,27 @@ func TestProcargsEnvironmentReturnsOnlyEnvironment(t *testing.T) {
 
 		got := procargsEnvironment(buf)
 		want := []string{"A=1"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("procargsEnvironment = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("empty argv[0] keeps the first environment entry", func(t *testing.T) {
+		var buf []byte
+		buf = append(buf, 2, 0, 0, 0) // argc 2, little-endian
+		buf = append(buf, "/bin/x"...)
+		buf = append(buf, 0, 0) // exec path terminator plus padding
+		buf = append(buf, 0)    // empty argv[0], still counted by argc
+		buf = append(buf, "x"...)
+		buf = append(buf, 0)
+		buf = append(buf, "CHILD=1"...)
+		buf = append(buf, 0)
+		buf = append(buf, "PI_WORKER_RUN=real"...)
+		buf = append(buf, 0)
+		buf = append(buf, 0) // trailing NUL
+
+		got := procargsEnvironment(buf)
+		want := []string{"CHILD=1", "PI_WORKER_RUN=real"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("procargsEnvironment = %v, want %v", got, want)
 		}
@@ -62,10 +83,26 @@ func TestProcargsEnvironmentRejectsShortBuffers(t *testing.T) {
 	tooFewArgs = append(tooFewArgs, "y"...)
 	tooFewArgs = append(tooFewArgs, 0)
 
+	var endsInPadding []byte
+	endsInPadding = append(endsInPadding, 1, 0, 0, 0) // argc 1, little-endian
+	endsInPadding = append(endsInPadding, "/bin/x"...)
+	endsInPadding = append(endsInPadding, 0)
+
+	var nonNULPadding []byte
+	nonNULPadding = append(nonNULPadding, 1, 0, 0, 0) // argc 1, little-endian
+	nonNULPadding = append(nonNULPadding, "/bin/x"...)
+	nonNULPadding = append(nonNULPadding, 0)
+	nonNULPadding = append(nonNULPadding, "y"...)
+	nonNULPadding = append(nonNULPadding, 0)
+	nonNULPadding = append(nonNULPadding, "A=1"...)
+	nonNULPadding = append(nonNULPadding, 0, 0)
+
 	cases := map[string][]byte{
-		"nil":                  nil,
-		"two bytes":            {1, 0},
-		"fewer args than argc": tooFewArgs,
+		"nil":                          nil,
+		"two bytes":                    {1, 0},
+		"fewer args than argc":         tooFewArgs,
+		"buffer ends inside padding":   endsInPadding,
+		"padding holds a non-NUL byte": nonNULPadding,
 	}
 	for name, buf := range cases {
 		t.Run(name, func(t *testing.T) {
