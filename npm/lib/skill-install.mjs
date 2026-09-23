@@ -621,7 +621,6 @@ export async function installSkill(options = {}) {
       const prior = validateReceipt(priorReceipt);
       const canonicals = prior.targets.filter((target) => target.kind === "canonical");
       if (
-        prior.skillsVersion === PINNED_SKILLS_VERSION &&
         prior.outcome === "installed" &&
         prior.affectedTargets.length === 0 &&
         canonicals.length === 1 &&

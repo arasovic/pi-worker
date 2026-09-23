@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -313,7 +314,7 @@ func TestInspectVerifiesAndClassifiesTargets(t *testing.T) {
 	})
 }
 
-func TestInspectRejectsMismatchedSkillsVersion(t *testing.T) {
+func TestInspectAcceptsReceiptFromAnotherSkillsVersion(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "canonical")
 	writeFile(t, filepath.Join(target, "a.txt"), "one")
@@ -335,15 +336,22 @@ func TestInspectRejectsMismatchedSkillsVersion(t *testing.T) {
 			},
 		}},
 	}
-	inspection, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	other, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
 	if err != nil {
 		t.Fatalf("Inspect() = %v, want nil", err)
 	}
-	if inspection.Status != StatusFailed {
-		t.Fatalf("status = %q, want %q", inspection.Status, StatusFailed)
+
+	receipt.SkillsVersion = PinnedSkillsVersion
+	pinned, err := Inspect(writeReceiptFromReceipt(t, root, receipt))
+	if err != nil {
+		t.Fatalf("Inspect() = %v, want nil", err)
 	}
-	if len(inspection.VerifiedTargets) != 0 {
-		t.Fatalf("verified targets = %v, want no verified ownership", inspection.VerifiedTargets)
+
+	if other.Status != pinned.Status {
+		t.Fatalf("status = %q, want %q", other.Status, pinned.Status)
+	}
+	if !reflect.DeepEqual(other.VerifiedTargets, pinned.VerifiedTargets) {
+		t.Fatalf("verified targets = %v, want %v", other.VerifiedTargets, pinned.VerifiedTargets)
 	}
 }
 

@@ -788,7 +788,7 @@ func frontMatterValueIsPiWorker(value string) bool {
 }
 
 func hasVerifiedReceiptEvidence(r Receipt) bool {
-	if r.Outcome != OutcomeInstalled || r.SkillsVersion != PinnedSkillsVersion {
+	if r.Outcome != OutcomeInstalled {
 		return false
 	}
 	canonicalTargets := []Target{}

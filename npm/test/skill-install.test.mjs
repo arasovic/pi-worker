@@ -126,6 +126,52 @@ test("installs an absent skill with the exact package-local CLI invocation", asy
   assert.deepEqual(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "installed");
 });
 
+test("an installed prior receipt from another skills version does not block a reinstall", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const copy = join(f.home, ".test", "skills", "pi-worker");
+  const first = childFor(() => {
+    mkdirSync(join(canonical, ".."), { recursive: true });
+    cpSync(f.skill, canonical, { recursive: true });
+    mkdirSync(join(copy, ".."), { recursive: true });
+    cpSync(f.skill, copy, { recursive: true });
+  });
+  assert.equal((await installSkill(options(f, first))).outcome, "installed");
+
+  const prior = JSON.parse(readFileSync(f.receipt, "utf8"));
+  prior.skillsVersion = "1.5.23";
+  writeFileSync(f.receipt, JSON.stringify(prior));
+
+  const result = await installSkill(options(f, childFor()));
+  assert.equal(result.outcome, "installed", JSON.stringify(result));
+});
+
+test("a blocked prior receipt with unmanaged affected targets from another skills version does not block a reinstall", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const copy = join(f.home, ".test", "skills", "pi-worker");
+  const first = childFor(() => {
+    mkdirSync(join(canonical, ".."), { recursive: true });
+    cpSync(f.skill, canonical, { recursive: true });
+    mkdirSync(join(copy, ".."), { recursive: true });
+    cpSync(f.skill, copy, { recursive: true });
+  });
+  assert.equal((await installSkill(options(f, first))).outcome, "installed");
+
+  const prior = JSON.parse(readFileSync(f.receipt, "utf8"));
+  prior.skillsVersion = "1.5.25";
+  prior.outcome = "blocked";
+  prior.affectedTargets = [{
+    path: canonical,
+    state: "unmanaged",
+    recovery: [`Inspect and back up ${canonical} before retrying.`],
+  }];
+  writeFileSync(f.receipt, JSON.stringify(prior));
+
+  const result = await installSkill(options(f, childFor()));
+  assert.equal(result.outcome, "installed", JSON.stringify(result));
+});
+
 test("installs through the actual pinned skills CLI for a detected universal agent target", async (t) => {
   const f = fixture(t);
   mkdirSync(join(f.home, ".config", "amp"), { recursive: true });
