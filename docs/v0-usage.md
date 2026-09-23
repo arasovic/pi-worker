@@ -84,6 +84,13 @@ skill outcome, installed target count, and next command. The outcome word is
 the only colored element. CI, `NO_COLOR`, and non-interactive installs retain
 one plain diagnostic line.
 
+npm shows install-script output only with `--foreground-scripts`; otherwise
+run `pi-worker skill status` to see the outcome. npm versions that check
+`allowScripts` warn that `pi-worker` has install scripts not yet covered by
+it. The warning does not stop the script. To silence it, run
+`npm config set allow-scripts=pi-worker --location=user`, keeping any
+packages you already allow in the comma-separated list.
+
 ## Supported commands
 
 - `pi-worker version [--json]`

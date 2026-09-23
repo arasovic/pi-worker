@@ -36,6 +36,8 @@ Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider authenti
    npm install -g pi-worker
    ```
 
+   If npm warns that `pi-worker` has install scripts not yet covered by `allowScripts`, the warning did not stop it: the install script still ran. Check the skill with `pi-worker skill status`. To stop the warning on later updates, run `npm config set allow-scripts=pi-worker --location=user`; if you already allow other packages, list them too, separated by commas.
+
    `go install github.com/arasovic/pi-worker/cmd/pi-worker@latest` gives you the binary without the skill.
 
 2. **Pick a model.** Replace `provider/model` with one exact selector printed by `pi-worker models`.
