@@ -130,6 +130,13 @@ pi-worker models [--timeout <duration>] [--json] [--debug]
 
 - `models` queries Pi once with `get_available_models`; it never activates a
   model or submits a prompt.
+- The catalog lists what Pi reports; it does not prove that the account
+  can use a model now. A model the account has lost access to still
+  appears, and `doctor` does not catch it either, because neither sends
+  a prompt. The refusal arrives only after the worker sends its prompt:
+  the worker fails with the provider's error in `error` (for example an
+  HTTP `403`), and the run ends `task-failed`, exit `5`. Treat it as a
+  setup problem, not a task problem.
 - The catalog process enables only `read,grep,find,ls`; it cannot write files
   or run shell commands through Pi.
 - Human output is one sorted exact `provider/id` selector per line.
