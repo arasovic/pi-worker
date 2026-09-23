@@ -155,6 +155,10 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /exit of 7 or 8 means it was cut short/i);
   assert.match(normalizedSkill, /without a document, report interruption and stop/i);
   assert.match(normalizedSkill, /whatever the outcome, read and report/i);
+  assert.match(normalizedSkill, /`3` `workers-unavailable`/);
+  assert.match(normalizedSkill, /`5` `task-failed` or `partial`/);
+  assert.match(normalizedSkill, /`6` `verification-failed`/);
+  assert.match(normalizedSkill, /`runs wait` whose own `--timeout` runs out also exits 7/);
   assert.match(normalizedSkill, /a failed run's `changes` still lists what the workers wrote; nothing is rolled back/i);
   assert.match(normalizedSkill, /--background/);
   assert.match(normalizedSkill, /runs wait <id> --timeout <slice> --json/i);

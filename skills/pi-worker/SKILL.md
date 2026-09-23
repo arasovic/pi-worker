@@ -49,9 +49,17 @@ the run going; wait again. Cancel with `pi-worker runs cancel <id> --json`.
 Without `--json`, `pi-worker runs status <id>` and `pi-worker runs wait <id>` print one aligned summary table: a run row, one row per worker with its state, model, and answer, plus `outcome=` for a finished run; no task prompt appears. With `--json`, each task's prompt is carried in the document up to 4096 bytes, so poll plain output and use JSON for the machine-readable document. For `pi-worker runs status <id> --json`, `pi-worker runs wait <id> --json`, and `pi-worker run --background --json`, the document is a run snapshot with its result under `result`: read `result.changes`, `result.writes`, `result.verification`, and `result.leftoverProcesses`; foreground `pi-worker run --json` keeps those fields at the root.
 
 Parse the single JSON document; if none comes back, the exit code is the signal.
-Exit 2 always means the command was rejected — fix your argv and re-run; exit 9
-is an internal failure; an exit of 7 or 8 means it was cut short: without a
-document, report interruption and stop. Whatever the outcome, read and report
+The exit code mirrors root `outcome`: `0` `completed`; `2` the command was
+rejected — fix your argv and re-run; `3` `workers-unavailable`; `4`
+`undeclared-writes`; `5` `task-failed` or `partial`; `6`
+`verification-failed`; `9` `internal-error`. An exit of 7 or 8 means it was
+cut short (`timeout`, `cancelled`): without a document, report interruption
+and stop. A `runs wait` whose own `--timeout` runs out also exits 7, but it
+prints the latest state with `terminal: false` and the run keeps going; wait
+again. `runs status` and `runs wait` exit with the same code as the finished
+run. The full table is under Exit codes in
+<https://github.com/arasovic/pi-worker/blob/main/docs/v0-usage.md#exit-codes>.
+Whatever the outcome, read and report
 each worker's `model`, effective `thinkingLevel`, `status`, `explanation`,
 `partialExplanation` when present, and `error`, plus root `changes`, `writes`,
 `verification`, and `leftoverProcesses` when present; a failed run's `changes`
