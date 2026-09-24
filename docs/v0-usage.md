@@ -110,8 +110,9 @@ packages you already allow in the comma-separated list.
 - `pi-worker worktrees remove <name> [--yes] [--json]`
 - `pi-worker run ...`
 - `pi-worker -h` / `pi-worker --help` print this usage to stdout and exit `0`;
-  any other unknown command names itself on stderr before the usage and exits
-  `2`.
+  `pi-worker <command> --help` prints that command's detailed help to stdout
+  and exits `0`; `run` has it now, the other commands follow. Any other
+  unknown command names itself on stderr before the usage and exits `2`.
 
 ## Version
 

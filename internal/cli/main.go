@@ -150,6 +150,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer stop()
 		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
+		if wantsHelp(args[1:]) {
+			printCommandHelp(stdout, "run")
+			return 0
+		}
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
 			return reportRunInputError(err, stderr)
@@ -197,6 +201,10 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	case "config":
 		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
+		if wantsHelp(args[1:]) {
+			printCommandHelp(stdout, "run")
+			return 0
+		}
 		opts, tasks, err := resolveRunInput(args[1:], stdin)
 		if err != nil {
 			return reportRunInputError(err, stderr)
@@ -422,6 +430,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker worktrees list [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees remove <name> [--yes] [--json]")
 	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug]")
+	fmt.Fprintln(w, "Details for one command: pi-worker <command> --help")
 }
 
 type versionOutput struct {
