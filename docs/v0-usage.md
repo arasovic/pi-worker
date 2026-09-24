@@ -111,7 +111,8 @@ packages you already allow in the comma-separated list.
 - `pi-worker run ...`
 - `pi-worker -h` / `pi-worker --help` print this usage to stdout and exit `0`;
   `pi-worker <command> --help` prints that command's detailed help to stdout
-  and exits `0`; `run` has it now, the other commands follow. Any other
+  and exits `0`; every command has one; for a command with subcommands,
+  `--help` after the subcommand works too. Any other
   unknown command names itself on stderr before the usage and exits `2`.
 
 ## Version

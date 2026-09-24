@@ -136,16 +136,32 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version", "--version":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "version")
+			return 0
+		}
 		return versionCommand(args[1:], stdout, stderr)
 	case "models":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "models")
+			return 0
+		}
 		ctx, stop := interruptContext()
 		defer stop()
 		return modelsCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "doctor")
+			return 0
+		}
 		ctx, stop := interruptContext()
 		defer stop()
 		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "config":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "config")
+			return 0
+		}
 		ctx, stop := interruptContext()
 		defer stop()
 		return configCommand(ctx, args[1:], stdout, stderr)
@@ -162,14 +178,26 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		defer stop()
 		return runCommand(ctx, opts, tasks, stdout, stderr)
 	case "skill":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "skill")
+			return 0
+		}
 		ctx, stop := interruptContext()
 		defer stop()
 		return skillCommand(ctx, args[1:], stdout, stderr)
 	case "runs":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "runs")
+			return 0
+		}
 		ctx, stop := interruptContext()
 		defer stop()
 		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "worktrees":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "worktrees")
+			return 0
+		}
 		ctx, stop := interruptContext()
 		defer stop()
 		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
@@ -193,12 +221,28 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 	}
 	switch args[0] {
 	case "version", "--version":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "version")
+			return 0
+		}
 		return versionCommand(args[1:], stdout, stderr)
 	case "models":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "models")
+			return 0
+		}
 		return modelsCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "doctor")
+			return 0
+		}
 		return doctorCommand(ctx, args[1:], stdout, stderr)
 	case "config":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "config")
+			return 0
+		}
 		return configCommand(ctx, args[1:], stdout, stderr)
 	case "run":
 		if wantsHelp(args[1:]) {
@@ -211,10 +255,22 @@ func mainWithContext(ctx context.Context, args []string, stdin io.Reader, stdout
 		}
 		return runCommand(ctx, opts, tasks, stdout, stderr)
 	case "skill":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "skill")
+			return 0
+		}
 		return skillCommand(ctx, args[1:], stdout, stderr)
 	case "runs":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "runs")
+			return 0
+		}
 		return runsCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "worktrees":
+		if wantsHelp(args[1:]) || wantsHelp(subcommandArgs(args)) {
+			printCommandHelp(stdout, "worktrees")
+			return 0
+		}
 		return worktreesCommand(ctx, args[1:], stdin, stdout, stderr)
 	case "-h", "--help":
 		printUsage(stdout)
