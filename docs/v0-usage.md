@@ -424,6 +424,9 @@ pi-worker runs cancel <id> [--json]
   and returns. It waits for nothing, so a run in flight is answered
   immediately, and asking again reports whatever has become durable
   since.
+- Without `--json`, `runs status` and `runs wait` print one aligned summary
+  table: a run row, one row per worker with its state, model, and answer,
+  plus `outcome=` for a finished run. No task prompt appears in that table.
 - `runs wait <id>` reads the same state repeatedly until the run
   finishes, then prints the finished run. Waiting is reading and nothing
   else: it never cancels, kills, or attaches to the run.
@@ -751,6 +754,10 @@ two runs from distinct configuration files do not share a gate.
   on stderr naming what moved, and `--json` mode carries a `git` object
   with `before` and `after` states. A modified working tree alone does
   not trigger it: leaving modified files behind is the point of a run.
+- The `git` object is a notification, not a prohibition: it means something
+  moved that a bounded edit does not normally move, and a caller may
+  legitimately want a worker to commit, so read it and decide rather than
+  treating it as an error.
 - The after state is collected on every terminal status, including a
   timed-out or cancelled run, under a fresh five-second budget when the
   parent context is already done.
@@ -877,6 +884,10 @@ two runs from distinct configuration files do not share a gate.
   configures the git inspector, so a workspace outside a git work tree
   reads `changes: omitted: work tree not confirmed` rather than
   nothing.
+- Which omitted reason a retry can clear differs: `measurement failed` and
+  the transient guard failure behind `work tree not confirmed` can clear on
+  a retry, `context already done` needs a re-run with a live context, and
+  `unborn head` cannot be changed by any retry.
 
 ### Exactly one input mechanism
 
@@ -1243,6 +1254,7 @@ It does **not** print:
 - macOS/Linux: each child runs in its own process group, but cleanup avoids signalling that reusable numeric group; it kills Pi through Go's process handle and performs a best-effort, creation-time-verified descendant sweep.
 - Windows: children are placed in a Job Object with kill-on-close.
 - This is recovery, not a sandbox. Deliberately daemonized/reparented processes, processes spawned during the post-snapshot window, and the short Windows pre-assignment window can escape. A run reports those of them that still carry its marker in root `leftoverProcesses`; see the run JSON contract for what it cannot see.
+- A `trap 'kill 0'` kept in a worker's own shell is at most a secondary layer: it does not run on `SIGKILL`, which a harness timeout can deliver, so it cannot substitute for the bounded command.
 - If Pi exits and is reaped before cleanup can snapshot its lineage, surviving descendants may also escape; v0 does not continuously track descendants.
 
 ## Examples

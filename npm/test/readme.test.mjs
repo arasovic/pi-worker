@@ -147,46 +147,41 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.match(normalizedSkill, /bash.*current user's host permissions/i);
   assert.match(normalizedSkill, /not a sandbox/i);
   assert.match(normalizedSkill, /separate working directory, not containment/i);
-  assert.match(normalizedSkill, /cleanup is best-effort lifecycle recovery/i);
-  assert.match(normalizedSkill, /not a sandbox or a no-escape guarantee/i);
-  assert.match(normalizedSkill, /deliberately daemonized or reparented Unix descendants/i);
-  assert.match(normalizedSkill, /processes spawned during teardown/i);
-  assert.match(normalizedSkill, /Windows pre-assignment window can escape/i);
-  assert.match(normalizedSkill, /exit of 7 or 8 means it was cut short/i);
-  assert.match(normalizedSkill, /without a document, report interruption and stop/i);
-  assert.match(normalizedSkill, /whatever the outcome, read and report/i);
-  assert.match(normalizedSkill, /`3` `workers-unavailable`/);
-  assert.match(normalizedSkill, /`5` `task-failed` or `partial`/);
-  assert.match(normalizedSkill, /`6` `verification-failed`/);
-  assert.match(normalizedSkill, /`runs wait` whose own `--timeout` runs out also exits 7/);
-  assert.match(normalizedSkill, /a failed run's `changes` still lists what the workers wrote; nothing is rolled back/i);
-  assert.match(normalizedSkill, /--background/);
+  assert.match(normalizedSkill, /which git operations are allowed/i);
+  assert.match(normalizedSkill, /parent-started side jobs must self-terminate/i);
+  assert.match(normalizedSkill, /never substitute a model or provider/i);
+  assert.match(normalizedSkill, /Acme Max.*--thinking max/i);
+  assert.match(normalizedSkill, /`pi-worker <command> --help`/);
+  assert.match(normalizedSkill, /`pi-worker run --help`/);
   assert.match(normalizedSkill, /runs wait <id> --timeout <slice> --json/i);
   assert.match(normalizedSkill, /a wait that runs out leaves the run going/i);
-  assert.match(normalizedSkill, /runs cancel <id> --json/i);
+  assert.match(normalizedSkill, /`completed` \(exit 0\) is the only success/i);
+  assert.match(normalizedSkill, /whatever the outcome, read and report/i);
+  assert.match(normalizedSkill, /nothing is rolled back/i);
+  assert.match(normalizedSkill, /`completed` does not prove the deliverable/i);
   assert.doesNotMatch(
     normalizedSkill,
     /(?:--background|slices?|threshold|host|command)[^.]{0,40}\d+\s*minutes?|\d+\s*minutes?[^.]{0,40}(?:--background|slices?|threshold|host|command)/i,
     "skill does not express the background trigger as a number of minutes"
   );
-  assert.doesNotMatch(normalizedSkill, /Do not treat empty output as any kind of success/i);
   for (const field of [
     "model",
     "thinkingLevel",
     "status",
     "explanation",
-    "partialExplanation",
     "error",
     "changes",
     "writes",
     "verification",
+    "leftoverProcesses",
   ]) {
     assert.match(normalizedSkill, new RegExp("`" + field + "`"), `skill names ${field}`);
   }
-  assert.match(normalizedSkill, /parent-started side jobs must self-terminate/i);
   assert.doesNotMatch(normalizedSkill, /worker's `failure`/i);
-  assert.match(normalizedSkill, /Luna Max.*--thinking max/i);
-  assert.doesNotMatch(normalizedSkill, /Spark Max/i);
+  assert.ok(
+    skill.split(/\s+/).filter(Boolean).length <= 450,
+    "skill must stay small: detail belongs in `pi-worker <command> --help`",
+  );
 });
 
 test("README links resolve and the npm tarball has one root README", () => {

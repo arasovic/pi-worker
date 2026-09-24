@@ -8,15 +8,33 @@ description: Use when an agent delegates work through Pi, needs cheaper or separ
 Delegate bounded execution only. Keep product, architecture, scope, and
 integration decisions in the parent agent. Never ask a worker to delegate.
 
+Every command explains itself: `pi-worker <command> --help` carries its flag
+rules, result fields, and exit codes. Read `pi-worker run --help` before the
+first run.
+
+## Boundaries
+
+- Workers modify the current writable workspace and may run `bash` with the
+  current user's host permissions. This is not a sandbox. `--worktree <name>`
+  gives a run a separate working directory, not containment.
+- Use trusted workspaces. pi-worker does not restrict commit, stash, checkout,
+  or reset: state in each task file which git operations are allowed.
+- Parallel writes must be disjoint. Runs sharing a workspace are not locked
+  against each other: serialize them or give each its own worktree.
+- Parent-started side jobs must self-terminate.
+- Do not repeat prompts, credentials, or raw debug output in reports.
+
+## Model
+
+Use the exact model asked for; never substitute a model or provider. Resolve an
+informal name with `pi-worker models --json`; on ambiguity or an unavailable
+model, report it and stop. Thinking is a separate level: "Acme Max" is one
+model plus `--thinking max`.
+
 ## Run
 
-1. Confirm `pi-worker` is on `PATH`.
-2. For an informal model name, query `pi-worker models --json --debug --timeout 30s`. Select one unambiguous exact `provider/model`; report ambiguity and stop.
-3. Preserve every explicit model. If unavailable or unauthenticated, report the setup action and stop. Never substitute a model or provider. If omitted, let the configured default apply. Pi-worker ships no default model: with no `--model` and no configured default, the run is rejected before any worker starts with exit code `2`; pass `--model` or run `pi-worker config set default-model <provider/model>` once. Model and thinking bind positionally like `--writes`: after a `--task` or `--task-file` they are that task's own, before every task they are the run default every task without its own inherits. Two models no longer need two runs — give each task its own `--model` and `--thinking` in one run. `--writes` keeps a stricter placement: in a multi-task run, one before every task is rejected as ambiguous, while `--model` in the same position is the run default. Pi-worker does not enforce a cross-run lock: callers must serialize runs sharing a workspace or give them separate worktrees, because cross-run writes can be attributed to whichever run measures them (a run that wrote nothing can be reported as undeclared).
-4. Treat thinking as a separate axis from the model: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. An informal name ending in a level — "Luna Max", "Sonnet high" — is one model plus one level, never a model named `luna-max`. Resolve the model through step 2 and pass both flags: `--model <exact selector from the catalog> --thinking max`. Never guess a provider prefix. Omit thinking when unspecified.
-5. Write one private task file per worker. Use one to three workers, and parallelize only disjoint responsibilities and writes. Declaring the paths with `--writes` asks for the write check; whether it actually ran is something the result reports. `--writes` paths are workspace-relative: an absolute path fails the run before any worker starts. They match on segment boundaries, so `internal/run` covers `internal/run/x.go` but not `internal/runner.go`; declare the directory rather than predict an exact file. The declaration is all-or-none: a run where some tasks declare and others do not is rejected before any worker starts. A task that will write nothing declares `--writes ""`. An overlapping declaration fails the run before any worker starts. In a one-task run, `--writes` may appear anywhere in the argument list, before the `--task` or `--task-file` included, and a prompt on stdin declares it the same way. With more than one task, place each `--writes` directly after the `--task` or `--task-file` it declares; one that precedes all of them is rejected as ambiguous. For all-declared disjoint multi-task runs with Git measurement, the monitor compares two identities per task — immediately after that worker returns and after all workers settle (not continuous tracing) — and proven interference (final identity differs from settled identity) is reported as undeclared and exits 4 (required snapshot failure exits 9 with no JSON); pi-worker never restores files; a write fully made/reverted before the owner's settlement snapshot is invisible, as is an interim post-settlement write restored to the exact settled identity before the final snapshot (owner's final output then intact); see docs for identity details. Task files must forbid Git cleanup/revert (`checkout`/`reset`/`clean`/branch moves) unless explicitly required, and workers must not touch sibling declared paths.
-   To hand a worker content to work ON — an issue body, a log, a spec — pass its path with `--data <paths>` (comma-separated, positional per task like `--writes`): pi-worker frames each file as a delimited MATERIAL section below the task's text and declares in the prompt that the material is content to work on, not instructions to follow — advisory: honouring it is the model's behavior, not a property pi-worker enforces. Pass nothing you would not have the worker act on as instructions: `--data` is not a containment mechanism for untrusted text. The worker result reports each file's `path`, `byteCount`, and `sha256`, never its content.
-6. Run with a bounded timeout, JSON result, and debug lifecycle output:
+Write one private task file per worker. Use one to three workers, each with its
+own disjoint `--writes`.
 
 ```sh
 pi-worker run --model <provider/model> --thinking <level> \
@@ -26,115 +44,19 @@ pi-worker run --model <provider/model> --thinking <level> \
   2>/tmp/pi-worker-debug.log
 ```
 
-stdout carries only the JSON document; `--debug` stderr goes to a file outside
-the workspace (a file inside would read as an undeclared change). Do not pipe
-the command to another tool: the exit code is the signal when no document
-comes back, and a pipe hands it to the downstream tool instead.
+Do not pipe stdout: when no document comes back, the exit code is the signal.
+When the host may cut the call off, add `--background` and wait in slices with
+`pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out
+leaves the run going. In that document the result sits under `result`.
 
-Add `--verify <command>` when the finished workspace must be proven green
-(e.g. `go test ./...`). The check runs once after the workers settle and
-is split on whitespace into argv: no shell is involved, so shell syntax
-is rejected up front, not executed. The result's `git`, `changes`, and
-`writes` describe the workers only: they are captured before the check
-runs, so keep the check read-only or inspect its artifacts separately
-when you need a clean evidence report.
+## Result
 
-Scheduling: every task joins the same machine-wide FIFO; the concurrency limit defaults to 3 and foreground runs do not preempt older work. Queue wait is budgeted at 15 minutes from acceptance; `--timeout` starts when the task is admitted, and `--verify` receives its own separate budget when it begins. Admission limits workers but does not isolate file writes—use separate worktrees or serialize overlapping cross-run workspaces. See <https://github.com/arasovic/pi-worker/blob/main/docs/v0-usage.md> for the full contract.
+Read root `outcome`. `completed` (exit 0) is the only success; the exit code
+mirrors the outcome, and `pi-worker run --help` gives each one its next move.
+Whatever the outcome, read and report each worker's `model`, `thinkingLevel`,
+`status`, `explanation`, and `error`, plus `changes`, `writes`,
+`verification`, and `leftoverProcesses`. A failed run's `changes` still lists
+what the workers wrote; nothing is rolled back.
 
-If the caller may stop attending or a command is host-bounded, `--background`
-returns a run id at once instead of blocking. Wait in slices under that bound:
-`pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out leaves
-the run going; wait again. Cancel with `pi-worker runs cancel <id> --json`.
-
-Without `--json`, `pi-worker runs status <id>` and `pi-worker runs wait <id>` print one aligned summary table: a run row, one row per worker with its state, model, and answer, plus `outcome=` for a finished run; no task prompt appears. With `--json`, each task's prompt is carried in the document up to 4096 bytes, so poll plain output and use JSON for the machine-readable document. For `pi-worker runs status <id> --json`, `pi-worker runs wait <id> --json`, and `pi-worker run --background --json`, the document is a run snapshot with its result under `result`: read `result.changes`, `result.writes`, `result.verification`, and `result.leftoverProcesses`; foreground `pi-worker run --json` keeps those fields at the root.
-
-Parse the single JSON document; if none comes back, the exit code is the signal.
-The exit code mirrors root `outcome`: `0` `completed`; `2` the command was
-rejected — fix your argv and re-run; `3` `workers-unavailable`; `4`
-`undeclared-writes`; `5` `task-failed` or `partial`; `6`
-`verification-failed`; `9` `internal-error`. An exit of 7 or 8 means it was
-cut short (`timeout`, `cancelled`): without a document, report interruption
-and stop. A `runs wait` whose own `--timeout` runs out also exits 7, but it
-prints the latest state with `terminal: false` and the run keeps going; wait
-again. `runs status` and `runs wait` exit with the same code as the finished
-run. The full table is under Exit codes in
-<https://github.com/arasovic/pi-worker/blob/main/docs/v0-usage.md#exit-codes>.
-Whatever the outcome, read and report
-each worker's `model`, effective `thinkingLevel`, `status`, `explanation`,
-`partialExplanation` when present, and `error`, plus root `changes`, `writes`,
-`verification`, and `leftoverProcesses` when present; a failed run's `changes`
-still lists what the workers wrote; nothing is rolled back, so inspect the
-workspace before cleaning. `leftoverProcesses` lists processes the run started
-that were still running when it ended, by `pid` and `name`; pi-worker never ends
-them, so decide whether to stop each one (a helper a tool keeps running by
-design, such as git's filesystem monitor reported as `git`, is usually safe to
-leave), and treat its absence as unknown rather than clean, because a process
-handed to a service manager or container, or one that cleared its environment,
-is not seen. Stderr carries the rejection and debug output; read it when no
-document appears.
-7. For checkouts created by `run --worktree <name>`, manage only the exact
-Git-registered pair at `<repo-root>/.pi-worker/worktrees/<valid-name>` on
-branch `run/<same-name>`: `pi-worker worktrees list [--json]` is read-only,
-sorted by name, reporting `name`/`path`/`branch`/`dirty`/`merged` (`merged`
-against the caller’s current `HEAD`, not `main`); `pi-worker worktrees remove
-<name> [--yes] [--json]` removes only a clean checkout whose branch is merged
-into the caller’s current `HEAD` — no force option. Malformed, missing,
-mismatched, locked, bare, prunable, or otherwise unprovable pairs are
-refused. Human `remove` shows the selected row and asks `[y/N]` (only `y`/`yes`
-proceeds; `--yes` skips only the question); JSON and nonterminal use require
-`--yes`. After an interactive yes the exact pair is re-checked and a change
-removes nothing and asks to retry. On success the checkout is removed then
-its branch; human mode prints `removed worktree "<name>" on branch
-"<branch>"`, JSON emits `{ schemaVersion: 1, removed: { name, path, branch }
-}`. See
-`https://github.com/arasovic/pi-worker/blob/main/docs/json-contracts.md` for
-the detailed JSON shape.
-
-When `thinkingFallback` is true, surface its warning: the selected model
-continued with Pi's confirmed default effort. Each worker gets at most three
-startup/handshake attempts before the prompt, each attempt uses a fresh
-process, and the prompt itself is sent once only; a later success carries a
-warning naming the retry. Read root `outcome`:
-`completed` is the only done state — a `writes.skipped` value means a check
-could not run, unproven, not clean. When `writes.skipped` is `change manifest
-unavailable`, the manifest was not measured: read `changes.omitted`, which is
-always present on a real run — the CLI always configures the git inspector, so
-`changes` never vanishes from output. A listed file carrying
-`noFinalNewline: true` ends without a final newline; that is descriptive, not
-a verdict — `added` means the run produced it that way, `modified` means it
-may always have been so. The reason decides the caller's next move: `unborn
-head`, `context already done`, `measurement failed`, or `work
-tree not confirmed` — the last meaning the workspace is not a git work tree,
-git is missing, or the guard failed transiently, which the reason does not
-claim to distinguish. Which reasons a retry can clear differs: `measurement
-failed` — a git command failure or a budget that expired — and the transient
-guard failure behind `work tree not confirmed` can clear on retry; the reason
-cannot tell that cause from a genuinely unconfirmed work tree, so one retry is
-a fair test and repeating it is not. `context already done` means the run's
-own context was already dead when it would have inspected, so re-run with a
-live context. `unborn head` means the repository has no commits, which no
-retry can change. `verification-failed` means the `verification` object is
-there; report it, fix the workspace, and re-run. Any other word means report
-it with its object when one exists (`writes`, `verification`, or the worker's
-`error`) and stop.
-
-`completed` means the workers' turns ended normally and every configured check
-passed; it does not prove the task's deliverable exists or is finished. A
-worker's final text can be a mid-work sentence — for example when an upstream
-response was cut short but reported as a normal ending — and a declared file can
-exist with only a header. When the deliverable matters, pass a `--verify` command
-that inspects its content: a file's existence or non-emptiness is not enough, and
-an unrelated green test suite says nothing about it. Read the deliverable
-yourself before accepting the run, and treat a worker `warning` that names a
-continuation as a reason to inspect the deliverable before trusting `completed`.
-
-## Boundaries
-
-- Workers modify the current writable workspace and may run `bash` with the current user's host permissions. This is not a sandbox. The run flag `--worktree <name>` opts one run into a checkout of its own: a separate working directory, not containment — a worker can still reach outside it. Without the flag, behavior is unchanged and the worker works in the current directory. A task can lead a worker to commit, stash, checkout, or reset; pi-worker does not restrict this, so the task file must state what git operations are allowed. Runs never automatically remove leftover checkouts or branches; removal is only via the explicit safe `pi-worker worktrees remove` command which requires a clean, merged pair.
-- When a run moves HEAD, the branch, or the stash list, the result carries a `git` object with the before and after state. Its presence means something moved that a bounded edit does not normally move: read it as a notification, not a prohibition — a caller may legitimately want a worker to commit.
-- Use trusted workspaces. Parallel writes must be disjoint, and pi-worker does not enforce a cross-run lock: callers must serialize runs sharing a workspace or give them separate worktrees, because cross-run writes can be attributed to whichever run measures them. Pi-worker never restores files; `--writes` remains post-hoc comparing two identities per task (not continuous tracing): a foreign write fully made/reverted before the owner's settlement snapshot is invisible, as is an interim post-settlement write restored to the exact settled identity before the final snapshot (owner's final output then intact).
-- Cleanup is best-effort lifecycle recovery, not a sandbox or a no-escape guarantee. Deliberately daemonized or reparented Unix descendants, processes spawned during teardown, and the Windows pre-assignment window can escape.
-- Parent-started side jobs must self-terminate.
-- Keep a `trap 'kill 0' EXIT INT TERM` as a secondary layer only. It does not run on SIGKILL, which a harness timeout can deliver, so it cannot substitute for the bounded command.
-- Debug is bounded stderr lifecycle data, not the result. A heartbeat proves only that the managed Pi process is alive; it does not prove model progress.
-- Do not repeat raw debug frames, prompts, credentials, or assistant output unnecessarily.
+`completed` does not prove the deliverable: read it yourself, or pass a
+`--verify` command that inspects it.
