@@ -159,24 +159,35 @@ native status exit code.
 ## `runs list --json`
 
 The root object has exactly `schemaVersion` and `runs`. `runs` is always an
-array, ordered newest first. Each entry has exactly these fields:
+array, ordered newest first, and includes both foreground records (the
+`.jsonl` files in the records directory) and background runs (one
+`snapshot.json` per run directory in the background store). Each entry has
+exactly these fields:
 
-- `runId`: the record filename without `.jsonl`
-- `startedAt`: the start timestamp, or `""` when the start fields are unreadable
+- `runId`: the record filename without `.jsonl`; for a background run, its
+  run directory name
+- `startedAt`: the start timestamp, or `""` when the start fields are
+  unreadable; for a background run, its `acceptedAt`
 - `workspace`: the recorded workspace, or `""` when unreadable
-- `tasks`: the number of recorded tasks, or `0` when unreadable
+- `tasks`: the number of recorded tasks, or `0` when unreadable; for a
+  background run, its worker count
 - `models`: the models the run's tasks named, in task order and without
   repeats, or `[]` when there are none or the start fields are unreadable
 - `outcome`: the recorded outcome, `error`, `running`, `interrupted`, or
-  `unknown`
-- `path`: the record path
+  `unknown`; a finished background run reports its own outcome, `running`
+  while its supervisor is alive, `interrupted` when the supervisor is gone
+  before it finished, and `unknown` when its state cannot be read
+- `path`: the record path; for a background run, its `snapshot.json`
 
 No root or entry field is omitted. Missing or unreadable display fields use
-their zero values. A record with no usable start line remains an entry with
-`outcome: "unknown"` and its filename-derived `runId` and `path`; its other
-entry fields carry their zero values. A successful command exits `0`, including
-when `runs` is empty. Usage errors exit `2`; a records-directory resolution or
-read failure exits `9`. Those failure paths emit no JSON document.
+their zero values. A foreground record with no usable start line remains an
+entry with `outcome: "unknown"` and its filename-derived `runId` and `path`;
+its other entry fields carry their zero values. A background run whose
+snapshot cannot be read is likewise an entry with `outcome: "unknown"`, its
+directory-derived `runId`, and its `snapshot.json` path. A successful command
+exits `0`, including when `runs` is empty. Usage errors exit `2`; a records-
+directory or background-root resolution or read failure exits `9`. Those
+failure paths emit no JSON document.
 
 ## `runs prune --json`
 

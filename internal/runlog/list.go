@@ -416,6 +416,10 @@ func taskModels(tasks []json.RawMessage) []string {
 	return models
 }
 
+// ProcessAlive reports whether the process recorded as pid with creation
+// time createTime is still that process, by the same rule List uses.
+func ProcessAlive(pid int, createTime int64) bool { return recordProcessAlive(pid, createTime) }
+
 // recordProcessAlive answers the one liveness question the three
 // readers ask of a record's start-line process: is that process still
 // the process that wrote the record? The answer is decided by the

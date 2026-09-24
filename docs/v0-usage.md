@@ -258,7 +258,15 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   `.tmp-*` stages, and any other file are not.
 - `runs list` is read-only: it prints one line per record, newest
   first, and writes nothing — no marker, no watermark, no
-  interrupted-run warning.
+  interrupted-run warning. It also lists every run started with
+  `--background`, read from the background store — one `snapshot.json`
+  per run directory under pi-worker's background directory — merged
+  with the foreground records and sorted newest first. A background
+  run's `path` is its `snapshot.json`; its outcome is the run's own
+  outcome once finished, `running` while its supervisor is still
+  alive, `interrupted` when the supervisor is gone before the run
+  finished, and `unknown` when its state cannot be read. `runs prune`
+  does not touch background runs.
 - A record's outcome is one of: the run's own outcome, verbatim, when
   its finish line carried a result; `error` when the finish line
   carried the error arm instead; `running` when there is no finish
@@ -270,8 +278,11 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   final selection and deletes the rest — one file at a time, stale
   `unknown` records included — and never deletes a record whose run is
   still running, whatever its age. `--keep 0` keeps none by age;
-  running runs are still spared. An `unknown` record is deleted like
-  any other, except while its file has changed within the last hour:
+  running runs are still spared. It lists, selects, and deletes only
+  `.jsonl` records in the records directory: runs started with
+  `--background` are never seen or touched by prune. An `unknown`
+  record is deleted like any other, except while its file has changed
+  within the last hour:
   prune cannot tell an unreadable record apart from one being written,
   so a record that changed recently is kept and reported — a later
   prune deletes it once it stops changing. That freshness question is
@@ -328,7 +339,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   as above.
 - Both commands emit one `schemaVersion: 1` document with `--json`.
   `runs list --json` carries a `runs` array — empty, never null, when
-  there are no records. `runs prune --json` (which requires `--yes`)
+  there is nothing to list. `runs prune --json` (which requires `--yes`)
   carries `deleted`, the run ids actually deleted, and the two kept
   arrays, `keptRunning` and `keptUnreadable`: a run still running
   lands in the first, a record that could not be read in the second —
