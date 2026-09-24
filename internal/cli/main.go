@@ -81,6 +81,14 @@ var runlogLeftovers = runlog.Leftovers
 // production value reads the records newest first.
 var runlogList = runlog.List
 
+// backgroundRoot and backgroundListRuns are the private dependency-injection
+// seams for the background half of runs list. Tests replace them with a
+// temporary root so no test reads the user's real background store; the
+// production values resolve the user's background directory and read its
+// snapshots into the same entry shape runlog.List produces.
+var backgroundRoot = background.DefaultRoot
+var backgroundListRuns = background.ListRuns
+
 // stdinIsTerminal reports whether the command's stdin is an
 // interactive terminal — the one question a bare io.Reader cannot
 // answer, so runs prune asks it here instead of reaching for os.Stdin

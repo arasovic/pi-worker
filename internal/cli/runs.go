@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -100,6 +101,26 @@ func runsListCommand(parent context.Context, opts runsOptions, stdout, stderr io
 		fmt.Fprintf(stderr, "pi-worker: list runs: %v\n", err)
 		return 9
 	}
+	// Background runs live in their own store, not in the records
+	// directory, so the inventory is the union of both readers. Only
+	// runs list merges them: runs prune keeps calling runlogList alone
+	// and must never see a background run, let alone delete one.
+	bgRoot, err := backgroundRoot()
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
+		return 9
+	}
+	bgRuns, err := backgroundListRuns(bgRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
+		return 9
+	}
+	runs = append(runs, bgRuns...)
+	// Both readers return their own entries newest first; the merged
+	// slice is sorted again so the interleaving of the two streams is
+	// chronological. Stable ordering leaves equal ids in first-seen
+	// order, though a run id is unique across both stores.
+	sort.SliceStable(runs, func(i, j int) bool { return runs[i].RunID > runs[j].RunID })
 	if runs == nil {
 		// The empty document is an empty array, never null, whatever
 		// the reader returned.

@@ -75,13 +75,33 @@ func writeListRecord(t *testing.T, dir, runID string, pid int, startedAt, worksp
 	return path
 }
 
+// withBackgroundRoot points the backgroundRoot seam at root for the duration
+// of one test, exactly like the other seam installers in this package. A list
+// test that wants to see a real background run points this at the same root
+// its Manager uses; every other test that reaches runs list gets a fresh
+// empty root from withRunlogDir instead.
+func withBackgroundRoot(t *testing.T, root string) {
+	t.Helper()
+	original := backgroundRoot
+	backgroundRoot = func() (string, error) { return root, nil }
+	t.Cleanup(func() { backgroundRoot = original })
+}
+
 // withRunlogDir points the runlogDir seam at dir for the duration of
-// one test, exactly like the other seam installers in this package.
+// one test, exactly like the other seam installers in this package. It
+// also points backgroundRoot at a fresh empty temporary directory: once
+// runs list merges the background store into its inventory, a test that
+// reached the command without isolating the background root would list
+// whatever runs the developer's real store happens to hold, and its
+// equality assertions would pass only where that store is empty. Tests
+// that need a real background run override the seam afterwards with
+// withBackgroundRoot.
 func withRunlogDir(t *testing.T, dir string) {
 	t.Helper()
 	original := runlogDir
 	runlogDir = func() (string, error) { return dir, nil }
 	t.Cleanup(func() { runlogDir = original })
+	withBackgroundRoot(t, t.TempDir())
 }
 
 // withStdinIsTerminal scripts the terminal seam for the duration of
