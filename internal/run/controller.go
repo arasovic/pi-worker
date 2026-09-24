@@ -165,6 +165,12 @@ type Controller struct {
 	gitInspector       GitInspector
 	afterWorkerSettled func(index int)
 
+	// preRunBudget bounds the pre-run git measurement — the before
+	// inspection and the pre-run stamping — on its own. New sets it to
+	// changesTimeout, because the pre-run stamping is the same kind of
+	// work the manifest pass does under that budget.
+	preRunBudget time.Duration
+
 	// Foreground admission fields. When foregroundAdmission is true,
 	// every task enqueues a ticket in the shared gate before execution
 	// and releases the lease after execution. Passing nil gate via
@@ -232,6 +238,7 @@ func WithPreparedAdmission(runID string, acceptedAt time.Time, executionTimeout 
 func New(worker pi.Worker, opts ...Option) *Controller {
 	c := &Controller{
 		worker:           worker,
+		preRunBudget:     changesTimeout,
 		executionContext: context.WithTimeout,
 		queueContext: func(ctx context.Context, _ int, deadline time.Time) (context.Context, context.CancelFunc) {
 			return context.WithDeadline(ctx, deadline)
@@ -308,7 +315,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// that never confirmed a work tree — which is indistinguishable
 	// from a directory outside one and from git missing entirely — is
 	// its own stated omission naming only what is known, never which of
-	// the three causes it is.
+	// the three causes it is. The pre-run measurement runs under its own
+	// budget derived from the run's context, so a hung git command cannot
+	// stall the run before any worker starts.
 	var before *GitState
 	var beforeErr error
 	// The context state is captured here, at the inspection site, where
@@ -316,8 +325,10 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// context that was live at inspection may have died mid-run and
 	// would look identical to one already done when it started.
 	beforeContextDone := false
+	preCtx, preCancel := context.WithTimeout(ctx, c.preRunBudget)
+	defer preCancel()
 	if c.gitInspector != nil {
-		before, beforeErr = c.gitInspector.Inspect(ctx, req.Workspace)
+		before, beforeErr = c.gitInspector.Inspect(preCtx, req.Workspace)
 		beforeContextDone = ctx.Err() != nil
 	}
 	// The before-dirty snapshot runs immediately after the inspection
@@ -346,12 +357,12 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	var repoRootVal string
 	measureWorkspace := req.Workspace
 	if before != nil && beforeErr == nil && before.Head != "" {
-		root, err := repoRoot(ctx, req.Workspace)
+		root, err := repoRoot(preCtx, req.Workspace)
 		if err != nil {
 			beforeErr = err
 		} else {
 			repoRootVal = root
-			prefixOut, prefixErr := gitOutput(ctx, req.Workspace, "rev-parse", "--show-prefix")
+			prefixOut, prefixErr := gitOutput(preCtx, req.Workspace, "rev-parse", "--show-prefix")
 			if prefixErr != nil {
 				beforeErr = fmt.Errorf("git rev-parse --show-prefix: %w", prefixErr)
 			} else {
@@ -359,9 +370,9 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 				// declarations anchor correctly when req.Workspace differs
 				// from git's spelling only in letter case.
 				measureWorkspace = filepath.Join(root, strings.TrimSuffix(prefixOut, "\n"))
-				metadata, beforeErr = snapshotGitMetadata(ctx, root)
+				metadata, beforeErr = snapshotGitMetadata(preCtx, root)
 				if beforeErr == nil && before.Dirty {
-					dirtyStamps, beforeErr = snapshotDirtyStamps(ctx, req.Workspace)
+					dirtyStamps, beforeErr = snapshotDirtyStamps(preCtx, req.Workspace)
 				}
 			}
 		}
