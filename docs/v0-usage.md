@@ -749,6 +749,9 @@ two runs from distinct configuration files do not share a gate.
   stash count. There is no flag for this; it happens on every run. The
   after state is taken before the verification command runs, so a
   check that moves git state is not part of the `git` object.
+  The before state and the pre-run stamping share one thirty-second
+  budget, so a git command that hangs cannot hold the run before any
+  worker starts; a budget that runs out is a measurement failure.
 - When the run moved HEAD, the branch, or the stash list, human mode
   prints one `pi-worker: warning: the run changed git state: ...` line
   on stderr naming what moved, and `--json` mode carries a `git` object

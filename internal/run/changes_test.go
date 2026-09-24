@@ -2382,3 +2382,49 @@ func TestControllerChangesNestedRepositoryOverwriteInsideOmitted(t *testing.T) {
 		t.Fatalf("writes = %#v, want no clean verdict", writes)
 	}
 }
+
+// blockingGitInspector is a fake GitInspector whose Inspect blocks until
+// its context is done, then reports the context error. It models a git
+// command that hangs after it has started, so a test can observe whether
+// the pre-run measurement is bounded by its own budget.
+type blockingGitInspector struct{}
+
+func (blockingGitInspector) Inspect(ctx context.Context, dir string) (*GitState, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestControllerPreRunGitMeasurementIsBounded(t *testing.T) {
+	// The pre-run inspection blocks until its context is cancelled. With
+	// an unbounded pre-run context the run would hang before any worker
+	// starts; the preRunBudget must cut it off, record the measurement
+	// failure, and let the run continue to the worker.
+	worker := newScriptedWorker()
+	c := New(worker, WithGitInspector(blockingGitInspector{}))
+	c.preRunBudget = 100 * time.Millisecond
+
+	type outcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := c.Run(context.Background(), validRequest("a"))
+		done <- outcome{result: result, err: err}
+	}()
+
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("run: %v", out.err)
+		}
+		if out.result.Changes == nil || out.result.Changes.Omitted != reasonMeasurementFail {
+			t.Fatalf("changes = %#v, want omitted with %q", out.result.Changes, reasonMeasurementFail)
+		}
+		if worker.callCount() != 1 {
+			t.Fatalf("worker invoked %d times, want 1", worker.callCount())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return within 10s; pre-run git measurement is not bounded")
+	}
+}
