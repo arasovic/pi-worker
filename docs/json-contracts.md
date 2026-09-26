@@ -344,14 +344,23 @@ Worker fields are conditionally present:
 - `requestedThinkingLevel`: present for an explicit request
 - `thinkingLevel`: present after Pi reports an effective level
 - `thinkingFallback`: present and `true` only for a reported fallback
-- `warning`: present with a fallback or other worker warning
+- `warning`: present with a fallback or other worker warning. A run that
+  reaches its time limit and spends its reserve on the final wrap-up prompt
+  appends one line saying how that wrap-up ended, as `timeout wrap-up:
+  stopping took <d>; report completed after <d>`, `timeout wrap-up: stopping
+  took <d>; report cut off at the time limit after <d>`, `timeout wrap-up:
+  stopping took <d>; no report text after <d>`, or `timeout wrap-up: stopping
+  took <d>; report prompt could not be sent`. `<d>` is a duration rounded to
+  the millisecond; the first names how long stopping the interrupted turn
+  took, the second (when present) how long the report took.
 - `explanation`: present when final assistant text exists
 - `partialExplanation`: present when the run ended without a final
   assistant text but retained assistant text exists; carries the most
   recent retained assistant text, which may precede the message in flight,
   is at most `MaxFrameBytes` (8 MiB) in UTF-8 bytes, and never appears
   together with `explanation`. On a timeout it carries the worker's final
-  wrap-up report when the model wrote one.
+  wrap-up report when the model wrote one, and the `warning` says how that
+  wrap-up ended.
 - `error`: present when the worker reports an error. When the latest assistant
   `message_end` has the stable `stopReason: "error"`, the worker reports
   `upstream/model turn ended with an error: <errorMessage>`, carrying Pi's own

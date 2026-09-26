@@ -465,12 +465,40 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// still ends timed-out: classify against the working context supplies the
 	// same error text as an ordinary timeout, and finalize fills
 	// partialExplanation from the text the wrap-up turn streamed. Abort and the
-	// waits use the parent context, which is still alive by construction.
+	// waits use the parent context, which is still alive by construction. It
+	// also measures how long stopping the turn took and how long the report
+	// itself took, and appends exactly one warning line naming how the wrap-up
+	// ended — completed, cut off at the time limit, no report text, or the
+	// prompt could not be sent.
 	wrapUp := func() WorkerResult {
+		stopStarted := time.Now()
 		_ = client.Abort(ctx)
 		_ = waitSettled(ctx)
-		_ = client.Prompt(ctx, wrapUpPrompt)
-		_ = waitSettled(ctx)
+		stop := time.Since(stopStarted)
+
+		deltasBefore := transcript.textDeltaCount()
+		reportStarted := time.Now()
+		promptErr := client.Prompt(ctx, wrapUpPrompt)
+		waitErr := waitSettled(ctx)
+		report := time.Since(reportStarted)
+		streamedText := transcript.textDeltaCount() > deltasBefore
+
+		var wrapUpWarning string
+		switch {
+		case promptErr != nil:
+			wrapUpWarning = wrapUpPromptFailedWarning(stop)
+		case waitErr == nil && streamedText:
+			wrapUpWarning = wrapUpReportCompletedWarning(stop, report)
+		case waitErr != nil && streamedText:
+			wrapUpWarning = wrapUpReportCutOffWarning(stop, report)
+		default:
+			wrapUpWarning = wrapUpNoReportTextWarning(stop, report)
+		}
+		if thinking.warning != "" {
+			thinking.warning = thinking.warning + "; " + wrapUpWarning
+		} else {
+			thinking.warning = wrapUpWarning
+		}
 		return finalize(w.classify(req.Model, workCtx, workCtx.Err()))
 	}
 	prompt := req.Prompt
@@ -661,6 +689,34 @@ func continuationSucceededWarning(attempt int) string {
 // ended the run.
 func continuationNoProgressWarning(attempt int) string {
 	return fmt.Sprintf("continuation attempt %d/%d after a turn that ended without a final answer; the retries produced no progress", attempt, maxContinuationAttempts)
+}
+
+// wrapUpPromptFailedWarning is the one wrap-up warning when Pi did not accept
+// the wrap-up prompt, so no report turn ever started. It still names how long
+// stopping the interrupted turn took.
+func wrapUpPromptFailedWarning(stop time.Duration) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; report prompt could not be sent", stop.Round(time.Millisecond))
+}
+
+// wrapUpReportCompletedWarning is the one wrap-up warning when the wrap-up
+// turn settled carrying report text. It names how long stopping the
+// interrupted turn took and how long the report took.
+func wrapUpReportCompletedWarning(stop, report time.Duration) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; report completed after %s", stop.Round(time.Millisecond), report.Round(time.Millisecond))
+}
+
+// wrapUpReportCutOffWarning is the one wrap-up warning when the wrap-up turn
+// streamed report text but the time limit ended it before it settled.
+func wrapUpReportCutOffWarning(stop, report time.Duration) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; report cut off at the time limit after %s", stop.Round(time.Millisecond), report.Round(time.Millisecond))
+}
+
+// wrapUpNoReportTextWarning is the one wrap-up warning when the wrap-up turn
+// contributed no report text, whether it settled silently or never settled. It
+// names how long stopping the interrupted turn took and how long waiting for
+// the report took.
+func wrapUpNoReportTextWarning(stop, report time.Duration) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; no report text after %s", stop.Round(time.Millisecond), report.Round(time.Millisecond))
 }
 
 func retryableStartupFailure(err error) bool {

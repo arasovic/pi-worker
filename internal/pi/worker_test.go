@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1599,6 +1600,9 @@ func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
 	if result.ContinuationAttempts != 0 {
 		t.Fatalf("continuationAttempts = %d, want 0 for a wrap-up turn", result.ContinuationAttempts)
 	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the completed wrap-up line", result.Warning)
+	}
 	if finished := time.Now(); !finished.Before(deadline) {
 		t.Fatalf("run finished at %v, not before the parent deadline %v", finished, deadline)
 	}
@@ -1608,6 +1612,128 @@ func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
 	}
 	if got := countStrings(types, "prompt"); got != 2 {
 		t.Fatalf("request log = %v, want exactly two prompts", types)
+	}
+}
+
+// TestWorkerWrapUpSettlesWithoutReportText covers the wrap-up turn that settles
+// carrying no report text: the worker still ends timed-out and its warning says
+// no report text arrived.
+func TestWorkerWrapUpSettlesWithoutReportText(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The wrap-up turn is accepted and settles without any text.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if result.PartialExplanation != "" {
+		t.Fatalf("partialExplanation = %q, want none without report text", result.PartialExplanation)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the no-report-text wrap-up line", result.Warning)
+	}
+}
+
+// TestWorkerWrapUpReportCutOffAtTimeLimit covers the wrap-up turn that streams
+// report text but never settles: the parent deadline ends it, the warning says
+// the report was cut off, and partialExplanation is the streamed text.
+func TestWorkerWrapUpReportCutOffAtTimeLimit(t *testing.T) {
+	const wrapUpText = "Parsed 12 files before the limit; the report is unfinished."
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The wrap-up turn is accepted and streams its report but never
+			// settles, so the parent deadline ends the report wait.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+				{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + wrapUpText + `"}}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if result.PartialExplanation != wrapUpText {
+		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the cut-off wrap-up line", result.Warning)
+	}
+}
+
+// TestWorkerWrapUpPromptRejected covers Pi rejecting the wrap-up prompt: no
+// report turn starts and the warning says the prompt could not be sent.
+func TestWorkerWrapUpPromptRejected(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The wrap-up prompt is rejected, so no report turn ever starts.
+			{{Response: &script.Response{Success: false, Error: "prompt rejected"}}},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report prompt could not be sent$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the prompt-could-not-be-sent wrap-up line", result.Warning)
 	}
 }
 
@@ -1655,6 +1781,9 @@ func TestWorkerParentCancellationSkipsWrapUp(t *testing.T) {
 	}
 	if result.PartialExplanation != "" {
 		t.Fatalf("partialExplanation = %q, want none for a cancelled run", result.PartialExplanation)
+	}
+	if strings.Contains(result.Warning, "timeout wrap-up") {
+		t.Fatalf("warning = %q, want no wrap-up warning for a cancelled run", result.Warning)
 	}
 	types := waitRequestLog(t, logPath, 4)
 	if got := countStrings(types, "prompt"); got != 1 {
