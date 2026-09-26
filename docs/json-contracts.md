@@ -271,10 +271,19 @@ in a managed private checkout.
 
 Each entry of `workers` carries `workerId` (1-based, request order),
 `state`, `acceptedAt`, `queueDeadline`, `executionTimeout`, and `task`;
-`startedAt`, `finishedAt`, `process`, and `result` appear once the worker
-has reached the phase that produces them. Worker `state` is `queued`,
-`running`, `completed`, `failed`, `timed-out`, `cancelled`,
+`startedAt`, `finishedAt`, `process`, `activity`, and `result` appear once
+the worker has reached the phase that produces them. Worker `state` is
+`queued`, `running`, `completed`, `failed`, `timed-out`, `cancelled`,
 `unavailable`, or `error`.
+
+`activity` is present once a running worker has reported Pi activity. It is
+reported on every tool start and otherwise at most every 10 seconds, and it
+carries `lastEventAt` (the moment of the last observed Pi event), `toolCalls`
+(the number of tool calls started so far), and `lastTool` (the most recent
+tool name, absent before the first tool call). `lastTool` is one of the
+built-in tool names or the fixed unknown placeholder — never tool arguments,
+output, or any other Pi text. The last activity reported stays in the
+terminal record after the run finishes.
 
 A `runs wait` whose bound arrived first prints the latest non-terminal
 document — `terminal` is `false` and there is no `result` — and says on

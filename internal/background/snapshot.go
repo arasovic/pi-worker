@@ -99,7 +99,12 @@ type WorkerSnapshot struct {
 	ExecutionTimeout string             `json:"executionTimeout"`
 	Task             run.TaskProjection `json:"task"`
 	Process          *ProcessIdentity   `json:"process,omitempty"`
-	Result           *pi.WorkerResult   `json:"result,omitempty"`
+	// Activity is the best-effort liveness report from Pi while the worker
+	// runs. It is present once a running worker has reported activity and
+	// is kept in the terminal snapshot, so the last observed activity stays
+	// in the finished record.
+	Activity *pi.Activity     `json:"activity,omitempty"`
+	Result   *pi.WorkerResult `json:"result,omitempty"`
 }
 
 // Validate checks that every field is structurally consistent.
@@ -404,6 +409,24 @@ func validateWorker(w WorkerSnapshot, snapAccepted, snapUpdated time.Time) []str
 	if w.Process != nil {
 		if w.Process.PID <= 0 || w.Process.CreateTime <= 0 {
 			errs = append(errs, fmt.Sprintf("worker[%d]: process pid and createTime must be positive", w.WorkerID))
+		}
+	}
+
+	// Activity (optional). It exists only for a worker that had started,
+	// and it carries a real event time. There is deliberately no ordering
+	// rule against startedAt or updatedAt: the two sides come from two
+	// processes' clocks, so their order is not knowable.
+	if w.Activity != nil {
+		if w.StartedAt == nil {
+			errs = append(errs, fmt.Sprintf("worker[%d]: activity requires startedAt", w.WorkerID))
+		}
+		if w.Activity.LastEventAt.IsZero() {
+			errs = append(errs, fmt.Sprintf("worker[%d]: activity lastEventAt must not be zero", w.WorkerID))
+		} else if w.Activity.LastEventAt.Location() != time.UTC {
+			errs = append(errs, fmt.Sprintf("worker[%d]: activity lastEventAt must be in UTC", w.WorkerID))
+		}
+		if w.Activity.ToolCalls < 0 {
+			errs = append(errs, fmt.Sprintf("worker[%d]: activity toolCalls must be >= 0", w.WorkerID))
 		}
 	}
 

@@ -93,6 +93,9 @@ type Request struct {
 	// reports the identity of the process it launched while the run is in
 	// flight; nil disables the report.
 	OnProcessStart pi.ProcessObserver
+	// OnActivity, when non-nil, is passed to every worker so each reports
+	// its activity while the run is in flight; nil disables the report.
+	OnActivity pi.ActivityObserver
 }
 
 // Worktree names the private checkout one run was given through the
@@ -448,6 +451,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			WorkerID:       index + 1,
 			Debug:          req.Debug,
 			OnProcessStart: req.OnProcessStart,
+			OnActivity:     req.OnActivity,
 		})
 		// The carried-file report is the run layer's own record of
 		// what it composed: the worker receives only the composed

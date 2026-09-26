@@ -23,6 +23,11 @@ const (
 	// including every startup-retry identity, in launch order, before the
 	// terminal result frame.
 	workerHostFrameProcessStart workerHostFrameKind = "process-start"
+	// workerHostFrameActivity is one activity notification: the child host
+	// reports what the running worker's Pi subprocess is doing — on every
+	// tool start and otherwise at most once per activity interval. There
+	// may be any number of them before the terminal result frame.
+	workerHostFrameActivity workerHostFrameKind = "activity"
 	// workerHostFrameResult is the single terminal result frame carrying
 	// exactly one pi.WorkerResult, preserved field for field.
 	workerHostFrameResult workerHostFrameKind = "result"
@@ -31,8 +36,9 @@ const (
 // workerHostResponse is one decoded worker-host response frame.
 type workerHostResponse struct {
 	kind     workerHostFrameKind
-	workerID int // process-start frames only
+	workerID int // process-start and activity frames
 	pid      int // process-start frames only
+	activity pi.Activity
 	result   pi.WorkerResult
 }
 
@@ -45,6 +51,7 @@ type workerHostResponseJSON struct {
 	Kind          string          `json:"kind"`
 	WorkerID      *int            `json:"workerId,omitempty"`
 	PID           *int            `json:"pid,omitempty"`
+	Activity      json.RawMessage `json:"activity,omitempty"`
 	Result        json.RawMessage `json:"result,omitempty"`
 }
 
@@ -67,6 +74,50 @@ func encodeWorkerHostProcessStart(workerID, pid int) ([]byte, error) {
 		return nil, fmt.Errorf("encode worker host response: %w", err)
 	}
 	return data, nil
+}
+
+// encodeWorkerHostActivity validates one activity report and returns its
+// response frame as JSON bytes. The same rules the strict decoder applies
+// are enforced here, so an invalid activity is never put on the wire.
+func encodeWorkerHostActivity(workerID int, activity pi.Activity) ([]byte, error) {
+	if err := validateWorkerHostActivity(workerID, activity); err != nil {
+		return nil, fmt.Errorf("encode worker host response: %w", err)
+	}
+	activityData, err := json.Marshal(activity)
+	if err != nil {
+		return nil, fmt.Errorf("encode worker host response: %w", err)
+	}
+	data, err := json.Marshal(workerHostResponseJSON{
+		SchemaVersion: workerHostResponseSchemaVersion,
+		Kind:          string(workerHostFrameActivity),
+		WorkerID:      &workerID,
+		Activity:      activityData,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode worker host response: %w", err)
+	}
+	return data, nil
+}
+
+// validateWorkerHostActivity is the single activity rule shared by encode
+// and decode: a positive worker identity, a non-negative call count, a
+// non-zero event time, and a bounded projected tool name. The name is
+// either a built-in name or the fixed unknown placeholder, so the byte
+// bound is a backstop, not the projection itself.
+func validateWorkerHostActivity(workerID int, activity pi.Activity) error {
+	if workerID <= 0 {
+		return fmt.Errorf("workerId must be positive, got %d", workerID)
+	}
+	if activity.ToolCalls < 0 {
+		return fmt.Errorf("toolCalls must be >= 0, got %d", activity.ToolCalls)
+	}
+	if activity.LastEventAt.IsZero() {
+		return fmt.Errorf("lastEventAt must not be zero")
+	}
+	if len(activity.LastTool) > 64 {
+		return fmt.Errorf("lastTool must be at most 64 bytes, got %d", len(activity.LastTool))
+	}
+	return nil
 }
 
 // encodeWorkerHostResult returns the terminal result frame for one
@@ -121,6 +172,9 @@ func decodeWorkerHostResponse(data []byte) (workerHostResponse, error) {
 		if wire.Result != nil {
 			return workerHostResponse{}, fmt.Errorf("decode worker host response: process-start frame must not carry a result payload")
 		}
+		if wire.Activity != nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: process-start frame must not carry an activity payload")
+		}
 		if wire.WorkerID == nil || wire.PID == nil {
 			return workerHostResponse{}, fmt.Errorf("decode worker host response: process-start frame requires workerId and pid")
 		}
@@ -131,9 +185,42 @@ func decodeWorkerHostResponse(data []byte) (workerHostResponse, error) {
 			return workerHostResponse{}, fmt.Errorf("decode worker host response: process-start pid must be positive, got %d", *wire.PID)
 		}
 		return workerHostResponse{kind: workerHostFrameProcessStart, workerID: *wire.WorkerID, pid: *wire.PID}, nil
+	case workerHostFrameActivity:
+		if wire.PID != nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity frame must not carry a pid payload")
+		}
+		if wire.Result != nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity frame must not carry a result payload")
+		}
+		if wire.WorkerID == nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity frame requires workerId")
+		}
+		if len(wire.Activity) == 0 || isJSONNull(wire.Activity) {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity frame requires an activity payload")
+		}
+		payloadDec := json.NewDecoder(bytes.NewReader(wire.Activity))
+		payloadDec.DisallowUnknownFields()
+		var activity pi.Activity
+		if err := payloadDec.Decode(&activity); err != nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity: %w", err)
+		}
+		var activityExtra any
+		if err := payloadDec.Decode(&activityExtra); err != io.EOF {
+			if err == nil {
+				return workerHostResponse{}, fmt.Errorf("decode worker host response: activity: trailing data after document")
+			}
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity: %w", err)
+		}
+		if err := validateWorkerHostActivity(*wire.WorkerID, activity); err != nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: activity: %w", err)
+		}
+		return workerHostResponse{kind: workerHostFrameActivity, workerID: *wire.WorkerID, activity: activity}, nil
 	case workerHostFrameResult:
 		if wire.WorkerID != nil || wire.PID != nil {
 			return workerHostResponse{}, fmt.Errorf("decode worker host response: result frame must not carry a process identity payload")
+		}
+		if wire.Activity != nil {
+			return workerHostResponse{}, fmt.Errorf("decode worker host response: result frame must not carry an activity payload")
 		}
 		if len(wire.Result) == 0 || isJSONNull(wire.Result) {
 			return workerHostResponse{}, fmt.Errorf("decode worker host response: result frame requires a result payload")

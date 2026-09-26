@@ -114,6 +114,54 @@ func (o *supervisorRunObserver) observer() pi.ProcessObserver {
 	}
 }
 
+// activity returns the pi.ActivityObserver handed to every worker. It is
+// best effort: a report for a worker that is not durably running is
+// dropped, and a failed Replace is dropped silently — it never enters
+// noteFailure, whose failures fail the run — so the next report retries
+// over the same durable base. A worker that has finished keeps the last
+// activity it reported, which the terminal snapshot copies forward.
+func (o *supervisorRunObserver) activity() pi.ActivityObserver {
+	return func(workerID int, activity pi.Activity) {
+		o.mu.Lock()
+		defer o.mu.Unlock()
+		if o.store == nil {
+			return
+		}
+		pending := o.snapshotLocked()
+		running := false
+		for i := range pending.Workers {
+			if pending.Workers[i].WorkerID == workerID && pending.Workers[i].State == WorkerRunning {
+				running = true
+				break
+			}
+		}
+		if !running {
+			return
+		}
+
+		workers := make([]WorkerSnapshot, len(pending.Workers))
+		copy(workers, pending.Workers)
+		pending.Workers = workers
+
+		now := time.Now().UTC()
+		pending.UpdatedAt = now
+		for i := range pending.Workers {
+			if pending.Workers[i].WorkerID != workerID {
+				continue
+			}
+			report := activity
+			pending.Workers[i].Activity = &report
+		}
+		if err := o.store.Replace(pending); err != nil {
+			// Best effort: the durable snapshot keeps its previous activity and
+			// the next report retries. This is deliberately not noteFailure:
+			// a lost liveness report must not fail the run.
+			return
+		}
+		o.durable = pending
+	}
+}
+
 // current returns the last snapshot this run made durable, or the accepted
 // snapshot it started from when nothing was persisted since.
 func (o *supervisorRunObserver) current() Snapshot {
@@ -225,6 +273,7 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 		Workspace:      req.workspace,
 		Verify:         req.verify,
 		OnProcessStart: observer.observer(),
+		OnActivity:     observer.activity(),
 	})
 	if runErr != nil {
 		errs = append(errs, fmt.Errorf("run accepted run (%s): controller: %w", req.runID, runErr))

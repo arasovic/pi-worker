@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
 )
 
@@ -155,6 +156,65 @@ func TestNewSnapshot_PathOverlap_TwoWorkers(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- worker activity validation --------------------------------------------------
+
+// TestValidateWorker_ActivityRules verifies the optional activity rule: a
+// present Activity needs a start, a real UTC event time, and a
+// non-negative count, while a valid one on a started worker is accepted.
+func TestValidateWorker_ActivityRules(t *testing.T) {
+	snap := oneTaskSnapshot(t, fixtureTask())
+	base := snap.Workers[0]
+	base.State = WorkerCompleted
+	started := fixtureTime.Add(time.Minute)
+	base.StartedAt = &started
+	finished := fixtureTime.Add(2 * time.Minute)
+	base.FinishedAt = &finished
+	base.Activity = &pi.Activity{LastEventAt: started, LastTool: "bash", ToolCalls: 2}
+	updated := fixtureTime.Add(3 * time.Minute)
+
+	if errs := validateWorker(base, fixtureTime, updated); len(errs) != 0 {
+		t.Fatalf("valid activity rejected: %v", errs)
+	}
+
+	withoutStart := base
+	withoutStart.StartedAt = nil
+	if errs := validateWorker(withoutStart, fixtureTime, updated); !containsSubstring(errs, "activity requires startedAt") {
+		t.Fatalf("activity without startedAt errors = %v, want the startedAt rule", errs)
+	}
+
+	zeroEventAt := base
+	zeroEventAt.Activity = &pi.Activity{ToolCalls: 1}
+	if errs := validateWorker(zeroEventAt, fixtureTime, updated); !containsSubstring(errs, "activity lastEventAt must not be zero") {
+		t.Fatalf("activity with zero lastEventAt errors = %v, want the non-zero rule", errs)
+	}
+
+	nonUTC := base
+	spread := *base.Activity
+	spread.LastEventAt = spread.LastEventAt.In(time.FixedZone("zero", 0))
+	nonUTC.Activity = &spread
+	if errs := validateWorker(nonUTC, fixtureTime, updated); !containsSubstring(errs, "activity lastEventAt must be in UTC") {
+		t.Fatalf("activity with non-UTC lastEventAt errors = %v, want the UTC rule", errs)
+	}
+
+	negative := base
+	badCount := *base.Activity
+	badCount.ToolCalls = -1
+	negative.Activity = &badCount
+	if errs := validateWorker(negative, fixtureTime, updated); !containsSubstring(errs, "activity toolCalls must be >= 0") {
+		t.Fatalf("activity with negative toolCalls errors = %v, want the count rule", errs)
+	}
+}
+
+// containsSubstring reports whether any message contains want.
+func containsSubstring(messages []string, want string) bool {
+	for _, message := range messages {
+		if strings.Contains(message, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- marshal/unmarshal round-trip with empty writes -----------------------------

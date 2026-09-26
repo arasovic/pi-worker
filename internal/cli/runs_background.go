@@ -319,13 +319,23 @@ func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap backgrou
 // runsWorkerAnswer says what one worker has to show for itself, for the
 // human table: the answer a completed worker gave, the reason a worker that
 // did not complete gave, and the text a worker that stopped early produced.
-// An answer that is still streaming is not an answer yet, so a worker with no
-// result carries nothing here — its state column already says `queued` or
-// `running`. Newlines are folded to spaces: the block is one line per worker,
-// and `--json` carries the text verbatim.
+// A worker with no result yet is still running or queued; a running worker
+// that has reported activity says so, in a fixed one-line form naming the
+// latest event time, the tool-call count, and the tool running now when one
+// is — a caller can then tell progress from a stall. A queued worker with no
+// activity carries nothing here. Newlines are folded to spaces: the block is
+// one line per worker, and `--json` carries the text verbatim.
 func runsWorkerAnswer(worker background.WorkerSnapshot) string {
 	if worker.Result == nil {
-		return ""
+		if worker.Activity == nil {
+			return ""
+		}
+		answer := "active " + worker.Activity.LastEventAt.UTC().Format(time.RFC3339) +
+			fmt.Sprintf(", %d tool calls", worker.Activity.ToolCalls)
+		if worker.Activity.LastTool != "" {
+			answer += ", last " + worker.Activity.LastTool
+		}
+		return answer
 	}
 	answer := worker.Result.Explanation
 	if answer == "" {
