@@ -60,6 +60,23 @@ const (
 // identity exists only then, so it can never be recovered later.
 type ProcessObserver func(workerID int, pid int)
 
+// Activity is one point-in-time report of what a worker's Pi subprocess
+// is doing: the moment the last Pi event was observed, how many tool
+// calls have started so far, and the last/current tool name. Names pass
+// through the fixed allowlist projection, so the field carries either a
+// built-in name or the fixed unknown placeholder — never raw Pi text,
+// arguments, or output.
+type Activity struct {
+	LastEventAt time.Time `json:"lastEventAt"`
+	LastTool    string    `json:"lastTool,omitempty"`
+	ToolCalls   int       `json:"toolCalls"`
+}
+
+// ActivityObserver is told one worker's activity while its run is in
+// flight: the worker id it ran under and the activity observed. It is
+// best effort — the observer's failure never fails a run.
+type ActivityObserver func(workerID int, activity Activity)
+
 // WorkerRequest describes one foreground worker invocation.
 type WorkerRequest struct {
 	Model         string
@@ -77,6 +94,10 @@ type WorkerRequest struct {
 	// starts. It is separate from Debug: the record must be written on
 	// every run, while debug output is off unless requested.
 	OnProcessStart ProcessObserver
+	// OnActivity, when non-nil, is called while the model turn is in
+	// flight: on every tool start, and otherwise at most once per activity
+	// interval. It is best effort — activity must never fail a run.
+	OnActivity ActivityObserver
 	// Controls, when non-nil, is a serial channel of typed worker controls
 	// serviced while the model turn is in flight, between Prompt and the
 	// terminal agent_settled event. The owning run drains exactly one
@@ -225,6 +246,11 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// Validation failures before the client is created snapshot empty: no
 	// frame was observed.
 	transcript := &transcriptAccumulator{}
+	// activity is the worker's liveness report. It is created once per Run,
+	// outside the startup-retry loop, so a retried startup shares one
+	// observer and one activity timeline. It is best effort and never
+	// fails the run.
+	activity := &activityAccumulator{workerID: req.WorkerID, observe: req.OnActivity, now: time.Now}
 	withThinking := func(result WorkerResult) WorkerResult {
 		result.Usage = usage.snapshot()
 		result.CacheWarmUsage = cacheWarm.snapshot()
@@ -322,7 +348,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 			}
 		}
 
-		client = NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript, cacheWarm}, debug)
+		client = NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript, cacheWarm, activity}, debug)
 		attemptThinking, failure, retryable, ok := w.prePromptAttempt(ctx, req, provider, id, client)
 		if ok {
 			successProc = proc

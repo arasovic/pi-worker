@@ -215,6 +215,46 @@ func TestWorkerHostResponseProcessStartRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWorkerHostResponseActivityRoundTrip verifies activity frame encoding
+// and strict decoding, plus every encode-side rejection.
+func TestWorkerHostResponseActivityRoundTrip(t *testing.T) {
+	at := time.Date(2026, 9, 26, 21, 40, 12, 0, time.UTC)
+	activity := pi.Activity{LastEventAt: at, LastTool: "bash", ToolCalls: 34}
+	data, err := encodeWorkerHostActivity(2, activity)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	frame, err := decodeWorkerHostResponse(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if frame.kind != workerHostFrameActivity || frame.workerID != 2 {
+		t.Fatalf("decoded frame = %+v, want activity worker 2", frame)
+	}
+	if !frame.activity.LastEventAt.Equal(at) || frame.activity.LastTool != "bash" || frame.activity.ToolCalls != 34 {
+		t.Fatalf("decoded activity = %+v, want %+v", frame.activity, activity)
+	}
+
+	for _, tt := range []struct {
+		name     string
+		workerID int
+		activity pi.Activity
+	}{
+		{"zero worker id", 0, activity},
+		{"negative worker id", -1, activity},
+		{"negative tool calls", 1, pi.Activity{LastEventAt: at, ToolCalls: -1}},
+		{"zero last event time", 1, pi.Activity{ToolCalls: 1}},
+		{"oversized last tool", 1, pi.Activity{LastEventAt: at, LastTool: strings.Repeat("x", 65)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := encodeWorkerHostActivity(tt.workerID, tt.activity)
+			if err == nil {
+				t.Fatal("encode succeeded, want rejection")
+			}
+		})
+	}
+}
+
 // TestWorkerHostResponseResultRoundTripPreservesFields verifies that a
 // fully populated worker result survives the terminal frame round trip
 // field for field.
@@ -287,6 +327,8 @@ func TestWorkerHostResponseDecodeRejectsMalformedFrames(t *testing.T) {
 		t.Fatalf("valid start frame: %v", err)
 	}
 
+	validActivity := map[string]any{"lastEventAt": "2026-09-26T21:40:12Z", "toolCalls": 1}
+
 	tests := []struct {
 		name    string
 		doc     map[string]any
@@ -300,11 +342,23 @@ func TestWorkerHostResponseDecodeRejectsMalformedFrames(t *testing.T) {
 		{"process-start missing identity", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "process-start", "pid": 42}, "requires workerId and pid"},
 		{"process-start zero worker id", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "process-start", "workerId": 0, "pid": 42}, "workerId must be positive"},
 		{"process-start zero pid", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "process-start", "workerId": 1, "pid": 0}, "pid must be positive"},
+		{"process-start with activity payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "process-start", "workerId": 1, "pid": 42, "activity": validActivity}, "must not carry an activity payload"},
+		{"activity with pid payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "pid": 42, "activity": validActivity}, "must not carry a pid payload"},
+		{"activity with result payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "activity": validActivity, "result": map[string]any{"model": "acme/m-1", "status": "completed"}}, "must not carry a result payload"},
+		{"activity missing worker id", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "activity": validActivity}, "requires workerId"},
+		{"activity missing payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1}, "requires an activity payload"},
+		{"activity null payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "activity": nil}, "requires an activity payload"},
+		{"activity zero worker id", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 0, "activity": validActivity}, "workerId must be positive"},
+		{"activity negative tool calls", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "activity": map[string]any{"lastEventAt": "2026-09-26T21:40:12Z", "toolCalls": -1}}, "toolCalls must be >= 0"},
+		{"activity zero last event time", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "activity": map[string]any{"toolCalls": 1}}, "lastEventAt must not be zero"},
+		{"activity oversized last tool", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "activity": map[string]any{"lastEventAt": "2026-09-26T21:40:12Z", "toolCalls": 1, "lastTool": strings.Repeat("x", 65)}}, "lastTool must be at most 64 bytes"},
+		{"activity unknown payload field", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "activity", "workerId": 1, "activity": map[string]any{"lastEventAt": "2026-09-26T21:40:12Z", "toolCalls": 1, "sneaky": 1}}, "unknown field"},
 		{"result with identity payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "result", "workerId": 1, "pid": 42, "result": map[string]any{"model": "acme/m-1", "status": "completed"}}, "must not carry a process identity payload"},
 		{"result missing payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "result"}, "requires a result payload"},
 		{"result null payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "result", "result": nil}, "requires a result payload"},
 		{"result unknown payload field", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "result", "result": map[string]any{"model": "acme/m-1", "status": "completed", "sneaky": 1}}, "unknown field"},
 		{"result invalid status", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "result", "result": map[string]any{"model": "acme/m-1", "status": "miraculous"}}, "not a defined worker status"},
+		{"result with activity payload", map[string]any{"schemaVersion": workerHostResponseSchemaVersion, "kind": "result", "activity": validActivity, "result": map[string]any{"model": "acme/m-1", "status": "completed"}}, "must not carry an activity payload"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

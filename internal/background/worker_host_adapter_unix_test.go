@@ -184,6 +184,57 @@ func TestWorkerHostAdapterCompletedRunForwardsProcessIdentity(t *testing.T) {
 	requireNoWorkerHostLeak(t, fdsBefore, gosBefore)
 }
 
+// TestWorkerHostAdapterForwardsActivity runs one full adapter exchange
+// against a real spawned host and fake Pi whose prompt emits a tool start
+// before the answer: the child host's activity frame must reach the parent
+// loop and be forwarded to the caller's observer with the projected tool.
+func TestWorkerHostAdapterForwardsActivity(t *testing.T) {
+	a := startHostExecutingAdapter(t)
+	cfg := happyPathScript("activity answer")
+	cfg.Triggers["prompt"] = []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"agent_start"}`)},
+		{Event: json.RawMessage(`{"type":"tool_execution_start","toolCallId":"c1","toolName":"bash"}`)},
+		{Event: json.RawMessage(`{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","isError":false}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The answer is 42."}]}}`)},
+		{Event: json.RawMessage(`{"type":"turn_end","message":{},"toolResults":[]}`)},
+		{Event: json.RawMessage(`{"type":"agent_end","messages":[],"willRetry":false}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	setupFakePiEnv(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), workerHostRunTimeout)
+	defer cancel()
+	var activities []pi.Activity
+	var activityIDs []int
+	result := a.Run(ctx, pi.WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "run the focused task",
+		Workspace: t.TempDir(),
+		WorkerID:  4,
+		OnActivity: func(workerID int, activity pi.Activity) {
+			activityIDs = append(activityIDs, workerID)
+			activities = append(activities, activity)
+		},
+	})
+
+	if result.Status != pi.StatusCompleted || result.Explanation != "activity answer" {
+		t.Fatalf("result = %+v, want completed with the fake Pi answer", result)
+	}
+	foundTool := false
+	for i, activity := range activities {
+		if activity.ToolCalls == 1 && activity.LastTool == "bash" {
+			foundTool = true
+			if activityIDs[i] != 4 {
+				t.Fatalf("activity worker id = %d, want the assigned worker id 4", activityIDs[i])
+			}
+		}
+	}
+	if !foundTool {
+		t.Fatalf("activities = %+v, want one with toolCalls 1 and lastTool bash", activities)
+	}
+}
+
 // TestWorkerHostAdapterRetryNotificationsForwardAllPIDs runs a script
 // with one transient startup failure: both startup-retry identities must
 // reach the observer in launch order, and the terminal result must

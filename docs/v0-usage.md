@@ -427,6 +427,10 @@ pi-worker runs cancel <id> [--json]
 - Without `--json`, `runs status` and `runs wait` print one aligned summary
   table: a run row, one row per worker with its state, model, and answer,
   plus `outcome=` for a finished run. No task prompt appears in that table.
+  A running worker that has reported Pi activity shows it in the answer
+  column as `active <lastEventAt>, <toolCalls> tool calls`, followed by
+  `, last <lastTool>` once a tool has started; the times use the table's
+  RFC3339 UTC form. A worker with no activity yet leaves that column empty.
 - `runs wait <id>` reads the same state repeatedly until the run
   finishes, then prints the finished run. Waiting is reading and nothing
   else: it never cancels, kills, or attaches to the run.

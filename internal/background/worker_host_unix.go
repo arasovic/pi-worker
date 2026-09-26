@@ -197,6 +197,28 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 		}
 	}
 
+	// Every activity report the worker makes is forwarded as one response
+	// frame, with the same write-failure handling as a process-start
+	// notification: a failed encode or write means the response stream is
+	// broken, so the run is cancelled and no terminal frame is appended
+	// after it. The shared notifyErr keeps the two notification streams on
+	// the one wire ordered and mutually exclusive.
+	notifyActivity := func(workerID int, activity pi.Activity) {
+		if notifyErr != nil {
+			return
+		}
+		frame, encErr := encodeWorkerHostActivity(workerID, activity)
+		if encErr != nil {
+			notifyErr = encErr
+			cancel()
+			return
+		}
+		if writeErr := writeWorkerHostResponse(pipes.responseWriter, frame); writeErr != nil {
+			notifyErr = fmt.Errorf("write activity notification: %w", writeErr)
+			cancel()
+		}
+	}
+
 	workerResult := pi.New(req.piExecutable).Run(runCtx, pi.WorkerRequest{
 		Model:          req.model,
 		ThinkingLevel:  req.thinkingLevel,
@@ -204,6 +226,7 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 		Workspace:      req.workspace,
 		WorkerID:       req.workerID,
 		OnProcessStart: func(workerID, pid int) { notify(workerID, pid) },
+		OnActivity:     func(workerID int, activity pi.Activity) { notifyActivity(workerID, activity) },
 	})
 
 	// If every notification reached the wire intact, exactly one
@@ -427,6 +450,14 @@ func (a *workerHostAdapter) execute(ctx context.Context, req pi.WorkerRequest, p
 				case workerHostFrameProcessStart:
 					if req.OnProcessStart != nil {
 						req.OnProcessStart(frame.workerID, frame.pid)
+					}
+					nextReceive()
+				case workerHostFrameActivity:
+					// Activity is a report: the parent forwards it when an
+					// observer is set and keeps receiving, exactly like a
+					// process-start notification. A nil observer drops it.
+					if req.OnActivity != nil {
+						req.OnActivity(frame.workerID, frame.activity)
 					}
 					nextReceive()
 				case workerHostFrameResult:

@@ -23,13 +23,14 @@ import (
 const workerHostRunTimeout = 30 * time.Second
 
 // readWorkerHostTerminalFrame reads response frames until the terminal
-// result frame, skipping process-start notifications, and returns it.
+// result frame, skipping process-start and activity notifications, and
+// returns it.
 func readWorkerHostTerminalFrame(t *testing.T, fx *workerHostFixture) workerHostResponse {
 	t.Helper()
 	for {
 		frame := readWorkerHostFrame(t, fx)
 		switch frame.kind {
-		case workerHostFrameProcessStart:
+		case workerHostFrameProcessStart, workerHostFrameActivity:
 			continue
 		case workerHostFrameResult:
 			return frame
@@ -43,8 +44,9 @@ func readWorkerHostTerminalFrame(t *testing.T, fx *workerHostFixture) workerHost
 // exchange over real pipes: the request writer is closed right after the
 // complete request, and the run must still complete — request EOF after
 // the complete request does not cancel it; only ownership EOF does. The
-// parent observes exactly one process-start notification followed by one
-// terminal completed result whose fields are preserved.
+// parent observes one process-start notification, any activity
+// notifications the run reports, and then one terminal completed result
+// whose fields are preserved.
 func TestWorkerHostChildCompletesRunAcrossRequestEOF(t *testing.T) {
 	// Warm gopsutil's one-time probe before the baseline: that setup is
 	// deliberately outside the measured exchange below.
@@ -72,9 +74,9 @@ func TestWorkerHostChildCompletesRunAcrossRequestEOF(t *testing.T) {
 	if start.kind != workerHostFrameProcessStart || start.pid <= 0 || start.workerID != req.workerID {
 		t.Fatalf("first frame = %+v, want process-start for worker %d", start, req.workerID)
 	}
-	final := readWorkerHostFrame(t, fx)
+	final := readWorkerHostTerminalFrame(t, fx)
 	if final.kind != workerHostFrameResult {
-		t.Fatalf("second frame kind = %q, want terminal result", final.kind)
+		t.Fatalf("terminal frame kind = %q, want terminal result", final.kind)
 	}
 	if final.result.Status != pi.StatusCompleted || final.result.Explanation != "host answer" {
 		t.Fatalf("terminal result = %+v, want completed with the fake Pi answer", final.result)
@@ -127,6 +129,8 @@ func TestWorkerHostChildRetryNotificationsPreserveAllPIDs(t *testing.T) {
 		switch frame.kind {
 		case workerHostFrameProcessStart:
 			pids = append(pids, frame.pid)
+		case workerHostFrameActivity:
+			continue
 		case workerHostFrameResult:
 			if len(pids) != 2 || pids[0] == 0 || pids[1] == 0 || pids[0] == pids[1] {
 				t.Fatalf("process-start identities = %v, want two distinct positive pids", pids)
@@ -560,13 +564,23 @@ func TestWorkerHostSpawnedChildExecutesAndExitsCleanly(t *testing.T) {
 	if err != nil || decodedStart.kind != workerHostFrameProcessStart || decodedStart.pid <= 0 {
 		t.Fatalf("process-start frame = %+v, %v", decodedStart, err)
 	}
-	finalFrame, err := p.Receive()
-	if err != nil {
-		t.Fatalf("receive terminal frame: %v", err)
+	var decodedFinal workerHostResponse
+	for {
+		finalFrame, err := p.Receive()
+		if err != nil {
+			t.Fatalf("receive terminal frame: %v", err)
+		}
+		decodedFinal, err = decodeWorkerHostResponse(finalFrame)
+		if err != nil {
+			t.Fatalf("decode terminal frame: %v", err)
+		}
+		if decodedFinal.kind == workerHostFrameProcessStart || decodedFinal.kind == workerHostFrameActivity {
+			continue
+		}
+		break
 	}
-	decodedFinal, err := decodeWorkerHostResponse(finalFrame)
-	if err != nil || decodedFinal.kind != workerHostFrameResult {
-		t.Fatalf("terminal frame decode: %+v, %v", decodedFinal, err)
+	if decodedFinal.kind != workerHostFrameResult {
+		t.Fatalf("terminal frame kind = %q, want result", decodedFinal.kind)
 	}
 	if decodedFinal.result.Status != pi.StatusCompleted || decodedFinal.result.Explanation != "spawned answer" {
 		t.Fatalf("terminal result = %+v", decodedFinal.result)
