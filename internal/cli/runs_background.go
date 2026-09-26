@@ -153,8 +153,8 @@ func runsCancelCommand(parent context.Context, opts runsOptions, stdout, stderr 
 }
 
 // runsRenderWaited prints what a wait came back with and carries the exit
-// code of the state that was printed: a finished run's own code, and 0 for
-// the live state a wait that ran out reports.
+// code of the state that was printed: a finished run's own code, and the
+// timeout code 7 for the live state a wait that ran out reports.
 func runsRenderWaited(stdout, stderr io.Writer, opts runsOptions, snap background.Snapshot, note string) int {
 	if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, note); code != 0 {
 		return code
