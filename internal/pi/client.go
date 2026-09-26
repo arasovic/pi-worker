@@ -76,7 +76,10 @@ type Client struct {
 	nextID  int
 	settled bool
 	// awaitingSettled gates which settlement event is terminal: only events
-	// from the prompt lifecycle become terminal and log "agent settled".
+	// from the prompt lifecycle become terminal and log "agent settled". It
+	// stays armed when a wait ends because the caller's context ended, since
+	// the prompt itself is still live on the wire; the caller can then abort
+	// and let the turn's settlement terminate the next wait.
 	awaitingSettled bool
 	debug           *WorkerScope
 	// modelPhase is the last projected assistant message phase. Only the
@@ -431,15 +434,18 @@ func (c *Client) WaitSettled(ctx context.Context) error {
 	}
 	for {
 		if err := ctx.Err(); err != nil {
-			c.awaitingSettled = false
+			// The caller stopped waiting, not the prompt: keep the settlement
+			// gate armed so the still-live turn's agent_settled is retained and
+			// a later abort's settlement can terminate the next wait.
 			return err
 		}
 		frame, err := c.nextFrame(ctx)
 		if err != nil {
-			c.awaitingSettled = false
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				// As above: a canceled wait does not end the prompt's lifecycle.
 				return err
 			}
+			c.awaitingSettled = false
 			return c.frameError(err)
 		}
 		isResponse, _, err := c.handleFrame(frame)
@@ -505,7 +511,8 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 	var pending *pendingControl
 	for {
 		if err := ctx.Err(); err != nil {
-			c.awaitingSettled = false
+			// The caller stopped waiting, not the prompt: keep the settlement
+			// gate armed for a later abort's agent_settled.
 			if pending != nil {
 				sendControlResult(pending.result, err)
 			}
@@ -543,7 +550,8 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 				fr := c.frameError(io.ErrClosedPipe)
 				return fr
 			case <-ctx.Done():
-				c.awaitingSettled = false
+				// The caller stopped waiting, not the prompt: keep the
+				// settlement gate armed for a later abort's agent_settled.
 				return ctx.Err()
 			case result := <-c.frameResults:
 				if result.err != nil {
@@ -620,7 +628,8 @@ func (c *Client) WaitSettledControlled(ctx context.Context, controls <-chan Work
 			sendControlResult(pending.result, fr)
 			return fr
 		case <-ctx.Done():
-			c.awaitingSettled = false
+			// The caller stopped waiting, not the prompt: keep the settlement
+			// gate armed for a later abort's agent_settled.
 			sendControlResult(pending.result, ctx.Err())
 			return ctx.Err()
 		case result := <-c.frameResults:
