@@ -70,6 +70,11 @@ type transcriptAccumulator struct {
 	// is greater than the count recorded before the continuation prompt was
 	// sent. Only the count is retained, never message content.
 	assistantMessages int
+	// textDeltas counts every non-empty text_delta frame retained. The worker
+	// reads it before and after the wrap-up prompt: a rise proves the wrap-up
+	// turn streamed report text even when comparing snapshot strings would be
+	// ambiguous after eviction. Only the count is retained, never content.
+	textDeltas int
 }
 
 // OnEvent tracks one message boundary, text-delivery frame, or assistant
@@ -163,6 +168,7 @@ func (a *transcriptAccumulator) appendDelta(delta string) {
 	if delta == "" {
 		return
 	}
+	a.textDeltas++
 	if !utf8.ValidString(delta) {
 		// encoding/json replaces invalid UTF-8 while decoding strings. Keep
 		// this guard for callers that construct an Event with a custom
@@ -305,6 +311,14 @@ func (a *transcriptAccumulator) assistantErrorMessage() string {
 // count, never message content.
 func (a *transcriptAccumulator) assistantMessageCount() int {
 	return a.assistantMessages
+}
+
+// textDeltaCount reports how many non-empty text_delta frames have been
+// retained. The worker records it before the wrap-up prompt and reads it again
+// after that turn's settlement wait: any rise means the turn streamed report
+// text, without comparing snapshot strings that eviction can rewrite.
+func (a *transcriptAccumulator) textDeltaCount() int {
+	return a.textDeltas
 }
 
 // snapshot returns the in-flight message's text when it carries any,

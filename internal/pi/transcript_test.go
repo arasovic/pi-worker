@@ -411,6 +411,33 @@ func TestTranscriptAssistantErrorStateFollowsAssistantBoundaries(t *testing.T) {
 	}
 }
 
+func TestTranscriptAccumulatorTextDeltaCountCountsNonEmptyDeltas(t *testing.T) {
+	// The wrap-up classification compares this count around the wrap-up
+	// prompt, so only non-empty text_delta frames may raise it: empty text
+	// deltas, thinking deltas, tool-call deltas, and malformed frames
+	// contribute nothing.
+	a := &transcriptAccumulator{}
+	stream := []Event{
+		event("message_start"),
+		textDeltaEvent(""),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":""}}`),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"hidden reasoning"}}`),
+		messageUpdateRaw(`{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","delta":"tool payload"}}`),
+		messageUpdateRaw(`not json`),
+		textDeltaEvent("first"),
+		textDeltaEvent("second"),
+		textDeltaEvent(""),
+	}
+	for i, ev := range stream {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent(frame %d) = %v, want nil", i, err)
+		}
+	}
+	if got := a.textDeltaCount(); got != 2 {
+		t.Fatalf("textDeltaCount = %d, want 2 for the two non-empty text deltas", got)
+	}
+}
+
 func TestTranscriptAssistantErrorMessageFollowsTheLatestErrorStop(t *testing.T) {
 	// The error text is retained verbatim from the message whose stopReason
 	// is the error stop, replaced when a newer error stop carries its own
