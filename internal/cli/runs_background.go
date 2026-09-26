@@ -31,6 +31,11 @@ var backgroundSupportsRuns = background.SupportsBackgroundRuns
 // run, and the run it was waiting for keeps going.
 const defaultRunsWaitTimeout = 30 * time.Minute
 
+// runsReportStartRunes is how many runes of a worker's wrap-up report the
+// human block shows before it cuts the line short and points at --json for
+// the rest. It is a rune count, not a byte count: a cut never splits a rune.
+const runsReportStartRunes = 160
+
 // runsStatusCommand reports where one background run stands and returns. It
 // waits for nothing: one read of the run's latest durable snapshot is the
 // whole command, so the state it prints of a run in flight is the state that
@@ -297,6 +302,17 @@ func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap backgrou
 	}
 	tab.Flush()
 
+	if extra := runsSnapshotExtraLines(snap); len(extra) > 0 {
+		// One empty line separates the block from the table, and the block
+		// exists only when a worker has a result the ANSWER column could
+		// not carry. When there is nothing extra, the output is exactly
+		// the table and the outcome line.
+		fmt.Fprintln(stdout)
+		for _, line := range extra {
+			fmt.Fprintln(stdout, line)
+		}
+	}
+
 	if snap.Terminal {
 		// The outcome line is the same word the foreground run prints, and
 		// it is the word the exit code the command returns was taken from.
@@ -314,6 +330,54 @@ func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap backgrou
 		fmt.Fprintln(stderr, note)
 	}
 	return 0
+}
+
+// runsSnapshotExtraLines builds the lines that follow the human table for
+// the workers whose result the ANSWER column cannot fully carry: each
+// worker's warning, and, for a worker whose answer column shows its error
+// rather than its wrap-up report, the start of that report. When any report
+// was cut short, one final line points at the --json document that carries
+// the whole text. The lines are in worker order; no lines are returned when
+// there is nothing extra to show.
+func runsSnapshotExtraLines(snap background.Snapshot) []string {
+	var lines []string
+	reportCut := false
+	for _, worker := range snap.Workers {
+		result := worker.Result
+		if result == nil {
+			continue
+		}
+		if result.Warning != "" {
+			lines = append(lines, fmt.Sprintf("worker %d warning: %s", worker.WorkerID, result.Warning))
+		}
+		// The report is worth repeating only when the ANSWER column did not
+		// already show it: runsWorkerAnswer falls to the report only when the
+		// explanation is empty and the error is not.
+		if result.PartialExplanation != "" && result.Explanation == "" && result.Error != "" {
+			start, cut := runsReportStart(result.PartialExplanation)
+			lines = append(lines, fmt.Sprintf("worker %d report: %s", worker.WorkerID, start))
+			if cut {
+				reportCut = true
+			}
+		}
+	}
+	if reportCut {
+		lines = append(lines, fmt.Sprintf("full text: pi-worker runs status %s --json", snap.RunID))
+	}
+	return lines
+}
+
+// runsReportStart folds a report to one line the same way runsWorkerAnswer
+// folds an answer, then cuts it to its first runsReportStartRunes runes. A
+// cut never splits a rune, and the shown text is marked with an ellipsis. It
+// reports whether the text was cut.
+func runsReportStart(text string) (string, bool) {
+	folded := strings.Join(strings.Fields(text), " ")
+	runes := []rune(folded)
+	if len(runes) <= runsReportStartRunes {
+		return folded, false
+	}
+	return string(runes[:runsReportStartRunes]) + "\u2026", true
 }
 
 // runsWorkerAnswer says what one worker has to show for itself, for the

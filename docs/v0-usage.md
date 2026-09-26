@@ -431,6 +431,14 @@ pi-worker runs cancel <id> [--json]
   column as `active <lastEventAt>, <toolCalls> tool calls`, followed by
   `, last <lastTool>` once a tool has started; the times use the table's
   RFC3339 UTC form. A worker with no activity yet leaves that column empty.
+  Below the table, each worker with a result may add lines: `worker <id>
+  warning: <warning>` for a warning, and, when the answer column shows the
+  worker's error rather than its wrap-up report, `worker <id> report: <text>`
+  with the report folded to one line and cut to its first 160 characters,
+  ending in `…` when cut. When any report was cut, one `full text: pi-worker
+  runs status <runId> --json` line follows and points at the machine document
+  that carries the full text; the block is separated from the table by one
+  empty line, and nothing is added for a run whose workers have no such lines.
 - `runs wait <id>` reads the same state repeatedly until the run
   finishes, then prints the finished run. Waiting is reading and nothing
   else: it never cancels, kills, or attaches to the run.
