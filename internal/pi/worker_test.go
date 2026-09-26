@@ -1721,7 +1721,7 @@ func TestWorkerWrapUpPromptRejected(t *testing.T) {
 	}
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -1729,6 +1729,9 @@ func TestWorkerWrapUpPromptRejected(t *testing.T) {
 		Workspace: t.TempDir(),
 	})
 
+	if ctx.Err() != nil {
+		t.Fatalf("ctx.Err() = %v, want nil: the worker must return before the parent deadline", ctx.Err())
+	}
 	if result.Status != StatusTimedOut {
 		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
 	}
