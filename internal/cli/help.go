@@ -54,9 +54,10 @@ Flags:
                          outside the workspace
 
 Result (--json): read root outcome first. Report each worker's model,
-thinkingLevel, status, explanation and error, and root changes, writes,
-verification and leftoverProcesses. A failed run's changes still lists what
-was written; nothing is rolled back.
+thinkingLevel, status, explanation (or partialExplanation when there is
+none) and error, and root changes, writes, verification and
+leftoverProcesses. A failed run's changes still lists what was written;
+nothing is rolled back.
 
 Outcome and exit code:
   0  completed            the only success; still read the deliverable

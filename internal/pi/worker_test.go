@@ -1540,6 +1540,131 @@ func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
 	}
 }
 
+// TestWorkerSpendsReserveOnWrapUpReport covers the working deadline: the first
+// turn is accepted but never settles, the derived working context ends before
+// the parent deadline, and the worker stops the turn, sends exactly one
+// wrap-up prompt, and returns timed-out with the wrap-up reply as
+// partialExplanation.
+func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
+	const wrapUpText = "Parsed 12 files and measured 40ms; the cache path is unfinished."
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The single wrap-up turn is accepted, streams its report, and
+			// settles.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+				{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + wrapUpText + `"}}`)},
+				{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"` + wrapUpText + `"}],"stopReason":"stop"}}`)},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+	}
+	// Pi emits the turn's agent_settled before it answers the abort, so the
+	// settlement wait after Abort may return immediately.
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("test context has no deadline")
+	}
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if result.Error != "timed out: context deadline exceeded" {
+		t.Fatalf("error = %q, want the exact timeout text", result.Error)
+	}
+	if result.PartialExplanation != wrapUpText {
+		t.Fatalf("partialExplanation = %q, want %q", result.PartialExplanation, wrapUpText)
+	}
+	if result.Explanation != "" {
+		t.Fatalf("explanation = %q, want empty on a timed-out run", result.Explanation)
+	}
+	if result.ContinuationAttempts != 0 {
+		t.Fatalf("continuationAttempts = %d, want 0 for a wrap-up turn", result.ContinuationAttempts)
+	}
+	if finished := time.Now(); !finished.Before(deadline) {
+		t.Fatalf("run finished at %v, not before the parent deadline %v", finished, deadline)
+	}
+	types := waitRequestLog(t, logPath, 6)
+	if got := countStrings(types, "abort"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one abort", types)
+	}
+	if got := countStrings(types, "prompt"); got != 2 {
+		t.Fatalf("request log = %v, want exactly two prompts", types)
+	}
+}
+
+// TestWorkerParentCancellationSkipsWrapUp covers the parent cancellation: the
+// first turn is accepted but never settles, the parent context is cancelled
+// mid-turn, and the worker returns cancelled with no abort and no wrap-up
+// prompt.
+func TestWorkerParentCancellationSkipsWrapUp(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			{{Response: &script.Response{Success: true}}},
+		},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel once the first prompt is in flight, so the cancellation, not the
+	// parent deadline, ends the wait.
+	go func() {
+		timer := time.NewTicker(5 * time.Millisecond)
+		defer timer.Stop()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case <-timer.C:
+				if countStrings(readRequestLog(logPath), "prompt") >= 1 {
+					cancel()
+					return
+				}
+			case <-deadline:
+				return
+			}
+		}
+	}()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCancelled {
+		t.Fatalf("status = %q, want cancelled; error = %q", result.Status, result.Error)
+	}
+	if result.PartialExplanation != "" {
+		t.Fatalf("partialExplanation = %q, want none for a cancelled run", result.PartialExplanation)
+	}
+	types := waitRequestLog(t, logPath, 4)
+	if got := countStrings(types, "prompt"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one prompt", types)
+	}
+	if got := countStrings(types, "abort"); got != 0 {
+		t.Fatalf("request log = %v, want no abort on cancellation", types)
+	}
+}
+
 func TestWorkerTimeoutCleansUpProcessAndSession(t *testing.T) {
 	script := &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {

@@ -31,6 +31,28 @@ const maxContinuationAttempts = 2
 // continuation prompt, the warnings, or the debug stream.
 const continuationPrompt = "Your previous turn ended without a final answer. Continue the task from where you stopped without redoing completed work; if it was already complete, restate the final result."
 
+// wrapUpPrompt is the one fixed English sentence submitted as the single final
+// turn when the worker's working deadline ends a run while the parent context
+// is still alive. It asks for a short report and forbids further tools, so the
+// model's streamed reply lands in partialExplanation. Like continuationPrompt
+// it is never interpolated with anything.
+const wrapUpPrompt = "Your time is almost up. Stop working and do not call any more tools. In a few sentences, report what you did, what you measured, and what is still unfinished."
+
+// timeoutReserveFraction and maxTimeoutReserve bound the time the worker keeps
+// back from a caller's deadline for one final wrap-up report. When the working
+// context carries a deadline, the working turns run under a derived context
+// that ends reserve before it, where
+//
+//	reserve = min(remaining/timeoutReserveFraction, maxTimeoutReserve)
+//
+// and remaining is measured once, right before the first prompt of the task. A
+// context without a deadline derives no working context and keeps no reserve:
+// there is no flag, config key, or tunable for either constant.
+const (
+	timeoutReserveFraction = 10
+	maxTimeoutReserve      = 2 * time.Minute
+)
+
 // ProcessObserver is told the identity of the process one worker
 // started, at the moment it starts: the worker id it ran under and the
 // launched process's pid. It is the run-level passenger that carries
@@ -373,11 +395,63 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// error when the run fails, which travels with the result into the JSON
 	// output and the stored run record; it never reaches the continuation
 	// prompt, the warnings, or the debug stream.
+	//
+	// When the caller's context carries a deadline, every working turn runs
+	// under a derived working context that ends reserve before the caller's
+	// deadline. When that working deadline is what ends a wait and the parent
+	// context is still alive, the worker stops the turn, sends exactly one
+	// fixed wrap-up prompt, and returns timed-out; the wrap-up turn's streamed
+	// text becomes partialExplanation. That final turn is never a continuation:
+	// it is not counted in continuationAttempts and never followed by another
+	// prompt. A parent cancellation or parent deadline never triggers it.
+	workCtx := ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		reserve := remaining / timeoutReserveFraction
+		if reserve > maxTimeoutReserve {
+			reserve = maxTimeoutReserve
+		}
+		if reserve < 0 {
+			reserve = 0
+		}
+		var workCancel context.CancelFunc
+		workCtx, workCancel = context.WithDeadline(ctx, deadline.Add(-reserve))
+		defer workCancel()
+	}
+	// waitSettled is the single settlement-wait path, reused for every working
+	// turn and for the wrap-up turn: controlled when the caller supervises the
+	// turn, plain otherwise.
+	waitSettled := func(waitCtx context.Context) error {
+		if req.Controls == nil {
+			return client.WaitSettled(waitCtx)
+		}
+		return client.WaitSettledControlled(waitCtx, req.Controls)
+	}
+	// workDeadlineReached reports whether the working context's own deadline
+	// ended the current wait while the parent context is still alive. That is
+	// the one condition for a wrap-up turn: a parent cancellation or the
+	// parent's own deadline is classified unchanged.
+	workDeadlineReached := func() bool {
+		return errors.Is(workCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	}
+	// wrapUp stops the interrupted turn and spends the reserve on one final
+	// report. Whatever the abort, the waits, or the wrap-up prompt do, the run
+	// still ends timed-out: classify against the working context supplies the
+	// same error text as an ordinary timeout, and finalize fills
+	// partialExplanation from the text the wrap-up turn streamed. Abort and the
+	// waits use the parent context, which is still alive by construction.
+	wrapUp := func() WorkerResult {
+		_ = client.Abort(ctx)
+		_ = waitSettled(ctx)
+		_ = client.Prompt(ctx, wrapUpPrompt)
+		_ = waitSettled(ctx)
+		return finalize(w.classify(req.Model, workCtx, workCtx.Err()))
+	}
 	prompt := req.Prompt
 	assistantMessagesAtContinuation := transcript.assistantMessageCount()
 	for {
-		if err := client.Prompt(ctx, prompt); err != nil {
-			return finalize(w.classify(req.Model, ctx, err))
+		if err := client.Prompt(workCtx, prompt); err != nil {
+			return finalize(w.classify(req.Model, workCtx, err))
 		}
 		// The wait between Prompt and the terminal agent_settled event is the
 		// single owned FrameReader consumer window: when Controls is nil the
@@ -385,18 +459,15 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		// WaitSettledControlled selects between pumped frames and one typed
 		// control at a time, keeping the same sole-consumer invariant during
 		// the model turn.
-		if req.Controls == nil {
-			if err := client.WaitSettled(ctx); err != nil {
-				return finalize(w.classify(req.Model, ctx, err))
+		if err := waitSettled(workCtx); err != nil {
+			if workDeadlineReached() {
+				return wrapUp()
 			}
-		} else {
-			if err := client.WaitSettledControlled(ctx, req.Controls); err != nil {
-				return finalize(w.classify(req.Model, ctx, err))
-			}
+			return finalize(w.classify(req.Model, workCtx, err))
 		}
-		text, err := client.GetLastAssistantText(ctx)
+		text, err := client.GetLastAssistantText(workCtx)
 		if err != nil {
-			return finalize(w.classify(req.Model, ctx, err))
+			return finalize(w.classify(req.Model, workCtx, err))
 		}
 		if !transcript.assistantError() && strings.TrimSpace(text) != "" {
 			return finalize(WorkerResult{Model: req.Model, Status: StatusCompleted, Explanation: text})
@@ -421,10 +492,16 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 				stopError += ": " + errorText
 			}
 		}
-		if err := ctx.Err(); err != nil {
-			// A cancelled or timed-out run is never re-prompted: the ending
-			// rejection is the context's, and classify reports it as such.
-			return finalize(w.classify(req.Model, ctx, err))
+		if err := workCtx.Err(); err != nil {
+			// The working context is the one that ends the run's turns: its
+			// deadline spends the reserve on the wrap-up report, while a parent
+			// cancellation or parent deadline is classified unchanged. A
+			// cancelled run is never re-prompted, and a wrap-up turn is never a
+			// continuation.
+			if workDeadlineReached() {
+				return wrapUp()
+			}
+			return finalize(w.classify(req.Model, workCtx, err))
 		}
 		if continuationAttempts >= maxContinuationAttempts {
 			return finalize(WorkerResult{Model: req.Model, Status: StatusFailed, Error: stopError})

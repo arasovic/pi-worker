@@ -341,7 +341,8 @@ Worker fields are conditionally present:
   assistant text but retained assistant text exists; carries the most
   recent retained assistant text, which may precede the message in flight,
   is at most `MaxFrameBytes` (8 MiB) in UTF-8 bytes, and never appears
-  together with `explanation`
+  together with `explanation`. On a timeout it carries the worker's final
+  wrap-up report when the model wrote one.
 - `error`: present when the worker reports an error. When the latest assistant
   `message_end` has the stable `stopReason: "error"`, the worker reports
   `upstream/model turn ended with an error: <errorMessage>`, carrying Pi's own
@@ -355,15 +356,17 @@ Worker fields are conditionally present:
   and tool-result messages do not, and a missing or malformed stopReason does
   not inherit an earlier error. A turn that settles without a final answer —
   the stable error stop or an empty final text — is continued on the same
-  session with one fixed prompt, at most twice; a cancelled or timed-out run
-  is never continued. When a continuation turn starts no newer assistant
-  message, the run ends after that one attempt instead of spending the bound:
-  nothing about the conversation changed, so the same stop repeats
-  deterministically. The failure text names the stop that ended the run: the
-  error wording above for an error stop, and the generic empty-answer wording
-  for an empty final text. The `partialExplanation` accounting stays as above.
-  Pi's error text is reported only in `error`; the fixed continuation prompt
-  never carries it.
+  session with one fixed prompt, at most twice; a cancelled run is never
+  continued; a run that reaches its time limit is not continued either but
+  gets the one wrap-up prompt described above (its reply lands in
+  `partialExplanation`, the run still ends timed out). When a continuation
+  turn starts no newer assistant message, the run ends after that one attempt
+  instead of spending the bound: nothing about the conversation changed, so
+  the same stop repeats deterministically. The failure text names the stop
+  that ended the run: the error wording above for an error stop, and the
+  generic empty-answer wording for an empty final text. The
+  `partialExplanation` accounting stays as above. Pi's error text is reported
+  only in `error`; the fixed continuation prompt never carries it.
 - `continuationAttempts`: present when the worker sent at least one
   continuation prompt after a turn that ended without a final answer; the
   number of those prompts, zero or more and never more than the fixed bound of
