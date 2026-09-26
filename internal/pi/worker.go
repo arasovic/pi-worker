@@ -479,7 +479,13 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		deltasBefore := transcript.textDeltaCount()
 		reportStarted := time.Now()
 		promptErr := client.Prompt(ctx, wrapUpPrompt)
-		waitErr := waitSettled(ctx)
+		var waitErr error
+		// A rejected prompt arms no settlement wait, so waiting here would block
+		// until the parent deadline for nothing: the reserve is spent returning
+		// instead.
+		if promptErr == nil {
+			waitErr = waitSettled(ctx)
+		}
 		report := time.Since(reportStarted)
 		streamedText := transcript.textDeltaCount() > deltasBefore
 
