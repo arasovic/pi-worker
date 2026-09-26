@@ -1156,7 +1156,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     read and composed), and `sha256` (the SHA-256 of the content as
     read, lowercase hex, matching what a checksum of the file on disk
     produces); content itself is never reported
-  - fallback workers include `thinkingFallback: true` and a fixed `warning`
+  - fallback workers include `thinkingFallback: true` and a fixed `warning`;
+    the field is present and `true` only for a reported fallback, absent when
+    no fallback happened, and never `false`
   - `continuationAttempts`: the number of continuation prompts the worker
     sent after a turn ended without a final answer; present when at least one
     was sent, and never more than the fixed bound of two. A run whose first
