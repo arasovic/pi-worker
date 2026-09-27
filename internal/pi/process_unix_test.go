@@ -525,7 +525,10 @@ func TestWorkerTimeoutTerminatesDescendantTree(t *testing.T) {
 	descendantPidFile := filepath.Join(t.TempDir(), "descendant.pid")
 	t.Setenv("FAKEPI_SPAWN_PIDFILE", descendantPidFile)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	// The deadline must leave the fake Pi time to start up and write its pid
+	// file; the timeout itself is guaranteed by the 10-second prompt sleep,
+	// so it does not depend on a short deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
