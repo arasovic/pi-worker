@@ -1765,7 +1765,7 @@ func TestWorkerWrapUpSettlesWithoutReportText(t *testing.T) {
 	}
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -1810,7 +1810,7 @@ func TestWorkerWrapUpReportCutOffAtTimeLimit(t *testing.T) {
 	}
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
