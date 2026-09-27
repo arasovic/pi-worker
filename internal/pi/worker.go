@@ -510,9 +510,9 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	prompt := req.Prompt
 	assistantMessagesAtContinuation := transcript.assistantMessageCount()
 	for {
-		// Submit on the parent context so a mid-round-trip deadline keeps the gate armed for the wrap-up branch.
+		// Submit on the parent context so a mid-round-trip deadline keeps the gate armed for the wrap-up branch; classify its failure against that same context.
 		if err := client.Prompt(ctx, prompt); err != nil {
-			return finalize(w.classify(req.Model, workCtx, err))
+			return finalize(w.classify(req.Model, ctx, err))
 		}
 		// The wait between Prompt and the terminal agent_settled event is the
 		// single owned FrameReader consumer window: when Controls is nil the
@@ -526,10 +526,10 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 			}
 			return finalize(w.classify(req.Model, workCtx, err))
 		}
-		// Read on the parent context so an answer that settled before the working deadline is kept.
+		// Read on the parent context so an answer that settled before the working deadline is kept; classify its failure against that same context.
 		text, err := client.GetLastAssistantText(ctx)
 		if err != nil {
-			return finalize(w.classify(req.Model, workCtx, err))
+			return finalize(w.classify(req.Model, ctx, err))
 		}
 		if !transcript.assistantError() && strings.TrimSpace(text) != "" {
 			return finalize(WorkerResult{Model: req.Model, Status: StatusCompleted, Explanation: text})
