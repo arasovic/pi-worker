@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -51,6 +52,24 @@ func countStrings(values []string, want string) int {
 		}
 	}
 	return n
+}
+
+// warmFakePiOnce makes the first test to need it pay the one-time operating
+// system launch cost for the freshly built fakepi binary: measured at ~250ms
+// for the first launch versus ~9ms for later launches. It runs one no-op
+// fakepi process to completion, so later timed process starts in the same test
+// binary are fast and the only latency they see is the scripted work.
+var warmFakePiOnce sync.Once
+
+func warmFakePi(t *testing.T) {
+	t.Helper()
+	warmFakePiOnce.Do(func() {
+		cmd := exec.Command(fakePiBin, "--mode", "rpc", "--tools", "none")
+		cmd.Stdin = strings.NewReader("")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("warm fakepi: %v: %s", err, out)
+		}
+	})
 }
 
 func TestWorkerIDZeroDefaultsToOne(t *testing.T) {
@@ -1612,6 +1631,114 @@ func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
 	}
 	if got := countStrings(types, "prompt"); got != 2 {
 		t.Fatalf("request log = %v, want exactly two prompts", types)
+	}
+}
+
+// TestWorkerPromptCrossingWorkDeadlineGetsWrapUp covers a prompt round trip
+// that outlives the working deadline: the prompt goes out on the parent
+// context, so when it returns the working context is already expired, the
+// settlement gate is still armed, and the existing workDeadlineReached branch
+// runs the wrap-up instead of ending the run with no report.
+func TestWorkerPromptCrossingWorkDeadlineGetsWrapUp(t *testing.T) {
+	const wrapUpText = "Parsed 12 files before the limit; the report streamed after the working deadline."
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first prompt round trip sleeps past the ~5.4s working
+			// deadline and then succeeds without settling, so the following
+			// waitSettled finds workCtx already expired.
+			{
+				{SleepMS: 5500},
+				{Response: &script.Response{Success: true}},
+			},
+			// The single wrap-up turn is accepted, streams its report, and
+			// settles.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+				{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + wrapUpText + `"}}`)},
+				{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"` + wrapUpText + `"}],"stopReason":"stop"}}`)},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	warmFakePi(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if result.Error != "timed out: context deadline exceeded" {
+		t.Fatalf("error = %q, want the exact timeout text", result.Error)
+	}
+	if result.PartialExplanation != wrapUpText {
+		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the completed wrap-up line", result.Warning)
+	}
+	types := waitRequestLog(t, logPath, 6)
+	if got := countStrings(types, "abort"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one abort", types)
+	}
+	if got := countStrings(types, "prompt"); got != 2 {
+		t.Fatalf("request log = %v, want exactly two prompts", types)
+	}
+}
+
+// TestWorkerAnswerReadAcrossWorkDeadlineIsKept covers reading the answer after
+// the turn settled: the read runs on the parent context, so a deadline that
+// passes while the text is being fetched does not discard an answer the turn
+// produced before the working deadline.
+func TestWorkerAnswerReadAcrossWorkDeadlineIsKept(t *testing.T) {
+	const answer = "The answer arrived after the working deadline."
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.Triggers["prompt"] = []script.Step{
+		{Response: &script.Response{Success: true}},
+		{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+		{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + answer + `"}}`)},
+		{Event: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"` + answer + `"}],"stopReason":"stop"}}`)},
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+	}
+	// The text read sleeps past the ~5.4s working deadline, then returns the
+	// answer the settled turn already produced.
+	scriptConfig.Triggers["get_last_assistant_text"] = []script.Step{
+		{SleepMS: 5500},
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"text":"` + answer + `"}`)}},
+	}
+	setupFakePiEnv(t, scriptConfig)
+
+	warmFakePi(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed; result = %#v", result.Status, result)
+	}
+	if result.Explanation != answer {
+		t.Fatalf("explanation = %q, want the settled answer %q", result.Explanation, answer)
+	}
+	if result.PartialExplanation != "" {
+		t.Fatalf("partialExplanation = %q, want none on a completed run", result.PartialExplanation)
 	}
 }
 
