@@ -510,7 +510,8 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	prompt := req.Prompt
 	assistantMessagesAtContinuation := transcript.assistantMessageCount()
 	for {
-		if err := client.Prompt(workCtx, prompt); err != nil {
+		// Submit on the parent context so a mid-round-trip deadline keeps the gate armed for the wrap-up branch.
+		if err := client.Prompt(ctx, prompt); err != nil {
 			return finalize(w.classify(req.Model, workCtx, err))
 		}
 		// The wait between Prompt and the terminal agent_settled event is the
@@ -525,7 +526,8 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 			}
 			return finalize(w.classify(req.Model, workCtx, err))
 		}
-		text, err := client.GetLastAssistantText(workCtx)
+		// Read on the parent context so an answer that settled before the working deadline is kept.
+		text, err := client.GetLastAssistantText(ctx)
 		if err != nil {
 			return finalize(w.classify(req.Model, workCtx, err))
 		}
