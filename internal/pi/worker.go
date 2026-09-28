@@ -469,7 +469,9 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// also measures how long stopping the turn took and how long the report
 	// itself took, and appends exactly one warning line naming how the wrap-up
 	// ended — completed, cut off at the time limit, no report text, or the
-	// prompt could not be sent.
+	// prompt could not be sent. The report turn runs at the lowest thinking
+	// level the model offers when that is lower than the working level, best
+	// effort.
 	wrapUp := func() WorkerResult {
 		stopStarted := time.Now()
 		_ = client.Abort(ctx)
@@ -480,6 +482,19 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		// text the run produced before the wrap-up, so it answers whether the
 		// report started from earlier text.
 		earlierTextPresent := transcript.snapshot() != ""
+
+		// The report only summarizes text already in context, so it does not
+		// need deep reasoning: best effort, run it at the lowest level the
+		// model offers when that is lower than the working level. Any failure
+		// keeps the working level.
+		reportThinking := thinking.effective
+		if levels, err := client.GetAvailableThinkingLevels(ctx); err == nil {
+			if lowest, ok := lowestThinkingLevel(levels); ok && lowest != thinking.effective {
+				if err := client.SetThinkingLevel(ctx, lowest); err == nil {
+					reportThinking = lowest
+				}
+			}
+		}
 
 		deltasBefore := transcript.textDeltaCount()
 		reportStarted := time.Now()
@@ -497,13 +512,13 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		var wrapUpWarning string
 		switch {
 		case promptErr != nil:
-			wrapUpWarning = wrapUpPromptFailedWarning(stop, earlierTextPresent)
+			wrapUpWarning = wrapUpPromptFailedWarning(stop, earlierTextPresent, reportThinking)
 		case waitErr == nil && streamedText:
-			wrapUpWarning = wrapUpReportCompletedWarning(stop, report, earlierTextPresent)
+			wrapUpWarning = wrapUpReportCompletedWarning(stop, report, earlierTextPresent, reportThinking)
 		case waitErr != nil && streamedText:
-			wrapUpWarning = wrapUpReportCutOffWarning(stop, report, earlierTextPresent)
+			wrapUpWarning = wrapUpReportCutOffWarning(stop, report, earlierTextPresent, reportThinking)
 		default:
-			wrapUpWarning = wrapUpNoReportTextWarning(stop, report, earlierTextPresent)
+			wrapUpWarning = wrapUpNoReportTextWarning(stop, report, earlierTextPresent, reportThinking)
 		}
 		if thinking.warning != "" {
 			thinking.warning = thinking.warning + "; " + wrapUpWarning
@@ -706,34 +721,36 @@ func continuationNoProgressWarning(attempt int) string {
 
 // wrapUpPromptFailedWarning is the one wrap-up warning when Pi did not accept
 // the wrap-up prompt, so no report turn ever started. It still names how long
-// stopping the interrupted turn took and whether earlier assistant text was
-// retained before the wrap-up prompt.
-func wrapUpPromptFailedWarning(stop time.Duration, earlierTextPresent bool) string {
-	return fmt.Sprintf("timeout wrap-up: stopping took %s; report prompt could not be sent%s", stop.Round(time.Millisecond), earlierTextClause(earlierTextPresent))
+// stopping the interrupted turn took, whether earlier assistant text was
+// retained before the wrap-up prompt, and the level the report turn ran at.
+func wrapUpPromptFailedWarning(stop time.Duration, earlierTextPresent bool, reportThinking ThinkingLevel) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; report prompt could not be sent%s%s", stop.Round(time.Millisecond), earlierTextClause(earlierTextPresent), reportThinkingClause(reportThinking))
 }
 
 // wrapUpReportCompletedWarning is the one wrap-up warning when the wrap-up
 // turn settled carrying report text. It names how long stopping the
-// interrupted turn took, how long the report took, and whether earlier
-// assistant text was retained before the wrap-up prompt.
-func wrapUpReportCompletedWarning(stop, report time.Duration, earlierTextPresent bool) string {
-	return fmt.Sprintf("timeout wrap-up: stopping took %s; report completed after %s%s", stop.Round(time.Millisecond), report.Round(time.Millisecond), earlierTextClause(earlierTextPresent))
+// interrupted turn took, how long the report took, whether earlier assistant
+// text was retained before the wrap-up prompt, and the level the report turn
+// ran at.
+func wrapUpReportCompletedWarning(stop, report time.Duration, earlierTextPresent bool, reportThinking ThinkingLevel) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; report completed after %s%s%s", stop.Round(time.Millisecond), report.Round(time.Millisecond), earlierTextClause(earlierTextPresent), reportThinkingClause(reportThinking))
 }
 
 // wrapUpReportCutOffWarning is the one wrap-up warning when the wrap-up turn
 // streamed report text but the time limit ended it before it settled. It also
-// names whether earlier assistant text was retained before the wrap-up prompt.
-func wrapUpReportCutOffWarning(stop, report time.Duration, earlierTextPresent bool) string {
-	return fmt.Sprintf("timeout wrap-up: stopping took %s; report cut off at the time limit after %s%s", stop.Round(time.Millisecond), report.Round(time.Millisecond), earlierTextClause(earlierTextPresent))
+// names whether earlier assistant text was retained before the wrap-up prompt
+// and the level the report turn ran at.
+func wrapUpReportCutOffWarning(stop, report time.Duration, earlierTextPresent bool, reportThinking ThinkingLevel) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; report cut off at the time limit after %s%s%s", stop.Round(time.Millisecond), report.Round(time.Millisecond), earlierTextClause(earlierTextPresent), reportThinkingClause(reportThinking))
 }
 
 // wrapUpNoReportTextWarning is the one wrap-up warning when the wrap-up turn
 // contributed no report text, whether it settled silently or never settled. It
 // names how long stopping the interrupted turn took, how long waiting for the
-// report took, and whether earlier assistant text was retained before the
-// wrap-up prompt.
-func wrapUpNoReportTextWarning(stop, report time.Duration, earlierTextPresent bool) string {
-	return fmt.Sprintf("timeout wrap-up: stopping took %s; no report text after %s%s", stop.Round(time.Millisecond), report.Round(time.Millisecond), earlierTextClause(earlierTextPresent))
+// report took, whether earlier assistant text was retained before the wrap-up
+// prompt, and the level the report turn ran at.
+func wrapUpNoReportTextWarning(stop, report time.Duration, earlierTextPresent bool, reportThinking ThinkingLevel) string {
+	return fmt.Sprintf("timeout wrap-up: stopping took %s; no report text after %s%s%s", stop.Round(time.Millisecond), report.Round(time.Millisecond), earlierTextClause(earlierTextPresent), reportThinkingClause(reportThinking))
 }
 
 // earlierTextClause renders the trailing clause every wrap-up warning carries:
@@ -744,6 +761,12 @@ func earlierTextClause(earlierTextPresent bool) string {
 		return "; earlier text: present"
 	}
 	return "; earlier text: none"
+}
+
+// reportThinkingClause renders the trailing clause every wrap-up warning
+// carries: the thinking level the wrap-up report turn ran at.
+func reportThinkingClause(reportThinking ThinkingLevel) string {
+	return fmt.Sprintf("; report thinking: %s", reportThinking)
 }
 
 func retryableStartupFailure(err error) bool {

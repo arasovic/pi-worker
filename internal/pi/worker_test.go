@@ -1619,7 +1619,7 @@ func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
 	if result.ContinuationAttempts != 0 {
 		t.Fatalf("continuationAttempts = %d, want 0 for a wrap-up turn", result.ContinuationAttempts)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+; earlier text: none$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the completed wrap-up line", result.Warning)
 	}
 	if finished := time.Now(); !finished.Before(deadline) {
@@ -1687,7 +1687,7 @@ func TestWorkerPromptCrossingWorkDeadlineGetsWrapUp(t *testing.T) {
 	if result.PartialExplanation != wrapUpText {
 		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+; earlier text: none$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the completed wrap-up line", result.Warning)
 	}
 	types := waitRequestLog(t, logPath, 6)
@@ -1779,8 +1779,171 @@ func TestWorkerWrapUpSettlesWithoutReportText(t *testing.T) {
 	if result.PartialExplanation != "" {
 		t.Fatalf("partialExplanation = %q, want none without report text", result.PartialExplanation)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+; earlier text: none$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the no-report-text wrap-up line", result.Warning)
+	}
+}
+
+// TestWorkerWrapUpLowersThinkingForReport covers the wrap-up turn run at the
+// lowest thinking level the model offers: when that level is lower than the
+// working level and Pi accepts the switch, the report uses it while the
+// result still names the working level.
+func TestWorkerWrapUpLowersThinkingForReport(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The wrap-up turn is accepted and settles without any text.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	// Deliberately unsorted: minimal is the lowest by reasoning order, not by
+	// Pi's listing order.
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["high","low","minimal","max"]}`)}},
+	}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{
+		{Response: &script.Response{Success: true}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+; earlier text: none; report thinking: minimal$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the no-report-text wrap-up line at minimal", result.Warning)
+	}
+	if result.ThinkingLevel != "medium" {
+		t.Fatalf("thinkingLevel = %q, want the working level medium unchanged", result.ThinkingLevel)
+	}
+	types := waitRequestLog(t, logPath, 8)
+	if got := countStrings(types, "set_thinking_level"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one set_thinking_level", types)
+	}
+	abortIndex := slices.Index(types, "abort")
+	setIndex := slices.Index(types, "set_thinking_level")
+	if abortIndex < 0 || setIndex < abortIndex {
+		t.Fatalf("request log = %v, want set_thinking_level after abort", types)
+	}
+	prompts := make([]int, 0, 2)
+	for i, typ := range types {
+		if typ == "prompt" {
+			prompts = append(prompts, i)
+		}
+	}
+	if len(prompts) != 2 || setIndex > prompts[1] {
+		t.Fatalf("request log = %v, want set_thinking_level before the second prompt", types)
+	}
+}
+
+// TestWorkerWrapUpKeepsThinkingWhenAlreadyLowest covers a working level that is
+// already the lowest the model offers: the report runs at that level with no
+// switch request.
+func TestWorkerWrapUpKeepsThinkingWhenAlreadyLowest(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The wrap-up turn is accepted and settles without any text.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","high"]}`)}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the no-report-text wrap-up line at medium", result.Warning)
+	}
+	types := waitRequestLog(t, logPath, 7)
+	if got := countStrings(types, "set_thinking_level"); got != 0 {
+		t.Fatalf("request log = %v, want no set_thinking_level", types)
+	}
+}
+
+// TestWorkerWrapUpKeepsThinkingWhenSwitchRejected covers Pi rejecting the
+// switch to the lowest level: the report still runs at the working level.
+func TestWorkerWrapUpKeepsThinkingWhenSwitchRejected(t *testing.T) {
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn is accepted but never settles, so the
+			// derived working deadline is what ends the wait.
+			{{Response: &script.Response{Success: true}}},
+			// The wrap-up turn is accepted and settles without any text.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{
+		{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["low","medium"]}`)}},
+	}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{
+		{Response: &script.Response{Success: false, Error: "rejected"}},
+	}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the no-report-text wrap-up line at medium", result.Warning)
+	}
+	types := waitRequestLog(t, logPath, 8)
+	if got := countStrings(types, "set_thinking_level"); got != 1 {
+		t.Fatalf("request log = %v, want exactly one set_thinking_level", types)
 	}
 }
 
@@ -1824,7 +1987,7 @@ func TestWorkerWrapUpReportCutOffAtTimeLimit(t *testing.T) {
 	if result.PartialExplanation != wrapUpText {
 		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+; earlier text: none$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the cut-off wrap-up line", result.Warning)
 	}
 }
@@ -1874,7 +2037,7 @@ func TestWorkerWrapUpReportCutOffKeepsEarlierTextFlag(t *testing.T) {
 	if result.PartialExplanation != wrapUpText {
 		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+; earlier text: present$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+; earlier text: present; report thinking: medium$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the cut-off wrap-up line with earlier text present", result.Warning)
 	}
 }
@@ -1912,7 +2075,7 @@ func TestWorkerWrapUpPromptRejected(t *testing.T) {
 	if result.Status != StatusTimedOut {
 		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report prompt could not be sent; earlier text: none$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report prompt could not be sent; earlier text: none; report thinking: medium$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the prompt-could-not-be-sent wrap-up line", result.Warning)
 	}
 }
