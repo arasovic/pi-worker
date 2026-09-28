@@ -1619,7 +1619,7 @@ func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
 	if result.ContinuationAttempts != 0 {
 		t.Fatalf("continuationAttempts = %d, want 0 for a wrap-up turn", result.ContinuationAttempts)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+; earlier text: none$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the completed wrap-up line", result.Warning)
 	}
 	if finished := time.Now(); !finished.Before(deadline) {
@@ -1687,7 +1687,7 @@ func TestWorkerPromptCrossingWorkDeadlineGetsWrapUp(t *testing.T) {
 	if result.PartialExplanation != wrapUpText {
 		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report completed after \S+; earlier text: none$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the completed wrap-up line", result.Warning)
 	}
 	types := waitRequestLog(t, logPath, 6)
@@ -1779,7 +1779,7 @@ func TestWorkerWrapUpSettlesWithoutReportText(t *testing.T) {
 	if result.PartialExplanation != "" {
 		t.Fatalf("partialExplanation = %q, want none without report text", result.PartialExplanation)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; no report text after \S+; earlier text: none$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the no-report-text wrap-up line", result.Warning)
 	}
 }
@@ -1824,8 +1824,58 @@ func TestWorkerWrapUpReportCutOffAtTimeLimit(t *testing.T) {
 	if result.PartialExplanation != wrapUpText {
 		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+; earlier text: none$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the cut-off wrap-up line", result.Warning)
+	}
+}
+
+// TestWorkerWrapUpReportCutOffKeepsEarlierTextFlag covers the cut-off wrap-up
+// when the interrupted working turn had already streamed assistant text: the
+// warning still reports the cut-off report and adds that earlier text was
+// present.
+func TestWorkerWrapUpReportCutOffKeepsEarlierTextFlag(t *testing.T) {
+	const wrapUpText = "Parsed 12 files before the limit; the report is unfinished."
+	scriptConfig := happyPathScript("unused")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"prompt": {
+			// The first working turn streams assistant text but never settles,
+			// so the derived working deadline is what ends the wait.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+				{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Read the config and started step 2."}}`)},
+			},
+			// The wrap-up turn is accepted and streams its report but never
+			// settles, so the parent deadline ends the report wait.
+			{
+				{Response: &script.Response{Success: true}},
+				{Event: json.RawMessage(`{"type":"message_start","message":{"role":"assistant","content":[]}}`)},
+				{Event: json.RawMessage(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + wrapUpText + `"}}`)},
+			},
+		},
+	}
+	scriptConfig.Triggers["abort"] = []script.Step{
+		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
+		{Response: &script.Response{Success: true}},
+	}
+	setupFakePiEnv(t, scriptConfig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{
+		Model:     "acme/m-1",
+		Prompt:    "go",
+		Workspace: t.TempDir(),
+	})
+
+	if result.Status != StatusTimedOut {
+		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
+	}
+	if result.PartialExplanation != wrapUpText {
+		t.Fatalf("partialExplanation = %q, want the streamed report %q", result.PartialExplanation, wrapUpText)
+	}
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report cut off at the time limit after \S+; earlier text: present$`).MatchString(result.Warning) {
+		t.Fatalf("warning = %q, want the cut-off wrap-up line with earlier text present", result.Warning)
 	}
 }
 
@@ -1862,7 +1912,7 @@ func TestWorkerWrapUpPromptRejected(t *testing.T) {
 	if result.Status != StatusTimedOut {
 		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
 	}
-	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report prompt could not be sent$`).MatchString(result.Warning) {
+	if !regexp.MustCompile(`^timeout wrap-up: stopping took \S+; report prompt could not be sent; earlier text: none$`).MatchString(result.Warning) {
 		t.Fatalf("warning = %q, want the prompt-could-not-be-sent wrap-up line", result.Warning)
 	}
 }
