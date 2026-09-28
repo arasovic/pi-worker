@@ -18,6 +18,9 @@ const (
 	ThinkingMax     ThinkingLevel = "max"
 )
 
+// thinkingLevelOrder lists Pi's thinking vocabulary from least to most reasoning.
+var thinkingLevelOrder = []ThinkingLevel{ThinkingOff, ThinkingMinimal, ThinkingLow, ThinkingMedium, ThinkingHigh, ThinkingXHigh, ThinkingMax}
+
 // ParseThinkingLevel accepts only the exact Pi thinking vocabulary.
 func ParseThinkingLevel(value string) (ThinkingLevel, bool) {
 	level := ThinkingLevel(value)
@@ -64,6 +67,18 @@ func (o thinkingOutcome) apply(result WorkerResult) WorkerResult {
 
 func thinkingLevelsContain(levels []ThinkingLevel, requested ThinkingLevel) bool {
 	return slices.Contains(levels, requested)
+}
+
+// lowestThinkingLevel returns the least-reasoning level among levels, by
+// thinkingLevelOrder rather than by the order Pi listed them, or false when
+// levels holds none of the vocabulary.
+func lowestThinkingLevel(levels []ThinkingLevel) (ThinkingLevel, bool) {
+	for _, level := range thinkingLevelOrder {
+		if slices.Contains(levels, level) {
+			return level, true
+		}
+	}
+	return "", false
 }
 
 func thinkingFallbackWarning(requested, effective ThinkingLevel, reason string) string {

@@ -347,17 +347,22 @@ Worker fields are conditionally present:
 - `warning`: present with a fallback or other worker warning. A run that
   reaches its time limit and spends its reserve on the final wrap-up prompt
   appends one line saying how that wrap-up ended, as `timeout wrap-up:
-  stopping took <d>; report completed after <d>; earlier text: <present|none>`,
-  `timeout wrap-up: stopping took <d>; report cut off at the time limit after
-  <d>; earlier text: <present|none>`, `timeout wrap-up: stopping took <d>; no
-  report text after <d>; earlier text: <present|none>`, or `timeout wrap-up:
-  stopping took <d>; report prompt could not be sent; earlier text:
-  <present|none>`. `<d>` is a duration rounded to the millisecond; the first
-  names how long stopping the interrupted turn took, the second (when present)
-  how long the report took. The final clause says whether assistant text was
-  retained immediately before the wrap-up prompt, i.e. whether
-  `partialExplanation` would have carried earlier text had the report added
-  none.
+  stopping took <d>; report completed after <d>; earlier text: <present|none>;
+  report thinking: <level>`, `timeout wrap-up: stopping took <d>; report cut
+  off at the time limit after <d>; earlier text: <present|none>; report
+  thinking: <level>`, `timeout wrap-up: stopping took <d>; no report text
+  after <d>; earlier text: <present|none>; report thinking: <level>`, or
+  `timeout wrap-up: stopping took <d>; report prompt could not be sent;
+  earlier text: <present|none>; report thinking: <level>`. `<d>` is a duration
+  rounded to the millisecond; the first names how long stopping the interrupted
+  turn took, the second (when present) how long the report took. The
+  `earlier text` clause says whether assistant text was retained immediately
+  before the wrap-up prompt, i.e. whether `partialExplanation` would have
+  carried earlier text had the report added none. The `report thinking` clause
+  names the level the wrap-up report ran at, which is the lowest level the
+  model offers when that is lower than the working level and Pi accepted the
+  switch, otherwise the working level; `thinkingLevel` still names the working
+  level.
 - `explanation`: present when final assistant text exists
 - `partialExplanation`: present when the run ended without a final
   assistant text but retained assistant text exists; carries the most
