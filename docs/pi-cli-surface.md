@@ -210,8 +210,8 @@ not from Pi. Idle `steer` accepted `pi-worker-0.99.1-probe`, answered
 returned that exact steering text and emptied the queue; `abort` returned
 success; the RPC process exited 0. `pi-worker doctor` on 0.99.1 before the pin
 moved reported the version as an unverified warning with `ready: yes`. File
-hashes of the Pi agent directory (sessions excluded) were unchanged by the
-doctor, catalog, and probe runs. The remaining 0.99.x changes do not reach Pi
+hashes of the Pi agent directory (sessions and package caches excluded) were
+unchanged by the doctor, catalog, and probe runs. The remaining 0.99.x changes do not reach Pi
 Worker: codemode's structured `bash` results apply only to codemode scripts;
 the `RpcClient` listener fix is in the TypeScript client, which Pi Worker does
 not use; `builtin:<name>` naming appears in RPC source info, which Pi Worker
