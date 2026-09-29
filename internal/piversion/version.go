@@ -13,7 +13,7 @@ import (
 
 const (
 	// VerifiedVersion is the only Pi version verified by pi-worker.
-	VerifiedVersion = "0.87.0"
+	VerifiedVersion = "0.99.1"
 	// MaxOutputBytes bounds untrusted version stdout from the child process.
 	MaxOutputBytes = 4096
 	// WaitDelay bounds cleanup when a descendant retains the child's pipes.
