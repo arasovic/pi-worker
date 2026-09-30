@@ -722,12 +722,17 @@ type gitMetadataSnapshot struct {
 
 // metadataStamp is deliberately metadata-only. In particular, this does
 // not hash or copy an exclude file: the measurement boundary must not pull
-// user file contents out of the workspace.
+// user file contents out of the workspace. The status-change time catches
+// a same-size rewrite with a restored modification time, because no process
+// can set it back; on platforms without it the stamp is size, modification
+// time and mode only. Git re-reads exclude files on every command and never
+// trusts a stat cache for them, so core.trustctime does not affect this stamp.
 type metadataStamp struct {
-	size    int64
-	modTime time.Time
-	mode    os.FileMode
-	absent  bool
+	size       int64
+	modTime    time.Time
+	mode       os.FileMode
+	changeTime time.Time
+	absent     bool
 }
 
 // snapshotGitMetadata records the index visibility markers, the effective
@@ -929,7 +934,8 @@ func resolveExcludesFile(root, value string) string {
 	return ""
 }
 
-// statMetadata stamps a Git metadata file without reading it. A missing
+// statMetadata stamps a Git metadata file without reading it: size,
+// modification time, mode, and the status-change time. A missing
 // file is a meaningful state: creating info/exclude during a run is drift.
 func statMetadata(path string) (metadataStamp, error) {
 	info, err := os.Stat(path)
@@ -939,11 +945,11 @@ func statMetadata(path string) (metadataStamp, error) {
 		}
 		return metadataStamp{}, err
 	}
-	return metadataStamp{size: info.Size(), modTime: info.ModTime(), mode: info.Mode()}, nil
+	return metadataStamp{size: info.Size(), modTime: info.ModTime(), mode: info.Mode(), changeTime: statusChangeTime(info)}, nil
 }
 
 func metadataStampEqual(a, b metadataStamp) bool {
-	return a.size == b.size && a.modTime.Equal(b.modTime) && a.mode == b.mode && a.absent == b.absent
+	return a.size == b.size && a.modTime.Equal(b.modTime) && a.mode == b.mode && a.changeTime.Equal(b.changeTime) && a.absent == b.absent
 }
 
 // gitignoreRuleStamp is the content identity of one in-tree .gitignore
