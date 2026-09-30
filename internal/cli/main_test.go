@@ -74,7 +74,7 @@ func TestMain(m *testing.M) {
 	// whole package test run too, so no test that reaches the run
 	// configuration reads the user's real config.json: the file is left
 	// absent here, so the loader reports the not-exist error and callers
-	// fall back to config.Empty() defaults, and any foreground admission
+	// fall back to config.Empty() defaults, and any admission
 	// state derived beside the config file stays under the system
 	// temporary directory with the fake-Pi and runlog resources. Tests
 	// that need a real on-disk config install their own path over this

@@ -37,7 +37,7 @@ func TestControllerSetsRunMarkerBeforeWorkersStart(t *testing.T) {
 		seen = os.Getenv(RunMarkerEnv)
 		return pi.WorkerResult{Model: req.Model, Status: pi.StatusCompleted}
 	}}
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, 5*time.Minute, 1))
 
 	if _, err := controller.Run(context.Background(), validRequest("task-1")); err != nil {
 		t.Fatalf("run: %v", err)
@@ -68,7 +68,7 @@ func TestControllerReportsLeftoverProcesses(t *testing.T) {
 			worker := &funcWorker{fn: func(_ context.Context, req pi.WorkerRequest) pi.WorkerResult {
 				return pi.WorkerResult{Model: req.Model, Status: status}
 			}}
-			controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+			controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, 5*time.Minute, 1))
 
 			result, err := controller.Run(context.Background(), validRequest("task-1"))
 			if err != nil {
@@ -108,7 +108,7 @@ func TestControllerOmitsLeftoverProcessesWhenNoneFound(t *testing.T) {
 	worker := &funcWorker{fn: func(_ context.Context, req pi.WorkerRequest) pi.WorkerResult {
 		return pi.WorkerResult{Model: req.Model, Status: pi.StatusCompleted}
 	}}
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", time.Now(), 5*time.Minute))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", time.Now(), 5*time.Minute, 1))
 
 	result, err := controller.Run(context.Background(), validRequest("task-1"))
 	if err != nil {

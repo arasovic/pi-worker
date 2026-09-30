@@ -54,9 +54,9 @@ func TestHelperSubprocessReconcile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Acquire a lease: Enqueue persists the queued ticket, Wait persists the
+	// Acquire a lease: Prepare persists the queued ticket, Wait persists the
 	// granted lease, so both states are durable before "ready" is printed.
-	leaseTicket, err := g.Enqueue(Request{RunID: runIDAcq, WorkerID: widAcq})
+	leaseTicket, err := prepareOne(g, Request{RunID: runIDAcq, WorkerID: widAcq})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enqueue1: %v\n", err)
 		os.Exit(1)
@@ -69,8 +69,8 @@ func TestHelperSubprocessReconcile(t *testing.T) {
 	}
 	_ = lease // held but never released until killed
 
-	// Enqueue a second ticket that stays queued (lease held above).
-	queuedTicket, err := g.Enqueue(Request{RunID: runIDQ, WorkerID: widQ})
+	// Prepare a second ticket that stays queued (lease held above).
+	queuedTicket, err := prepareOne(g, Request{RunID: runIDQ, WorkerID: widQ})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enqueue2: %v\n", err)
 		os.Exit(1)

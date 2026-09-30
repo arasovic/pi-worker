@@ -42,6 +42,15 @@ func (w *admissionOrderWorker) Run(ctx context.Context, req pi.WorkerRequest) pi
 	}
 }
 
+// prepareOne prepares a one-request batch in gate and returns its ticket.
+func prepareOne(gate *admission.Gate, req admission.Request) (*admission.QueueTicket, error) {
+	tickets, err := gate.Prepare([]admission.Request{req})
+	if err != nil {
+		return nil, err
+	}
+	return tickets[0], nil
+}
+
 func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	gate, err := admission.Open(t.TempDir(), 1)
@@ -50,7 +59,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 	}
 
 	// Step 2: hold one lease so the controller ticket queues but cannot grant.
-	blocker, err := gate.Enqueue(admission.Request{RunID: "blocker", WorkerID: 1})
+	blocker, err := prepareOne(gate, admission.Request{RunID: "blocker", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue blocker: %v", err)
 	}
@@ -64,7 +73,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 	worker := newScriptedWorker()
 	executionTimeout := 5 * time.Minute
 	acceptedAt := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, executionTimeout))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, executionTimeout, 1))
 
 	// Steps 4-5: intercept the deadline/duration sent by the admission goroutines.
 	queueDeadlineCh := make(chan time.Time, 1)
@@ -143,7 +152,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 	}
 
 	// Step 11: probe proves the task lease did not remain.
-	probe, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
+	probe, err := prepareOne(gate, admission.Request{RunID: "probe", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue probe: %v", err)
 	}
@@ -223,7 +232,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 	})
 
 	// Step 2: acquire blocker lease so controller tickets queue behind it.
-	blocker, err := gate.Enqueue(admission.Request{RunID: "blocker", WorkerID: 1})
+	blocker, err := prepareOne(gate, admission.Request{RunID: "blocker", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue blocker: %v", err)
 	}
@@ -241,7 +250,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 		releases: map[int]<-chan struct{}{1: relCh1, 2: relCh2},
 	}
 	acceptedAt := time.Now()
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, 5*time.Minute, 2))
 
 	// Step 4: override queueContext to send a marker then return a cancellable context.
 	queueEntered := make(chan struct{}, 1)
@@ -267,7 +276,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 	}
 
 	// Enqueue a later outsider ticket and start its Wait concurrently.
-	ot, err := gate.Enqueue(admission.Request{RunID: "outsider", WorkerID: 1})
+	ot, err := prepareOne(gate, admission.Request{RunID: "outsider", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue outsider: %v", err)
 	}
@@ -367,7 +376,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 	}
 
 	// Step 14: enqueue and wait on a final probe with a bounded context.
-	probe, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
+	probe, err := prepareOne(gate, admission.Request{RunID: "probe", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue probe: %v", err)
 	}
@@ -388,7 +397,7 @@ func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	boundedProbe := func(t *testing.T, gate *admission.Gate) {
 		t.Helper()
-		tk, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
+		tk, err := prepareOne(gate, admission.Request{RunID: "probe", WorkerID: 1})
 		if err != nil {
 			t.Fatalf("enqueue probe: %v", err)
 		}
@@ -415,7 +424,7 @@ func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
 
 		worker := newScriptedWorker()
 		acceptedAt := time.Now()
-		controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+		controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, 5*time.Minute, 2))
 		controller.queueContext = expiredCtx
 
 		result, runErr := controller.Run(context.Background(), validRequest("task-1", "task-2"))
@@ -452,7 +461,7 @@ func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
 
 		worker := newScriptedWorker()
 		acceptedAt := time.Now()
-		controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+		controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, 5*time.Minute, 2))
 		controller.queueContext = func(parent context.Context, workerID int, _ time.Time) (context.Context, context.CancelFunc) {
 			if workerID == 1 {
 				return context.WithCancel(parent)
@@ -510,7 +519,7 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 	}
 
 	// Step 2: acquire a blocker lease so controller tickets queue behind it.
-	blocker, err := gate.Enqueue(admission.Request{RunID: "blocker", WorkerID: 1})
+	blocker, err := prepareOne(gate, admission.Request{RunID: "blocker", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue blocker: %v", err)
 	}
@@ -521,7 +530,7 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 
 	// Step 3: admitted controller with two tasks.
 	worker := newScriptedWorker()
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", time.Now(), 5*time.Minute))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", time.Now(), 5*time.Minute, 2))
 
 	// Step 4: override queueContext to send each worker ID then return a
 	// cancellable context derived from the parent.
@@ -609,7 +618,7 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 	if err := blockerLease.Release(); err != nil {
 		t.Fatalf("release blocker lease: %v", err)
 	}
-	probe, err := gate.Enqueue(admission.Request{RunID: "probe", WorkerID: 1})
+	probe, err := prepareOne(gate, admission.Request{RunID: "probe", WorkerID: 1})
 	if err != nil {
 		t.Fatalf("enqueue probe: %v", err)
 	}
@@ -649,7 +658,7 @@ func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
 		return os.WriteFile(filepath.Join(root, "state.json"), []byte("{definitely not valid json"), 0o600)
 	}}
 	acceptedAt := time.Now()
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, 5*time.Minute))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, 5*time.Minute, 1))
 
 	result, runErr := controller.Run(context.Background(), validRequest("task-1"))
 
@@ -703,7 +712,7 @@ func TestControllerForegroundAdmissionStartsFreshVerificationClock(t *testing.T)
 	verifier := &scriptedVerifier{result: Verification{Argv: []string{"go", "test", "./..."}, ExitCode: 0}}
 	executionTimeout := 7 * time.Minute
 	controller := New(worker,
-		WithForegroundAdmission(gate, "run-1", time.Now(), executionTimeout),
+		preparedAdmission(t, gate, "run-1", time.Now(), executionTimeout, 1),
 		WithVerifier(verifier))
 
 	// Override executionContext with a mutex-protected recorder: every

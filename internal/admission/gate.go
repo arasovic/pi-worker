@@ -258,47 +258,6 @@ func (g *Gate) Prepare(requests []Request) ([]*QueueTicket, error) {
 	return result, nil
 }
 
-// Enqueue writes exactly one durable queued ticket and never waits for
-// capacity. It validates non-empty RunID and positive WorkerID, generates
-// one random ticket ID, and persists a single queued ticket under one lock
-// transition. The returned QueueTicket can later be used to poll for grant.
-func (g *Gate) Enqueue(req Request) (*QueueTicket, error) {
-	if req.RunID == "" {
-		return nil, errors.New("admission enqueue: runId must not be empty")
-	}
-	if req.WorkerID <= 0 {
-		return nil, fmt.Errorf("admission enqueue: workerId must be positive, got %d", req.WorkerID)
-	}
-
-	ticketID, err := newTicketID()
-	if err != nil {
-		return nil, fmt.Errorf("admission enqueue: %w", err)
-	}
-
-	// Enqueue the ticket under one lock transition.
-	if err := g.updateState(func(st *state) (bool, error) {
-		if st.NextSequence > math.MaxInt-1 {
-			return false, errors.New("sequence overflow")
-		}
-		seq := st.NextSequence
-		st.NextSequence++
-		st.Tickets = append(st.Tickets, ticket{
-			ID:              ticketID,
-			Sequence:        seq,
-			RunID:           req.RunID,
-			WorkerID:        req.WorkerID,
-			OwnerPID:        g.owner.PID,
-			OwnerCreateTime: g.owner.CreateTime,
-			State:           ticketQueued,
-		})
-		return true, nil
-	}); err != nil {
-		return nil, fmt.Errorf("admission enqueue: %w", err)
-	}
-
-	return &QueueTicket{gate: g, ticketID: ticketID, owner: g.owner}, nil
-}
-
 // tryGrant reacquires the lock, reaps stale tickets, checks whether ticketID
 // is the earliest queued ticket and leased count is below maxLive. If so it
 // marks the ticket leased and returns a Lease. Returns (nil, nil) if the
@@ -385,7 +344,7 @@ func (g *Gate) removeQueuedTicket(ticketID string) error {
 // Wait blocks until the queued ticket is granted as a Lease, the context
 // is cancelled, or the ticket is reaped. Wait must be called at most once
 // per QueueTicket; a second call returns a deterministic error before
-// touching durable state. It never calls Enqueue or changes NextSequence.
+// touching durable state. It never calls Prepare or changes NextSequence.
 //
 // If the context is already done or ends while queued, Wait cancels the
 // ticket and returns a joined error. Any tryGrant error cancels the ticket
