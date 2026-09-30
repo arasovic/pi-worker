@@ -95,7 +95,7 @@ Usage:
   pi-worker runs prune --keep <n> [--yes] [--json]
 
 list    every run on this machine, newest first, foreground and background,
-        with its outcome: the run's own, running, interrupted (its process
+        with its outcome: the run's own, running, interrupted (its owner
         is gone) or unknown (its record cannot be read)
 status  one background run's latest state, at once; waits for nothing
 wait    reads a background run until it finishes, then prints what run

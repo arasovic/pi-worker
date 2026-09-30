@@ -183,16 +183,17 @@ listed once, as its background entry, because the snapshot is the state
   repeats, or `[]` when there are none or the start fields are unreadable
 - `outcome`: the recorded outcome, `error`, `running`, `interrupted`, or
   `unknown`; a finished background run reports its own outcome, `running`
-  while its supervisor is alive, `interrupted` when the supervisor is gone
-  before it finished, and `unknown` when its state cannot be read
-- `path`: the record path; for a background run, its `snapshot.json`
+  while its owner lock is held (for an older run without one, while its
+  supervisor is alive), `interrupted` when the owner is gone before it
+  finished, and `unknown` when its state cannot be read
+- `path`: the record path; for a background run, its run directory
 
 No root or entry field is omitted. Missing or unreadable display fields use
 their zero values. A foreground record with no usable start line remains an
 entry with `outcome: "unknown"` and its filename-derived `runId` and `path`;
 its other entry fields carry their zero values. A background run whose
 snapshot cannot be read is likewise an entry with `outcome: "unknown"`, its
-directory-derived `runId`, and its `snapshot.json` path. A successful command
+directory-derived `runId`, and its run directory as `path`. A successful command
 exits `0`, including when `runs` is empty. Usage errors exit `2`; a records-
 directory or background-root resolution or read failure exits `9`. Those
 failure paths emit no JSON document.

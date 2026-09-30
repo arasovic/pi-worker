@@ -21,7 +21,7 @@ type listedRun struct {
 // TestRunsListIncludesBackgroundRuns drives the real runs list against one
 // finished background run and one hand-written foreground record and pins
 // the merge: both identities appear, the background entry carries its own
-// outcome and its snapshot path, and the order is newest first. The human
+// outcome and its run directory as its path, and the order is newest first. The human
 // output names the background run too.
 func TestRunsListIncludesBackgroundRuns(t *testing.T) {
 	manager, root := setupBackgroundRun(t, backgroundHappyScript("list answer"))
@@ -68,8 +68,8 @@ func TestRunsListIncludesBackgroundRuns(t *testing.T) {
 	if background.Outcome != "completed" {
 		t.Fatalf("background outcome = %q, want completed", background.Outcome)
 	}
-	if !strings.HasSuffix(background.Path, "snapshot.json") {
-		t.Fatalf("background path = %q, want it to end in snapshot.json", background.Path)
+	if want := filepath.Join(root, backgroundRunID); background.Path != want {
+		t.Fatalf("background path = %q, want its run directory %q", background.Path, want)
 	}
 	if foreground.Path != foregroundPath {
 		t.Fatalf("foreground path = %q, want %q", foreground.Path, foregroundPath)
@@ -178,7 +178,7 @@ func TestRunBackgroundWritesTheRunRecord(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatalf("decode runs list document: %v\n%s", err, stdout)
 	}
-	if len(document.Runs) != 1 || document.Runs[0].RunID != runID || !strings.HasSuffix(document.Runs[0].Path, "snapshot.json") {
+	if len(document.Runs) != 1 || document.Runs[0].RunID != runID || document.Runs[0].Path != filepath.Join(root, runID) {
 		t.Fatalf("runs list = %+v, want the run once, as its background entry", document.Runs)
 	}
 }

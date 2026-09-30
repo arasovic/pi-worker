@@ -270,11 +270,12 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   writes a run record, so it is found in both places; it is listed
   once, as its background entry, because the snapshot is the state
   `runs status` and `runs wait` read. A background run's `path` is its
-  `snapshot.json`; its outcome is the run's own outcome once finished,
-  `running` while its supervisor is still alive, `interrupted` when the
-  supervisor is gone before the run finished, and `unknown` when its
-  state cannot be read. `runs prune` never touches a background
-  snapshot.
+  run directory; its outcome is the run's own outcome once finished,
+  `running` while its owner lock (`owner.lock` in the run directory) is
+  held — for an older run without one, while its supervisor is still
+  alive — `interrupted` when the owner is gone before the run finished,
+  and `unknown` when its state cannot be read. `runs prune` never
+  touches a background snapshot.
 - A record's outcome is one of: the run's own outcome, verbatim, when
   its finish line carried a result; `error` when the finish line
   carried the error arm instead; `running` when there is no finish
