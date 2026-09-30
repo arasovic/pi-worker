@@ -12,6 +12,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/contracts"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -269,17 +270,22 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 	// with req.debug each worker host writes its own debug lines to the
 	// run's debug file (runAcceptedRun).
 	observer := newSupervisorRunObserver(store, prep.snapshot)
+	recorder := startRunRecord(req)
+	observe := observer.observer()
 	options := []run.Option{run.WithGitInspector(run.NewDefaultGitInspector())}
 	if len(req.verify) > 0 {
 		options = append(options, run.WithVerifier(run.NewDefaultVerifier()))
 	}
 	options = append(options, run.WithPreparedAdmission(req.runID, req.acceptedAt, req.executionTimeout, prep.tickets))
 	runResult, runErr := run.New(worker, options...).Run(ctx, run.Request{
-		Tasks:          req.tasks,
-		Workspace:      req.workspace,
-		Verify:         req.verify,
-		OnProcessStart: observer.observer(),
-		OnActivity:     observer.activity(),
+		Tasks:     req.tasks,
+		Workspace: req.workspace,
+		Verify:    req.verify,
+		OnProcessStart: func(workerID, pid int) {
+			observe(workerID, pid)
+			recorder.WorkerProcess(time.Now(), workerID, pid)
+		},
+		OnActivity: observer.activity(),
 	})
 	if runErr != nil {
 		errs = append(errs, fmt.Errorf("run accepted run (%s): controller: %w", req.runID, runErr))
@@ -300,12 +306,37 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 		if writeErr := writeFailedTerminalSnapshot(observer, cause); writeErr != nil {
 			errs = append(errs, writeErr)
 		}
+		_ = recorder.Finish(time.Now(), nil, cause)
 		return joinSupervisorStartErrors(errs...)
 	}
 	if err := store.Replace(terminal); err != nil {
 		errs = append(errs, fmt.Errorf("run accepted run (%s): replace terminal snapshot: %w", req.runID, err))
 	}
+	// The finish line follows the terminal snapshot and carries the same
+	// result document, so the record never reports a run settled before
+	// its snapshot does.
+	_ = recorder.Finish(time.Now(), terminal.Result, nil)
 	return joinSupervisorStartErrors(errs...)
+}
+
+// startRunRecord writes the start line of the run record a foreground run
+// writes, into the directory the starter named, and returns its recorder:
+// the start line's pid and creation time are this supervisor's, which is
+// how a later run tells a killed supervisor's record from a live one. No
+// directory, or a record that cannot be started, returns nil, on which
+// every recorder method is a no-op. Record failures are dropped here and at
+// Finish, never joined into the run's errors: a record problem must not fail
+// the run, and a supervisor's stderr reaches nobody, so there is no one to
+// warn.
+func startRunRecord(req supervisorStartRequest) *runlog.Recorder {
+	if req.runlogDir == "" {
+		return nil
+	}
+	recorder, err := runlog.StartWithID(req.runlogDir, req.runID, req.acceptedAt, req.workspace, req.tasks)
+	if err != nil {
+		return nil
+	}
+	return recorder
 }
 
 // observerFailures words the observer's recorded failures for the run that

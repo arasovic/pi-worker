@@ -112,6 +112,10 @@ type StartOptions struct {
 	// Unset or non-positive means the default bound.
 	QueueWait time.Duration
 	Debug     bool
+	// RunlogDir is the run-records directory the supervisor writes this
+	// run's record into — the record a foreground run writes. Empty means
+	// the run writes no record.
+	RunlogDir string
 
 	// removeWorktree is the private seam the unaccepted-start cleanup uses
 	// instead of worktree.RemoveUntouched, so a test can observe exactly

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -515,5 +516,39 @@ func TestRunAcceptedRunReleasesEveryPreparedLease(t *testing.T) {
 				t.Errorf("admission gate holds live leases after the run: %+v", st.Tickets)
 			}
 		})
+	}
+}
+
+// TestRunAcceptedRunWithoutRunlogDirWritesNoRecord requires that a request
+// naming no records directory still runs to its terminal snapshot and leaves
+// no run record anywhere: not in the working directory a relative path would
+// resolve against, not beside the snapshot, and not in the workspace.
+func TestRunAcceptedRunWithoutRunlogDirWritesNoRecord(t *testing.T) {
+	req, backgroundRoot, _ := newStartRequestWithTempRoots(t)
+	acceptedAt := time.Now().UTC().Truncate(time.Second)
+	req.runID = runlog.RunID(acceptedAt)
+	req.acceptedAt = acceptedAt
+	req.workspace = t.TempDir()
+	req.verify = nil
+	req.runlogDir = ""
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	stored := supervisorStartResult{request: req, preparation: prep, accepted: true}
+	if err := runAcceptedRunWith(context.Background(), &recordingWorker{}, stored); err != nil {
+		t.Fatalf("runAcceptedRunWith: %v", err)
+	}
+	for _, dir := range []string{cwd, backgroundRoot, req.workspace} {
+		matches, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+		if err != nil {
+			t.Fatalf("glob %s: %v", dir, err)
+		}
+		if len(matches) != 0 {
+			t.Fatalf("a run without a records directory wrote %v", matches)
+		}
 	}
 }

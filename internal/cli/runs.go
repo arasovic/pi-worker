@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,10 +105,14 @@ func runsListCommand(parent context.Context, opts runsOptions, stdout, stderr io
 		fmt.Fprintf(stderr, "pi-worker: list runs: %v\n", err)
 		return 9
 	}
-	// Background runs live in their own store, not in the records
-	// directory, so the inventory is the union of both readers. Only
-	// runs list merges them: runs prune keeps calling runlogList alone
-	// and must never see a background run, let alone delete one.
+	// Background runs live in their own store, so the inventory is the
+	// union of both readers. A background run also writes a run record,
+	// so it appears in both: its background entry is the one listed,
+	// because the snapshot is the state runs status and wait read, it
+	// turns terminal before the record's finish line is written, and it
+	// outlives a record runs prune deleted. Only runs list merges them:
+	// runs prune keeps calling runlogList alone and never touches a
+	// background snapshot.
 	bgRoot, err := backgroundRoot()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
@@ -118,11 +123,16 @@ func runsListCommand(parent context.Context, opts runsOptions, stdout, stderr io
 		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
 		return 9
 	}
+	inBackground := make(map[string]bool, len(bgRuns))
+	for _, bgRun := range bgRuns {
+		inBackground[bgRun.RunID] = true
+	}
+	runs = slices.DeleteFunc(runs, func(r runlog.Run) bool { return inBackground[r.RunID] })
 	runs = append(runs, bgRuns...)
 	// Both readers return their own entries newest first; the merged
 	// slice is sorted again so the interleaving of the two streams is
 	// chronological. Stable ordering leaves equal ids in first-seen
-	// order, though a run id is unique across both stores.
+	// order; a run in both stores was deduplicated above.
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].RunID > runs[j].RunID })
 	if runs == nil {
 		// The empty document is an empty array, never null, whatever

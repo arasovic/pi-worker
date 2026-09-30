@@ -263,12 +263,15 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   interrupted-run warning. It also lists every run started with
   `--background`, read from the background store — one `snapshot.json`
   per run directory under pi-worker's background directory — merged
-  with the foreground records and sorted newest first. A background
-  run's `path` is its `snapshot.json`; its outcome is the run's own
-  outcome once finished, `running` while its supervisor is still
-  alive, `interrupted` when the supervisor is gone before the run
-  finished, and `unknown` when its state cannot be read. `runs prune`
-  does not touch background runs.
+  with the run records and sorted newest first. A background run also
+  writes a run record, so it is found in both places; it is listed
+  once, as its background entry, because the snapshot is the state
+  `runs status` and `runs wait` read. A background run's `path` is its
+  `snapshot.json`; its outcome is the run's own outcome once finished,
+  `running` while its supervisor is still alive, `interrupted` when the
+  supervisor is gone before the run finished, and `unknown` when its
+  state cannot be read. `runs prune` never touches a background
+  snapshot.
 - A record's outcome is one of: the run's own outcome, verbatim, when
   its finish line carried a result; `error` when the finish line
   carried the error arm instead; `running` when there is no finish
@@ -281,8 +284,10 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   `unknown` records included — and never deletes a record whose run is
   still running, whatever its age. `--keep 0` keeps none by age;
   running runs are still spared. It lists, selects, and deletes only
-  `.jsonl` records in the records directory: runs started with
-  `--background` are never seen or touched by prune. An `unknown`
+  `.jsonl` records in the records directory: the record a run started
+  with `--background` wrote there is deleted like any other, while its
+  background snapshot is never seen or touched, so `runs status` and
+  `runs wait` still answer for it. An `unknown`
   record is deleted like any other, except while its file has changed
   within the last hour:
   prune cannot tell an unreadable record apart from one being written,
@@ -360,7 +365,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   not stop the other deletions, and the exit is `9`), or when the
   prune is cancelled.
 - At the start of every run, `--background` included, pi-worker also
-  checks whether an earlier settled foreground run may have left
+  checks whether an earlier settled run may have left
   processes running, and warns on stderr when
   it finds any: one line per run naming the record's full path and the
   possibly-leftover pids — up to ten, then a count of the rest, inside
@@ -378,7 +383,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   descendant that is still alive, with the same process identity, is
   reported even when it left the worker's group. A process that starts
   and loses its link to the worker within about a second can still be
-  missed, and runs started with `--background` do not record descendants.
+  missed.
 - When a run's group has fully emptied, the operating system may hand
   its number to something else. If the new holder leads a process group
   of its own under that number — its process-group id equals its pid —
@@ -425,10 +430,21 @@ pi-worker runs cancel <id> [--json]
   (see `### Model selection`), the shared-workspace warning, interrupted
   earlier runs, and processes an earlier run may have left running (see
   `## Run records`), including their `check unavailable` forms. The two
-  earlier-run scans read foreground run records only, because a
-  background run writes none; they also update the same once-only
-  marker, so an interrupted run reported by a background start is not
-  reported again by the next foreground run.
+  earlier-run scans read the same run records a foreground run reads and
+  update the same once-only marker, so an interrupted run reported by a
+  background start is not reported again by the next foreground run.
+- A background run writes the same run record a foreground run writes,
+  into the records directory the starting command resolved: its
+  supervisor writes the start line before any worker starts, a worker
+  line per started worker, a descendant line per descendant process, and
+  the finish line after the terminal state, carrying the same result
+  document. The start line names the supervisor process, so a supervisor
+  killed without warning leaves a record the next run reports as
+  interrupted, and a settled run's leftover processes are reported the
+  same way as a foreground run's. When the records directory cannot be
+  resolved, the start prints `run record unavailable` and the run starts
+  without a record. A record the supervisor cannot write never fails the
+  run and is not reported: the supervisor has no terminal to report to.
 - A start that was refused exits non-zero without leaving a run behind:
   `2` when the workspace or the requested private checkout is refused,
   `7` when the acceptance handshake ran out of time, `8` when the start

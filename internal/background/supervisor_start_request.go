@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,6 +36,11 @@ type supervisorStartRequest struct {
 	worktree         *worktree.Prepared
 	piExecutable     string
 	debug            bool
+	// runlogDir is the run-records directory the supervisor writes this
+	// run's record into; empty means no record. The starter resolves it,
+	// never the supervisor, so a starter whose records live elsewhere — a
+	// test — decides where the supervisor writes.
+	runlogDir string
 }
 
 // supervisorStartRequestJSON is the wire shape of a start request. Data
@@ -53,6 +59,7 @@ type supervisorStartRequestJSON struct {
 	Worktree         *worktreeJSON `json:"worktree,omitempty"`
 	PiExecutable     string        `json:"piExecutable"`
 	Debug            bool          `json:"debug"`
+	RunlogDir        string        `json:"runlogDir,omitempty"`
 }
 
 // taskJSON keeps the write declaration's Declared flag separate from the
@@ -193,6 +200,9 @@ func validateSupervisorStartRequest(req supervisorStartRequest) error {
 	if err := run.ValidateWrites(req.tasks); err != nil {
 		return err
 	}
+	if req.runlogDir != "" && !filepath.IsAbs(req.runlogDir) {
+		return fmt.Errorf("runlogDir must be an absolute path, got %q", req.runlogDir)
+	}
 	if req.worktree != nil {
 		if !worktree.ValidName(req.worktree.Name) {
 			return fmt.Errorf("worktree: invalid name %q", req.worktree.Name)
@@ -224,6 +234,7 @@ func (req supervisorStartRequest) toJSON() supervisorStartRequestJSON {
 		MaxModelWorkers:  req.maxModelWorkers,
 		PiExecutable:     req.piExecutable,
 		Debug:            req.debug,
+		RunlogDir:        req.runlogDir,
 	}
 	if len(req.tasks) > 0 {
 		wire.Tasks = make([]taskJSON, len(req.tasks))
@@ -273,6 +284,7 @@ func (wire supervisorStartRequestJSON) fromJSON() (supervisorStartRequest, error
 		maxModelWorkers:  wire.MaxModelWorkers,
 		piExecutable:     wire.PiExecutable,
 		debug:            wire.Debug,
+		runlogDir:        wire.RunlogDir,
 	}
 	if len(wire.Tasks) > 0 {
 		req.tasks = make([]run.Task, len(wire.Tasks))
