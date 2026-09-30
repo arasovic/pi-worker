@@ -4,6 +4,7 @@ package background
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -144,6 +145,11 @@ func TestRunAcceptedRunWithTwoCompletedTasks(t *testing.T) {
 	if loaded.Result.Outcome != *loaded.Outcome {
 		t.Errorf("result.outcome = %q, want %q", loaded.Result.Outcome, *loaded.Outcome)
 	}
+	// The stored result is the run --json document, so a run in a private
+	// checkout carries the same worktree object a foreground run reports.
+	if want := (run.Worktree{Path: req.worktree.Path, Branch: req.worktree.Branch}); loaded.Result.Worktree == nil || *loaded.Result.Worktree != want {
+		t.Errorf("result.worktree = %+v, want %+v", loaded.Result.Worktree, want)
+	}
 
 	if len(loaded.Workers) != len(req.tasks) {
 		t.Fatalf("workers = %d, want %d", len(loaded.Workers), len(req.tasks))
@@ -174,6 +180,32 @@ func TestRunAcceptedRunWithTwoCompletedTasks(t *testing.T) {
 
 	if err := loaded.Validate(); err != nil {
 		t.Fatalf("reloaded terminal snapshot failed validation: %v", err)
+	}
+}
+
+// TestWriteFailedTerminalSnapshotKeepsTheRunWorktree requires that a run
+// whose controller result could not be recorded still stores the worktree
+// object in its result, the way the normal terminal path does.
+func TestWriteFailedTerminalSnapshotKeepsTheRunWorktree(t *testing.T) {
+	req, _, _ := newStartRequestWithTempRoots(t)
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	observer := newSupervisorRunObserver(prep.store, prep.snapshot)
+	if err := writeFailedTerminalSnapshot(observer, errors.New("controller vanished")); err != nil {
+		t.Fatalf("writeFailedTerminalSnapshot: %v", err)
+	}
+
+	loaded, err := prep.store.Load(req.runID)
+	if err != nil {
+		t.Fatalf("reload failed terminal snapshot: %v", err)
+	}
+	if !loaded.Terminal || loaded.Result == nil {
+		t.Fatalf("snapshot terminal=%v result=%v, want a terminal snapshot with a result", loaded.Terminal, loaded.Result)
+	}
+	if want := (run.Worktree{Path: req.worktree.Path, Branch: req.worktree.Branch}); loaded.Result.Worktree == nil || *loaded.Result.Worktree != want {
+		t.Errorf("result.worktree = %+v, want %+v", loaded.Result.Worktree, want)
 	}
 }
 

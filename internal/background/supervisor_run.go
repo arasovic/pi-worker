@@ -355,6 +355,11 @@ func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *sup
 	result := runResult
 	result.Status = status
 	result.Outcome = outcome
+	// The controller never fills the worktree; the foreground CLI adds it
+	// after the run, and the stored result must carry the same object.
+	if base.Worktree != nil {
+		result.Worktree = &run.Worktree{Path: base.Worktree.Path, Branch: base.Worktree.Branch}
+	}
 	terminal.Status = &status
 	terminal.Outcome = &outcome
 	terminal.Result = &result

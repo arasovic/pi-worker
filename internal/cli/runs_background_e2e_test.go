@@ -406,6 +406,52 @@ func TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode(t *testing.T) {
 	}
 }
 
+// TestRunsWaitResultCarriesTheWorktreeLikeAForegroundRun requires that the
+// result of a background run started with --worktree is the run --json
+// document: it carries the worktree object a foreground run of the same kind
+// reports, with the checkout the snapshot itself names.
+func TestRunsWaitResultCarriesTheWorktreeLikeAForegroundRun(t *testing.T) {
+	manager, _ := setupBackgroundRun(t, backgroundHappyScript("checkout answer"))
+	repo := canonicalRepo(t, newGitWorkspace(t))
+
+	installRealFakePiWorker(t)
+	code, stdout, stderr := runCLI(t, []string{"run", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m", "--worktree", "front"}, "")
+	if code != 0 {
+		t.Fatalf("foreground run = (%d, %q, %q), want 0", code, stdout, stderr)
+	}
+	foreground, ok := decodeJSONObject(t, stdout)["worktree"].(map[string]any)
+	if !ok {
+		t.Fatalf("foreground run --json = %q, want a worktree object", stdout)
+	}
+	assertExactJSONKeys(t, foreground, "path", "branch")
+
+	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m", "--worktree", "back")
+	code, stdout, stderr = runCLI(t, []string{"runs", "wait", runID, "--json"}, "")
+	if code != 0 {
+		t.Fatalf("runs wait --json = (%d, %q, %q), want 0", code, stdout, stderr)
+	}
+	document := decodeJSONObject(t, stdout)
+	result, ok := document["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result = %#v, want the run's own result document", document["result"])
+	}
+	worktree, ok := result["worktree"].(map[string]any)
+	if !ok {
+		t.Fatalf("result.worktree = %#v, want object", result["worktree"])
+	}
+	assertExactJSONKeys(t, worktree, "path", "branch")
+	root, ok := document["worktree"].(map[string]any)
+	if !ok {
+		t.Fatalf("worktree = %#v, want the snapshot's checkout", document["worktree"])
+	}
+	if worktree["path"] != root["path"] || worktree["branch"] != root["branch"] {
+		t.Fatalf("result.worktree = %v, want the snapshot's path %v and branch %v", worktree, root["path"], root["branch"])
+	}
+	if checkout := filepath.Join(repo, ".pi-worker", "worktrees", "back"); worktree["path"] != checkout || worktree["branch"] != "run/back" {
+		t.Fatalf("result.worktree = %v, want path %q and branch run/back", worktree, checkout)
+	}
+}
+
 // TestRunsWaitTimeoutReportsLatestStateAndLeavesTheRunGoing requires that a
 // wait whose bound arrives first prints the latest state, says on stderr that
 // the wait ran out, exits with the code the contract gives a timeout, and
