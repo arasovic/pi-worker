@@ -4,15 +4,16 @@ package background
 
 import (
 	"fmt"
-	"io"
 	"os"
 )
 
 // openSnapshot refuses a symbolic link at the final path component and
-// opens the snapshot file read-only.  A Lstat inspects the entry itself so
+// opens the snapshot file read-only. A Lstat inspects the entry itself so
 // a symlink in a parent directory resolves normally while the final entry
 // — the snapshot.json file — is checked for a dangling or present symlink.
-func openSnapshot(path string) (io.ReadCloser, error) {
+// The return type matches the unix open: *os.File so the caller can stat
+// the opened file.
+func openSnapshot(path string) (*os.File, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
