@@ -220,11 +220,14 @@ func inspectRecord(path string) (pid int, createTime int64, finished bool, err e
 	return rec.pid, rec.createTime, rec.finished, nil
 }
 
-// loadMarker reads the marker document. A missing file, an unreadable
-// one, and a document whose schemaVersion is not markerSchemaVersion
-// all report absent: the caller scans everything.
+// loadMarker reads the marker document through the same guarded open
+// as the records: readRecordFile refuses anything that is not a
+// regular file and anything above the size ceiling without blocking
+// on a named pipe. A missing file, an unreadable one, and a document
+// whose schemaVersion is not markerSchemaVersion all report absent:
+// the caller scans everything.
 func loadMarker(dir string) (marker, bool) {
-	data, err := os.ReadFile(filepath.Join(dir, markerFileName))
+	data, err := readRecordFile(filepath.Join(dir, markerFileName))
 	if err != nil {
 		return marker{}, false
 	}
