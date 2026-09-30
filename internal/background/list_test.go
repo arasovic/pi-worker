@@ -15,7 +15,7 @@ import (
 
 // createTerminalSnapshot builds and stores one completed background run
 // under root, carrying one worker per model in models, and returns the
-// snapshot path it wrote. The expected listing values are built as
+// run directory it wrote. The expected listing values are built as
 // literals in the test bodies; this helper only arranges state.
 func createTerminalSnapshot(t *testing.T, root, runID string, acceptedAt time.Time, models []string) string {
 	t.Helper()
@@ -48,7 +48,7 @@ func createTerminalSnapshot(t *testing.T, root, runID string, acceptedAt time.Ti
 	if err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	return snapshotPath(root, runID)
+	return filepath.Join(root, runID)
 }
 
 // TestListRunsMissingRoot requires that a root that does not exist lists
@@ -95,7 +95,7 @@ func TestListRunsTerminalSnapshot(t *testing.T) {
 
 // TestListRunsUnreadableSnapshotIsUnknown requires that a run directory
 // whose snapshot cannot be read is still listed, with the directory's run
-// id, the snapshot path, and outcome unknown.
+// id, the run directory as its path, and outcome unknown.
 func TestListRunsUnreadableSnapshotIsUnknown(t *testing.T) {
 	root := t.TempDir()
 	runID := "20260901T120000Z-3"
@@ -114,23 +114,27 @@ func TestListRunsUnreadableSnapshotIsUnknown(t *testing.T) {
 		RunID:   runID,
 		Models:  []string{},
 		Outcome: "unknown",
-		Path:    snapshotPath(root, runID),
+		Path:    filepath.Join(root, runID),
 	}}
 	if !reflect.DeepEqual(runs, want) {
 		t.Fatalf("runs = %+v, want %+v", runs, want)
 	}
 }
 
-// TestListRunsSkipsNonRunIDEntries requires that a directory entry whose
-// name is not a run id is skipped silently while a real run beside it is
-// still listed.
+// TestListRunsSkipsNonRunIDEntries requires that, in a directory mixing
+// run directories with the files and directories a records directory also
+// holds, only a directory named by a run id is listed: a directory whose
+// name is not a run id, a flat record, reported.json, and a regular file
+// whose name is a run id are all skipped silently.
 func TestListRunsSkipsNonRunIDEntries(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "not-a-run-id"), 0o700); err != nil {
 		t.Fatalf("mkdir non-run entry: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write loose file: %v", err)
+	for _, name := range []string{"notes.txt", "20260901T110000Z-1.jsonl", "reported.json", "20260901T110000Z-2"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write loose file %s: %v", name, err)
+		}
 	}
 	acceptedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	path := createTerminalSnapshot(t, root, "20260901T120000Z-4", acceptedAt, []string{"acme/a"})

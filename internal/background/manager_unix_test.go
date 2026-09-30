@@ -403,3 +403,45 @@ func TestManagerWaitDeadSupervisorReturnsAtOnce(t *testing.T) {
 		t.Fatalf("Wait snapshot = %+v, want the stored non-terminal snapshot", snap)
 	}
 }
+
+// freeLockLivePidFixture stores a non-terminal snapshot whose recorded
+// supervisor is this live test process but whose owner lock is free: the
+// lock says the owner is gone, the pid alone would say it is alive.
+func freeLockLivePidFixture(t *testing.T) (*Manager, string) {
+	t.Helper()
+	root := t.TempDir()
+	runID := storeLiveSnapshot(t, root, liveIdentity(t))
+	leaveOwnerLockFree(t, filepath.Join(root, runID))
+	manager, err := NewManager(root, t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	return manager, runID
+}
+
+// TestManagerStatusFreeOwnerLockReportsUnavailable requires that Status
+// judges the run by its free owner lock, not by the live pid it recorded.
+func TestManagerStatusFreeOwnerLockReportsUnavailable(t *testing.T) {
+	manager, runID := freeLockLivePidFixture(t)
+	snap, err := manager.Status(runID)
+	var unavailable *SupervisorUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("Status = (%+v, %v), want *SupervisorUnavailableError", snap, err)
+	}
+}
+
+// TestManagerWaitFreeOwnerLockReturnsAtOnce requires that Wait returns the
+// unavailable error at once when the owner lock is free, although the
+// recorded supervisor pid is alive.
+func TestManagerWaitFreeOwnerLockReturnsAtOnce(t *testing.T) {
+	manager, runID := freeLockLivePidFixture(t)
+	started := time.Now()
+	snap, err := manager.Wait(context.Background(), runID, 10*time.Second)
+	var unavailable *SupervisorUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("Wait = (%+v, %v), want *SupervisorUnavailableError", snap, err)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("Wait took %v; it must return at once", elapsed)
+	}
+}

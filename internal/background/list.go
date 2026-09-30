@@ -2,6 +2,7 @@ package background
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -21,18 +22,18 @@ import (
 // are no background runs to list.
 //
 // A snapshot that cannot be loaded is still listed, carrying what the
-// directory name and the fixed snapshot path alone tell: the run id,
-// the path, outcome "unknown", and the empty models slice. The load
+// directory name alone tells: the run id, the run directory as its
+// path, outcome "unknown", and the empty models slice. The load
 // failure is not returned — an unreadable entry is an inventory fact,
 // not a failure of the listing, exactly as runlog.List treats an
 // unreadable record. Only a read error on root itself, other than
 // not-exist, is returned.
 //
-// The outcome of a readable snapshot is decided by the same liveness
-// seam runlog.List uses, never a second answer to the same question:
-// the snapshot's own outcome when it is terminal and carries one;
-// otherwise "running" when the recorded supervisor process is still
-// alive, and "interrupted" when it is gone.
+// The outcome of a readable snapshot is the snapshot's own outcome when
+// it is terminal and carries one; otherwise runlog.OwnerAlive decides:
+// "running" while the run's owner lock is held, or, for a run directory
+// without one, while the recorded supervisor process is alive, and
+// "interrupted" once it is gone.
 func ListRuns(root string) ([]runlog.Run, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -54,7 +55,7 @@ func ListRuns(root string) ([]runlog.Run, error) {
 		if _, err := runlog.ParseRunID(name); err != nil {
 			continue
 		}
-		path := snapshotPath(root, name)
+		path := filepath.Join(root, name)
 		snap, err := store.Load(name)
 		if err != nil {
 			runs = append(runs, runlog.Run{RunID: name, Models: []string{}, Outcome: "unknown", Path: path})
@@ -64,7 +65,7 @@ func ListRuns(root string) ([]runlog.Run, error) {
 		switch {
 		case snap.Terminal && snap.Outcome != nil:
 			outcome = string(*snap.Outcome)
-		case runlog.ProcessAlive(snap.Supervisor.PID, snap.Supervisor.CreateTime):
+		case runlog.OwnerAlive(path, snap.Supervisor.PID, snap.Supervisor.CreateTime):
 			outcome = "running"
 		default:
 			outcome = "interrupted"

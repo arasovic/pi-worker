@@ -182,7 +182,9 @@ func (m *Manager) DebugLogPath(runID string) string {
 // not for the run to move — so the Snapshot it reports of a run in flight
 // is the state that was durable at the moment it read, and the same call
 // made again reports whatever has become durable since. When the snapshot
-// it reads is non-terminal and its recorded supervisor process is gone, it
+// it reads is non-terminal and its owner is gone — runlog.OwnerAlive, the
+// owner lock when the run directory has one, the recorded supervisor
+// process otherwise — it
 // reads once more: a terminal second read is the supervisor having finished
 // between the read and the check and is returned as the answer, and
 // otherwise the second snapshot is returned with a
@@ -202,7 +204,7 @@ func (m *Manager) Status(runID string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("background manager status (%s): %w", runID, err)
 	}
-	if snap.Terminal || runlog.ProcessAlive(snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+	if snap.Terminal || runlog.OwnerAlive(filepath.Join(m.root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 		return snap, nil
 	}
 	snap, err = store.Load(runID)
@@ -269,7 +271,7 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		if snap.Terminal {
 			return snap, nil
 		}
-		if !runlog.ProcessAlive(snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+		if !runlog.OwnerAlive(filepath.Join(m.root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 			snap, loadErr = store.Load(runID)
 			if loadErr != nil {
 				return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)
