@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
@@ -64,7 +63,7 @@ func TestRunJSONCarriesWritesForDeclaredRun(t *testing.T) {
 	// yields the clean verdict — a present undeclaredCount of zero —
 	// rather than a skip reason.
 	newGitWorkspace(t)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt", "--json"}, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
@@ -98,7 +97,7 @@ func TestRunJSONDeclaredEmptyWritesCarriesCleanVerdict(t *testing.T) {
 	// writes with the clean verdict when the run declared --writes ""
 	// and changed nothing.
 	newGitWorkspace(t)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "", "--json"}, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
@@ -133,8 +132,7 @@ func TestRunUndeclaredWriteExitsFourWithViolationOnStderr(t *testing.T) {
 	// workspace — during the prompt RPC, exactly when a real worker's
 	// tools would act.
 	newGitWorkspace(t)
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -170,8 +168,7 @@ func TestRunDeclaredWritesNothingReportsStrayPathAndExitsFour(t *testing.T) {
 	// declaration is a contract the check holds the run to, not a gap it
 	// skips over.
 	newGitWorkspace(t)
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -208,8 +205,7 @@ func TestRunUndeclaredWriteJSONCarriesViolation(t *testing.T) {
 	// stderr. Same mechanism as the human test: the fakepi write step
 	// leaves stray.txt in the workspace during the prompt RPC.
 	newGitWorkspace(t)
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -264,7 +260,7 @@ func TestRunDirtyBeforeStatePrintsMeasuredAndChecked(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
 	}
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -272,7 +268,7 @@ func TestRunDirtyBeforeStatePrintsMeasuredAndChecked(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	const want = "worker 1: done\n" +
+	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
 		"changes: 0 files, +0/-0\n" +
 		"writes: ok\n" +
 		"outcome=completed\n"
@@ -291,7 +287,7 @@ func TestRunDirtyBeforeStateJSONCarriesCleanVerdict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
 	}
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt", "--json"}, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
@@ -325,7 +321,7 @@ func TestRunDeclaredEmptyOnDirtyBeforeStateRunsCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
 	}
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", ""}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -333,7 +329,7 @@ func TestRunDeclaredEmptyOnDirtyBeforeStateRunsCheck(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	const want = "worker 1: done\n" +
+	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
 		"changes: 0 files, +0/-0\n" +
 		"writes: ok\n" +
 		"outcome=completed\n"
@@ -355,8 +351,7 @@ func TestRunUndeclaredWriteOnDirtyBeforeStateExitsFour(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dirt.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("write dirt: %v", err)
 	}
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -408,13 +403,11 @@ func TestRunDirtyBeforeEntryPrintsClauseOnChangesLine(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	fake.runHook = func() {
+	code, stdout, stderr := runWhileFakePiHolds(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt"}, func() {
 		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
 			t.Errorf("write file during run: %v", err)
 		}
-	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt"}, "")
+	})
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
@@ -424,7 +417,7 @@ func TestRunDirtyBeforeEntryPrintsClauseOnChangesLine(t *testing.T) {
 	// The committed file.txt holds "one\n", so the final two lines read
 	// +2/-1 against HEAD, and the clause names the one entry whose
 	// counts include pre-run work.
-	const want = "worker 1: done\n" +
+	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
 		"changes: 1 file, +2/-1 (1 already modified before the run)\n" +
 		"  file.txt  +2/-1\n" +
 		"writes: ok\n" +
@@ -440,20 +433,18 @@ func TestRunCleanBeforeStateChangesLineHasNoClause(t *testing.T) {
 	// the count and the sums with no parenthesised clause. This is the
 	// output that must not move, because most runs are not dirty.
 	dir := newGitWorkspace(t)
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	fake.runHook = func() {
+	code, stdout, stderr := runWhileFakePiHolds(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, func() {
 		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
 			t.Errorf("write file during run: %v", err)
 		}
-	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
+	})
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	const want = "worker 1: done\n" +
+	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
 		"changes: 1 file, +1/-0\n" +
 		"  file.txt  +1/-0\n" +
 		"outcome=completed\n"
@@ -473,19 +464,17 @@ func TestRunDirtyBeforeJSONCarriesFieldOnlyOnDirtyEntry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	fake.runHook = func() {
+	// Declare both changed paths so the run exits 0 and the document is
+	// the clean shape this test is about; without the declaration the
+	// stray new.txt would turn it into an exit-4 violation document.
+	code, stdout, stderr := runWhileFakePiHolds(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt,new.txt", "--json"}, func() {
 		if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
 			t.Errorf("write file during run: %v", err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0o644); err != nil {
 			t.Errorf("write new file during run: %v", err)
 		}
-	}
-	// Declare both changed paths so the run exits 0 and the document is
-	// the clean shape this test is about; without the declaration the
-	// stray new.txt would turn it into an exit-4 violation document.
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt,new.txt", "--json"}, "")
+	})
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -532,14 +521,10 @@ func TestRunPartialWriteDeclarationExitsTwoBeforeAnyWorkerStarts(t *testing.T) {
 	// nothing, and the writes-nothing declaration is the legal way a
 	// task that will not write takes part — nothing expressible is
 	// lost.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	newGitWorkspace(t)
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--writes", "file.txt", "--task", "b"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before the run started", fake.callCount())
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty", stdout)

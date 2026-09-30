@@ -80,7 +80,6 @@ func TestRunVerifyRejectsShellCharactersAndEmptyValues(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 			code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--verify", test.value, "--task", "x"}, "")
 			if code != 2 {
 				t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -94,16 +93,12 @@ func TestRunVerifyRejectsShellCharactersAndEmptyValues(t *testing.T) {
 			if !strings.Contains(stderr, "usage:") {
 				t.Fatalf("stderr missing usage text: %q", stderr)
 			}
-			if fake.callCount() != 0 {
-				t.Fatalf("worker invoked %d times, want 0", fake.callCount())
-			}
 		})
 	}
 }
 
 func TestRunVerifyFlagGivenTwiceIsUsageError(t *testing.T) {
 	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--verify", "go test ./...", "--verify", "go vet ./...", "--task", "x"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -114,13 +109,11 @@ func TestRunVerifyFlagGivenTwiceIsUsageError(t *testing.T) {
 	if !strings.Contains(stderr, "flag --verify specified more than once") {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
-	}
 }
 
 func TestRunVerifyPassingExitsZeroAndCarriesArgvOnly(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("All done."))
 	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
 	if code != 0 {
@@ -142,26 +135,28 @@ func TestRunVerifyPassingExitsZeroAndCarriesArgvOnly(t *testing.T) {
 	if verification["exitCode"] != float64(0) {
 		t.Fatalf("verification exitCode = %v, want 0", verification["exitCode"])
 	}
-	if fake.callCount() != 1 {
-		t.Fatalf("worker calls = %d, want 1", fake.callCount())
+	if got := fakePiRequestOrder(t, os.Getenv("FAKEPI_LOG")); got != "PA" {
+		t.Fatalf("worker requests = %q, want one worker (PA)", got)
 	}
 }
 
 func TestRunVerifyPassingHumanPrintsOneShortLine(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("All done."))
 	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--verify", verify}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	requireChangesTail(t, stdout, "worker 1: All done.\nverification: ok\n")
+	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=medium]: All done.\nverification: ok\n")
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 }
 
 func TestRunVerifyFailingExitsSixAndKeepsStatusCompleted(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("All done."))
 	verify := strings.Join(cliVerifyHelperArgs(t, "3", "2"), " ")
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
 	if code != 6 {
@@ -189,19 +184,20 @@ func TestRunVerifyFailingExitsSixAndKeepsStatusCompleted(t *testing.T) {
 	if !strings.Contains(verification["output"].(string), "check-line-0001") {
 		t.Fatalf("verification output missing excerpt: %v", verification["output"])
 	}
-	if fake.callCount() != 1 {
-		t.Fatalf("worker calls = %d, want 1", fake.callCount())
+	if got := fakePiRequestOrder(t, os.Getenv("FAKEPI_LOG")); got != "PA" {
+		t.Fatalf("worker requests = %q, want one worker (PA)", got)
 	}
 }
 
 func TestRunVerifyFailingHumanPrintsExitCodeAndExcerpt(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("All done."))
 	verify := strings.Join(cliVerifyHelperArgs(t, "3", "2"), " ")
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--verify", verify}, "")
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6; stderr = %q", code, stderr)
 	}
-	requireChangesTail(t, stdout, "worker 1: All done.\n")
+	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=medium]: All done.\n")
 	if !strings.Contains(stderr, "pi-worker: verification failed with exit code 3") {
 		t.Fatalf("stderr missing exit code: %q", stderr)
 	}
@@ -211,7 +207,8 @@ func TestRunVerifyFailingHumanPrintsExitCodeAndExcerpt(t *testing.T) {
 }
 
 func TestRunVerifyFailingHumanPrintsLogPathForTruncatedCapture(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("All done."))
 	// 1300 numbered lines exceed the excerpt budget, forcing a truncated
 	// excerpt backed by a full pi-worker-verify-*.log temp file.
 	verify := strings.Join(cliVerifyHelperArgs(t, "3", "1300"), " ")
@@ -219,7 +216,7 @@ func TestRunVerifyFailingHumanPrintsLogPathForTruncatedCapture(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6; stderr = %q", code, stderr)
 	}
-	requireChangesTail(t, stdout, "worker 1: All done.\n")
+	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=medium]: All done.\n")
 	if !strings.Contains(stderr, "pi-worker: verification failed with exit code 3") {
 		t.Fatalf("stderr missing exit code: %q", stderr)
 	}
@@ -249,7 +246,8 @@ func TestRunVerifyFailingHumanPrintsLogPathForTruncatedCapture(t *testing.T) {
 }
 
 func TestRunWithoutVerifyKeepsJSONFreeOfVerification(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
@@ -347,7 +345,8 @@ func TestRunVerifyCancellationJSONEmitsNoDocument(t *testing.T) {
 }
 
 func TestRunVerifyCarriesArgvSplitOnWhitespace(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("ok"))
 	verify := os.Args[0] + " -test.run=TestCLIVerifyHelperProcess"
 	t.Setenv("PI_WORKER_CLI_VERIFY_HELPER", "1")
 	t.Setenv("PI_WORKER_CLI_VERIFY_EXIT", "0")

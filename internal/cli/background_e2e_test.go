@@ -24,6 +24,12 @@ var (
 	backgroundBinOnce sync.Once
 	backgroundBinPath string
 	backgroundBinErr  error
+	// The build runs with the directory and environment the test process
+	// started with: the first caller may already have moved into a scratch
+	// workspace outside the module or pointed HOME at a scratch directory,
+	// where the build and module caches are not.
+	backgroundBuildDir, _ = os.Getwd()
+	backgroundBuildEnv    = os.Environ()
 )
 
 // piWorkerBinForBackground builds the production binary once per test run. A
@@ -39,6 +45,7 @@ func piWorkerBinForBackground(t *testing.T) string {
 		}
 		backgroundBinPath = filepath.Join(dir, "pi-worker")
 		build := exec.Command("go", "build", "-o", backgroundBinPath, "github.com/arasovic/pi-worker/cmd/pi-worker")
+		build.Dir, build.Env = backgroundBuildDir, backgroundBuildEnv
 		if out, buildErr := build.CombinedOutput(); buildErr != nil {
 			backgroundBinErr = fmt.Errorf("build pi-worker: %v\n%s", buildErr, out)
 		}

@@ -317,7 +317,8 @@ func TestRunWarnsAboutInterruptedRunOnceEndToEnd(t *testing.T) {
 // not an interruption, and a finished run is never one, whatever its
 // outcome.
 func TestRunSilentAboutAliveAndFinishedRecordsEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -375,7 +376,8 @@ func TestRunWarnsOnceForInterruptedRunAfterStillRunningEndToEnd(t *testing.T) {
 // interrupted records and asserts the CLI prints five path lines and
 // one summary line naming the remainder and the records directory.
 func TestRunWarnsFiveInterruptedRunsPlusCountEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -407,7 +409,8 @@ func TestRunWarnsFiveInterruptedRunsPlusCountEndToEnd(t *testing.T) {
 // code is unchanged and each failure is one warning in the existing
 // style: a records problem never fails a run.
 func TestRunInterruptedCheckFailureWarnsAndContinues(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	for _, test := range []struct {
 		name  string
 		err   error
@@ -443,7 +446,8 @@ func TestRunInterruptedCheckFailureWarnsAndContinues(t *testing.T) {
 // path and the pids — while stdout carries only the run's own JSON
 // document.
 func TestRunWarnsAboutLeftoverProcessesEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -473,7 +477,8 @@ func TestRunWarnsAboutLeftoverProcessesEndToEnd(t *testing.T) {
 // five path lines and one summary line naming the remainder and the
 // records directory.
 func TestRunWarnsFiveLeftoverRunsPlusCountEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -509,7 +514,8 @@ func TestRunWarnsFiveLeftoverRunsPlusCountEndToEnd(t *testing.T) {
 // asserts the warning line lists ten, comma-separated, and summarizes
 // the rest inside the same parentheses, verbatim.
 func TestRunWarnsCapsLeftoverPidsAtTenEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -579,7 +585,8 @@ func TestRunLeftoverCheckFailureWarnsAndContinues(t *testing.T) {
 // leftover-process scan scripted to no runs at all and asserts nothing
 // is printed: no leftovers is no warning.
 func TestRunSilentWithNoLeftoversEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -603,7 +610,8 @@ func TestRunSilentWithNoLeftoversEndToEnd(t *testing.T) {
 // nothing is printed: a run with no pids is skipped silently, never
 // printed with an empty list.
 func TestRunSilentAboutLeftoverWithNoPidsEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }

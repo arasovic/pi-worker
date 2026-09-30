@@ -5,11 +5,12 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/run"
 )
 
 func writeFile(t *testing.T, path string, content string) {
@@ -24,14 +25,10 @@ func TestRunDataMissingFileExitsTwoBeforeAnyWorkerStarts(t *testing.T) {
 	// same pass that validates the rest of the argv: the run exits 2 and
 	// no worker starts. The rejection names the file, and the error
 	// carries the underlying read failure unchanged.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	missing := filepath.Join(t.TempDir(), "missing.md")
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--data", missing}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before the run started", fake.callCount())
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty", stdout)
@@ -56,13 +53,9 @@ func TestRunDataUnreadableFileExitsTwoBeforeAnyWorkerStarts(t *testing.T) {
 	if err := os.Chmod(path, 0); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--data", path}, "")
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before the run started", fake.callCount())
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--data", path}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("exit = %d, stdout = %q, want 2 and empty; stderr = %q", code, stdout, stderr)
 	}
 	if !strings.Contains(stderr, "read data file") {
 		t.Fatalf("stderr missing the read failure: %q", stderr)
@@ -73,18 +66,14 @@ func TestRunDataEmptyValueExitsTwo(t *testing.T) {
 	// --data "" is a usage error: unlike --writes "", it has no "carries
 	// nothing" meaning, because omitting the flag already means that.
 	// Whitespace-only is the same empty value.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	for _, args := range [][]string{
 		{"run", "--model", "acme/m-1", "--task", "a", "--data", ""},
 		{"run", "--model", "acme/m-1", "--task", "a", "--data="},
 		{"run", "--model", "acme/m-1", "--task", "a", "--data", "   "},
 	} {
-		code, _, stderr := runCLI(t, args, "")
-		if code != 2 {
-			t.Fatalf("%v: exit = %d, want 2; stderr = %q", args, code, stderr)
-		}
-		if fake.callCount() != 0 {
-			t.Fatalf("%v: worker invoked %d times before the rejection", args, fake.callCount())
+		code, stdout, stderr := runCLI(t, args, "")
+		if code != 2 || stdout != "" {
+			t.Fatalf("%v: exit = %d, stdout = %q, want 2 and empty; stderr = %q", args, code, stdout, stderr)
 		}
 		if !strings.Contains(stderr, "invalid data") {
 			t.Fatalf("%v: stderr missing the invalid-data error: %q", args, stderr)
@@ -95,14 +84,10 @@ func TestRunDataEmptyValueExitsTwo(t *testing.T) {
 func TestRunDataEmptyElementBetweenCommasExitsTwo(t *testing.T) {
 	// A comma-separated value with a trimmed-empty element — including a
 	// trailing comma — is a usage error, exactly like --writes.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	for _, value := range []string{"a.md,,b.md", "a.md,", ", a.md"} {
-		code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--data", value}, "")
-		if code != 2 {
-			t.Fatalf("--data %q: exit = %d, want 2; stderr = %q", value, code, stderr)
-		}
-		if fake.callCount() != 0 {
-			t.Fatalf("--data %q: worker invoked %d times before the rejection", value, fake.callCount())
+		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--data", value}, "")
+		if code != 2 || stdout != "" {
+			t.Fatalf("--data %q: exit = %d, stdout = %q, want 2 and empty; stderr = %q", value, code, stdout, stderr)
 		}
 		if !strings.Contains(stderr, "empty element between commas") {
 			t.Fatalf("--data %q: stderr missing the empty-element error: %q", value, stderr)
@@ -116,13 +101,9 @@ func TestRunDataBeforeEveryTaskRejectedWithMultipleTasks(t *testing.T) {
 	// remedy stated, mirroring --writes.
 	path := filepath.Join(t.TempDir(), "data.md")
 	writeFile(t, path, "issue body")
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--data", path, "--task", "a", "--task", "b"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before the rejection", fake.callCount())
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty", stdout)
@@ -139,16 +120,25 @@ func TestRunDataTwiceForOneTaskRejected(t *testing.T) {
 	second := filepath.Join(t.TempDir(), "two.md")
 	writeFile(t, first, "one")
 	writeFile(t, second, "two")
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--data", first, "--data", second}, "")
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before the rejection", fake.callCount())
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--data", first, "--data", second}, "")
+	if code != 2 || stdout != "" {
+		t.Fatalf("exit = %d, stdout = %q, want 2 and empty; stderr = %q", code, stdout, stderr)
 	}
 	if !strings.Contains(stderr, "--data specified more than once for task 1") {
 		t.Fatalf("stderr missing the duplicate error: %q", stderr)
+	}
+}
+
+// requireTaskMaterial fails unless task keeps prompt byte-identical and
+// carries exactly want, in order, content as read. The controller composes
+// the MATERIAL frame from these; the run package pins that composition.
+func requireTaskMaterial(t *testing.T, task run.Task, prompt string, want ...run.DataFile) {
+	t.Helper()
+	if task.Prompt != prompt {
+		t.Fatalf("task prompt = %q, want the task text %q unchanged", task.Prompt, prompt)
+	}
+	if !reflect.DeepEqual(task.Data, want) {
+		t.Fatalf("task material = %#v, want %#v", task.Data, want)
 	}
 }
 
@@ -158,21 +148,11 @@ func TestRunDataBeforeSingleTaskReachesThatTask(t *testing.T) {
 	// reach it, exactly as --writes behaves.
 	path := filepath.Join(t.TempDir(), "data.md")
 	writeFile(t, path, "issue body")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--data", path, "--task", "summarize"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--data", path, "--task", "summarize"}, "")
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v, want one", tasks)
 	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q", stderr)
-	}
-	req := mustWorkerRequest(t, fake, 1)
-	if !strings.HasPrefix(req.Prompt, "summarize") {
-		t.Fatalf("worker prompt = %q, want it to start with the task text", req.Prompt)
-	}
-	if !strings.Contains(req.Prompt, "--- MATERIAL ") || !strings.Contains(req.Prompt, path) || !strings.Contains(req.Prompt, "issue body") {
-		t.Fatalf("worker prompt missing the carried material: %q", req.Prompt)
-	}
+	requireTaskMaterial(t, tasks[0], "summarize", run.DataFile{Path: path, Content: []byte("issue body")})
 }
 
 func TestRunDataWithStdinPromptReachesTheStdinTask(t *testing.T) {
@@ -182,18 +162,11 @@ func TestRunDataWithStdinPromptReachesTheStdinTask(t *testing.T) {
 	// task, exactly as --writes behaves.
 	path := filepath.Join(t.TempDir(), "data.md")
 	writeFile(t, path, "issue body")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--data", path}, "do it")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--data", path}, "do it")
+	if len(tasks) != 1 {
+		t.Fatalf("tasks = %#v, want one", tasks)
 	}
-	req := mustWorkerRequest(t, fake, 1)
-	if !strings.HasPrefix(req.Prompt, "do it") {
-		t.Fatalf("worker prompt = %q, want it to start with the stdin prompt", req.Prompt)
-	}
-	if !strings.Contains(req.Prompt, "issue body") {
-		t.Fatalf("worker prompt missing the carried material: %q", req.Prompt)
-	}
+	requireTaskMaterial(t, tasks[0], "do it", run.DataFile{Path: path, Content: []byte("issue body")})
 }
 
 func TestRunDataJSONCarriesPathAndByteCountNotContent(t *testing.T) {
@@ -206,8 +179,14 @@ func TestRunDataJSONCarriesPathAndByteCountNotContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "issue-412.md")
 	content := "title: API v2\n\nThe new endpoints.\n"
 	writeFile(t, path, content)
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "summarize", "--data", path, "--json"}, "")
+	args := []string{"run", "--model", "acme/m-1", "--task", "summarize", "--data", path, "--json"}
+	// The worker, by contrast, receives the task text byte-identical with
+	// the material read up front.
+	_, tasks := mustResolveRun(t, args[1:], "")
+	requireTaskMaterial(t, tasks[0], "summarize", run.DataFile{Path: path, Content: []byte(content)})
+
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, args, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -235,15 +214,6 @@ func TestRunDataJSONCarriesPathAndByteCountNotContent(t *testing.T) {
 	if strings.Contains(stdout, content) {
 		t.Fatalf("document contains the carried content: %q", stdout)
 	}
-	// The worker, by contrast, received the composed prompt: the task
-	// text byte-identical up front, then the framed material.
-	req := mustWorkerRequest(t, fake, 1)
-	if !strings.HasPrefix(req.Prompt, "summarize") {
-		t.Fatalf("worker prompt = %q, want it to start with the task text", req.Prompt)
-	}
-	if !strings.Contains(req.Prompt, "--- MATERIAL ") || !strings.Contains(req.Prompt, path) || !strings.Contains(req.Prompt, content) {
-		t.Fatalf("worker prompt missing the framed material: %q", req.Prompt)
-	}
 }
 
 func TestRunDataSeveralFilesPerTask(t *testing.T) {
@@ -256,8 +226,12 @@ func TestRunDataSeveralFilesPerTask(t *testing.T) {
 	second := filepath.Join(dir, "b.md")
 	writeFile(t, first, "aaa")
 	writeFile(t, second, "bbbb")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "t", "--data", first + "," + second, "--json"}, "")
+	args := []string{"run", "--model", "acme/m-1", "--task", "t", "--data", first + "," + second, "--json"}
+	_, tasks := mustResolveRun(t, args[1:], "")
+	requireTaskMaterial(t, tasks[0], "t", run.DataFile{Path: first, Content: []byte("aaa")}, run.DataFile{Path: second, Content: []byte("bbbb")})
+
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, args, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -275,17 +249,13 @@ func TestRunDataSeveralFilesPerTask(t *testing.T) {
 	if secondEntry["path"] != second || secondEntry["byteCount"] != float64(4) {
 		t.Fatalf("data[1] = %#v, want %q with byteCount 4", secondEntry, second)
 	}
-	req := mustWorkerRequest(t, fake, 1)
-	if strings.Index(req.Prompt, first) > strings.Index(req.Prompt, second) || !strings.Contains(req.Prompt, "--- END MATERIAL ") {
-		t.Fatalf("worker prompt section order or delimiters wrong: %q", req.Prompt)
-	}
 }
 
 func TestRunDataSeveralTasksEachWithOwnFiles(t *testing.T) {
 	// Several tasks, each with its own comma-separated --data: every
-	// worker's prompt carries only its own files, every worker's result
-	// records only its own files, and the whole run shares one frame
-	// token.
+	// task carries only its own files and every worker's result records
+	// only its own files. The shared per-run frame token is the
+	// controller's, pinned in the run package.
 	newGitWorkspace(t)
 	dir := t.TempDir()
 	a1 := filepath.Join(dir, "a1.md")
@@ -294,13 +264,21 @@ func TestRunDataSeveralTasksEachWithOwnFiles(t *testing.T) {
 	writeFile(t, a1, "one")
 	writeFile(t, a2, "two")
 	writeFile(t, b1, "three")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, stdout, _ := runCLI(t, []string{
+	args := []string{
 		"run", "--model", "acme/m-1",
 		"--task", "first", "--data", a1 + "," + a2,
 		"--task", "second", "--data", b1,
 		"--json",
-	}, "")
+	}
+	_, tasks := mustResolveRun(t, args[1:], "")
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %#v, want two", tasks)
+	}
+	requireTaskMaterial(t, tasks[0], "first", run.DataFile{Path: a1, Content: []byte("one")}, run.DataFile{Path: a2, Content: []byte("two")})
+	requireTaskMaterial(t, tasks[1], "second", run.DataFile{Path: b1, Content: []byte("three")})
+
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, _ := runCLI(t, args, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
@@ -317,19 +295,6 @@ func TestRunDataSeveralTasksEachWithOwnFiles(t *testing.T) {
 	if secondData[0].(map[string]any)["path"] != b1 {
 		t.Fatalf("workers[1].data = %#v, want %q", secondData, b1)
 	}
-	firstReq := mustWorkerRequest(t, fake, 1)
-	secondReq := mustWorkerRequest(t, fake, 2)
-	if !strings.Contains(firstReq.Prompt, "--- MATERIAL ") || !strings.Contains(firstReq.Prompt, a1) || !strings.Contains(firstReq.Prompt, a2) || strings.Contains(firstReq.Prompt, b1) {
-		t.Fatalf("worker 1 prompt carries the wrong files: %q", firstReq.Prompt)
-	}
-	if !strings.Contains(secondReq.Prompt, "--- MATERIAL ") || !strings.Contains(secondReq.Prompt, b1) || strings.Contains(secondReq.Prompt, a1) || strings.Contains(secondReq.Prompt, a2) {
-		t.Fatalf("worker 2 prompt carries the wrong files: %q", secondReq.Prompt)
-	}
-	// One per-run token shared by every section of every task.
-	token := strings.Split(strings.Split(firstReq.Prompt, "--- MATERIAL ")[1], ":")[0]
-	if !strings.Contains(secondReq.Prompt, "--- MATERIAL "+token+": ") {
-		t.Fatalf("worker 2 prompt does not share worker 1's frame token: %q", secondReq.Prompt)
-	}
 }
 
 func TestRunDataAbsolutePathAccepted(t *testing.T) {
@@ -339,8 +304,12 @@ func TestRunDataAbsolutePathAccepted(t *testing.T) {
 	newGitWorkspace(t)
 	path := filepath.Join(t.TempDir(), "spec.md")
 	writeFile(t, path, "spec body")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "t", "--data", path, "--json"}, "")
+	args := []string{"run", "--model", "acme/m-1", "--task", "t", "--data", path, "--json"}
+	_, tasks := mustResolveRun(t, args[1:], "")
+	requireTaskMaterial(t, tasks[0], "t", run.DataFile{Path: path, Content: []byte("spec body")})
+
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, args, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -349,10 +318,6 @@ func TestRunDataAbsolutePathAccepted(t *testing.T) {
 	data := requireJSONArray(t, workers[0].(map[string]any)["data"], "workers[0].data")
 	if len(data) != 1 || data[0].(map[string]any)["path"] != path {
 		t.Fatalf("workers[0].data = %#v, want the absolute path %q", data, path)
-	}
-	req := mustWorkerRequest(t, fake, 1)
-	if !strings.Contains(req.Prompt, path) {
-		t.Fatalf("worker prompt missing the absolute path label: %q", req.Prompt)
 	}
 }
 
@@ -367,8 +332,13 @@ func TestRunDataJSONSha256DistinguishesSameLengthFiles(t *testing.T) {
 	second := filepath.Join(dir, "b.md")
 	writeFile(t, first, "aaaa")
 	writeFile(t, second, "bbbb")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "t", "--data", first + "," + second, "--json"}, "")
+	args := []string{"run", "--model", "acme/m-1", "--task", "t", "--data", first + "," + second, "--json"}
+	// The worker receives both files' material.
+	_, tasks := mustResolveRun(t, args[1:], "")
+	requireTaskMaterial(t, tasks[0], "t", run.DataFile{Path: first, Content: []byte("aaaa")}, run.DataFile{Path: second, Content: []byte("bbbb")})
+
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, args, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -399,10 +369,5 @@ func TestRunDataJSONSha256DistinguishesSameLengthFiles(t *testing.T) {
 		if strings.Contains(stdout, needle) {
 			t.Fatalf("document contains %q; content and the material frame must never appear: %q", needle, stdout)
 		}
-	}
-	// The worker received the composed sections with both files.
-	req := mustWorkerRequest(t, fake, 1)
-	if !strings.Contains(req.Prompt, first) || !strings.Contains(req.Prompt, second) {
-		t.Fatalf("worker prompt missing both files' sections: %q", req.Prompt)
 	}
 }

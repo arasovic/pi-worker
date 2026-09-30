@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 	"github.com/arasovic/pi-worker/internal/worktree"
 )
 
@@ -72,10 +74,18 @@ func chdirPlain(t *testing.T) string {
 	return dir
 }
 
-// completedResult is the scripted worker answer for a successful run in
-// these tests; the model matches what the CLI receives from --model.
-func completedResult() pi.WorkerResult {
-	return pi.WorkerResult{Model: "acme/model", Explanation: "done", Status: pi.StatusCompleted}
+// fakePiLog returns every request the fake Pi processes of this test have
+// received so far, empty when none started.
+func fakePiLog(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("FAKEPI_LOG"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read fake Pi log: %v", err)
+	}
+	return string(data)
 }
 
 // newGitWorkspaceAt creates an isolated repository in the supplied
@@ -169,8 +179,8 @@ func TestParseRunArgsAcceptsValidWorktreeNames(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
 	for _, name := range []string{"x", "version-compare", "run-2"} {
 		t.Run("accepted "+name, func(t *testing.T) {
-			installFakeWorker(t, completedResult())
-			code, _, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", name}, "")
+			useFakePi(t, backgroundHappyScript("done"))
+			code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", name}, "")
 			if code != 0 {
 				t.Fatalf("exit = %d, stderr = %q", code, stderr)
 			}
@@ -189,8 +199,10 @@ func TestParseRunArgsAcceptsValidWorktreeNames(t *testing.T) {
 // gets its own assertion (trap 6).
 func TestRunWorktreeCreatesPrivateCheckout(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	fake := installFakeWorker(t, completedResult())
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	useFakePi(t, backgroundHappyScript("done"))
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -201,12 +213,8 @@ func TestRunWorktreeCreatesPrivateCheckout(t *testing.T) {
 	if stderr != wantLine {
 		t.Fatalf("stderr = %q, want exactly %q", stderr, wantLine)
 	}
-	request, ok := fake.requestForWorker(1)
-	if !ok {
-		t.Fatalf("no request recorded for worker 1")
-	}
-	if request.Workspace != checkout {
-		t.Fatalf("worker workspace = %q, want %q", request.Workspace, checkout)
+	if workspace := fakePiCwd(t, metaPath); workspace != resolvedDir(t, checkout) {
+		t.Fatalf("worker workspace = %q, want %q", workspace, checkout)
 	}
 	// The directory is a real checkout of the source repo's HEAD, on
 	// the branch the creation line named.
@@ -216,7 +224,7 @@ func TestRunWorktreeCreatesPrivateCheckout(t *testing.T) {
 	if content, err := os.ReadFile(filepath.Join(checkout, "file.txt")); err != nil || string(content) != "one\n" {
 		t.Fatalf("checkout file.txt = %q, %v; want the committed file from HEAD", content, err)
 	}
-	requireChangesTail(t, stdout, "worker 1: done\n")
+	requireChangesTail(t, stdout, fakePiDoneLines(1))
 }
 
 // TestRunJSONWorktreeObject pins the document shape: a --worktree run's
@@ -226,8 +234,8 @@ func TestRunWorktreeCreatesPrivateCheckout(t *testing.T) {
 // green unmodified.
 func TestRunJSONWorktreeObject(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	installFakeWorker(t, completedResult())
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe", "--json"}, "")
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe", "--json"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -254,14 +262,14 @@ func TestRunJSONWorktreeObject(t *testing.T) {
 // name is still there afterwards.
 func TestRunWorktreeRefusesTakenName(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	installFakeWorker(t, completedResult())
-	if code, _, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, ""); code != 0 {
+	useFakePi(t, backgroundHappyScript("done"))
+	if code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, ""); code != 0 {
 		t.Fatalf("first run exit = %d, stderr = %q", code, stderr)
 	}
-	// A fresh fake for the refused run, so the assertion below really
-	// proves the refused run never called the worker.
-	refused := installFakeWorker(t, completedResult())
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	// The fake Pi log as the first run left it, so the assertion below
+	// really proves the refused run never reached Pi.
+	firstRun := fakePiLog(t)
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, "")
 	if code != 2 {
 		t.Fatalf("second run exit = %d, want 2 (stderr %q)", code, stderr)
 	}
@@ -276,8 +284,8 @@ func TestRunWorktreeRefusesTakenName(t *testing.T) {
 	if strings.Contains(stderr, "usage:") {
 		t.Fatalf("stderr = %q, want no usage block", stderr)
 	}
-	if refused.callCount() != 0 {
-		t.Fatalf("worker calls = %d, want 0 for the refused run", refused.callCount())
+	if got := fakePiLog(t); got != firstRun {
+		t.Fatalf("fake Pi log grew from %q to %q, want no request from the refused run", firstRun, got)
 	}
 	// The refusal must not remove what it found.
 	if _, err := os.Stat(checkout); err != nil {
@@ -292,10 +300,11 @@ func TestRunWorktreeRefusesTakenName(t *testing.T) {
 // nothing: the branch that took the name is still there afterwards.
 func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	fake := installFakeWorker(t, completedResult())
-	if code, _, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, ""); code != 0 {
+	useFakePi(t, backgroundHappyScript("done"))
+	if code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, ""); code != 0 {
 		t.Fatalf("first run exit = %d, stderr = %q", code, stderr)
 	}
+	firstRun := fakePiLog(t)
 	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
 	if err := os.RemoveAll(checkout); err != nil {
 		t.Fatalf("remove checkout: %v", err)
@@ -303,7 +312,7 @@ func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 	if !gitRefExists(t, repo, "refs/heads/run/probe") {
 		t.Fatalf("test setup: branch run/probe must still exist")
 	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, "")
 	if code != 2 {
 		t.Fatalf("second run exit = %d, want 2 (stderr %q)", code, stderr)
 	}
@@ -314,8 +323,8 @@ func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
 	}
-	if fake.callCount() != 1 {
-		t.Fatalf("worker calls = %d, want 1 (the first run only)", fake.callCount())
+	if got := fakePiLog(t); got != firstRun || fakePiRequestOrder(t, os.Getenv("FAKEPI_LOG")) != "PA" {
+		t.Fatalf("fake Pi log = %q, want the first run's one worker only (%q)", got, firstRun)
 	}
 	// The refusal must not remove what it found.
 	if !gitRefExists(t, repo, "refs/heads/run/probe") {
@@ -334,13 +343,13 @@ func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 func TestRunWorktreeRefusesGitCollision(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
 	gitRun(t, repo, "branch", "run")
-	fake := installFakeWorker(t, completedResult())
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
 	t.Cleanup(func() { runlogDir = originalDir })
 
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (stderr %q)", code, stderr)
 	}
@@ -359,8 +368,8 @@ func TestRunWorktreeRefusesGitCollision(t *testing.T) {
 	if strings.Contains(stderr, "usage:") {
 		t.Fatalf("stderr = %q, want no usage block", stderr)
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker calls = %d, want 0 for the refused run", fake.callCount())
+	if got := fakePiLog(t); got != "" {
+		t.Fatalf("fake Pi log = %q, want no request for the refused run", got)
 	}
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
@@ -420,9 +429,9 @@ func TestRunWorktreePreparationExitPrecedence(t *testing.T) {
 					t.Fatalf("make leftover worktree directory: %v", err)
 				}
 			}
-			fake := installFakeWorker(t, completedResult())
+			useFakePi(t, backgroundHappyScript("done"))
 			code, stdout, stderr := runCLIWithContext(t, test.context(), []string{
-				"run", "--model", "acme/model", "--task", "work", "--worktree", "probe",
+				"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe",
 			}, "")
 			if code != test.wantCode {
 				t.Fatalf("exit = %d, want %d; stderr = %q", code, test.wantCode, stderr)
@@ -433,8 +442,8 @@ func TestRunWorktreePreparationExitPrecedence(t *testing.T) {
 			if !strings.Contains(stderr, test.wantOutput) {
 				t.Fatalf("stderr = %q, want it to contain %q", stderr, test.wantOutput)
 			}
-			if fake.callCount() != 0 {
-				t.Fatalf("worker calls = %d, want 0 during preparation", fake.callCount())
+			if got := fakePiLog(t); got != "" {
+				t.Fatalf("fake Pi log = %q, want no request during preparation", got)
 			}
 		})
 	}
@@ -444,8 +453,8 @@ func TestRunWorktreePreparationExitPrecedence(t *testing.T) {
 // checkout and its branch still exist after the run finished.
 func TestRunWorktreeLeftBehind(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	installFakeWorker(t, completedResult())
-	if code, _, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, ""); code != 0 {
+	useFakePi(t, backgroundHappyScript("done"))
+	if code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, ""); code != 0 {
 		t.Fatalf("run exit = %d, stderr = %q", code, stderr)
 	}
 	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
@@ -464,8 +473,11 @@ func TestRunWorktreeLeftBehind(t *testing.T) {
 // the refusal a leftover earns.
 func TestRunWorktreeFailedRunKeepsCheckout(t *testing.T) {
 	repo := canonicalRepo(t, newGitWorkspace(t))
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/model", Status: pi.StatusFailed, Error: "agent failed"})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	// Pi refuses the prompt, so the worker fails.
+	failing := backgroundHappyScript("done")
+	failing.Triggers["prompt"] = []script.Step{{Response: &script.Response{Success: false, Error: "agent failed"}}}
+	useFakePi(t, failing)
+	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, "")
 	if code != 5 {
 		t.Fatalf("exit = %d, want 5 (stderr %q)", code, stderr)
 	}
@@ -483,8 +495,7 @@ func TestRunWorktreeFailedRunKeepsCheckout(t *testing.T) {
 // no usage block and no JSON document.
 func TestRunWorktreeRequiresGitWorkTree(t *testing.T) {
 	chdirPlain(t)
-	installFakeWorker(t, completedResult())
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--worktree", "probe"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--worktree", "probe"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (stderr %q)", code, stderr)
 	}
