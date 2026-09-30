@@ -155,9 +155,10 @@ func TestLoadReadsSnapshotReplacedBeforeOpen(t *testing.T) {
 	}
 }
 
-// TestLoadRefusesPipeSwappedInBeforeOpen pins the non-blocking open: a
-// named pipe renamed over snapshot.json between the Lstat checks and the
-// open must produce an error, not block forever waiting for a writer that
+// TestLoadRefusesPipeSwappedInBeforeOpen pins both the non-blocking open
+// and the regular-file refusal on the opened file: a named pipe renamed
+// over snapshot.json between the Lstat checks and the open must produce a
+// "not a regular file" error, not block forever waiting for a writer that
 // never comes. Load runs in a goroutine under a 2 s deadline so a
 // regression (blocking open) fails the test instead of hanging the suite.
 func TestLoadRefusesPipeSwappedInBeforeOpen(t *testing.T) {
@@ -196,6 +197,9 @@ func TestLoadRefusesPipeSwappedInBeforeOpen(t *testing.T) {
 		}
 		if r.err == nil {
 			t.Fatal("expected error for pipe swapped in before open")
+		}
+		if !strings.Contains(r.err.Error(), "not a regular file") {
+			t.Fatalf("want 'not a regular file', got: %v", r.err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Load blocked on a writerless pipe: expected an error within 2s")
