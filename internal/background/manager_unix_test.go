@@ -340,7 +340,7 @@ func deadSupervisorSnapshotFixture(t *testing.T) (root, runID string, want Snaps
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if err := createUnlockedSnapshot(store, snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return root, snap.RunID, snap

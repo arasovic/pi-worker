@@ -103,7 +103,7 @@ func TestLifecycle_CreateAndLoad(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -130,7 +130,7 @@ func TestLifecycle_Replace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(base); err != nil {
+	if _, err := store.Create(base); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -161,7 +161,7 @@ func TestLifecycle_Remove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -197,7 +197,7 @@ func TestCreate_ProducesExactlyOneJSONDocumentWithPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -261,7 +261,7 @@ func TestCreate_DuplicateRunIDPreservesOriginal(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
 
@@ -270,7 +270,7 @@ func TestCreate_DuplicateRunIDPreservesOriginal(t *testing.T) {
 		t.Fatalf("read original snapshot: %v", err)
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("second Create should fail for existing run ID")
 	}
@@ -300,7 +300,7 @@ func TestRemove_RefusesWithExtraEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -370,8 +370,12 @@ func TestConcurrentCreate_Collision(t *testing.T) {
 	}
 	done := make(chan result, 2)
 
-	go func() { done <- result{storeA.Create(snap)} }()
-	go func() { done <- result{storeB.Create(snap)} }()
+	create := func(store *Store) {
+		_, err := store.Create(snap)
+		done <- result{err}
+	}
+	go create(storeA)
+	go create(storeB)
 
 	var results [2]result
 	for i := 0; i < 2; i++ {
@@ -415,7 +419,7 @@ func TestConcurrentReplaceAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(base); err != nil {
+	if _, err := store.Create(base); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 

@@ -445,7 +445,7 @@ func TestCreate_RefusesRootSymlink_NoMutation(t *testing.T) {
 	}
 
 	snap := buildValidSnapshot(t)
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error for symlinked root")
 	}
@@ -473,7 +473,7 @@ func TestCreate_RefusesExistingRunDir_NoMutation(t *testing.T) {
 	store, _ := NewStore(root)
 	snap := buildValidSnapshot(t)
 
-	err := store.Create(snap)
+	_, err := store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error for pre-existing run dir")
 	}
@@ -564,7 +564,7 @@ func TestCreate_InvalidSnapshot_NoFilesystemChange(t *testing.T) {
 	snap := buildValidSnapshot(t)
 	snap.State = "corrupt_state"
 
-	err := store.Create(snap)
+	_, err := store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error for invalid snapshot in Create")
 	}

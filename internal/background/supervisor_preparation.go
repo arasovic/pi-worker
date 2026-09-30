@@ -3,6 +3,7 @@ package background
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/arasovic/pi-worker/internal/admission"
 )
@@ -30,6 +31,12 @@ type supervisorPreparation struct {
 	snapshot        Snapshot
 	store           *Store
 	tickets         []*admission.QueueTicket
+	// ownerLock is the run directory's owner lock Store.Create took. It
+	// is held from the durable Snapshot on and released only by rollback
+	// after the Snapshot is removed, or by releaseOwnerLock once the run
+	// is over: keeping it referenced here is also what keeps the garbage
+	// collector from closing it early.
+	ownerLock *os.File
 }
 
 // prepareSupervisorStart runs the whole production preparation
@@ -122,7 +129,8 @@ func prepareSupervisorStart(req supervisorStartRequest) (*supervisorPreparation,
 	// false, so rollback only re-cancels the tickets that are still
 	// queued.
 	prep := &supervisorPreparation{snapshot: snapshot, store: store, tickets: tickets}
-	if err := store.Create(snapshot); err != nil {
+	lock, err := store.Create(snapshot)
+	if err != nil {
 		createErr := fmt.Errorf("prepare supervisor start (run %s): create snapshot: %w", req.runID, err)
 		if cancelErr := cancelPreparedTickets(req.runID, tickets); cancelErr != nil {
 			return prep, errors.Join(createErr, cancelErr)
@@ -132,6 +140,7 @@ func prepareSupervisorStart(req supervisorStartRequest) (*supervisorPreparation,
 
 	// The Snapshot is durable; record that this preparation created it.
 	prep.snapshotCreated = true
+	prep.ownerLock = lock
 	return prep, nil
 }
 
@@ -163,11 +172,14 @@ func (p *supervisorPreparation) rollback() error {
 	// preparation has already cleared the flag after its successful
 	// removal. A removal failure keeps the flag set so the caller can
 	// retry rollback once the cause is gone.
+	// The owner lock is released only after the removal, so the run
+	// directory never shows a free lock beside a snapshot.
 	if p.snapshotCreated {
 		if err := p.store.Remove(p.snapshot.RunID); err != nil {
 			errs = append(errs, fmt.Errorf("rollback supervisor preparation (run %s): remove accepted snapshot: %w", p.snapshot.RunID, err))
 		} else {
 			p.snapshotCreated = false
+			p.releaseOwnerLock()
 		}
 	}
 
@@ -181,6 +193,18 @@ func (p *supervisorPreparation) rollback() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// releaseOwnerLock closes the run's owner lock, telling every reader the
+// owner is gone. It is called once the run is over — after its terminal
+// snapshot and finish line — or by rollback after the snapshot is removed,
+// and is a no-op when no lock is held.
+func (p *supervisorPreparation) releaseOwnerLock() {
+	if p == nil || p.ownerLock == nil {
+		return
+	}
+	p.ownerLock.Close()
+	p.ownerLock = nil
 }
 
 // cancelPreparedTickets cancels every prepared ticket in order,

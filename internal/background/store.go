@@ -226,14 +226,18 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 // Create writes a newly-built snapshot into <root>/<runId>/snapshot.json.
 // It validates and encodes the snapshot before touching the filesystem,
 // inspects (or creates) root, creates the per-run directory exclusively,
-// and writes the file.  On failure after creating the run directory, one
-// bounded cleanup removes only the exact entries we created.
-func (s *Store) Create(snapshot Snapshot) error {
+// takes the run's owner lock inside it, and only then writes the file, so
+// no reader ever sees a snapshot whose owner lock is free while its owner
+// lives. The returned lock file is the caller's: it must stay open for as
+// long as the caller owns the run. On failure after creating the run
+// directory, one bounded cleanup removes only the exact entries we
+// created and releases the lock.
+func (s *Store) Create(snapshot Snapshot) (*os.File, error) {
 	if s == nil || s.root == "" {
-		return fmt.Errorf("create snapshot: nil store or empty root")
+		return nil, fmt.Errorf("create snapshot: nil store or empty root")
 	}
 	if err := snapshot.Validate(); err != nil {
-		return fmt.Errorf("create snapshot: validate: %w", err)
+		return nil, fmt.Errorf("create snapshot: validate: %w", err)
 	}
 
 	root := s.root
@@ -244,44 +248,44 @@ func (s *Store) Create(snapshot Snapshot) error {
 	// Encode before any filesystem mutation.
 	encoded, err := encodeSnapshot(snapshot)
 	if err != nil {
-		return fmt.Errorf("create snapshot (%s): encode: %w", runID, err)
+		return nil, fmt.Errorf("create snapshot (%s): encode: %w", runID, err)
 	}
 
 	// Two-phase root preflight.
 	fi, err := os.Lstat(root)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("create snapshot (%s): stat root %s: %w", runID, root, err)
+			return nil, fmt.Errorf("create snapshot (%s): stat root %s: %w", runID, root, err)
 		}
 		// Root does not exist — create it, then re-check for raced replacements.
 		if err := os.MkdirAll(root, 0o700); err != nil {
-			return fmt.Errorf("create snapshot (%s): mkdir all root %s: %w", runID, root, err)
+			return nil, fmt.Errorf("create snapshot (%s): mkdir all root %s: %w", runID, root, err)
 		}
 		fi, err = os.Lstat(root)
 		if err != nil {
-			return fmt.Errorf("create snapshot (%s): stat root %s: %w", runID, root, err)
+			return nil, fmt.Errorf("create snapshot (%s): stat root %s: %w", runID, root, err)
 		}
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("create snapshot (%s): refusing to write through a symbolic link at %s", runID, root)
+		return nil, fmt.Errorf("create snapshot (%s): refusing to write through a symbolic link at %s", runID, root)
 	}
 	if !fi.IsDir() {
-		return fmt.Errorf("create snapshot (%s): root %s exists but is not a directory", runID, root)
+		return nil, fmt.Errorf("create snapshot (%s): root %s exists but is not a directory", runID, root)
 	}
 
 	// Harden root permissions (off Windows).
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(root, 0700); err != nil {
-			return fmt.Errorf("create snapshot (%s): chmod root %s: %w", runID, root, err)
+			return nil, fmt.Errorf("create snapshot (%s): chmod root %s: %w", runID, root, err)
 		}
 	}
 
 	// Create the per-run directory exclusively.
 	if err := os.Mkdir(runDir, 0700); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("create snapshot (%s): run directory %s already exists", runID, runDir)
+			return nil, fmt.Errorf("create snapshot (%s): run directory %s already exists", runID, runDir)
 		}
-		return fmt.Errorf("create snapshot (%s): mkdir run dir %s: %w", runID, runDir, err)
+		return nil, fmt.Errorf("create snapshot (%s): mkdir run dir %s: %w", runID, runDir, err)
 	}
 	// Mark that we created the run directory for bounded cleanup.
 	runDirCreated := true
@@ -289,16 +293,24 @@ func (s *Store) Create(snapshot Snapshot) error {
 	// Harden run directory permissions (off Windows).
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(runDir, 0700); err != nil {
-			cErr := doCleanup(snapPath, runDir, root, runDirCreated, nil)
-			return errors.Join(fmt.Errorf("create snapshot (%s): chmod run dir %s: %w", runID, runDir, err), cErr)
+			cErr := doCleanup(snapPath, runDir, root, runDirCreated, nil, nil)
+			return nil, errors.Join(fmt.Errorf("create snapshot (%s): chmod run dir %s: %w", runID, runDir, err), cErr)
 		}
+	}
+
+	// Take the owner lock before the snapshot exists: a snapshot is never
+	// readable while its lock is free.
+	lock, err := runlog.AcquireOwnerLock(runDir)
+	if err != nil {
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, nil, err)
+		return nil, fmt.Errorf("create snapshot (%s): %w", runID, cErr)
 	}
 
 	// Write snapshot.json with O_CREATE|O_EXCL|O_WRONLY for exclusive creation.
 	f, err := openSnapshotForCreate(snapPath)
 	if err != nil {
-		cErr := doCleanup(snapPath, runDir, root, runDirCreated, err)
-		return fmt.Errorf("create snapshot (%s): open snapshot %s: %w", runID, snapPath, cErr)
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, lock, err)
+		return nil, fmt.Errorf("create snapshot (%s): open snapshot %s: %w", runID, snapPath, cErr)
 	}
 
 	// Write. Detect short write (matching Replace pattern).
@@ -317,8 +329,8 @@ func (s *Store) Create(snapshot Snapshot) error {
 			cerr = closeErr
 		}
 		cerr = errors.Join(cerr, wErr)
-		cErr := doCleanup(snapPath, runDir, root, runDirCreated, cerr)
-		return fmt.Errorf("create snapshot (%s): write snapshot %s: %w", runID, snapPath, cErr)
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, lock, cerr)
+		return nil, fmt.Errorf("create snapshot (%s): write snapshot %s: %w", runID, snapPath, cErr)
 	}
 
 	// Sync. On sync failure: close once, join close error, then cleanup.
@@ -329,43 +341,52 @@ func (s *Store) Create(snapshot Snapshot) error {
 			cerr = closeErr
 		}
 		cerr = errors.Join(cerr, sErr)
-		cErr := doCleanup(snapPath, runDir, root, runDirCreated, cerr)
-		return fmt.Errorf("create snapshot (%s): sync snapshot %s: %w", runID, snapPath, cErr)
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, lock, cerr)
+		return nil, fmt.Errorf("create snapshot (%s): sync snapshot %s: %w", runID, snapPath, cErr)
 	}
 
 	// Close. On close failure, run cleanup.
 	if closeErr := f.Close(); closeErr != nil {
-		cErr := doCleanup(snapPath, runDir, root, runDirCreated, closeErr)
-		return fmt.Errorf("create snapshot (%s): close snapshot %s: %w", runID, snapPath, cErr)
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, lock, closeErr)
+		return nil, fmt.Errorf("create snapshot (%s): close snapshot %s: %w", runID, snapPath, cErr)
 	}
 
 	// Sync the run directory.
 	if err := syncParentDirectory(runDir); err != nil {
-		cErr := doCleanup(snapPath, runDir, root, runDirCreated, err)
-		return fmt.Errorf("create snapshot (%s): sync run dir %s: %w", runID, runDir, cErr)
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, lock, err)
+		return nil, fmt.Errorf("create snapshot (%s): sync run dir %s: %w", runID, runDir, cErr)
 	}
 
 	// Sync the root directory.
 	if err := syncParentDirectory(root); err != nil {
-		cErr := doCleanup(snapPath, runDir, root, runDirCreated, err)
-		return fmt.Errorf("create snapshot (%s): sync root %s: %w", runID, root, cErr)
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, lock, err)
+		return nil, fmt.Errorf("create snapshot (%s): sync root %s: %w", runID, root, cErr)
 	}
 
-	return nil
+	return lock, nil
 }
 
 // doCleanup performs a bounded cleanup of exactly the entries that [Create]
-// added.  It removes the snapshot file, the run directory (if we created
-// it), and syncs root afterward.
+// added.  It removes the snapshot file, the owner lock file while it is
+// still held (when lock is non-nil), the run directory (if we created it),
+// syncs root afterward, and only then releases the lock.
 // Only fs.ErrNotExist is silently ignored during removal.  The returned
 // error joins primaryErr (the reason for cleanup) with any cleanup-side
 // errors, or nil when everything cleared cleanly.
-func doCleanup(snapPath, runDir, root string, didCreateRunDir bool, primaryErr error) error {
+func doCleanup(snapPath, runDir, root string, didCreateRunDir bool, lock *os.File, primaryErr error) error {
 	var errs []error
 
 	// Remove the exact snapshot file (ignore only fs.ErrNotExist).
 	if rErr := removeSnapshotForCleanup(snapPath); rErr != nil && !errors.Is(rErr, fs.ErrNotExist) {
 		errs = append(errs, rErr)
+	}
+
+	// Remove the owner lock file this call created, while still holding it.
+	if lock != nil {
+		defer lock.Close()
+		if rErr := removeSnapshotForCleanup(filepath.Join(runDir, runlog.OwnerLockName)); rErr != nil && !errors.Is(rErr, fs.ErrNotExist) {
+			errs = append(errs, rErr)
+		}
 	}
 
 	// Remove the exact run directory only if we created it.
@@ -566,10 +587,12 @@ func (s *Store) Replace(snapshot Snapshot) error {
 // regular file (actual not-exist identities are preserved).
 //
 // Before any mutation the run directory is ReadDir'ed and must
-// contain exactly one entry named "snapshot.json" — this method never
-// deletes future control files or unrelated state. Only
-// snapshot.json is removed, the run directory is synced, the now-
-// empty run directory is removed, and finally root is synced.
+// contain exactly "snapshot.json", or exactly "snapshot.json" and a
+// regular "owner.lock" — this method never deletes a run record, a
+// debug log, or unrelated state. Only those entries are removed (the
+// lock file whether or not its lock is held: the caller that created it
+// may still hold it), the run directory is synced, the now-empty run
+// directory is removed, and finally root is synced.
 //
 // Returns operation/path-specific errors. After any successful
 // removal step a later sync/remove failure reports the real partial
@@ -612,22 +635,29 @@ func (s *Store) Remove(runID string) error {
 		return fmt.Errorf("remove snapshot (%s): %s exists but is not a regular file", runID, snapPath)
 	}
 
-	// Require exactly one entry named "snapshot.json" so this method
-	// never deletes future control files or unrelated state.
+	// Require exactly snapshot.json, optionally beside a regular
+	// owner.lock, so this method never deletes anything else.
 	entries, err := os.ReadDir(runDir)
 	if err != nil {
 		return fmt.Errorf("remove snapshot (%s): read run dir %s: %w", runID, runDir, err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "snapshot.json" {
-		return fmt.Errorf("remove snapshot (%s): %s does not contain exactly one snapshot.json entry", runID, runDir)
+	withLock := len(entries) == 2 && entries[0].Name() == runlog.OwnerLockName && entries[0].Type().IsRegular() && entries[1].Name() == "snapshot.json"
+	if !withLock && (len(entries) != 1 || entries[0].Name() != "snapshot.json") {
+		return fmt.Errorf("remove snapshot (%s): %s does not contain exactly one snapshot.json entry and at most an owner lock", runID, runDir)
 	}
 
-	// Remove only the snapshot file.
+	// Remove only the snapshot file, then the lock file.
 	if err := os.Remove(snapPath); err != nil {
 		return fmt.Errorf("remove snapshot (%s): remove %s: %w", runID, snapPath, err)
 	}
+	if withLock {
+		lockPath := filepath.Join(runDir, runlog.OwnerLockName)
+		if err := os.Remove(lockPath); err != nil {
+			return fmt.Errorf("remove snapshot (%s): remove %s: %w", runID, lockPath, err)
+		}
+	}
 
-	// Sync the run directory after removing its only entry.
+	// Sync the run directory after removing its entries.
 	if err := syncParentDirectory(runDir); err != nil {
 		return fmt.Errorf("remove snapshot (%s): sync run dir %s: %w", runID, runDir, err)
 	}

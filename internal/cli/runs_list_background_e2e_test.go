@@ -12,6 +12,7 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // TestRunsListIncludesRunDirectories requires that runs list reads the
@@ -33,9 +34,11 @@ func TestRunsListIncludesRunDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	lock, err := store.Create(snap)
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	lock.Close()
 	writeListRecord(t, dir, dirRunID, deadPID, "2026-08-30T10:20:00Z", "/ws-flat", 1, true, "completed", "")
 	flatRunID := "20260830T101500Z-1"
 	flatPath := writeListRecord(t, dir, flatRunID, deadPID, "2026-08-30T10:15:00Z", "/ws-flat", 1, true, "completed", "")
@@ -255,6 +258,15 @@ func TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory(t *testing.T) {
 	runDir := filepath.Join(root, backgroundRunID)
 	recordPath := filepath.Join(foregroundDir, backgroundRunID+".jsonl")
 	waitForFinishedRecord(t, recordPath)
+	// The supervisor still holds the owner lock for a moment after its
+	// finish line, and prune rightly spares a run whose lock is held.
+	deadline := time.Now().Add(10 * time.Second)
+	for runlog.ProbeOwnerLock(runDir) != runlog.LockFree {
+		if time.Now().After(deadline) {
+			t.Fatalf("owner lock of the finished run still %v", runlog.ProbeOwnerLock(runDir))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
 	if code != 0 || stderr != "" {

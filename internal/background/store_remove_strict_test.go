@@ -41,6 +41,82 @@ func helperValidPayload(t *testing.T, runID string) []byte {
 
 // --- Remove tests ===================================================================
 
+// Remove deletes a run directory holding exactly snapshot.json and the
+// owner lock file, lock included.
+func TestRemove_SnapshotAndOwnerLock_RemovesTheRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	runID := makeRunID(fixtureTime)
+	store, _ := helperRunDir(t, root, runID, helperValidPayload(t, runID))
+	if err := os.WriteFile(filepath.Join(root, runID, "owner.lock"), nil, 0o600); err != nil {
+		t.Fatalf("write owner lock: %v", err)
+	}
+
+	if err := store.Remove(runID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, runID)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("run directory after Remove: %v, want it gone", err)
+	}
+}
+
+// Remove refuses a run directory holding anything beside snapshot.json and
+// the owner lock — a run record here — and deletes nothing; it also refuses
+// an owner lock that is not a regular file.
+func TestRemove_OwnerLockBesideAnythingElse_Refused(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, runDir string)
+	}{
+		{"third entry", func(t *testing.T, runDir string) {
+			for _, name := range []string{"owner.lock", "record.jsonl"} {
+				if err := os.WriteFile(filepath.Join(runDir, name), nil, 0o600); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+			}
+		}},
+		{"lock not a regular file", func(t *testing.T, runDir string) {
+			if err := os.Mkdir(filepath.Join(runDir, "owner.lock"), 0o700); err != nil {
+				t.Fatalf("mkdir owner.lock: %v", err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			runID := makeRunID(fixtureTime)
+			store, snapPath := helperRunDir(t, root, runID, helperValidPayload(t, runID))
+			runDir := filepath.Join(root, runID)
+			tt.setup(t, runDir)
+			before := dirNames(t, runDir)
+
+			err := store.Remove(runID)
+			if err == nil || !strings.Contains(err.Error(), "exactly one snapshot.json entry") {
+				t.Fatalf("Remove = %v, want the strict refusal", err)
+			}
+			if after := dirNames(t, runDir); strings.Join(after, ",") != strings.Join(before, ",") {
+				t.Fatalf("run directory = %v after the refusal, want %v untouched", after, before)
+			}
+			if _, err := os.Stat(snapPath); err != nil {
+				t.Fatalf("snapshot after the refusal: %v", err)
+			}
+		})
+	}
+}
+
+// dirNames returns the names of dir's entries in order.
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	return names
+}
+
 // Remove on a missing run directory preserves fs.ErrNotExist.
 func TestRemove_MissingRunDirectory_PreservesErrNotExist(t *testing.T) {
 	root := t.TempDir()

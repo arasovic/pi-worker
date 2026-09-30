@@ -17,10 +17,10 @@ import (
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
-// writeRunDir writes one run directory <parent>/<runID>/ holding only a
+// writeRunDir writes one run directory <parent>/<runID>/ holding a
 // non-terminal snapshot.json whose supervisor is the provably-dead
-// deadPID, and returns the directory. Without an owner lock the pid
-// rule decides, so the run lists as interrupted.
+// deadPID beside its free owner lock, and returns the directory. The free
+// lock decides, so the run lists as interrupted.
 func writeRunDir(t *testing.T, parent, runID string) string {
 	t.Helper()
 	acceptedAt, err := runlog.ParseRunID(runID)
@@ -37,9 +37,12 @@ func writeRunDir(t *testing.T, parent, runID string) string {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	lock, err := store.Create(snap)
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	// The supervisor that wrote it is gone: its owner lock is free.
+	lock.Close()
 	return filepath.Join(parent, runID)
 }
 
