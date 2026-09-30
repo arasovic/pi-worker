@@ -13,5 +13,5 @@ func statusChangeTime(info os.FileInfo) time.Time {
 	if !ok {
 		return time.Time{}
 	}
-	return time.Unix(st.Ctimespec.Sec, st.Ctimespec.Nsec)
+	return time.Unix(st.Ctimespec.Unix())
 }
