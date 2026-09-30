@@ -270,7 +270,8 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   per run directory under pi-worker's background directory, and the
   run directories inside the records directory — merged with the run
   records and sorted newest first. A run directory is listed instead of
-  a `.jsonl` record with the same run id. A supervised run also
+  a `.jsonl` record with the same run id, and a run directory in the
+  records directory instead of a background one. A supervised run also
   writes a run record, so it is found in both places; it is listed
   once, as its background entry, because the snapshot is the state
   `runs status` and `runs wait` read. A background run's `path` is its
@@ -278,8 +279,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   `running` while its owner lock (`owner.lock` in the run directory) is
   held — for an older run without one, while its supervisor is still
   alive — `interrupted` when the owner is gone before the run finished,
-  and `unknown` when its state cannot be read. `runs prune` never
-  touches a background snapshot.
+  and `unknown` when its state cannot be read.
 - A record's outcome is one of: the run's own outcome, verbatim, when
   its finish line carried a result; `error` when the finish line
   carried the error arm instead; `running` when there is no finish
@@ -287,17 +287,25 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   counts as alive); `interrupted` when there is no finish line and
   that process is gone; `unknown` when the record has no usable start
   line at all.
-- `runs prune --keep <n>` keeps the newest `n` records in that command's
-  final selection and deletes the rest — one file at a time, stale
-  `unknown` records included — and never deletes a record whose run is
-  still running, whatever its age. `--keep 0` keeps none by age;
-  running runs are still spared. It lists, selects, and deletes only
-  `.jsonl` records in the records directory: the record a run started
-  with `--background` wrote there is deleted like any other, while its
-  background snapshot is never seen or touched, so `runs status` and
-  `runs wait` still answer for it. An `unknown`
-  record is deleted like any other, except while its file has changed
-  within the last hour:
+- `runs prune --keep <n>` keeps the newest `n` runs in that command's
+  final selection and deletes the rest — one run at a time, stale
+  `unknown` runs included — and never deletes a run that is still
+  running, whatever its age. `--keep 0` keeps none by age; running
+  runs are still spared. It selects from the list `runs list` shows,
+  so `--keep` counts runs, not files: a run found in several places —
+  a run directory in the records directory, a legacy background run
+  directory, a flat `.jsonl` record — is one run, and deleting it
+  removes all of them. A run directory is emptied entry by entry,
+  never removed as a tree: only `record.jsonl`, `snapshot.json`,
+  `debug.log`, `owner.lock`, and leftover `.snapshot.json.tmp-*`
+  stages are removed, and a directory holding anything else is
+  refused whole. Its owner lock is taken before anything in it is
+  removed and held until it is gone; a lock someone else holds at that
+  moment spares the run as running. A pruned run is gone: `runs
+  status` and `runs wait` exit `2` for it as an unknown run, so
+  collect a background run's result before pruning it. An `unknown`
+  run is deleted like any other, except while its record or run
+  directory has changed within the last hour:
   prune cannot tell an unreadable record apart from one being written,
   so a record that changed recently is kept and reported — a later
   prune deletes it once it stops changing. That freshness question is
@@ -313,8 +321,8 @@ pi-worker runs prune --keep <n> [--yes] [--json]
 - Without `--yes`, prune lists on stderr the records it is about to
   delete and asks `delete <n> run records? [y/N]`. After an
   affirmative answer, it re-lists immediately before deletion, making
-  one fresh selection; if the ordered records selected for deletion
-  changed, it deletes nothing, exits `9`, and asks the caller to
+  one fresh selection; if the ordered runs selected for deletion, or
+  the places any of them was found, changed, it deletes nothing, exits `9`, and asks the caller to
   retry. Only `y` or `yes` (case-insensitive, after trimming spaces)
   proceeds, and anything else — `n`, an empty line, an EOF — deletes
   nothing, prints `nothing deleted`, and exits `0`. Existing per-file
@@ -328,10 +336,11 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   deleted and is still reported, nothing further is removed, and the
   exit is `9`.
 - With `--yes`, prune has no human wait. It lists/selects once
-  immediately before deletion, adds no lock, and does not coordinate
+  immediately before deletion, adds no lock beyond each run
+  directory's own owner lock, and does not otherwise coordinate
   another prune.
-- The human output prints one line per record as it goes — `deleted
-  <id>` for a record it removed, `kept <id>` for one it spared at the
+- The human output prints one line per run as it goes — `deleted
+  <id>` for a run it removed, `kept <id>` for one it spared at the
   last moment — and then a summary line, `kept <n> newest`, plus one
   clause per spared kind — `, <m> still running` and `, <m>
   unreadable` — each clause appearing only when at least one record

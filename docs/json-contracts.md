@@ -204,18 +204,23 @@ failure paths emit no JSON document.
 The root object has exactly `schemaVersion`, `deleted`, `keptNewest`,
 `keptRunning`, and `keptUnreadable`:
 
-- `deleted`: the run IDs actually deleted, as a string array
-- `keptNewest`: the number of records retained by `--keep`, capped at the
-  number of records found
-- `keptRunning`: run IDs spared because their runs are still running
+- `deleted`: the run IDs actually deleted, as a string array. IDs cover every
+  layout — a run directory in the records directory, a legacy background run
+  directory, a flat `.jsonl` record — and each run is listed once: a run found
+  in several of them is deleted from all of them
+- `keptNewest`: the number of runs retained by `--keep`, capped at the number
+  of runs found; a run found in several layouts counts once
+- `keptRunning`: run IDs spared because their runs are still running,
+  including a run directory whose owner lock was held at the moment of its
+  delete
 - `keptUnreadable`: run IDs spared because their records could not be safely
   classified
 
 All three ID arrays are always present and non-null, including when empty; no
 root field is omitted. `--json` requires `--yes`: without it, prune emits no
 document and exits `2` before resolving the records directory. A successful prune exits `0`, including when nothing is deleted. A
-records-directory resolution, read, or open failure exits `9` and emits no
-document. A delete failure or cancellation exits `9` after selection and emits
+records-directory or background-root resolution, read, or open failure exits
+`9` and emits no document. A delete failure or cancellation exits `9` after selection and emits
 the document, reporting the IDs known to have been deleted or kept.
 
 ## `worktrees list --json`

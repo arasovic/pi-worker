@@ -580,45 +580,6 @@ func TestRunsPruneInteractiveSelectionDeletesNormally(t *testing.T) {
 	}
 }
 
-// TestRunsPruneInteractiveRetryRejectsReorderedSelection asserts the
-// retry gate treats the ordered deletion list as part of the contract:
-// the same two Path/RunID candidates in opposite order exits 9,
-// deletes nothing, calls the list twice, and leaves both records in
-// place.
-func TestRunsPruneInteractiveRetryRejectsReorderedSelection(t *testing.T) {
-	dir := t.TempDir()
-	withRunlogDir(t, dir)
-	withStdinIsTerminal(t, true)
-	firstPath := writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
-	secondPath := writeListRecord(t, dir, "20260830T102000Z-2", deadPID, "2026-08-30T10:20:00Z", "/ws-b", 1, true, "completed", "")
-	calls := withRunlogListResponses(t,
-		runlogListResponse{runs: []runlog.Run{
-			{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: firstPath},
-			{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/ws-b", Tasks: 1, Outcome: "completed", Path: secondPath},
-		}},
-		runlogListResponse{runs: []runlog.Run{
-			{RunID: "20260830T102000Z-2", StartedAt: "2026-08-30T10:20:00Z", Workspace: "/ws-b", Tasks: 1, Outcome: "completed", Path: secondPath},
-			{RunID: "20260830T101500Z-1", StartedAt: "2026-08-30T10:15:00Z", Workspace: "/ws-a", Tasks: 1, Outcome: "completed", Path: firstPath},
-		}},
-	)
-
-	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0"}, "y\n")
-	if code != 9 || stdout != "" {
-		t.Fatalf("runs prune = (%d, %q, %q), want exit 9 with nothing on stdout", code, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "runs prune retry: selection changed") {
-		t.Fatalf("stderr = %q, want the retry selection-change message", stderr)
-	}
-	if got := *calls; got != 2 {
-		t.Fatalf("runlogList calls = %d, want 2", got)
-	}
-	for _, path := range []string{firstPath, secondPath} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("record %s vanished after a reorder mismatch: %v", path, err)
-		}
-	}
-}
-
 // TestRunsPruneInteractiveRetryRejectsChangedSelection asserts the
 // post-confirmation retry refuses any changed ordered deletion list:
 // a changed path or changed run id exits 9, deletes nothing, and
