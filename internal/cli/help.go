@@ -55,7 +55,7 @@ Flags:
 
 Result (--json): read root outcome first. Report each worker's model,
 thinkingLevel, status, explanation (or partialExplanation when there is
-none) and error, and root changes, writes, verification and
+none), error and warning, and root changes, writes, verification and
 leftoverProcesses. A failed run's changes still lists what was written;
 nothing is rolled back.
 
@@ -67,7 +67,8 @@ Outcome and exit code:
   5  task-failed, partial a worker failed; a provider refusal such as 403
                           in its error is an access problem, not the task
   6  verification-failed  --verify failed; read verification
-  7  timeout              without a document, report the interruption
+  7  timeout              read partialExplanation, warning and changes;
+                          with no document, report the interruption
   8  cancelled            and stop
   9  internal-error
 
