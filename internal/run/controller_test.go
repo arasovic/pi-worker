@@ -255,6 +255,21 @@ func validRequest(prompts ...string) Request {
 	return Request{Tasks: records, Workspace: "/workspace"}
 }
 
+// preparedAdmission prepares one ticket per task in gate, in task order,
+// and returns the option that admits the run's tasks with them.
+func preparedAdmission(t *testing.T, gate *admission.Gate, runID string, acceptedAt time.Time, executionTimeout time.Duration, tasks int) Option {
+	t.Helper()
+	requests := make([]admission.Request, tasks)
+	for i := range requests {
+		requests[i] = admission.Request{RunID: runID, WorkerID: i + 1}
+	}
+	tickets, err := gate.Prepare(requests)
+	if err != nil {
+		t.Fatalf("prepare admission: %v", err)
+	}
+	return WithPreparedAdmission(runID, acceptedAt, executionTimeout, tickets)
+}
+
 func TestControllerPassesEachTaskThinkingLevelToItsWorker(t *testing.T) {
 	// Two tasks on the same model at different thinking levels: each
 	// worker receives its own task's level, and the levels do not leak
@@ -1195,7 +1210,7 @@ func TestControllerReportsWorkerTimeline(t *testing.T) {
 	acceptedAt := time.Now()
 	executionTimeout := 5 * time.Minute
 	worker := newScriptedWorker()
-	controller := New(worker, WithForegroundAdmission(gate, "run-1", acceptedAt, executionTimeout))
+	controller := New(worker, preparedAdmission(t, gate, "run-1", acceptedAt, executionTimeout, 3))
 
 	result, runErr := controller.Run(context.Background(), validRequest("task-1", "task-2", "task-3"))
 	if runErr != nil {

@@ -16,7 +16,7 @@ import (
 )
 
 // TestHelperSubprocess is an env-gated helper that runs the
-// Enqueue -> Wait -> Release lifecycle as a real child process. It is never
+// Prepare -> Wait -> Release lifecycle as a real child process. It is never
 // called directly by a test.
 //
 // Required env vars:
@@ -24,11 +24,11 @@ import (
 //	PI_WORKER_ADMISSION_TEST_HELPER=subprocess  – activates this code path
 //	PI_WORKER_ADMISSION_TEST_ROOT               – shared admission root directory
 //	PI_WORKER_ADMISSION_TEST_MAX_LIVE           – maxLive for Gate.Open
-//	PI_WORKER_ADMISSION_TEST_RUN_ID             – RunID for Enqueue
-//	PI_WORKER_ADMISSION_TEST_WORKER_ID          – WorkerID for Enqueue
+//	PI_WORKER_ADMISSION_TEST_RUN_ID             – RunID for Prepare
+//	PI_WORKER_ADMISSION_TEST_WORKER_ID          – WorkerID for Prepare
 //	PI_WORKER_ADMISSION_TEST_ACQUIRE_TIMEOUT    – optional, seconds (default 10)
 //
-// Protocol: after Enqueue+Wait grants a lease the helper writes "acquired\n"
+// Protocol: after Prepare+Wait grants a lease the helper writes "acquired\n"
 // to stdout and blocks reading stdin. When stdin is closed or a byte arrives,
 // it calls Release and exits 0. Any error exits nonzero without leaking
 // the child.
@@ -52,7 +52,7 @@ func TestHelperSubprocess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	ticket, err := g.Enqueue(Request{RunID: runID, WorkerID: workerID})
+	ticket, err := prepareOne(g, Request{RunID: runID, WorkerID: workerID})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "enqueue: %v\n", err)
 		os.Exit(1)

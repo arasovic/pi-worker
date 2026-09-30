@@ -8,17 +8,17 @@ import (
 	"testing"
 )
 
-// TestGateBoundedRacePrepareAndEnqueue exercises two Gate instances opened
+// TestPrepareConcurrentBatchesPreserveFIFO exercises two Gate instances opened
 // on the same root with maxLive=1 and deterministic thread-safe sequential
 // ticket IDs. One goroutine calls Prepare for workers 1,2 of run "batch";
-// the other calls Enqueue for run "single" worker 1. Results are collected
+// the other calls Prepare for run "single" worker 1. Results are collected
 //
 //	– durable state contains exactly three queued tickets (sequences 1,2,3);
 //	– batch ticket IDs are contiguous in state (positions 0+1 or 1+2);
 //	– no ticket is leased before a grant attempt;
 //	– tryGrant on a non-earliest ticket returns nil lease;
 //	– granting and releasing every ticket in sequence order leaves clean state.
-func TestPrepareConcurrentWithEnqueuePreservesFIFO(t *testing.T) {
+func TestPrepareConcurrentBatchesPreserveFIFO(t *testing.T) {
 	root := t.TempDir()
 
 	// Install a deterministic ticket-ID generator shared by both gates.
@@ -59,7 +59,7 @@ func TestPrepareConcurrentWithEnqueuePreservesFIFO(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		ticket, err := gateB.Enqueue(Request{RunID: "single", WorkerID: 1})
+		ticket, err := prepareOne(gateB, Request{RunID: "single", WorkerID: 1})
 		res := opResult{nil, err}
 		if ticket != nil {
 			res.tickets = []*QueueTicket{ticket}

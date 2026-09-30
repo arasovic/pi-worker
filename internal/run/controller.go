@@ -174,15 +174,12 @@ type Controller struct {
 	// work the manifest pass does under that budget.
 	preRunBudget time.Duration
 
-	// Foreground admission fields. When foregroundAdmission is true,
-	// every task enqueues a ticket in the shared gate before execution
-	// and releases the lease after execution. Passing nil gate via
-	// WithForegroundAdmission is rejected at Run time.
+	// Admission fields. When foregroundAdmission is true, every task
+	// waits on its prepared ticket before execution and releases the
+	// lease after execution.
 	foregroundAdmission bool
-	gate                *admission.Gate
-	// preparedTickets, when non-nil, are tickets a caller already
-	// prepared for this run's tasks in task order; the controller uses
-	// them instead of enqueuing its own.
+	// preparedTickets are the tickets a caller prepared for this run's
+	// tasks, in task order.
 	preparedTickets  []*admission.QueueTicket
 	runID            string
 	acceptedAt       time.Time
@@ -206,24 +203,9 @@ func WithGitInspector(g GitInspector) Option {
 	return func(c *Controller) { c.gitInspector = g }
 }
 
-// WithForegroundAdmission configures admission gating: every task
-// enqueues a ticket in gate before execution and releases the lease
-// after. gate must not be nil. Passing nil silently disables admission,
-// so an explicit bool prevents accidental misconfiguration.
-func WithForegroundAdmission(gate *admission.Gate, runID string, acceptedAt time.Time, executionTimeout time.Duration) Option {
-	return func(c *Controller) {
-		c.foregroundAdmission = true
-		c.gate = gate
-		c.runID = runID
-		c.acceptedAt = acceptedAt
-		c.executionTimeout = executionTimeout
-	}
-}
-
-// WithPreparedAdmission configures the admission path with tickets a
-// caller has already prepared, instead of enqueuing new ones. Used by a
-// run whose tickets were prepared as part of accepting it, so the
-// controller must never enqueue a second set for the same workers.
+// WithPreparedAdmission configures admission gating with tickets a
+// caller has already prepared as part of accepting the run: every task
+// waits on its ticket before execution and releases the lease after.
 // tickets are in task order: tickets[i] belongs to task i.
 func WithPreparedAdmission(runID string, acceptedAt time.Time, executionTimeout time.Duration, tickets []*admission.QueueTicket) Option {
 	return func(c *Controller) {
@@ -269,21 +251,14 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err := validate(req); err != nil {
 		return Result{}, err
 	}
-	// Validate admission configuration when set. The explicit bool
-	// prevents nil gate from silently disabling admission.
+	// Validate admission configuration when set.
 	if c.foregroundAdmission {
-		if c.preparedTickets == nil {
-			if c.gate == nil {
-				return Result{}, fmt.Errorf("foreground admission: gate must not be nil")
-			}
-		} else {
-			if len(c.preparedTickets) != len(req.Tasks) {
-				return Result{}, fmt.Errorf("foreground admission: %d prepared tickets for %d tasks", len(c.preparedTickets), len(req.Tasks))
-			}
-			for i, ticket := range c.preparedTickets {
-				if ticket == nil {
-					return Result{}, fmt.Errorf("foreground admission: prepared ticket %d is nil", i+1)
-				}
+		if len(c.preparedTickets) != len(req.Tasks) {
+			return Result{}, fmt.Errorf("foreground admission: %d prepared tickets for %d tasks", len(c.preparedTickets), len(req.Tasks))
+		}
+		for i, ticket := range c.preparedTickets {
+			if ticket == nil {
+				return Result{}, fmt.Errorf("foreground admission: prepared ticket %d is nil", i+1)
 			}
 		}
 		if c.runID == "" {
@@ -400,34 +375,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("generate material frame token: %v", err)
 	}
-	// When admission is configured, synchronously enqueue one ticket per
-	// task in index order before starting any goroutine. On enqueue
-	// failure, cancel each earlier ticket, join every rollback error with
-	// the enqueue error, and return before worker start.
-	var tickets []*admission.QueueTicket
-	if c.foregroundAdmission && c.preparedTickets != nil {
-		tickets = c.preparedTickets
-	} else if c.foregroundAdmission {
-		tickets = make([]*admission.QueueTicket, len(req.Tasks))
-		var enqueueErr error
-		for i := range req.Tasks {
-			ticket, ticketErr := c.gate.Enqueue(admission.Request{RunID: c.runID, WorkerID: i + 1})
-			if ticketErr != nil {
-				enqueueErr = fmt.Errorf("enqueue task %d: %w", i+1, ticketErr)
-				break
-			}
-			tickets[i] = ticket
-		}
-		if enqueueErr != nil {
-			var rollback error
-			for _, t := range tickets {
-				if t != nil {
-					rollback = errors.Join(rollback, t.Cancel())
-				}
-			}
-			return Result{}, errors.Join(enqueueErr, rollback)
-		}
-	}
+	tickets := c.preparedTickets
 	var admissionErrs []error // mutex-protected: only written by worker goroutines
 	var admissionErrMu sync.Mutex
 	recordAdmissionErr := func(err error) {

@@ -136,50 +136,6 @@ func TestPrepareCancelWhileQueued(t *testing.T) {
 	}
 }
 
-// TestPrepareVersusEnqueue compares Prepare vs Enqueue lifecycle using
-// separate roots; no random-ID matching needed.
-func TestPrepareVersusEnqueue(t *testing.T) {
-	ctx := context.Background()
-
-	rootA := t.TempDir()
-	gA, ownerA := openGateForTest(t, rootA, 1)
-	installSequentialTicketIDs(t, "PA-")
-
-	handlesA, err := gA.Prepare([]Request{{RunID: "a-run", WorkerID: 1}})
-	if err != nil {
-		t.Fatalf("Prepare A: %v", err)
-	}
-	leaseA, werrA := handlesA[0].Wait(ctx)
-	if werrA != nil || leaseA == nil {
-		t.Fatalf("Wait A: err=%v lease=%p", werrA, leaseA)
-	}
-	_ = leaseA.Release()
-	stA := readStateForTest(t, rootA)
-	assertNoTickets(t, rootA)
-	assertNextSequence(t, stA, 2)
-
-	rootB := t.TempDir()
-	gB, _ := openGateForTest(t, rootB, 1)
-	installSequentialTicketIDs(t, "PB-")
-
-	qtB, err := gB.Enqueue(Request{RunID: "b-run", WorkerID: 1})
-	if err != nil {
-		t.Fatalf("Enqueue B: %v", err)
-	}
-	leaseB, werrB := qtB.Wait(ctx)
-	if werrB != nil || leaseB == nil {
-		t.Fatalf("Wait B: err=%v lease=%p", werrB, leaseB)
-	}
-	_ = leaseB.Release()
-	stB := readStateForTest(t, rootB)
-	assertNoTickets(t, rootB)
-	assertNextSequence(t, stB, 2)
-
-	if ownerA.PID <= 0 {
-		t.Fatalf("Owner PID not positive: %d", ownerA.PID)
-	}
-}
-
 // TestPrepareNilGateAndEmptyBatch edge cases without mutating state.
 func TestPrepareNilGateAndEmptyBatch(t *testing.T) {
 	root := t.TempDir()
