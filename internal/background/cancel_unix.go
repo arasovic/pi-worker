@@ -25,7 +25,8 @@ func (m *Manager) Cancel(runID string) (Snapshot, error) {
 	if m == nil {
 		return Snapshot{}, fmt.Errorf("background manager cancel (%s): nil manager", runID)
 	}
-	store, err := NewStore(m.root)
+	root := m.rootOf(runID)
+	store, err := NewStore(root)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("background manager cancel (%s): construct store: %w", runID, err)
 	}
@@ -41,7 +42,7 @@ func (m *Manager) Cancel(runID string) (Snapshot, error) {
 	// exits in between can leave the pid to be reused before the signal. The
 	// creation-time match below narrows that window; closing it needs a
 	// signal that names the process rather than its number.
-	switch runlog.ProbeOwnerLock(filepath.Join(m.root, runID)) {
+	switch runlog.ProbeOwnerLock(filepath.Join(root, runID)) {
 	case runlog.LockFree:
 		return snap, &SupervisorUnavailableError{PID: snap.Supervisor.PID, Reason: errors.New("owner lock is free")}
 	case runlog.LockUnknown:

@@ -57,9 +57,9 @@ func defaultRunVersionProbe(parent context.Context) (string, error) {
 var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
 
 // runlogDir and runlogInterrupted are the private dependency-injection
-// seams for the directory the supervisor writes a run's record into and
-// for the reader that scans earlier records for interrupted runs before a
-// run starts. runlogLeftovers is the seam for the reader that finds the
+// seams for the directory every run's own directory lives in — the
+// supervisor writes a run's snapshot and record there — and for the reader
+// that scans earlier records for interrupted runs before a run starts. runlogLeftovers is the seam for the reader that finds the
 // live processes an earlier settled run left behind, on the same pre-run
 // scan. Tests replace them with a temporary directory and with scripted
 // failures; the production values read records in the user's config
@@ -74,11 +74,12 @@ var runlogLeftovers = runlog.Leftovers
 var runlogList = runlog.List
 
 // backgroundRoot and backgroundListRuns are the private dependency-injection
-// seams for the background half of runs list. Tests replace them with a
-// temporary root so no test reads the user's real background store; the
-// production values resolve the user's background directory and read its
-// snapshots into the same entry shape runlog.List produces.
-var backgroundRoot = background.DefaultRoot
+// seams for the directory older versions kept background snapshots in and
+// for the reader of run directories. Tests replace them with a temporary
+// root so no test reads the user's real directory; the production values
+// resolve the user's older background directory, read and never written,
+// and read snapshots into the same entry shape runlog.List produces.
+var backgroundRoot = background.LegacyRoot
 var backgroundListRuns = background.ListRuns
 
 // stdinIsTerminal reports whether the command's stdin is an

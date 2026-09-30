@@ -12,10 +12,36 @@ import (
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
+// runRecords returns every record in dir: a flat <id>.jsonl, or the
+// record.jsonl inside a run directory <id>/. The interrupted-run scan keeps
+// its one-shot marker (reported.json) in the same directory, so the marker
+// is filtered out, exactly as the readers filter it.
+func runRecords(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read record dir: %v", err)
+	}
+	var records []string
+	for _, entry := range entries {
+		switch {
+		case entry.IsDir():
+			if _, err := os.Stat(filepath.Join(dir, entry.Name(), "record.jsonl")); err == nil {
+				records = append(records, filepath.Join(dir, entry.Name(), "record.jsonl"))
+			}
+		case strings.HasSuffix(entry.Name(), ".jsonl"):
+			records = append(records, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return records
+}
+
 // TestRunLogRecordsSuccessfulRunEndToEnd drives a completed run whose
-// supervisor writes the record into the directory the command resolved,
-// and asserts the on-disk record: exactly one file whose last line carries
-// the finish event and the same outcome the run reported.
+// supervisor writes the record into the run's own directory inside the
+// records directory the command resolved, and asserts the on-disk record:
+// exactly one, <id>/record.jsonl, whose last line carries the finish event
+// and the same outcome the run reported. With --debug the debug log sits in
+// the same directory.
 func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
 	newGitWorkspace(t)
 	useFakePi(t, backgroundHappyScript("done"))
@@ -24,28 +50,22 @@ func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
 	runlogDir = func() (string, error) { return logDir, nil }
 	t.Cleanup(func() { runlogDir = originalDir })
 
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "write the answer", "--json"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "write the answer", "--json", "--debug"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 
-	entries, err := os.ReadDir(logDir)
-	if err != nil {
-		t.Fatalf("read record dir: %v", err)
+	runDir := filepath.Join(logDir, runIDFromRunLine(t, stderr))
+	files := runRecords(t, logDir)
+	if len(files) != 1 || files[0] != filepath.Join(runDir, "record.jsonl") {
+		t.Fatalf("records = %v, want exactly %s", files, filepath.Join(runDir, "record.jsonl"))
 	}
-	// Only *.jsonl files are records. The interrupted-run scan keeps
-	// its one-shot marker (reported.json) in the same directory, so a
-	// record count must filter it out, exactly as the reader does.
-	var files []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			files = append(files, entry.Name())
-		}
+	if _, err := os.Stat(filepath.Join(runDir, "debug.log")); err != nil {
+		t.Fatalf("debug log beside the record: %v", err)
 	}
-	if len(files) != 1 {
-		t.Fatalf("record files = %v, want exactly one", files)
-	}
-	content, err := os.ReadFile(filepath.Join(logDir, files[0]))
+	// The finish line follows the terminal snapshot the run returned on.
+	waitForFinishedRecord(t, files[0])
+	content, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatalf("read record: %v", err)
 	}
@@ -74,10 +94,10 @@ func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
 func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
 	newGitWorkspace(t)
 	manager := useFakePi(t, backgroundHappyScript("done"))
-	logDir := t.TempDir()
-	originalDir := runlogDir
-	runlogDir = func() (string, error) { return logDir, nil }
-	t.Cleanup(func() { runlogDir = originalDir })
+	logDir, err := runlogDir()
+	if err != nil {
+		t.Fatalf("runlogDir: %v", err)
+	}
 
 	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "write the answer", "--json"}, "")
 	if code != 0 {
@@ -92,23 +112,13 @@ func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
 	}
 	wantPID := float64(snap.Workers[0].Process.PID)
 
-	entries, err := os.ReadDir(logDir)
-	if err != nil {
-		t.Fatalf("read record dir: %v", err)
-	}
-	// Only *.jsonl files are records; the interrupted-run scan's
-	// one-shot marker (reported.json) shares the directory and must be
-	// filtered out, exactly as the reader filters it.
-	var files []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			files = append(files, entry.Name())
-		}
-	}
+	files := runRecords(t, logDir)
 	if len(files) != 1 {
-		t.Fatalf("record files = %v, want exactly one", files)
+		t.Fatalf("records = %v, want exactly one", files)
 	}
-	content, err := os.ReadFile(filepath.Join(logDir, files[0]))
+	// The finish line follows the terminal snapshot the run returned on.
+	waitForFinishedRecord(t, files[0])
+	content, err := os.ReadFile(files[0])
 	if err != nil {
 		t.Fatalf("read record: %v", err)
 	}
@@ -177,23 +187,23 @@ func TestRunlogDirStaysUnderSystemTemp(t *testing.T) {
 	}
 }
 
-// TestRunLogUnavailableDoesNotFailRun drives a run with runlogDir
-// failing and asserts the run still completes with its normal exit code
-// and the record-unavailable warning appears on stderr: a record that
-// cannot be written must never fail or block a run.
-func TestRunLogUnavailableDoesNotFailRun(t *testing.T) {
+// TestRunWithoutRecordsDirectoryStartsNothing drives a run with runlogDir
+// failing and asserts it is refused before any worker starts, exit 9 with
+// the reason: the records directory is where the run's own directory — its
+// snapshot, the state the run is waited on through — is written.
+func TestRunWithoutRecordsDirectoryStartsNothing(t *testing.T) {
 	newGitWorkspace(t)
 	useFakePi(t, backgroundHappyScript("done"))
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return "", errors.New("records disabled") }
 	t.Cleanup(func() { runlogDir = originalDir })
 
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "still work"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "still work"}, "")
+	if code != 9 || stdout != "" || !strings.Contains(stderr, "pi-worker: determine records directory: records disabled") {
+		t.Fatalf("run = (%d, %q, %q), want exit 9, no document, the reason", code, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "pi-worker: warning: run record unavailable: records disabled") {
-		t.Fatalf("stderr = %q, want the record-unavailable warning", stderr)
+	if got := fakePiLog(t); got != "" {
+		t.Fatalf("fake Pi log = %q, want no worker", got)
 	}
 }
 
@@ -540,20 +550,7 @@ func TestRunLeftoverCheckFailureWarnsAndContinues(t *testing.T) {
 	if stderr := withoutRunLine(t, stderr); stderr != "pi-worker: warning: leftover-process check unavailable: process table unreadable\n" {
 		t.Fatalf("stderr = %q, want the check-unavailable warning", stderr)
 	}
-	entries, err := os.ReadDir(logDir)
-	if err != nil {
-		t.Fatalf("read record dir: %v", err)
-	}
-	// Only *.jsonl files are records; the interrupted-run scan's
-	// one-shot marker (reported.json) shares the directory and must be
-	// filtered out, exactly as the reader filters it.
-	files := 0
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
-			files++
-		}
-	}
-	if files != 1 {
+	if files := len(runRecords(t, logDir)); files != 1 {
 		t.Fatalf("record files = %d, want exactly one: the run must still start its record", files)
 	}
 }

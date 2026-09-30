@@ -15,6 +15,7 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // newRunningSnapshot builds a valid running-state Snapshot derived from an
@@ -72,18 +73,32 @@ func TestNewStore_ExplicitTempRootHasNoSideEffect(t *testing.T) {
 }
 
 // DefaultRoot is exactly UserDir / background.
-func TestDefaultRoot_EqualsUserDirBackground(t *testing.T) {
-	userDir, err := config.UserDir()
-	if err != nil {
-		t.Fatalf("config.UserDir: %v", err)
-	}
+func TestDefaultRoot_EqualsRunlogDir(t *testing.T) {
 	got, err := DefaultRoot()
 	if err != nil {
 		t.Fatalf("DefaultRoot: %v", err)
 	}
-	want := filepath.Join(userDir, "background")
+	want, err := runlog.Dir()
+	if err != nil {
+		t.Fatalf("runlog.Dir: %v", err)
+	}
 	if got != want {
 		t.Errorf("DefaultRoot() = %q; want %q", got, want)
+	}
+}
+
+func TestLegacyRoot_EqualsUserDirBackground(t *testing.T) {
+	userDir, err := config.UserDir()
+	if err != nil {
+		t.Fatalf("config.UserDir: %v", err)
+	}
+	got, err := LegacyRoot()
+	if err != nil {
+		t.Fatalf("LegacyRoot: %v", err)
+	}
+	want := filepath.Join(userDir, "background")
+	if got != want {
+		t.Errorf("LegacyRoot() = %q; want %q", got, want)
 	}
 }
 
@@ -103,7 +118,7 @@ func TestLifecycle_CreateAndLoad(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -130,7 +145,7 @@ func TestLifecycle_Replace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(base); err != nil {
+	if _, err := store.Create(base); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -161,7 +176,7 @@ func TestLifecycle_Remove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -197,7 +212,7 @@ func TestCreate_ProducesExactlyOneJSONDocumentWithPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -261,7 +276,7 @@ func TestCreate_DuplicateRunIDPreservesOriginal(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
 
@@ -270,7 +285,7 @@ func TestCreate_DuplicateRunIDPreservesOriginal(t *testing.T) {
 		t.Fatalf("read original snapshot: %v", err)
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("second Create should fail for existing run ID")
 	}
@@ -300,7 +315,7 @@ func TestRemove_RefusesWithExtraEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if _, err := store.Create(snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -370,8 +385,12 @@ func TestConcurrentCreate_Collision(t *testing.T) {
 	}
 	done := make(chan result, 2)
 
-	go func() { done <- result{storeA.Create(snap)} }()
-	go func() { done <- result{storeB.Create(snap)} }()
+	create := func(store *Store) {
+		_, err := store.Create(snap)
+		done <- result{err}
+	}
+	go create(storeA)
+	go create(storeB)
 
 	var results [2]result
 	for i := 0; i < 2; i++ {
@@ -415,7 +434,7 @@ func TestConcurrentReplaceAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(base); err != nil {
+	if _, err := store.Create(base); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 

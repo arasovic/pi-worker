@@ -54,7 +54,7 @@ func TestStoreReplace_RenameFailsPreservesOriginalNoTemp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(orig); err != nil {
+	if _, err := store.Create(orig); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestStoreReplace_ReplaceSyncRunDirFailsReturnsErrorNewSnapshotComplete(t *t
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(orig); err != nil {
+	if _, err := store.Create(orig); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestStoreReplace_RejectsSymlinkDestination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(orig); err != nil {
+	if _, err := store.Create(orig); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 

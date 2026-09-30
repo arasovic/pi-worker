@@ -148,7 +148,7 @@ func setupSupervisedBinary(t *testing.T, s *script.Script) (string, *background.
 	if err != nil {
 		t.Fatalf("DefaultRoot: %v", err)
 	}
-	manager, err := background.NewManager(root, t.TempDir(), 1)
+	manager, err := background.NewManager(root, "", t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

@@ -67,7 +67,7 @@ func TestListRunsNonTerminalDeadSupervisorIsInterrupted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if err := createUnlockedSnapshot(store, snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -95,7 +95,7 @@ func storeLiveSnapshot(t *testing.T, root string, supervisor ProcessIdentity) st
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if err := createUnlockedSnapshot(store, snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return snap.RunID

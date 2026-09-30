@@ -12,9 +12,9 @@ import (
 const recordFileName = "record.jsonl"
 
 // Leftover is the report of one settled run whose recorded worker
-// groups still hold live members: the run's id, its record's path, and
-// the pids of the leftover processes, ascending with duplicates
-// removed.
+// groups still hold live members: the run's id, its path — the run
+// directory, or an older run's .jsonl record — and the pids of the
+// leftover processes, ascending with duplicates removed.
 type Leftover struct {
 	RunID string `json:"runId"`
 	Path  string `json:"path"`
@@ -185,7 +185,7 @@ func Leftovers(dir string) ([]Leftover, error) {
 		// A run directory <id>/ holds its record as record.jsonl, and
 		// its owner lock decides liveness; a flat <id>.jsonl record is
 		// the older layout, decided by its start line's process.
-		var runID, path string
+		var runID, path, recordPath string
 		settled := isSettled
 		switch {
 		case entry.IsDir():
@@ -193,16 +193,17 @@ func Leftovers(dir string) ([]Leftover, error) {
 				continue
 			}
 			runDir := filepath.Join(dir, name)
-			runID, path = name, filepath.Join(runDir, recordFileName)
+			runID, path, recordPath = name, runDir, filepath.Join(runDir, recordFileName)
 			settled = func(rec recordFacts) bool {
 				return rec.finished || !OwnerAlive(runDir, rec.pid, rec.createTime)
 			}
 		case strings.HasSuffix(name, ".jsonl"):
 			runID, path = strings.TrimSuffix(name, ".jsonl"), filepath.Join(dir, name)
+			recordPath = path
 		default:
 			continue
 		}
-		rec, err := parseRecord(path)
+		rec, err := parseRecord(recordPath)
 		if err != nil {
 			// A record that cannot be read or parsed is skipped: it
 			// cannot be attributed to anything.

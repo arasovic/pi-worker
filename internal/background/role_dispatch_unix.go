@@ -79,6 +79,10 @@ func dispatchSupervisorRole(stderr io.Writer) (bool, int) {
 		}
 		return true, roleExitExchangeFailed
 	}
+	// The owner lock is held for as long as this supervisor owns the run
+	// and released only after runAcceptedRun wrote the terminal snapshot
+	// and the finish line, or on an earlier return that ends the run.
+	defer result.preparation.releaseOwnerLock()
 	executable, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: resolve own executable for %s: %v\n", roleSupervisor, err)

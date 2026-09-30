@@ -13,6 +13,18 @@ import (
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
+// createUnlockedSnapshot stores snap in the shape a version before the owner
+// lock wrote: Create, then release and remove the lock file, so the recorded
+// supervisor process alone decides the run's liveness.
+func createUnlockedSnapshot(store *Store, snap Snapshot) error {
+	lock, err := store.Create(snap)
+	if err != nil {
+		return err
+	}
+	lock.Close()
+	return os.Remove(filepath.Join(store.root, snap.RunID, runlog.OwnerLockName))
+}
+
 // createTerminalSnapshot builds and stores one completed background run
 // under root, carrying one worker per model in models, and returns the
 // run directory it wrote. The expected listing values are built as
@@ -45,7 +57,7 @@ func createTerminalSnapshot(t *testing.T, root, runID string, acceptedAt time.Ti
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if err := createUnlockedSnapshot(store, snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return filepath.Join(root, runID)

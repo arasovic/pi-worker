@@ -89,10 +89,16 @@ func TestMain(m *testing.M) {
 	}
 	originalUserConfigPath := userConfigPath
 	userConfigPath = func() (string, error) { return filepath.Join(configDir, "config.json"), nil }
+	// Point the older background directory at a path that does not exist
+	// under the same temporary tree, so no test that builds the default
+	// Manager or lists runs reads the user's real directory.
+	originalBackgroundRoot := backgroundRoot
+	backgroundRoot = func() (string, error) { return filepath.Join(configDir, "background"), nil }
 	code := m.Run()
 	runVersionProbe = originalRunVersionProbe
 	runlogDir = originalRunlogDir
 	userConfigPath = originalUserConfigPath
+	backgroundRoot = originalBackgroundRoot
 	os.RemoveAll(dir)
 	os.RemoveAll(runlogParent)
 	os.RemoveAll(configDir)
@@ -204,9 +210,11 @@ func withBuildInfo(t *testing.T, version, commit, buildDate string) {
 
 // useFakePi points every run this test starts at the fakepi test double
 // answering from scriptConfig, through the supervisor the built binary
-// starts. The background state stays under this test's own directory, and
-// the admission root and limit the run resolved reach the Manager unchanged,
-// as they do in production. The returned Manager reads that state.
+// starts. The records directory — where every run keeps its own directory —
+// is this test's own, and the production Manager is built from it with the
+// admission root and limit the run resolved, as it is in production. The
+// returned Manager reads that state; a test that moves runlogDir afterwards
+// moves the runs it starts with it.
 func useFakePi(t *testing.T, scriptConfig *script.Script) *background.Manager {
 	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
@@ -217,18 +225,16 @@ func useFakePi(t *testing.T, scriptConfig *script.Script) *background.Manager {
 
 	root := t.TempDir()
 	lastRunSecond = time.Time{}
-	reader, err := background.NewManager(root, t.TempDir(), 1)
+	reader, err := background.NewManager(root, "", t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	originalManager, originalPi, originalRole := newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable
-	newBackgroundManager = func(admissionRoot string, maxModelWorkers int) (*background.Manager, error) {
-		return background.NewManager(root, admissionRoot, maxModelWorkers)
-	}
+	withRunlogDir(t, root)
+	originalPi, originalRole := backgroundPiExecutable, backgroundRoleExecutable
 	backgroundPiExecutable = fakePiBin
 	backgroundRoleExecutable = roleBin
 	t.Cleanup(func() {
-		newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable = originalManager, originalPi, originalRole
+		backgroundPiExecutable, backgroundRoleExecutable = originalPi, originalRole
 	})
 	return reader
 }
@@ -802,7 +808,7 @@ func TestRunWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
 // for this test — and the warning this test is about is printed before
 // that refusal, exactly as it is before a successful start.
 func TestRunBackgroundWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
-	manager, err := background.NewManager(t.TempDir(), t.TempDir(), 2)
+	manager, err := background.NewManager(t.TempDir(), "", t.TempDir(), 2)
 	if err != nil {
 		t.Fatalf("background.NewManager: %v", err)
 	}

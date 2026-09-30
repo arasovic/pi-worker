@@ -182,6 +182,24 @@ func StartWithID(dir, runID string, startedAt time.Time, workspace string, tasks
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	return startRecord(filepath.Join(dir, runID+".jsonl"), runID, startedAt, workspace, tasks)
+}
+
+// StartAt writes the start line of one run's record into runDir, the
+// run's own directory, as record.jsonl. It validates runID exactly as
+// StartWithID does, but never creates a directory: runDir belongs to the
+// run's owner, which created it, and a record without it is refused. The
+// record file is opened exclusively (O_EXCL), like StartWithID's.
+func StartAt(runDir, runID string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
+	if err := ValidateRunID(runID, startedAt); err != nil {
+		return nil, err
+	}
+	return startRecord(filepath.Join(runDir, recordFileName), runID, startedAt, workspace, tasks)
+}
+
+// startRecord opens the record at path exclusively and writes its start
+// line in one Write call.
+func startRecord(path, runID string, startedAt time.Time, workspace string, tasks []run.Task) (*Recorder, error) {
 	// The creation-time lookup and the marshalling of the start line
 	// happen before the record file exists: everything that can fail
 	// or block — the process-table read, the JSON encoding — completes
@@ -207,7 +225,7 @@ func StartWithID(dir, runID string, startedAt time.Time, workspace string, tasks
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(dir, runID+".jsonl"), os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}

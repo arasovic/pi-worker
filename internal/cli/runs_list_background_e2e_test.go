@@ -12,6 +12,7 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // TestRunsListIncludesRunDirectories requires that runs list reads the
@@ -33,9 +34,11 @@ func TestRunsListIncludesRunDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	lock, err := store.Create(snap)
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	lock.Close()
 	writeListRecord(t, dir, dirRunID, deadPID, "2026-08-30T10:20:00Z", "/ws-flat", 1, true, "completed", "")
 	flatRunID := "20260830T101500Z-1"
 	flatPath := writeListRecord(t, dir, flatRunID, deadPID, "2026-08-30T10:15:00Z", "/ws-flat", 1, true, "completed", "")
@@ -172,23 +175,20 @@ func waitForFinishedRecord(t *testing.T, path string) []recordLine {
 }
 
 // TestRunBackgroundWritesTheRunRecord requires that a background run writes
-// the run record a foreground run writes, into the records directory the
-// starting command resolved: the start line names the supervisor process the
-// snapshot names, the worker line the process the snapshot names, and the
-// finish line carries the snapshot's own result document. runs list shows
-// the run once, as its background entry.
+// the run record a foreground run writes, into its own directory inside the
+// records directory, beside its snapshot: the start line names the
+// supervisor process the snapshot names, the worker line the process the
+// snapshot names, and the finish line carries the snapshot's own result
+// document. runs list shows the run once, as its run directory.
 func TestRunBackgroundWritesTheRunRecord(t *testing.T) {
 	manager, root := setupBackgroundRun(t, backgroundHappyScript("recorded answer"))
-	recordsDir := t.TempDir()
-	withRunlogDir(t, recordsDir)
-	withBackgroundRoot(t, root)
 
 	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
 	final, err := manager.Wait(context.Background(), runID, 90*time.Second)
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	lines := waitForFinishedRecord(t, filepath.Join(recordsDir, runID+".jsonl"))
+	lines := waitForFinishedRecord(t, filepath.Join(root, runID, "record.jsonl"))
 
 	start := lines[0]
 	if start.Event != "start" || start.RunID != runID {
@@ -225,22 +225,16 @@ func TestRunBackgroundWritesTheRunRecord(t *testing.T) {
 		t.Fatalf("decode runs list document: %v\n%s", err, stdout)
 	}
 	if len(document.Runs) != 1 || document.Runs[0].RunID != runID || document.Runs[0].Path != filepath.Join(root, runID) {
-		t.Fatalf("runs list = %+v, want the run once, as its background entry", document.Runs)
+		t.Fatalf("runs list = %+v, want the run once, as its run directory", document.Runs)
 	}
 }
 
-// TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory requires that
-// prune deletes a finished background run whole — its run directory in
-// the background store and the record it wrote into the records
-// directory — reports it once, and that the pruned run is then unknown
-// to runs status. The background root is pointed at the run's real
-// store.
-func TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory(t *testing.T) {
+// TestRunsPruneDeletesABackgroundRunsDirectory requires that prune deletes
+// a finished background run whole — its run directory in the records
+// directory, snapshot and record together — reports it once, and that the
+// pruned run is then unknown to runs status.
+func TestRunsPruneDeletesABackgroundRunsDirectory(t *testing.T) {
 	manager, root := setupBackgroundRun(t, backgroundHappyScript("prune answer"))
-
-	foregroundDir := t.TempDir()
-	withRunlogDir(t, foregroundDir)
-	withBackgroundRoot(t, root)
 
 	// Started without startBackgroundRun: its cleanup drains the run,
 	// which cannot be read once pruned. The run is drained here instead.
@@ -253,8 +247,16 @@ func TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 	runDir := filepath.Join(root, backgroundRunID)
-	recordPath := filepath.Join(foregroundDir, backgroundRunID+".jsonl")
-	waitForFinishedRecord(t, recordPath)
+	waitForFinishedRecord(t, filepath.Join(runDir, "record.jsonl"))
+	// The supervisor still holds the owner lock for a moment after its
+	// finish line, and prune rightly spares a run whose lock is held.
+	deadline := time.Now().Add(10 * time.Second)
+	for runlog.ProbeOwnerLock(runDir) != runlog.LockFree {
+		if time.Now().After(deadline) {
+			t.Fatalf("owner lock of the finished run still %v", runlog.ProbeOwnerLock(runDir))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
 	if code != 0 || stderr != "" {
@@ -269,10 +271,8 @@ func TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory(t *testing.T) {
 	if !slices.Equal(document.Deleted, []string{backgroundRunID}) {
 		t.Fatalf("prune deleted %v, want the background run %s once", document.Deleted, backgroundRunID)
 	}
-	for _, path := range []string{runDir, recordPath} {
-		if _, err := os.Lstat(path); !os.IsNotExist(err) {
-			t.Fatalf("%s after prune: %v, want it deleted", path, err)
-		}
+	if _, err := os.Lstat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("%s after prune: %v, want it deleted", runDir, err)
 	}
 
 	code, stdout, stderr = runCLI(t, []string{"runs", "status", backgroundRunID}, "")

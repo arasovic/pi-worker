@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -49,37 +51,59 @@ var errSupervisorRejected = errors.New("background manager start: supervisor did
 // that Manager loses nothing durable.
 type Manager struct {
 	root            string
+	legacyRoot      string
 	admissionRoot   string
 	maxModelWorkers int
 }
 
-// NewManager returns the Manager that reads and writes run state under the
-// two given roots and admits at most maxModelWorkers live model workers
-// through the admission Gate at admissionRoot. An empty root falls back to
-// the default location of that kind of state inside the user configuration
-// tree: the snapshots directory [DefaultRoot] names, and the admission
-// directory beside the configuration file a foreground run opens its own
-// gate from, so an empty admission root never names the filesystem root. The
-// limit must be positive, because a Gate with no live slot could admit
-// nothing. Nothing here touches the filesystem: constructing a Manager
-// creates no directory and no state.
-func NewManager(root, admissionRoot string, maxModelWorkers int) (*Manager, error) {
-	if root == "" || admissionRoot == "" {
+// NewManager returns the Manager that writes run state under root, reads it
+// there and, for a run an older version started, under legacyRoot, and admits
+// at most maxModelWorkers live model workers through the admission Gate at
+// admissionRoot. An empty root or admission root falls back to the default
+// location of that kind of state inside the user configuration tree: the run
+// directory [DefaultRoot] names, and the admission directory beside the
+// configuration file a foreground run opens its own gate from, so an empty
+// admission root never names the filesystem root. An empty legacyRoot reads
+// no older runs. The limit must be positive, because a Gate with no live slot
+// could admit nothing. Nothing here touches the filesystem: constructing a
+// Manager creates no directory and no state.
+func NewManager(root, legacyRoot, admissionRoot string, maxModelWorkers int) (*Manager, error) {
+	if root == "" {
+		defaultRoot, err := DefaultRoot()
+		if err != nil {
+			return nil, fmt.Errorf("background manager: resolve the user configuration directory: %w", err)
+		}
+		root = defaultRoot
+	}
+	if admissionRoot == "" {
 		userDir, err := config.UserDir()
 		if err != nil {
 			return nil, fmt.Errorf("background manager: resolve the user configuration directory: %w", err)
 		}
-		if root == "" {
-			root = filepath.Join(userDir, "background")
-		}
-		if admissionRoot == "" {
-			admissionRoot = filepath.Join(userDir, "admission")
-		}
+		admissionRoot = filepath.Join(userDir, "admission")
 	}
 	if maxModelWorkers <= 0 {
 		return nil, fmt.Errorf("background manager: maxModelWorkers must be positive, got %d", maxModelWorkers)
 	}
-	return &Manager{root: root, admissionRoot: admissionRoot, maxModelWorkers: maxModelWorkers}, nil
+	return &Manager{root: root, legacyRoot: legacyRoot, admissionRoot: admissionRoot, maxModelWorkers: maxModelWorkers}, nil
+}
+
+// rootOf returns the root holding runID's run directory: the legacy root when
+// the run directory exists only there — a run an older version started —
+// and the Manager's own root otherwise, so a run found nowhere is reported
+// against the root new runs are written to. A run never moves between roots,
+// so one answer holds for the whole of a call.
+func (m *Manager) rootOf(runID string) string {
+	if m.legacyRoot == "" {
+		return m.root
+	}
+	if _, err := os.Lstat(filepath.Join(m.root, runID)); !errors.Is(err, fs.ErrNotExist) {
+		return m.root
+	}
+	if _, err := os.Lstat(filepath.Join(m.legacyRoot, runID)); err != nil {
+		return m.root
+	}
+	return m.legacyRoot
 }
 
 // StartOptions is what a caller brings to Start: the tasks and the
@@ -112,10 +136,6 @@ type StartOptions struct {
 	// Unset or non-positive means the default bound.
 	QueueWait time.Duration
 	Debug     bool
-	// RunlogDir is the run-records directory the supervisor writes this
-	// run's record into — the record a foreground run writes. Empty means
-	// the run writes no record.
-	RunlogDir string
 
 	// removeWorktree is the private seam the unaccepted-start cleanup uses
 	// instead of worktree.RemoveUntouched, so a test can observe exactly
@@ -174,7 +194,7 @@ func (m *Manager) validateStartOptions(opts StartOptions) error {
 // lines to. It exists only once a worker of that run has started, and only
 // when the run was started with debug on.
 func (m *Manager) DebugLogPath(runID string) string {
-	return debugLogPath(m.root, runID)
+	return debugLogPath(m.rootOf(runID), runID)
 }
 
 // Status returns the latest durable Snapshot of one run. It waits for
@@ -196,7 +216,8 @@ func (m *Manager) DebugLogPath(runID string) string {
 // refuses to read anything that is not exactly one valid snapshot of the run
 // it was asked for.
 func (m *Manager) Status(runID string) (Snapshot, error) {
-	store, err := NewStore(m.root)
+	root := m.rootOf(runID)
+	store, err := NewStore(root)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("background manager status (%s): construct store: %w", runID, err)
 	}
@@ -204,7 +225,7 @@ func (m *Manager) Status(runID string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("background manager status (%s): %w", runID, err)
 	}
-	if snap.Terminal || runlog.OwnerAlive(filepath.Join(m.root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+	if snap.Terminal || runlog.OwnerAlive(filepath.Join(root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 		return snap, nil
 	}
 	snap, err = store.Load(runID)
@@ -244,7 +265,8 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 	if m == nil {
 		return Snapshot{}, fmt.Errorf("background manager wait (%s): nil manager", runID)
 	}
-	store, err := NewStore(m.root)
+	root := m.rootOf(runID)
+	store, err := NewStore(root)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("background manager wait (%s): construct store: %w", runID, err)
 	}
@@ -271,7 +293,7 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		if snap.Terminal {
 			return snap, nil
 		}
-		if !runlog.OwnerAlive(filepath.Join(m.root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+		if !runlog.OwnerAlive(filepath.Join(root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 			snap, loadErr = store.Load(runID)
 			if loadErr != nil {
 				return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)

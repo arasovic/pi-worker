@@ -9,10 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/arasovic/pi-worker/internal/admission"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // diskAdmissionState is the minimal wire shape of admission state.json,
@@ -392,8 +395,12 @@ func TestSupervisorPreparationRollbackRemovesSnapshotAndTickets(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	// The snapshot and its run directory are gone.
+	// The snapshot, the owner lock and the run directory are gone, and the
+	// lock is released.
 	requireDirEmpty(t, backgroundRoot)
+	if prep.ownerLock != nil {
+		t.Fatal("rollback kept the owner lock open after removing the run directory")
+	}
 
 	// Every ticket was cancelled.
 	if st := readAdmissionState(t, admissionRoot); len(st.Tickets) != 0 {
@@ -476,4 +483,27 @@ func TestSupervisorPreparationNilRollbackIsSafe(t *testing.T) {
 	if err := (&supervisorPreparation{}).rollback(); err != nil {
 		t.Fatalf("zero-value rollback returned error: %v", err)
 	}
+}
+
+// TestSupervisorPreparationKeepsTheOwnerLockHeld requires that the owner lock
+// Store.Create took stays held while the preparation is the only thing that
+// still refers to it: the garbage collector closes an unreferenced file, and
+// a lock closed that way would tell every reader the supervisor is gone.
+func TestSupervisorPreparationKeepsTheOwnerLockHeld(t *testing.T) {
+	req, backgroundRoot, _ := newStartRequestWithTempRoots(t)
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	runDir := filepath.Join(backgroundRoot, req.runID)
+	// Finalizers run on their own goroutine after a collection, so the
+	// probe is repeated over a short window rather than asked once.
+	for i := 0; i < 10; i++ {
+		runtime.GC()
+		if got := runlog.ProbeOwnerLock(runDir); got != runlog.LockHeld {
+			t.Fatalf("owner lock after collection %d = %v, want held", i+1, got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runtime.KeepAlive(prep)
 }

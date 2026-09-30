@@ -252,30 +252,32 @@ pi-worker runs list [--json]
 pi-worker runs prune --keep <n> [--yes] [--json]
 ```
 
-- A run record is one `.jsonl` file per run, one line per event: the
-  start line written before any worker starts, one line per started
-  worker, one line per descendant process of a worker found while the
-  run is alive, and the finish line when the run completes. Records live in
+- Every run keeps its own directory `<id>/` in the records directory —
   the `runs` directory inside pi-worker's user configuration directory
-  — the operating system's user configuration directory plus
-  `pi-worker/runs`, the location `runlog.Dir()` resolves. Only
-  `*.jsonl` files and run directories named by a run id (`<id>/`,
-  holding `record.jsonl` and `snapshot.json`) in that directory are
-  records; `reported.json`, its `.tmp-*` stages, and any other entry
-  are not.
+  (the operating system's user configuration directory plus
+  `pi-worker/runs`, the location `runlog.Dir()` resolves). It holds
+  `snapshot.json` (the run's state, which `runs status` and `runs wait`
+  read), `record.jsonl` (the run record), `owner.lock` (held by the
+  run's supervisor for as long as it lives), and `debug.log` for a
+  `--debug` run. The run record has one line per event: the start line
+  written before any worker starts, one line per started worker, one
+  line per descendant process of a worker found while the run is alive,
+  and the finish line when the run completes. Older versions wrote the
+  record as a flat `<id>.jsonl` file in the records directory and kept
+  the snapshot in `<id>/` under pi-worker's background directory; those
+  runs are still read there. Only run directories and `*.jsonl` files
+  in the records directory are records; `reported.json`, its `.tmp-*`
+  stages, and any other entry are not.
 - `runs list` is read-only: it prints one line per record, newest
   first, and writes nothing — no marker, no watermark, no
-  interrupted-run warning. It also lists every supervised run (every
-  `run`, with or without `--background`), read from the background store — one `snapshot.json`
-  per run directory under pi-worker's background directory, and the
-  run directories inside the records directory — merged with the run
-  records and sorted newest first. A run directory is listed instead of
-  a `.jsonl` record with the same run id, and a run directory in the
-  records directory instead of a background one. A supervised run also
-  writes a run record, so it is found in both places; it is listed
-  once, as its background entry, because the snapshot is the state
-  `runs status` and `runs wait` read. A background run's `path` is its
-  run directory; its outcome is the run's own outcome once finished,
+  interrupted-run warning. Every run directory is read from its
+  `snapshot.json` — those in the records directory and those older
+  versions kept under the background directory — and merged with the
+  older `.jsonl` records, sorted newest first. A run directory is listed
+  instead of a `.jsonl` record with the same run id, and a run directory
+  in the records directory instead of an older one, because the
+  snapshot is the state `runs status` and `runs wait` read. A run
+  directory's `path` is that directory; its outcome is the run's own outcome once finished,
   `running` while its owner lock (`owner.lock` in the run directory) is
   held — for an older run without one, while its supervisor is still
   alive — `interrupted` when the owner is gone before the run finished,
@@ -475,17 +477,15 @@ pi-worker runs cancel <id> [--json]
   reported again by the next. A run directory is judged by its
   `snapshot.json` and its owner lock, and an interrupted one is named by
   the directory's path.
-- Every run writes a run record into the records directory the starting
-  command resolved: its
+- Every run writes a run record into its run directory: its
   supervisor writes the start line before any worker starts, a worker
   line per started worker, a descendant line per descendant process, and
   the finish line after the terminal state, carrying the same result
-  document. The start line names the supervisor process, so a supervisor
-  killed without warning leaves a record the next run reports as
-  interrupted, and a settled run's leftover processes are reported by the
-  next run's start. When the records directory cannot be
-  resolved, the start prints `run record unavailable` and the run starts
-  without a record. A record the supervisor cannot write never fails the
+  document. A supervisor killed without warning frees its owner lock, so
+  the next run reports the run as interrupted, and a settled run's
+  leftover processes are reported by the next run's start. When the
+  records directory cannot be resolved, the start is refused with exit
+  `9` before any worker starts. A record the supervisor cannot write never fails the
   run and is not reported: the supervisor has no terminal to report to.
 - A start that was refused exits non-zero without leaving a run behind,
   with or without `--background`, and prints no document:

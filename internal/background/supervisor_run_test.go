@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -519,18 +520,18 @@ func TestRunAcceptedRunReleasesEveryPreparedLease(t *testing.T) {
 	}
 }
 
-// TestRunAcceptedRunWithoutRunlogDirWritesNoRecord requires that a request
-// naming no records directory still runs to its terminal snapshot and leaves
-// no run record anywhere: not in the working directory a relative path would
-// resolve against, not beside the snapshot, and not in the workspace.
-func TestRunAcceptedRunWithoutRunlogDirWritesNoRecord(t *testing.T) {
+// TestRunAcceptedRunWritesItsRecordInItsRunDirectory requires that the run's
+// record is written into the run's own directory, beside its snapshot, as
+// record.jsonl carrying the start and the finish line, and that no flat
+// record appears anywhere: not in the working directory, not in the root,
+// and not in the workspace.
+func TestRunAcceptedRunWritesItsRecordInItsRunDirectory(t *testing.T) {
 	req, backgroundRoot, _ := newStartRequestWithTempRoots(t)
 	acceptedAt := time.Now().UTC().Truncate(time.Second)
 	req.runID = runlog.RunID(acceptedAt)
 	req.acceptedAt = acceptedAt
 	req.workspace = t.TempDir()
 	req.verify = nil
-	req.runlogDir = ""
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 
@@ -548,7 +549,15 @@ func TestRunAcceptedRunWithoutRunlogDirWritesNoRecord(t *testing.T) {
 			t.Fatalf("glob %s: %v", dir, err)
 		}
 		if len(matches) != 0 {
-			t.Fatalf("a run without a records directory wrote %v", matches)
+			t.Fatalf("the run wrote a flat record %v", matches)
 		}
+	}
+	record, err := os.ReadFile(filepath.Join(backgroundRoot, req.runID, "record.jsonl"))
+	if err != nil {
+		t.Fatalf("read the run directory's record: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(record), "\n"), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], `"event":"start"`) || !strings.Contains(lines[len(lines)-1], `"event":"finish"`) {
+		t.Fatalf("record = %q, want a start line and a finish line", record)
 	}
 }

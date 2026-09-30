@@ -81,14 +81,14 @@ func TestLeftoversRunDirSettledByOwnerLock(t *testing.T) {
 	t.Run("lock free", func(t *testing.T) {
 		withPidAlive(t, func(int32) (bool, error) { return true, nil })
 		dir := t.TempDir()
-		runDir, path := writeLeftoverRunDir(t, dir, runID, 4242, workerSpec{pid: 5001, createTime: 1000})
+		runDir, _ := writeLeftoverRunDir(t, dir, runID, 4242, workerSpec{pid: 5001, createTime: 1000})
 		releasedOwnerLock(t, runDir)
 
 		leftovers, err := Leftovers(dir)
 		if err != nil {
 			t.Fatalf("Leftovers: %v", err)
 		}
-		want := []Leftover{{RunID: runID, Path: path, PIDs: []int{5010}}}
+		want := []Leftover{{RunID: runID, Path: runDir, PIDs: []int{5010}}}
 		if !reflect.DeepEqual(leftovers, want) {
 			t.Fatalf("leftovers = %#v, want %#v", leftovers, want)
 		}

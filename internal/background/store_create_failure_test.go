@@ -105,7 +105,7 @@ func TestStoreCreate_WriteErrorRemovesRunDir(t *testing.T) {
 		return mock, nil
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error from WriteError")
 	}
@@ -136,7 +136,7 @@ func TestStoreCreate_ShortWriteReturnsIoErrAndRemovesRunDir(t *testing.T) {
 		return mock, nil
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error from short write")
 	}
@@ -166,7 +166,7 @@ func TestStoreCreate_SyncErrorReturnsSyncMessageAndRemovesRunDir(t *testing.T) {
 		return mock, nil
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error from SyncError")
 	}
@@ -196,7 +196,7 @@ func TestStoreCreate_CloseErrorReturnsCloseMessageAndRemovesRunDir(t *testing.T)
 		return mock, nil
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error from CloseError")
 	}
@@ -231,7 +231,7 @@ func TestStoreCreate_InjectedCleanupFailureJoinedWithPrimaryError(t *testing.T) 
 		return cleanupFail
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -290,7 +290,7 @@ func TestStoreCreate_DirSyncAfterCloseFailsRemovesRunDirNoSnapshotRemains(t *tes
 		return origOpenDir(path)
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error from DirSyncAfterClose")
 	}
@@ -328,7 +328,7 @@ func TestStoreCreate_FailureDoesNotRemoveRootOrUnrelatedPaths(t *testing.T) {
 		return &FakeSnapshotFile{writeError: errors.New("fail"), name: "mock"}, nil
 	}
 
-	err = store.Create(snap)
+	_, err = store.Create(snap)
 	if err == nil {
 		t.Fatal("expected error")
 	}

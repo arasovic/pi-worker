@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ const inFlightMS = 2000
 func newTestManager(t *testing.T) (*Manager, string, string) {
 	t.Helper()
 	root, admissionRoot := t.TempDir(), t.TempDir()
-	m, err := NewManager(root, admissionRoot, 2)
+	m, err := NewManager(root, "", admissionRoot, 2)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestManagerUnacceptedStartLeavesNothing(t *testing.T) {
 	if err := os.WriteFile(root, []byte("occupied"), 0o600); err != nil {
 		t.Fatalf("write occupied root: %v", err)
 	}
-	m, err := NewManager(root, admissionRoot, 2)
+	m, err := NewManager(root, "", admissionRoot, 2)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -340,7 +341,7 @@ func deadSupervisorSnapshotFixture(t *testing.T) (root, runID string, want Snaps
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	if err := store.Create(snap); err != nil {
+	if err := createUnlockedSnapshot(store, snap); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	return root, snap.RunID, snap
@@ -351,7 +352,7 @@ func deadSupervisorSnapshotFixture(t *testing.T) (root, runID string, want Snaps
 // snapshot with a SupervisorUnavailableError carrying the same PID.
 func TestManagerStatusDeadSupervisorReportsUnavailable(t *testing.T) {
 	root, runID, want := deadSupervisorSnapshotFixture(t)
-	manager, err := NewManager(root, t.TempDir(), 1)
+	manager, err := NewManager(root, "", t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestManagerStatusDeadSupervisorReportsUnavailable(t *testing.T) {
 // out its bound.
 func TestManagerWaitDeadSupervisorReturnsAtOnce(t *testing.T) {
 	root, runID, want := deadSupervisorSnapshotFixture(t)
-	manager, err := NewManager(root, t.TempDir(), 1)
+	manager, err := NewManager(root, "", t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -412,7 +413,7 @@ func freeLockLivePidFixture(t *testing.T) (*Manager, string) {
 	root := t.TempDir()
 	runID := storeLiveSnapshot(t, root, liveIdentity(t))
 	leaveOwnerLockFree(t, filepath.Join(root, runID))
-	manager, err := NewManager(root, t.TempDir(), 1)
+	manager, err := NewManager(root, "", t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -443,5 +444,37 @@ func TestManagerWaitFreeOwnerLockReturnsAtOnce(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("Wait took %v; it must return at once", elapsed)
+	}
+}
+
+// TestManagerReadsARunFoundOnlyInTheLegacyRoot requires that a run an older
+// version started, whose run directory exists only in the legacy root, is
+// read there by Status, Wait, Cancel and DebugLogPath — judged by its
+// recorded supervisor, since it has no owner lock — and that a run found in
+// neither root is reported against the Manager's own root.
+func TestManagerReadsARunFoundOnlyInTheLegacyRoot(t *testing.T) {
+	legacyRoot, runID, want := deadSupervisorSnapshotFixture(t)
+	root := t.TempDir()
+	manager, err := NewManager(root, legacyRoot, t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	var unavailable *SupervisorUnavailableError
+	if snap, err := manager.Status(runID); !errors.As(err, &unavailable) || snap.RunID != runID {
+		t.Fatalf("Status = (%+v, %v), want the legacy snapshot with *SupervisorUnavailableError", snap, err)
+	}
+	if snap, err := manager.Wait(context.Background(), runID, 10*time.Second); !errors.As(err, &unavailable) || snap.RunID != runID {
+		t.Fatalf("Wait = (%+v, %v), want the legacy snapshot with *SupervisorUnavailableError", snap, err)
+	}
+	if snap, err := manager.Cancel(runID); !errors.As(err, &unavailable) || unavailable.PID != want.Supervisor.PID {
+		t.Fatalf("Cancel = (%+v, %v), want *SupervisorUnavailableError for pid %d", snap, err, want.Supervisor.PID)
+	}
+	if got, wantPath := manager.DebugLogPath(runID), filepath.Join(legacyRoot, runID, "debug.log"); got != wantPath {
+		t.Fatalf("DebugLogPath = %q, want %q", got, wantPath)
+	}
+
+	missing := "20260901T120001Z-2"
+	if _, err := manager.Status(missing); err == nil || !strings.Contains(err.Error(), filepath.Join(root, missing)) {
+		t.Fatalf("Status of an unknown run = %v, want the error to name %s", err, filepath.Join(root, missing))
 	}
 }
