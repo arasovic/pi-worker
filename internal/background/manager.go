@@ -166,12 +166,17 @@ func (m *Manager) validateStartOptions(opts StartOptions) error {
 	return nil
 }
 
-// Status returns the latest durable Snapshot of one run. It reads exactly
-// once, resolves nothing, and waits for nothing — not for a terminal
-// snapshot, not for the supervisor to answer, not for the run to move — so
-// the Snapshot it reports of a run in flight is the state that was durable
-// at the moment it read, and the same call made again reports whatever has
-// become durable since.
+// Status returns the latest durable Snapshot of one run. It waits for
+// nothing — not for a terminal snapshot, not for the supervisor to answer,
+// not for the run to move — so the Snapshot it reports of a run in flight
+// is the state that was durable at the moment it read, and the same call
+// made again reports whatever has become durable since. When the snapshot
+// it reads is non-terminal and its recorded supervisor process is gone, it
+// reads once more: a terminal second read is the supervisor having finished
+// between the read and the check and is returned as the answer, and
+// otherwise the second snapshot is returned with a
+// SupervisorUnavailableError, because the run was interrupted and will not
+// finish.
 //
 // The run need not have been started by this Manager, and no run need have
 // existed at all: the error of those cases comes from the Store, which
@@ -186,12 +191,26 @@ func (m *Manager) Status(runID string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("background manager status (%s): %w", runID, err)
 	}
-	return snap, nil
+	if snap.Terminal || runlog.ProcessAlive(snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+		return snap, nil
+	}
+	snap, err = store.Load(runID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("background manager status (%s): %w", runID, err)
+	}
+	if snap.Terminal {
+		return snap, nil
+	}
+	return snap, &SupervisorUnavailableError{PID: snap.Supervisor.PID, Reason: errors.New("recorded supervisor process is gone")}
 }
 
 // Wait blocks until the named run's durable Snapshot is terminal and returns
 // exactly that Snapshot. It never cancels, never kills, and never touches
-// the running supervisor: reading is all it does to a run.
+// the running supervisor: reading is all it does to a run. When a
+// non-terminal snapshot's recorded supervisor process is gone, Wait reads
+// once more and, unless the second read is terminal, returns the second
+// snapshot with a SupervisorUnavailableError at once, without waiting out
+// the bound, because the run was interrupted and will not finish.
 //
 // When the bound it was given arrives first, Wait returns the latest
 // non-terminal Snapshot it read together with the context error that ended
@@ -238,6 +257,16 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		}
 		if snap.Terminal {
 			return snap, nil
+		}
+		if !runlog.ProcessAlive(snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+			snap, loadErr = store.Load(runID)
+			if loadErr != nil {
+				return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)
+			}
+			if snap.Terminal {
+				return snap, nil
+			}
+			return snap, &SupervisorUnavailableError{PID: snap.Supervisor.PID, Reason: errors.New("recorded supervisor process is gone")}
 		}
 		latest = snap
 

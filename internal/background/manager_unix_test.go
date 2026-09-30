@@ -314,3 +314,92 @@ func newGitWorkspace(t *testing.T) string {
 	}
 	return dir
 }
+
+// deadSupervisorSnapshotFixture stores a non-terminal snapshot whose
+// supervisor is provably dead, for the liveness tests below. It is built
+// the way TestListRunsNonTerminalDeadSupervisorIsInterrupted builds its
+// own, so the dead-identity reading is the same one List already answers.
+func deadSupervisorSnapshotFixture(t *testing.T) (root, runID string, want Snapshot) {
+	t.Helper()
+	root = t.TempDir()
+	pid, createTime := startAndStopProcess(t)
+	acceptedAt := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	snap, err := NewSnapshot(
+		"20260901T120000Z-2",
+		acceptedAt,
+		"/test-workspace",
+		ProcessIdentity{PID: pid, CreateTime: createTime},
+		[]run.Task{{Prompt: "task", Model: "acme/m-1"}},
+		time.Minute,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Create(snap); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return root, snap.RunID, snap
+}
+
+// TestManagerStatusDeadSupervisorReportsUnavailable requires that Status on
+// a stored non-terminal snapshot whose supervisor is gone returns that
+// snapshot with a SupervisorUnavailableError carrying the same PID.
+func TestManagerStatusDeadSupervisorReportsUnavailable(t *testing.T) {
+	root, runID, want := deadSupervisorSnapshotFixture(t)
+	manager, err := NewManager(root, t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	got, err := manager.Status(runID)
+	if err == nil {
+		t.Fatalf("Status = %+v, nil error; want SupervisorUnavailableError", got)
+	}
+	var unavailable *SupervisorUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("Status error = %v, want *SupervisorUnavailableError", err)
+	}
+	if unavailable.PID != want.Supervisor.PID {
+		t.Fatalf("unavailable PID = %d, want %d", unavailable.PID, want.Supervisor.PID)
+	}
+	if got.RunID != runID || got.Terminal {
+		t.Fatalf("Status snapshot = %+v, want the stored non-terminal snapshot", got)
+	}
+}
+
+// TestManagerWaitDeadSupervisorReturnsAtOnce requires that Wait on the same
+// kind of snapshot returns the unavailable error quickly instead of running
+// out its bound.
+func TestManagerWaitDeadSupervisorReturnsAtOnce(t *testing.T) {
+	root, runID, want := deadSupervisorSnapshotFixture(t)
+	manager, err := NewManager(root, t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	started := time.Now()
+	snap, err := manager.Wait(context.Background(), runID, 10*time.Second)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatalf("Wait = %+v, nil error; want SupervisorUnavailableError", snap)
+	}
+	var unavailable *SupervisorUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("Wait error = %v, want *SupervisorUnavailableError", err)
+	}
+	if unavailable.PID != want.Supervisor.PID {
+		t.Fatalf("unavailable PID = %d, want %d", unavailable.PID, want.Supervisor.PID)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait error = %v, want SupervisorUnavailableError, not DeadlineExceeded", err)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("Wait took %v; it must return at once", elapsed)
+	}
+	if snap.RunID != runID || snap.Terminal {
+		t.Fatalf("Wait snapshot = %+v, want the stored non-terminal snapshot", snap)
+	}
+}

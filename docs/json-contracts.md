@@ -287,7 +287,10 @@ terminal record after the run finishes.
 
 A `runs wait` whose bound arrived first prints the latest non-terminal
 document — `terminal` is `false` and there is no `result` — and says on
-stderr, never in the document, that the wait ran out.
+stderr, never in the document, that the wait ran out. A run whose
+supervisor is gone before it finished makes `runs status` and `runs wait`
+print the stored snapshot, still non-terminal, and say on stderr with
+exit `9` that the supervisor is no longer there.
 
 ## `run --json`
 
