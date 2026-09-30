@@ -65,10 +65,12 @@ const debugBudgetExhausted = "debug budget exhausted"
 // DebugSink, or one created with a nil writer, is a no-op: disabled mode
 // emits nothing and preserves existing behavior.
 //
-// The CLI creates one sink per run; workers obtain a worker-scoped view with
-// Worker. A scope binds the worker label and owns only its liveness state;
-// the writer, clock, serialization lock, and lane budgets remain run-level,
-// so workers 1..3 never interleave writes or multiply the hard bound.
+// The CLI creates one sink per foreground run; workers obtain a worker-scoped
+// view with Worker. A scope binds the worker label and owns only its liveness
+// state; the writer, clock, serialization lock, and lane budgets remain
+// run-level, so workers 1..3 never interleave writes or multiply the hard
+// bound. A background run's worker hosts each create their own sink, so there
+// the bound is per worker.
 type DebugSink struct {
 	mu                sync.Mutex
 	w                 io.Writer
@@ -86,6 +88,13 @@ type DebugSink struct {
 // lines to w on the wall clock.
 func NewDebugSink(w io.Writer) *DebugSink {
 	return newDebugSink(w, time.Now())
+}
+
+// NewDebugSinkAt returns a run-level sink whose elapsed clock starts at
+// start instead of now, so sinks created in different processes of one run
+// stamp their lines against the same origin.
+func NewDebugSinkAt(w io.Writer, start time.Time) *DebugSink {
+	return newDebugSink(w, start)
 }
 
 // newDebugSink is the testable constructor; NewDebugSink uses time.Now().

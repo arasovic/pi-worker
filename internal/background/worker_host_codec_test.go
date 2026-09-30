@@ -66,6 +66,35 @@ func TestWorkerHostRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWorkerHostRequestRoundTripCarriesTheDebugFile verifies that a debug
+// run's file and clock origin reach the child host intact, and that a
+// request without debug carries neither key on the wire.
+func TestWorkerHostRequestRoundTripCarriesTheDebugFile(t *testing.T) {
+	req := validWorkerHostRequest()
+	req.debugLog = "/state/background/20260930T120000Z-1/debug.log"
+	req.debugStart = time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	data, err := encodeWorkerHostRequest(req)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := decodeWorkerHostRequest(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.debugLog != req.debugLog || !got.debugStart.Equal(req.debugStart) {
+		t.Fatalf("debug round trip = (%q, %s), want (%q, %s)", got.debugLog, got.debugStart, req.debugLog, req.debugStart)
+	}
+
+	plain, err := encodeWorkerHostRequest(validWorkerHostRequest())
+	if err != nil {
+		t.Fatalf("encode without debug: %v", err)
+	}
+	if strings.Contains(string(plain), "debug") {
+		t.Fatalf("request without debug = %s, want no debug keys", plain)
+	}
+}
+
 // TestWorkerHostRequestValidationFailures drives every validation rule
 // through encode, which must reject before any payload exists.
 func TestWorkerHostRequestValidationFailures(t *testing.T) {
@@ -88,6 +117,17 @@ func TestWorkerHostRequestValidationFailures(t *testing.T) {
 		{"empty pi executable", func(r *workerHostRequest) { r.piExecutable = "" }, "piExecutable is required"},
 		{"zero execution timeout", func(r *workerHostRequest) { r.executionTimeout = 0 }, "executionTimeout must be positive"},
 		{"negative execution timeout", func(r *workerHostRequest) { r.executionTimeout = -time.Second }, "executionTimeout must be positive"},
+		{"debug log without start", func(r *workerHostRequest) { r.debugLog = "/state/run/debug.log" }, "debugLog and debugStart must be set together"},
+		{"debug start without log", func(r *workerHostRequest) { r.debugStart = time.Unix(1, 0).UTC() }, "debugLog and debugStart must be set together"},
+		{"relative debug log", func(r *workerHostRequest) {
+			r.debugLog, r.debugStart = "run/debug.log", time.Unix(1, 0).UTC()
+		}, "debugLog must be a clean absolute path"},
+		{"unclean debug log", func(r *workerHostRequest) {
+			r.debugLog, r.debugStart = "/state/run/../other/debug.log", time.Unix(1, 0).UTC()
+		}, "debugLog must be a clean absolute path"},
+		{"debug log with another name", func(r *workerHostRequest) {
+			r.debugLog, r.debugStart = "/state/run/snapshot.json", time.Unix(1, 0).UTC()
+		}, "debugLog must be a clean absolute path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,6 +190,10 @@ func TestWorkerHostRequestDecodeRejectsMalformedDocuments(t *testing.T) {
 		{"malformed executionTimeout", func(m map[string]any) { m["executionTimeout"] = "soon" }, "not a valid duration"},
 		{"zero executionTimeout", func(m map[string]any) { m["executionTimeout"] = "0s" }, "executionTimeout must be positive"},
 		{"invalid thinking", func(m map[string]any) { m["thinkingLevel"] = "turbo" }, "thinkingLevel"},
+		{"debugLog without debugStart", func(m map[string]any) { m["debugLog"] = "/state/run/debug.log" }, "debugLog and debugStart must be set together"},
+		{"malformed debugStart", func(m map[string]any) {
+			m["debugLog"], m["debugStart"] = "/state/run/debug.log", "noon"
+		}, "parsing time"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

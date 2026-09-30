@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -219,7 +220,11 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 		}
 	}
 
+	debug, closeDebug, debugErr := openWorkerHostDebug(req)
+	defer closeDebug()
+
 	workerResult := pi.New(req.piExecutable).Run(runCtx, pi.WorkerRequest{
+		Debug:          debug,
 		Model:          req.model,
 		ThinkingLevel:  req.thinkingLevel,
 		Prompt:         req.prompt,
@@ -228,6 +233,16 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 		OnProcessStart: func(workerID, pid int) { notify(workerID, pid) },
 		OnActivity:     func(workerID int, activity pi.Activity) { notifyActivity(workerID, activity) },
 	})
+	if debugErr != nil {
+		// The run went on without its debug lines; the result says so
+		// instead of leaving an empty debug file to explain itself.
+		debugWarning := "debug log unavailable: " + debugErr.Error()
+		if workerResult.Warning != "" {
+			workerResult.Warning = workerResult.Warning + "; " + debugWarning
+		} else {
+			workerResult.Warning = debugWarning
+		}
+	}
 
 	// If every notification reached the wire intact, exactly one
 	// terminal result frame follows. A notification failure leaves the
@@ -254,6 +269,40 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 			notifyErr)
 	}
 	return workerHostExchange{request: req, result: workerResult}, notifyErr
+}
+
+// openWorkerHostDebug opens the run's debug file for appending and returns
+// the sink this host's worker writes to, with the close to run after the
+// worker returned. Every debug line is one write on an O_APPEND descriptor,
+// so the hosts of one run share the file without interleaving. The open
+// neither follows a final symbolic link nor blocks on a named pipe, and
+// anything but a regular file is refused. No request debug file yields a
+// nil (disabled) sink and no error. One that cannot be opened yields a nil
+// sink and the reason: debug output never fails a run, so the caller
+// reports the reason as a warning on the worker's result instead.
+//
+// Only a host creates this file, and a host exists only once the supervisor
+// has written its accepted reply, so a start the supervisor rolls back
+// never has one. A starter that gives up after that reply kills the
+// supervisor first; a host that already got here leaves this file beside
+// the snapshot, and that discard then keeps the run directory.
+func openWorkerHostDebug(req workerHostRequest) (*pi.DebugSink, func(), error) {
+	if req.debugLog == "" {
+		return nil, func() {}, nil
+	}
+	f, err := os.OpenFile(req.debugLog, os.O_WRONLY|os.O_APPEND|os.O_CREATE|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a regular file", debugLogName)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, func() {}, err
+	}
+	return pi.NewDebugSinkAt(f, req.debugStart), func() { _ = f.Close() }, nil
 }
 
 // watchWorkerHostOwnership watches the child ownership descriptor (fd 5)

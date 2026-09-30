@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -33,18 +34,25 @@ type workerHostRequest struct {
 	prompt           string
 	piExecutable     string
 	executionTimeout time.Duration
+	// debugLog, when set, is the run's debug file the host appends its
+	// sanitized debug lines to, and debugStart is the origin of their
+	// elapsed stamps. Both are set or neither is.
+	debugLog   string
+	debugStart time.Time
 }
 
 // workerHostRequestJSON is the wire shape of an execution request.
 type workerHostRequestJSON struct {
-	SchemaVersion    int    `json:"schemaVersion"`
-	WorkerID         int    `json:"workerId"`
-	Workspace        string `json:"workspace"`
-	Model            string `json:"model"`
-	ThinkingLevel    string `json:"thinkingLevel,omitempty"`
-	Prompt           string `json:"prompt"`
-	PiExecutable     string `json:"piExecutable"`
-	ExecutionTimeout string `json:"executionTimeout"`
+	SchemaVersion    int       `json:"schemaVersion"`
+	WorkerID         int       `json:"workerId"`
+	Workspace        string    `json:"workspace"`
+	Model            string    `json:"model"`
+	ThinkingLevel    string    `json:"thinkingLevel,omitempty"`
+	Prompt           string    `json:"prompt"`
+	PiExecutable     string    `json:"piExecutable"`
+	ExecutionTimeout string    `json:"executionTimeout"`
+	DebugLog         string    `json:"debugLog,omitempty"`
+	DebugStart       time.Time `json:"debugStart,omitzero"`
 }
 
 // encodeWorkerHostRequest validates req and returns its wire JSON.
@@ -61,6 +69,8 @@ func encodeWorkerHostRequest(req workerHostRequest) ([]byte, error) {
 		Prompt:           req.prompt,
 		PiExecutable:     req.piExecutable,
 		ExecutionTimeout: req.executionTimeout.String(),
+		DebugLog:         req.debugLog,
+		DebugStart:       req.debugStart,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode worker host request: %w", err)
@@ -98,6 +108,8 @@ func decodeWorkerHostRequest(data []byte) (workerHostRequest, error) {
 		thinkingLevel: pi.ThinkingLevel(wire.ThinkingLevel),
 		prompt:        wire.Prompt,
 		piExecutable:  wire.PiExecutable,
+		debugLog:      wire.DebugLog,
+		debugStart:    wire.DebugStart,
 	}
 	d, err := time.ParseDuration(wire.ExecutionTimeout)
 	if err != nil {
@@ -148,6 +160,14 @@ func validateWorkerHostRequest(req workerHostRequest) error {
 	}
 	if req.executionTimeout <= 0 {
 		return fmt.Errorf("executionTimeout must be positive, got %s", req.executionTimeout)
+	}
+	if (req.debugLog == "") != req.debugStart.IsZero() {
+		return fmt.Errorf("debugLog and debugStart must be set together")
+	}
+	if req.debugLog != "" {
+		if !filepath.IsAbs(req.debugLog) || filepath.Clean(req.debugLog) != req.debugLog || filepath.Base(req.debugLog) != debugLogName {
+			return fmt.Errorf("debugLog must be a clean absolute path to a %s file", debugLogName)
+		}
 	}
 	return nil
 }

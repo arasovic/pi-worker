@@ -35,6 +35,9 @@ const pruneGraceWindow = time.Hour
 type runsOptions struct {
 	command string
 	json    bool
+	// debug streams a waited run's debug file to stderr while it waits.
+	// Only runs wait takes it.
+	debug bool
 	// runID is the identity a status, wait, or cancel asks about. These
 	// commands take exactly one, and take it by name: an identity no run is
 	// recorded under is a usage error, not a state to report.
@@ -773,6 +776,15 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 			}
 			seen[name] = true
 			opts.yes = true
+		case "--debug":
+			if hasValue {
+				return opts, fmt.Errorf("flag %s does not take a value", name)
+			}
+			if seen[name] {
+				return opts, fmt.Errorf("flag %s specified more than once", name)
+			}
+			seen[name] = true
+			opts.debug = true
 		case "--keep":
 			// Valued exactly like --timeout: both spellings --keep 3 and
 			// --keep=3 are accepted, and a repeat is rejected with the
@@ -828,6 +840,10 @@ func parseRunsArgs(args []string) (runsOptions, error) {
 			}
 			return opts, fmt.Errorf("unexpected argument %q", arg)
 		}
+	}
+
+	if opts.debug && opts.command != "wait" {
+		return opts, fmt.Errorf("flag --debug is not valid with runs %s", opts.command)
 	}
 
 	switch opts.command {

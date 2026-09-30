@@ -166,6 +166,13 @@ func (m *Manager) validateStartOptions(opts StartOptions) error {
 	return nil
 }
 
+// DebugLogPath names the file a run started with debug on writes its debug
+// lines to. It exists only once a worker of that run has started, and only
+// when the run was started with debug on.
+func (m *Manager) DebugLogPath(runID string) string {
+	return debugLogPath(m.root, runID)
+}
+
 // Status returns the latest durable Snapshot of one run. It waits for
 // nothing — not for a terminal snapshot, not for the supervisor to answer,
 // not for the run to move — so the Snapshot it reports of a run in flight

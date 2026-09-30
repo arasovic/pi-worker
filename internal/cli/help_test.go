@@ -197,7 +197,7 @@ func TestCommandHelpCoversEveryFlag(t *testing.T) {
 		{"config", []string{"config.go"}, map[string]bool{"--debug": true, "--json": true, "--timeout": true}},
 		{"doctor", []string{"doctor.go"}, map[string]bool{"--debug": true, "--json": true, "--timeout": true}},
 		{"models", []string{"models.go"}, map[string]bool{"--debug": true, "--json": true, "--timeout": true}},
-		{"runs", []string{"runs.go", "runs_background.go"}, map[string]bool{"--json": true, "--keep": true, "--timeout": true, "--yes": true}},
+		{"runs", []string{"runs.go", "runs_background.go"}, map[string]bool{"--debug": true, "--json": true, "--keep": true, "--timeout": true, "--yes": true}},
 		{"skill", []string{"skill.go"}, map[string]bool{"--json": true}},
 		{"worktrees", []string{"worktrees.go"}, map[string]bool{"--json": true, "--yes": true}},
 	}

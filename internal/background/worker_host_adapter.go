@@ -25,6 +25,10 @@ import (
 type workerHostAdapter struct {
 	executable   string // same-binary role executable spawning worker-host children
 	piExecutable string // host pi executable the child host launches
+	// debugLog and debugStart are handed to every child host unchanged;
+	// empty debugLog means the run has debug off.
+	debugLog   string
+	debugStart time.Time
 }
 
 // newWorkerHostAdapter returns the private worker-host pi.Worker adapter
@@ -110,6 +114,8 @@ func (a *workerHostAdapter) Run(ctx context.Context, req pi.WorkerRequest) (resu
 		prompt:           req.Prompt,
 		piExecutable:     a.piExecutable,
 		executionTimeout: executionTimeout,
+		debugLog:         a.debugLog,
+		debugStart:       a.debugStart,
 	}
 	payload, err := encodeWorkerHostRequest(wireReq)
 	if err != nil {

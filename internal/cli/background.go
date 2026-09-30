@@ -122,6 +122,9 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 	if worktreeOf := started.Snapshot.Worktree; worktreeOf != nil {
 		fmt.Fprintf(stderr, "pi-worker: worktree %s on branch %s\n", worktreeOf.Path, worktreeOf.Branch)
 	}
+	if opts.debug {
+		fmt.Fprintf(stderr, "pi-worker: debug log %s\n", manager.DebugLogPath(started.RunID))
+	}
 
 	if opts.json {
 		data, err := json.Marshal(acceptSnapshot(started.Snapshot))

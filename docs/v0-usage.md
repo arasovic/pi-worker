@@ -104,7 +104,7 @@ packages you already allow in the comma-separated list.
 - `pi-worker runs list [--json]`
 - `pi-worker runs prune --keep <n> [--yes] [--json]`
 - `pi-worker runs status <id> [--json]`
-- `pi-worker runs wait <id> [--timeout <duration>] [--json]`
+- `pi-worker runs wait <id> [--timeout <duration>] [--debug] [--json]`
 - `pi-worker runs cancel <id> [--json]`
 - `pi-worker worktrees list [--json]`
 - `pi-worker worktrees remove <name> [--yes] [--json]`
@@ -405,7 +405,7 @@ pi-worker runs prune --keep <n> [--yes] [--json]
 ```text
 pi-worker run --background [--json] ...
 pi-worker runs status <id> [--json]
-pi-worker runs wait <id> [--timeout <duration>] [--json]
+pi-worker runs wait <id> [--timeout <duration>] [--debug] [--json]
 pi-worker runs cancel <id> [--json]
 ```
 
@@ -469,6 +469,19 @@ pi-worker runs cancel <id> [--json]
   gone before it finished makes `runs status` and `runs wait` print the
   latest state, say so on stderr, and exit `9`; `runs wait` returns
   at once instead of waiting out the bound.
+- `run --background --debug` writes the debug stream (see
+  `### --debug debug stream`) to `debug.log` in the run's state directory
+  instead of stderr, and prints `pi-worker: debug log <path>` on stderr once
+  the run is accepted, in human and `--json` mode alike; stdout is
+  unchanged. Each worker appends its own lines as it starts, so the file
+  does not exist before the first worker has, and it is created with mode
+  `0600`. A worker that cannot open it runs without debug lines and says so
+  in its warning: `debug log unavailable: <reason>`. `runs wait <id> --debug` copies the lines already in that file and
+  every line added while it waits to stderr, whole lines only, and copies
+  the rest once the run has finished, before it prints the finished run.
+  Without `--debug`, `runs wait` prints no debug line. A run started without
+  `--debug` has no such file, and `runs wait --debug` then prints no debug
+  line either.
 - `runs cancel <id>` reads and prints the latest state once, and, when the
   supervisor identity still matches the live process, requests a stop with
   `SIGTERM` and returns without waiting or writing a snapshot. The supervisor
@@ -1258,7 +1271,9 @@ document carries either way. Contract breach outranks quality signal.
 
 ### `--debug` debug stream
 
-`--debug` writes sanitized lifecycle progress only to stderr. It includes:
+`--debug` writes sanitized lifecycle progress only to stderr; a background
+run writes it to its `debug.log` instead, and `runs wait --debug` copies that
+file to stderr (see `## Background runs`). It includes:
 - worker identity and start line
 - RPC request status/duration (`get_available_models`, `set_model`,
   `get_state`, `get_available_thinking_levels`, `set_thinking_level`, `prompt`,
@@ -1282,8 +1297,11 @@ document carries either way. Contract breach outranks quality signal.
 
 The debug stream is bounded to 512 lines per run: 315 regular lifecycle/tool/RPC
 lines, 180 heartbeat lines, 16 reserved terminal lines, and one fixed budget
-notice. The heartbeat is disabled, including its timer and goroutine, when
-`--debug` is not enabled.
+notice. A background run's workers each run in a process of their own, so
+there the same bound applies to each worker instead: up to 512 lines per
+worker. A background run's elapsed stamps count from its `acceptedAt`, which
+is whole seconds. The heartbeat is disabled, including its timer and
+goroutine, when `--debug` is not enabled.
 
 It does **not** print:
 - prompts
