@@ -184,6 +184,9 @@ type recordFacts struct {
 	// it does, resultOutcome is the result's outcome verbatim.
 	hasResult     bool
 	resultOutcome string
+	// badLines counts the non-empty lines that are not JSON at all — a
+	// torn last line among them. They are skipped, never fatal.
+	badLines int
 }
 
 // maxRecordBytes is the ceiling on one record file's size, in bytes.
@@ -311,9 +314,13 @@ func parseRecord(path string) (recordFacts, error) {
 	first, last := -1, -1
 	var workers []workerFacts
 	var descendants []workerFacts
+	badLines := 0
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
+		}
+		if !json.Valid([]byte(line)) {
+			badLines++
 		}
 		if first == -1 {
 			first = i
@@ -346,7 +353,7 @@ func parseRecord(path string) (recordFacts, error) {
 	if err := json.Unmarshal([]byte(lines[first]), &start); err != nil || start.Event != "start" || start.PID <= 0 {
 		return recordFacts{}, errors.New("record has no usable start line")
 	}
-	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers, descendants: descendants, models: []string{}}
+	rec := recordFacts{pid: start.PID, createTime: start.CreateTime, workers: workers, descendants: descendants, models: []string{}, badLines: badLines}
 	// The display fields are best-effort: a malformed one leaves them
 	// zero without touching the classification, which is decided by the
 	// minimal facts above.

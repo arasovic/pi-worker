@@ -9,7 +9,53 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/arasovic/pi-worker/internal/background"
+	"github.com/arasovic/pi-worker/internal/run"
 )
+
+// TestRunsListIncludesRunDirectories requires that runs list reads the
+// run directories <id>/ inside the records directory next to the flat
+// records, and that a run directory wins over a flat record with the
+// same id: the run is listed once, from its directory.
+func TestRunsListIncludesRunDirectories(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	acceptedAt := time.Date(2026, 8, 30, 10, 20, 0, 0, time.UTC)
+	dirRunID := "20260830T102000Z-2"
+	snap, err := background.NewSnapshot(dirRunID, acceptedAt, "/ws-dir",
+		background.ProcessIdentity{PID: deadPID, CreateTime: 1000},
+		[]run.Task{{Prompt: "go", Model: "acme/m-1"}}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	store, err := background.NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Create(snap); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	writeListRecord(t, dir, dirRunID, deadPID, "2026-08-30T10:20:00Z", "/ws-flat", 1, true, "completed", "")
+	flatRunID := "20260830T101500Z-1"
+	flatPath := writeListRecord(t, dir, flatRunID, deadPID, "2026-08-30T10:15:00Z", "/ws-flat", 1, true, "completed", "")
+
+	code, stdout, stderr := runCLI(t, []string{"runs", "list", "--json"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("runs list --json = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
+	}
+	var document struct {
+		Runs []listedRun `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode runs list document: %v\n%s", err, stdout)
+	}
+	runs := document.Runs
+	if len(runs) != 2 || runs[0].RunID != dirRunID || !strings.HasPrefix(runs[0].Path, filepath.Join(dir, dirRunID)) || strings.HasSuffix(runs[0].Path, ".jsonl") ||
+		runs[1].RunID != flatRunID || runs[1].Path != flatPath {
+		t.Fatalf("runs list = %+v, want the run directory once, then the flat record", runs)
+	}
+}
 
 // listedRun is the subset of a runs list entry these tests assert on.
 type listedRun struct {

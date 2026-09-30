@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// recordFileName is the run record inside a run directory.
+const recordFileName = "record.jsonl"
+
 // Leftover is the report of one settled run whose recorded worker
 // groups still hold live members: the run's id, its record's path, and
 // the pids of the leftover processes, ascending with duplicates
@@ -81,8 +84,11 @@ type liveProcess struct {
 // considers it over — it carries its finish line, or the process that
 // wrote it is no longer the process it was — the start line's pid
 // paired with its creation time — measured through the same liveness
-// seam. A run still in flight has not left anything behind. A worker
-// line without a creation time is never reportable: the identity pair
+// seam. A run directory's record.jsonl is settled when it carries its
+// finish line or its owner is gone by OwnerAlive — the owner lock, when
+// the directory has one. A run still in flight has not left anything
+// behind. A worker line without a creation time is never reportable:
+// the identity pair
 // is incomplete, so the number alone cannot name a group. And when a
 // recorded pid is itself still alive it must still be the same
 // process — its creation time must equal the recorded one — or the
@@ -153,9 +159,9 @@ func Leftovers(dir string) ([]Leftover, error) {
 		}
 		return nil, err
 	}
-	// Only *.jsonl files are records; reported.json, its .tmp-*
-	// stages, and any other file are skipped silently, exactly as the
-	// other readers skip them.
+	// Only run directories and *.jsonl files are records;
+	// reported.json, its .tmp-* stages, and any other entry are skipped
+	// silently, exactly as the other readers skip them.
 	type candidate struct {
 		runID   string
 		path    string
@@ -176,17 +182,33 @@ func Leftovers(dir string) ([]Leftover, error) {
 	var candidates []candidate
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".jsonl") {
+		// A run directory <id>/ holds its record as record.jsonl, and
+		// its owner lock decides liveness; a flat <id>.jsonl record is
+		// the older layout, decided by its start line's process.
+		var runID, path string
+		settled := isSettled
+		switch {
+		case entry.IsDir():
+			if _, err := ParseRunID(name); err != nil {
+				continue
+			}
+			runDir := filepath.Join(dir, name)
+			runID, path = name, filepath.Join(runDir, recordFileName)
+			settled = func(rec recordFacts) bool {
+				return rec.finished || !OwnerAlive(runDir, rec.pid, rec.createTime)
+			}
+		case strings.HasSuffix(name, ".jsonl"):
+			runID, path = strings.TrimSuffix(name, ".jsonl"), filepath.Join(dir, name)
+		default:
 			continue
 		}
-		path := filepath.Join(dir, name)
 		rec, err := parseRecord(path)
 		if err != nil {
 			// A record that cannot be read or parsed is skipped: it
 			// cannot be attributed to anything.
 			continue
 		}
-		if !isSettled(rec) {
+		if !settled(rec) {
 			// A run still in flight has not left anything behind.
 			continue
 		}
@@ -215,7 +237,7 @@ func Leftovers(dir string) ([]Leftover, error) {
 			continue
 		}
 		candidates = append(candidates, candidate{
-			runID:       strings.TrimSuffix(name, ".jsonl"),
+			runID:       runID,
 			path:        path,
 			workers:     workers,
 			descendants: descendants,

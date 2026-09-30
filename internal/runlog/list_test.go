@@ -576,3 +576,23 @@ func TestListDisplayDamageDoesNotChangeClassification(t *testing.T) {
 		t.Fatalf("runs = %#v, want %#v", runs, want)
 	}
 }
+
+// TestParseRecordCountsTornLine asserts a line that is not JSON is
+// skipped and counted, not fatal: the start line still classifies the
+// record, and badLines is exactly one.
+func TestParseRecordCountsTornLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "20260830T101500Z-1.jsonl")
+	record := `{"schemaVersion":1,"event":"start","runId":"20260830T101500Z-1","pid":4242,"tasks":[]}` + "\n" +
+		`{"schemaVersion":1,"event":"worker","pid":5001,"createTime":1000}` + "\n" +
+		`{"schemaVersion":1,"event":"fin`
+	if err := os.WriteFile(path, []byte(record), 0o600); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	rec, err := parseRecord(path)
+	if err != nil {
+		t.Fatalf("parseRecord: %v", err)
+	}
+	if rec.badLines != 1 || rec.pid != 4242 || rec.finished {
+		t.Fatalf("record = badLines %d, pid %d, finished %v; want 1, 4242, false", rec.badLines, rec.pid, rec.finished)
+	}
+}

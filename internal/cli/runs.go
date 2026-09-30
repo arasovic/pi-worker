@@ -31,7 +31,7 @@ const runsSchemaVersion = 1
 // just created its record and has not yet written its start line; no
 // record is legitimately left half-written for an hour, so an older
 // unreadable record is still exactly the junk prune exists to clear.
-const pruneGraceWindow = time.Hour
+const pruneGraceWindow = runlog.UnknownGrace
 
 type runsOptions struct {
 	command string
@@ -123,6 +123,17 @@ func runsListCommand(parent context.Context, opts runsOptions, stdout, stderr io
 		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
 		return 9
 	}
+	// A run directory <id>/ inside the records directory is read by the
+	// same reader as the background store: it wins over a flat record
+	// with the same id, exactly like a background entry. The reader
+	// skips everything that is not a directory named by a run id, so
+	// the flat records and reported.json beside it are not listed twice.
+	dirRuns, err := backgroundListRuns(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: list run directories: %v\n", err)
+		return 9
+	}
+	bgRuns = append(bgRuns, dirRuns...)
 	inBackground := make(map[string]bool, len(bgRuns))
 	for _, bgRun := range bgRuns {
 		inBackground[bgRun.RunID] = true
