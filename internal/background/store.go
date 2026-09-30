@@ -76,6 +76,23 @@ func NewStore(root string) (*Store, error) {
 	return &Store{root: root}, nil
 }
 
+// maxSnapshotBytes is the ceiling on the snapshot file's size, in bytes.
+// A real snapshot document is tens of kilobytes of JSON, so 32 MiB is
+// three orders of magnitude of headroom and still cannot exhaust
+// memory. Load refuses a snapshot above the ceiling before it is read.
+// The headroom and reasoning match maxRecordBytes in internal/runlog
+// and maxStateBytes in internal/admission: the three documents are
+// comparably small and the same ceiling keeps any of them from
+// exhausting memory.
+const maxSnapshotBytes int64 = 32 << 20
+
+// beforeSnapshotOpen is called once by Load between its check of the
+// snapshot path and the open of that path. The product never assigns
+// to it and always runs the no-op below; the variable exists only so
+// a test can replace it with a function that changes the path's
+// target inside that window and pin the re-check after the open.
+var beforeSnapshotOpen = func() {}
+
 // Load reads and validates the snapshot for the given run ID. It first
 // verifies the run ID through [runlog.ParseRunID], then locates
 // <root>/<runId>/snapshot.json using only strict checks:
@@ -84,12 +101,24 @@ func NewStore(root string) (*Store, error) {
 //     filesystem.
 //   - The per-run directory is inspected with Lstat and must be a real
 //     directory (not a symlink).
+//   - The snapshot file is inspected with Lstat and must be a regular
+//     file (not a symlink) within maxSnapshotBytes; anything above the
+//     ceiling is refused before the path is opened or read.
 //   - The snapshot file is opened without following a final-component
 //     symlink on darwin/linux (build-tag helper); other platforms also
-//     Lstat-reject a final symlink before os.Open.
-//   - Exactly one JSON document is decoded with DisallowUnknownFields;
-//     trailing data is rejected, then Snapshot.Validate is called.
-//   - The decoded Snapshot.RunID must equal the requested runId.
+//     Lstat-reject a final symlink before os.Open. The open itself is
+//     non-blocking, so a name that became a named pipe between the check
+//     and the open opens immediately instead of blocking forever, and
+//     the re-check below then refuses the pipe for what it is.
+//   - After the open, the file that was opened is checked itself: it must
+//     still be a regular file, it must be the very file the checks
+//     described, and it must still be within the size ceiling, so a name
+//     replaced between the check and the open is refused rather than read.
+//   - Exactly one JSON document is decoded with DisallowUnknownFields
+//     from a reader limited to maxSnapshotBytes; trailing data is
+//     rejected, then Snapshot.Validate is called.
+//   - The decoded Snapshot.RunID must equal the requested runId (at most
+//     64 runes of a mismatched runId are quoted).
 func (s *Store) Load(runID string) (Snapshot, error) {
 	if s == nil || s.root == "" {
 		return Snapshot{}, fmt.Errorf("load snapshot (%s): nil store or empty root", runID)
@@ -126,6 +155,13 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 	if !si.Mode().IsRegular() {
 		return Snapshot{}, fmt.Errorf("load snapshot (%s): %s exists but is not a regular file", runID, path)
 	}
+	if si.Size() < 0 || si.Size() > maxSnapshotBytes {
+		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot %s is too large (%d bytes exceeds %d bytes)", runID, path, si.Size(), maxSnapshotBytes)
+	}
+
+	// The test-only seam: between the checks above and the open
+	// below, a no-op in the product.
+	beforeSnapshotOpen()
 
 	f, err := openSnapshot(path)
 	if err != nil {
@@ -133,7 +169,23 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 	}
 	defer f.Close()
 
-	dec := json.NewDecoder(f)
+	opened, err := f.Stat()
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("load snapshot (%s): stat snapshot %s: %w", runID, path, err)
+	}
+	// The re-check of the open file: a name replaced between the
+	// check and the open hands the open a different file, and a file
+	// that grew past the ceiling after the check must not be read
+	// whole. The first condition also refuses a symlink that
+	// appeared in the gap.
+	if !opened.Mode().IsRegular() || !os.SameFile(si, opened) {
+		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot %s changed before reading", runID, path)
+	}
+	if opened.Size() < 0 || opened.Size() > maxSnapshotBytes {
+		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot %s is too large (%d bytes exceeds %d bytes)", runID, path, opened.Size(), maxSnapshotBytes)
+	}
+
+	dec := json.NewDecoder(io.LimitReader(f, maxSnapshotBytes))
 	dec.DisallowUnknownFields()
 	var snap Snapshot
 	if err := dec.Decode(&snap); err != nil {
@@ -150,7 +202,7 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 
 	// Require the decoded run ID matches the one we were asked to load.
 	if snap.RunID != runID {
-		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot runId %q does not match requested %s", runID, snap.RunID, runID)
+		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot runId %.64q does not match requested %s", runID, snap.RunID, runID)
 	}
 
 	if err := snap.Validate(); err != nil {
