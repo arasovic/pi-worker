@@ -226,6 +226,68 @@ func TestCommandHelpCoversEveryFlag(t *testing.T) {
 	}
 }
 
+// TestRunResultFieldsMatchSkill checks that the `run` help's Result
+// paragraph and the skill's report paragraph name the same worker fields.
+// The search is scoped to each paragraph so a field mentioned elsewhere does
+// not mask its removal from the list.
+func TestRunResultFieldsMatchSkill(t *testing.T) {
+	fields := []string{"model", "thinkingLevel", "status", "explanation", "partialExplanation", "error", "warning", "changes", "writes", "verification", "leftoverProcesses"}
+
+	help := commandHelp["run"]
+	start := strings.Index(help, "Result (--json):")
+	if start < 0 {
+		t.Fatalf("commandHelp[run] has no Result (--json): paragraph")
+	}
+	rest := help[start:]
+	end := strings.Index(rest, "\n\n")
+	if end < 0 {
+		t.Fatalf("commandHelp[run] Result (--json): paragraph has no trailing blank line")
+	}
+	helpPara := rest[:end]
+
+	data, err := os.ReadFile("../../skills/pi-worker/SKILL.md")
+	if err != nil {
+		t.Fatalf("read skill: %v", err)
+	}
+	skillText := string(data)
+	skillStart := strings.Index(skillText, "Whatever the outcome")
+	if skillStart < 0 {
+		t.Fatalf("skill has no report paragraph starting with Whatever the outcome")
+	}
+	skillRest := skillText[skillStart:]
+	skillEnd := strings.Index(skillRest, "\n\n")
+	if skillEnd < 0 {
+		t.Fatalf("skill report paragraph has no trailing blank line")
+	}
+	skillPara := skillRest[:skillEnd]
+
+	for _, field := range fields {
+		matched, err := regexp.MatchString(`\b`+regexp.QuoteMeta(field)+`\b`, helpPara)
+		if err != nil {
+			t.Fatalf("match %s: %v", field, err)
+		}
+		if !matched {
+			t.Errorf("commandHelp[run] Result (--json): paragraph lacks field %q", field)
+		}
+		if !strings.Contains(skillPara, "`"+field+"`") {
+			t.Errorf("skill report paragraph lacks field %q", field)
+		}
+	}
+
+	rowStart := strings.Index(help, "\n  7  ")
+	if rowStart < 0 {
+		t.Fatalf("commandHelp[run] has no exit 7 row")
+	}
+	rowEnd := strings.Index(help[rowStart+1:], "\n  8  ")
+	if rowEnd < 0 {
+		t.Fatalf("commandHelp[run] exit 7 row has no following exit 8 row")
+	}
+	row := help[rowStart : rowStart+1+rowEnd]
+	if !strings.Contains(row, "partialExplanation") {
+		t.Errorf("commandHelp[run] exit 7 row lacks partialExplanation")
+	}
+}
+
 // TestTopLevelHelpMentionsCommandHelp checks that the top-level usage points
 // at `pi-worker <command> --help`.
 func TestTopLevelHelpMentionsCommandHelp(t *testing.T) {
