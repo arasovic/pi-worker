@@ -27,6 +27,14 @@ const releaseWorkflow = (() => {
     return null;
   }
 })();
+const ACTION_PINS = {
+  "actions/checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  "actions/setup-go": "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+  "actions/setup-node": "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
+  "actions/upload-artifact": "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+  "actions/download-artifact": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  "actions/dependency-review-action": "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+};
 const joinParts = (...parts) => parts.join("");
 const machineHome = joinParts("/Us", "ers/");
 const codexMarker = joinParts(".", "cod", "ex");
@@ -194,23 +202,28 @@ test("CI keeps read-only reproducible source and snapshot gates", () => {
   assert.match(ciWorkflow, /npm run stage -- --dist dist/);
   assert.match(ciWorkflow, /npm run check:hygiene/);
   assert.match(ciWorkflow, /PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm\/test\/package\.test\.mjs/);
-  assert.match(ciWorkflow, /node-package:[\s\S]*?actions\/setup-node@v7[\s\S]*?actions\/setup-go@v7[\s\S]*?npm run verify/);
+  assert.match(
+    ciWorkflow,
+    new RegExp(
+      `node-package:[\\s\\S]*?${ACTION_PINS["actions/setup-node"]}[\\s\\S]*?${ACTION_PINS["actions/setup-go"]}[\\s\\S]*?npm run verify`,
+    ),
+  );
   assert.deepEqual(
     [...ciWorkflow.matchAll(/uses:\s+(\S+)/g)].map(([, action]) => action).filter((action, index, all) => all.indexOf(action) === index).sort(),
-    ["actions/checkout@v7", "actions/setup-go@v7", "actions/setup-node@v7"],
+    [ACTION_PINS["actions/checkout"], ACTION_PINS["actions/setup-go"], ACTION_PINS["actions/setup-node"]],
   );
   assert.doesNotMatch(ciWorkflow, /npm publish|NPM_TOKEN|id-token:\s*write|contents:\s*write|packages:\s*write|secrets\.|upload-artifact|create.?release/i);
 });
 
 function assertReleasePreparation(workflow) {
   const requiredActions = [
-    "actions/checkout@v7",
-    "actions/download-artifact@v8",
-    "actions/setup-go@v7",
-    "actions/setup-node@v7",
-    "actions/upload-artifact@v7",
+    ACTION_PINS["actions/checkout"],
+    ACTION_PINS["actions/download-artifact"],
+    ACTION_PINS["actions/setup-go"],
+    ACTION_PINS["actions/setup-node"],
+    ACTION_PINS["actions/upload-artifact"],
   ];
-  const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)\s*$/gm)].map(([, action]) => action);
+  const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)(?:\s+#\s*v\d+\.\d+\.\d+)?\s*$/gm)].map(([, action]) => action);
   assert.deepEqual([...new Set(actionUsages)].sort(), requiredActions);
   assert.match(workflow, /persist-credentials:\s*false/);
   assert.match(workflow, /^    timeout-minutes:\s*30$/m);
@@ -222,8 +235,8 @@ function assertReleasePreparation(workflow) {
   assert.match(workflow, /npm run stage -- --dist dist/);
   assert.match(workflow, /PI_WORKER_ASSERT_STAGED=1 node --test --test-name-pattern='current checkout npm pack' npm\/test\/package\.test\.mjs/);
   assert.match(workflow, /npm pack --json/);
-  assert.match(workflow, /actions\/upload-artifact@v7/);
-  assert.match(workflow, /actions\/download-artifact@v8/);
+  assert.match(workflow, new RegExp(ACTION_PINS["actions/upload-artifact"]));
+  assert.match(workflow, new RegExp(ACTION_PINS["actions/download-artifact"]));
   assert.match(workflow, /gh release create/);
   assert.match(workflow, /dist\/checksums\.txt/);
   assert.match(workflow, /darwin_arm64/);
@@ -239,6 +252,27 @@ function assertReleasePreparation(workflow) {
     assert.equal(syntax.status, 0, syntax.stderr);
   }
 }
+
+test("every workflow action is pinned to a full commit SHA with its release as a comment", () => {
+  const workflows = [".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/dependency-review.yml"];
+  const pinned = [];
+  for (const relativePath of workflows) {
+    const content = readFileSync(join(repository, relativePath), "utf8");
+    let matches = 0;
+    for (const line of content.split("\n")) {
+      if (!line.includes("uses:")) continue;
+      assert.match(
+        line,
+        /^\s*(?:- )?uses:\s+[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/,
+        `${relativePath} pins its actions to a full commit SHA with its release as a comment: ${line}`,
+      );
+      pinned.push(line.match(/uses:\s+([^\s#]+)/)[1]);
+      matches += 1;
+    }
+    assert.ok(matches > 0, `${relativePath} must reference at least one action`);
+  }
+  assert.deepEqual([...new Set(pinned)].sort(), Object.values(ACTION_PINS).sort());
+});
 
 test("trusted release workflow publishes tagged staged artifacts through OIDC", () => {
   assert.ok(releaseWorkflow, "missing .github/workflows/release.yml");
