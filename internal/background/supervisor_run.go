@@ -230,7 +230,12 @@ func supervisorPidCreateTime(pid int) (int64, error) {
 // snapshot through the production private worker host. executable names the
 // same-binary role executable that spawns worker-host children.
 func runAcceptedRun(ctx context.Context, executable string, result supervisorStartResult) error {
-	return runAcceptedRunWith(ctx, newWorkerHostAdapter(executable, result.request.piExecutable), result)
+	adapter := newWorkerHostAdapter(executable, result.request.piExecutable)
+	if result.request.debug {
+		adapter.debugLog = debugLogPath(result.request.backgroundRoot, result.request.runID)
+		adapter.debugStart = result.request.acceptedAt
+	}
+	return runAcceptedRunWith(ctx, adapter, result)
 }
 
 // runAcceptedRunWith drives an accepted supervisor start result through
@@ -260,8 +265,9 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 	// instead of enqueuing a second set, and each launch is persisted by the
 	// observer while its process is alive. The run stays accepted until a
 	// worker process exists to make it running. req.workspace already names
-	// the private checkout when one was prepared, and req.debug is not a
-	// debug sink, so Debug stays nil.
+	// the private checkout when one was prepared. Debug stays nil here:
+	// with req.debug each worker host writes its own debug lines to the
+	// run's debug file (runAcceptedRun).
 	observer := newSupervisorRunObserver(store, prep.snapshot)
 	options := []run.Option{run.WithGitInspector(run.NewDefaultGitInspector())}
 	if len(req.verify) > 0 {

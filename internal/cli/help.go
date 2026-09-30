@@ -51,7 +51,9 @@ Flags:
                          pi-worker runs wait <id> --timeout <slice> --json
   --json                 print one JSON document on stdout; do not pipe it
   --debug                lifecycle lines on stderr; send them to a file
-                         outside the workspace
+                         outside the workspace. With --background they
+                         go to a file in the run's state, named on
+                         stderr; runs wait <id> --debug streams them
 
 Result (--json): read root outcome first. Report each worker's model,
 thinkingLevel, status, explanation (or partialExplanation when there is
@@ -82,7 +84,7 @@ Full contract: https://github.com/arasovic/pi-worker/blob/main/docs/v0-usage.md
 Usage:
   pi-worker runs list [--json]
   pi-worker runs status <id> [--json]
-  pi-worker runs wait <id> [--timeout <duration>] [--json]
+  pi-worker runs wait <id> [--timeout <duration>] [--debug] [--json]
   pi-worker runs cancel <id> [--json]
   pi-worker runs prune --keep <n> [--yes] [--json]
 
@@ -93,7 +95,9 @@ status  one background run's latest state, at once; waits for nothing
 wait    reads a background run until it finishes, then prints what run
         prints for it; it never cancels the run. --timeout bounds the wait,
         default 30m. When it runs out, the latest state is printed, the exit
-        is 7 and the run keeps going: wait again or ask status later
+        is 7 and the run keeps going: wait again or ask status later.
+        --debug streams the lifecycle lines of a run started with --debug
+        to stderr
 cancel  asks a background run to stop and returns at once; follow it with
         wait to see it end as cancelled
 prune   deletes foreground run records, keeping the newest <n>. A running

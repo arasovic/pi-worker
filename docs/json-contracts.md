@@ -33,7 +33,10 @@ contract for agents and other machine consumers.
   Config and skill receipts persist and their readers reject unknown
   fields, so a new required field needs a new version there.
 - Usage and early setup failures may write no JSON. Diagnostics and `--debug`
-  output go to stderr and never become a second stdout document.
+  output go to stderr and never become a second stdout document; that holds
+  for `run --background --debug`, whose debug lines go to the run's
+  `debug.log`, and for `runs wait --debug --json`, which copies them to
+  stderr.
 
 ## `version --json`
 
@@ -374,7 +377,9 @@ Worker fields are conditionally present:
   names the level set for the wrap-up report, which is the lowest level the
   model offers when that is lower than the working level and Pi accepted the
   switch, otherwise the working level; `thinkingLevel` still names the working
-  level.
+  level. A worker of a `run --background --debug` run whose debug file could
+  not be opened runs without its debug lines and appends `debug log
+  unavailable: <reason>`, joined to an earlier warning with `; `.
 - `explanation`: present when final assistant text exists
 - `partialExplanation`: present when the run ended without a final
   assistant text but retained assistant text exists; carries the most

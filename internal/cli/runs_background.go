@@ -98,7 +98,12 @@ func runsWaitCommand(parent context.Context, opts runsOptions, stdout, stderr io
 	if _, err := runlog.ParseRunID(opts.runID); err != nil {
 		return runsUnknownRun(opts.runID, stderr)
 	}
+	stopDebug := func() {}
+	if opts.debug {
+		stopDebug = followDebugLog(manager.DebugLogPath(opts.runID), stderr)
+	}
 	snap, err := manager.Wait(parent, opts.runID, opts.timeout)
+	stopDebug()
 	switch {
 	case err == nil:
 		return runsRenderWaited(stdout, stderr, opts, snap, "")

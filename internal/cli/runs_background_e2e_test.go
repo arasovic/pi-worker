@@ -737,7 +737,7 @@ func TestMainUsageIncludesBackgroundRunCommands(t *testing.T) {
 	}
 	for _, want := range []string{
 		"pi-worker runs status <id> [--json]",
-		"pi-worker runs wait <id> [--timeout <duration>] [--json]",
+		"pi-worker runs wait <id> [--timeout <duration>] [--debug] [--json]",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("usage missing %q:\n%s", want, stderr)

@@ -51,6 +51,15 @@ func snapshotPath(root, runID string) string {
 	return filepath.Join(root, runID, "snapshot.json")
 }
 
+// debugLogName is the file a debug run's worker hosts append their debug
+// lines to, beside the run's snapshot.
+const debugLogName = "debug.log"
+
+// debugLogPath returns <root>/<runId>/debug.log.
+func debugLogPath(root, runID string) string {
+	return filepath.Join(root, runID, debugLogName)
+}
+
 // Store provides snapshot read and write access through a per-run directory
 // layout: <root>/<runId>/snapshot.json.
 type Store struct {
