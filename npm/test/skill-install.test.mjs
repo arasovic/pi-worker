@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { installSkill } from "../lib/skill-install.mjs";
 import { writeReceipt } from "../lib/skill-receipt.mjs";
 import { PINNED_SKILLS_VERSION } from "../lib/skill-rules.mjs";
+import { classifyTarget, hashSkillTree } from "../lib/skill-tree.mjs";
 
 const realRulesPath = fileURLToPath(new URL("../generated/skills-rules.json", import.meta.url));
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -772,7 +773,7 @@ test("blocks when target state changes during the final preflight", async (t) =>
   assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).affectedTargets[0].state, "conflicting");
 });
 
-test("persists failed when package-local CLI resolution fails after the guard", async (t) => {
+test("persists failed when package-local CLI resolution fails before the guard", async (t) => {
   const f = fixture(t);
   const child = childFor();
   const result = await installSkill(options(f, child, {
@@ -834,6 +835,55 @@ test("preserves verified prior ownership across pre-child package failures", asy
       assert.deepEqual(retryReceipt.recovery, []);
     });
   }
+});
+
+test("keeps the prior receipt on disk until the skills CLI spawns", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const copy = join(f.home, ".test", "skills", "pi-worker");
+  const first = childFor(() => {
+    mkdirSync(join(canonical, ".."), { recursive: true });
+    cpSync(f.skill, canonical, { recursive: true });
+    mkdirSync(join(copy, ".."), { recursive: true });
+    cpSync(f.skill, copy, { recursive: true });
+  });
+  assert.equal((await installSkill(options(f, first))).outcome, "installed");
+  const installedReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+
+  // hashSkillTree and classifyTarget are also used after the spawn for
+  // post-install verification, which runs under the guard. Only the
+  // pre-spawn calls observe the kill window, so only those are recorded.
+  const hashReceipts = [];
+  const classifyReceipts = [];
+  let spawned = false;
+  let spawnReceipt;
+  const second = childFor(() => {
+    spawned = true;
+    spawnReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+    mkdirSync(join(canonical, ".."), { recursive: true });
+    cpSync(f.skill, canonical, { recursive: true });
+    mkdirSync(join(copy, ".."), { recursive: true });
+    cpSync(f.skill, copy, { recursive: true });
+  });
+  const result = await installSkill(options(f, second, {
+    hashSkillTree: async (...args) => {
+      if (!spawned) hashReceipts.push(JSON.parse(readFileSync(f.receipt, "utf8")));
+      return hashSkillTree(...args);
+    },
+    classifyTarget: async (...args) => {
+      if (!spawned) classifyReceipts.push(JSON.parse(readFileSync(f.receipt, "utf8")));
+      return classifyTarget(...args);
+    },
+  }));
+
+  assert.equal(result.outcome, "installed");
+  assert.ok(hashReceipts.length > 0);
+  assert.ok(classifyReceipts.length > 0);
+  for (const seen of [...hashReceipts, ...classifyReceipts]) {
+    assert.deepEqual(seen, installedReceipt);
+  }
+  assert.equal(spawnReceipt.outcome, "skipped");
+  assert.deepEqual(spawnReceipt.targets, []);
 });
 
 test("does not restore an installed receipt or hide targets after an initial classifier fault", async (t) => {
@@ -920,13 +970,13 @@ test("does not restore an installed receipt or hide targets after blocked-receip
   const failed = await installSkill(options(f, childFor(), {
     writeReceipt: async (...args) => {
       writes += 1;
-      if (writes === 2) throw new Error("injected blocked receipt write failure");
+      if (writes === 1) throw new Error("injected blocked receipt write failure");
       return writeReceipt(...args);
     },
   }));
 
   assert.equal(failed.outcome, "failed");
-  assert.equal(writes, 3);
+  assert.equal(writes, 2);
   const failedReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
   assert.notDeepEqual(failedReceipt, installedReceipt);
   assert.deepEqual(failedReceipt.affectedTargets.map(({ path, state }) => ({ path, state })), [
@@ -948,13 +998,13 @@ test("retries a one-shot blocked receipt failure as a failed receipt", async (t)
   const result = await installSkill(options(f, childFor(), {
     writeReceipt: async (...args) => {
       writes += 1;
-      if (writes === 2) throw new Error("one-shot blocked write failure");
+      if (writes === 1) throw new Error("one-shot blocked write failure");
       return writeReceipt(...args);
     },
   }));
 
   assert.equal(result.outcome, "failed");
-  assert.equal(writes, 3);
+  assert.equal(writes, 2);
   assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "failed");
 });
 

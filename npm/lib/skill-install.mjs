@@ -592,11 +592,6 @@ export async function installSkill(options = {}) {
   }
 
   const priorReceipt = await readPriorReceipt(receiptPath);
-  try {
-    await persist(writer, receiptPath, temporaryReceipt(version), options.receiptWriteOptions);
-  } catch {
-    return result("skipped", "Unable to prepare the skill installation receipt.");
-  }
 
   const failAfterGuard = async (
     diagnostic = "Skill installation failed.",
@@ -611,9 +606,10 @@ export async function installSkill(options = {}) {
     return result("failed", diagnostic);
   };
 
-  // Only package-only failures may restore the receipt replaced by the
-  // temporary guard. The validation deliberately uses the production
-  // classifier and the old canonical manifest, never package inventory or an
+  // Only package-only failures may restore the prior receipt. The temporary
+  // guard is written only immediately before spawning, so at these callsites
+  // the prior receipt is still on disk. The validation deliberately uses the
+  // production classifier and the old canonical manifest, never package inventory or an
   // injected classifier supplied to this installation attempt.
   const restorePriorReceiptAfterPackageOnlyFailure = async (diagnostic) => {
     let document = failedReceipt(version);
@@ -827,6 +823,14 @@ export async function installSkill(options = {}) {
     // Agent detection and required-target/rule checks are package-only here:
     // preflight already found no target conflict, and no child has run.
     return restorePriorReceiptAfterPackageOnlyFailure("Unable to inspect the bundled skill.");
+  }
+
+  // The prior receipt stays on disk until the first step that can mutate a
+  // target, so a kill before that leaves ownership intact.
+  try {
+    await persist(writer, receiptPath, temporaryReceipt(version), options.receiptWriteOptions);
+  } catch {
+    return result("skipped", "Unable to prepare the skill installation receipt.");
   }
 
   const childResult = await captureChild(
