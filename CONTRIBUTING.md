@@ -77,9 +77,11 @@ on its own branch:
   re-adds `go.sum` entries that `go mod tidy` pruned, and `tools/release`
   refuses to build a snapshot from a dirty tree. That job fails with
   `working tree has uncommitted changes`.
-- GitHub Actions: update the expected reference in `npm/test/hygiene.test.mjs`,
-  which asserts the exact action versions the release workflows use. Read the
-  action's release notes first: these pins guard the publication path.
+- GitHub Actions: the workflows pin each action to a full commit SHA with
+  its release as a trailing comment; Dependabot's `github-actions`
+  updates move both together. The companion change updates `ACTION_PINS`
+  in `npm/test/hygiene.test.mjs` after reading the action's release
+  notes, because these pins guard the publication path.
 - `skills`: the pin is declared twice — `PINNED_SKILLS_VERSION` in
   `npm/lib/skill-rules.mjs` (JavaScript) and `PinnedSkillsVersion` in
   `internal/skillinstall/receipt.go` (Go) — and a Dependabot bump of the npm
