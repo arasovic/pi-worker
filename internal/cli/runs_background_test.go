@@ -350,3 +350,39 @@ func TestRenderRunsSnapshotPrintsRunChecksBeforeOutcome(t *testing.T) {
 		t.Fatalf("stdout = %q, want it to end with %q", out, want)
 	}
 }
+
+// TestRunsWaitExitsByStoredOutcome requires that a finished background run
+// exits by the outcome its snapshot stores, not by one recomputed from the
+// result. A controller that returns a full result together with an error is
+// recorded as failed with outcome internal-error while its workers all
+// completed: recomputing from those workers would say task-failed and exit
+// 5 under a printed outcome=internal-error.
+func TestRunsWaitExitsByStoredOutcome(t *testing.T) {
+	status := contracts.RunFailed
+	snap := background.Snapshot{
+		RunID:    "20260926T222744Z-7099",
+		State:    background.RunFailed,
+		Terminal: true,
+		Status:   &status,
+		Outcome:  outcomePtr(contracts.OutcomeInternalError),
+		Result: &run.Result{
+			Status:  contracts.RunFailed,
+			Outcome: contracts.OutcomeInternalError,
+			Workers: []pi.WorkerResult{{Status: pi.StatusCompleted, Explanation: "the final answer"}},
+		},
+		Workers: []background.WorkerSnapshot{{
+			WorkerID: 1,
+			State:    background.WorkerCompleted,
+			Task:     run.TaskProjection{Model: "acme/m-1"},
+			Result:   &pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "the final answer"},
+		}},
+	}
+	var stdout, stderr bytes.Buffer
+	code := runsRenderWaited(&stdout, &stderr, runsOptions{}, snap, "")
+	if !strings.HasSuffix(stdout.String(), "outcome=internal-error\n") {
+		t.Fatalf("stdout = %q, want it to end with outcome=internal-error", stdout.String())
+	}
+	if code != 9 {
+		t.Fatalf("exit = %d, want 9", code)
+	}
+}

@@ -284,11 +284,15 @@ func runsReadFailure(runID string, err error, stderr io.Writer) int {
 }
 
 // runsFinishedExitCode maps a terminal snapshot's own outcome onto the code
-// the same result produces in the foreground. The snapshot carries the run
-// result the supervisor wrote, so no second decision about what the run
-// earned is made here: the same mapping a foreground run exits through is
-// applied to that document.
+// the same result produces in the foreground. The stored outcome is the
+// supervisor's one decision about what the run earned, including a
+// controller error the result's fields alone do not show, so it is not
+// recomputed from the result here: the printed outcome word and the exit
+// code cannot disagree.
 func runsFinishedExitCode(snap background.Snapshot) int {
+	if snap.Outcome != nil {
+		return contracts.OutcomeExitCode(*snap.Outcome)
+	}
 	if snap.Result != nil {
 		_, code := runOutcome(*snap.Result)
 		return code
