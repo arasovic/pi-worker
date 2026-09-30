@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1019,6 +1020,60 @@ func TestControllerWritesSameRunExcludesFileTargetModifiedUnavailable(t *testing
 	changes := result.Changes
 	if changes == nil || changes.Omitted != reasonMeasurementFail {
 		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != reasonManifestUnavailable {
+		t.Fatalf("writes = %#v, want the exact unavailable skip", writes)
+	}
+	if writes.UndeclaredCount != 0 || writes.Undeclared != nil || writes.Truncated {
+		t.Fatalf("writes = %#v, want no verdict fields alongside the skip", writes)
+	}
+}
+
+func TestControllerWritesSameRunExcludeSameSizeRestoredMtimeUnavailable(t *testing.T) {
+	// Regression for #390: a worker that rewrites .git/info/exclude with a
+	// same-size rule and restores the modification time still moves the
+	// status-change time, which no process can set back. The stamp must
+	// catch that rewrite and make the measurement unavailable instead of a
+	// wrong clean that hides the untracked file the new rule covers.
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("status-change time stamp only on darwin and linux")
+	}
+	dir := newGitRepo(t)
+	exclude := filepath.Join(dir, ".git", "info", "exclude")
+	if err := os.WriteFile(exclude, []byte("aaaaaa.tmp\n"), 0o644); err != nil {
+		t.Fatalf("write exclude: %v", err)
+	}
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		path := filepath.Join(dir, ".git", "info", "exclude")
+		before, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte("hidden.txt\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
+			return err
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+			return fmt.Errorf("size or mtime not restored: %v -> %v", before, after)
+		}
+		return os.WriteFile(filepath.Join(dir, "hidden.txt"), []byte("hidden\n"), 0o644)
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("declared.txt")})
+	if _, err := os.Stat(filepath.Join(dir, "hidden.txt")); err != nil {
+		t.Fatalf("untracked file after run: %v", err)
+	}
+	changes := result.Changes
+	if changes == nil || changes.Omitted != reasonMeasurementFail {
+		t.Fatalf("changes = %#v, want the exact measurement-failed omission", changes)
+	}
+	if changes.Files != nil || changes.TotalFiles != 0 || changes.Truncated {
+		t.Fatalf("changes = %#v, want no measured fields alongside the omission", changes)
 	}
 	writes := result.Writes
 	if writes == nil || writes.Skipped != reasonManifestUnavailable {

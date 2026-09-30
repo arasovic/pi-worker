@@ -666,7 +666,10 @@ starts and re-read after the run ends:
   `$GIT_DIR/info/exclude` and the effective `core.excludesFile` (the
   configured file, or the XDG default when unset), so a rule appended
   to either during the run can hide untracked paths the run wrote.
-  Each file is stamped without reading its contents, and the effective
+  Each file is stamped without reading its contents: the stamp is size,
+  modification time, mode and — on macOS and Linux — the status-change
+  time, which a process cannot set back, so a same-size rewrite with a
+  restored modification time is still drift there. The effective
   value is recorded; a moved stamp or a moved value is drift.
 - In-tree `.gitignore` rule files. The untracked listing honours every
   `.gitignore` rule file git consults in the tree, so a rule appended

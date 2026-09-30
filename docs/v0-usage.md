@@ -873,7 +873,9 @@ two runs from distinct configuration files do not share a gate.
   the effective `core.trustctime` and `core.fileMode` values, and the
   ignore-rule files: the ones beyond the tree — `$GIT_DIR/info/exclude`
   and the effective `core.excludesFile` file — each stamped without
-  reading its contents, and the in-tree `.gitignore` rule files
+  reading its contents (size, modification time, mode and — on macOS
+  and Linux — the status-change time, which a process cannot set back),
+  and the in-tree `.gitignore` rule files
   themselves,
   enumerated with git's own listings (tracked, visible untracked, and
   the ones git itself ignores, each restricted to `.gitignore` names)
