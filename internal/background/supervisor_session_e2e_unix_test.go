@@ -172,7 +172,7 @@ func TestSessionStarterHelper(t *testing.T) {
 		t.Fatalf("%s carries %d fields, want 5", sessionStarterEnv, len(fields))
 	}
 	root, admissionRoot, workspace, piBin, roleBin := fields[0], fields[1], fields[2], fields[3], fields[4]
-	m, err := NewManager(root, admissionRoot, 2)
+	m, err := NewManager(root, "", admissionRoot, 2)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

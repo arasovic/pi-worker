@@ -3,6 +3,7 @@ package background
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -120,7 +121,6 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 		t.Fatalf("test prompt too small: %d bytes", len(big))
 	}
 	req.tasks[0].Prompt = big
-	req.runlogDir = "/runs"
 
 	encoded, err := encodeSupervisorStartRequest(req)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 	if back.backgroundRoot != req.backgroundRoot || back.admissionRoot != req.admissionRoot {
 		t.Fatalf("roots mismatch: %q %q", back.backgroundRoot, back.admissionRoot)
 	}
-	if back.maxModelWorkers != req.maxModelWorkers || back.piExecutable != req.piExecutable || back.debug != req.debug || back.runlogDir != "/runs" {
+	if back.maxModelWorkers != req.maxModelWorkers || back.piExecutable != req.piExecutable || back.debug != req.debug {
 		t.Fatalf("scalars mismatch: %+v", back)
 	}
 	if !slices.Equal(back.verify, []string{"go", "test", "./..."}) {
@@ -202,6 +202,33 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSupervisorStartRequestDecodesAnOlderStartersRunlogDir requires that a
+// request frame from an older starter, which still names the records
+// directory in runlogDir — even a relative one — decodes, and that the field
+// changes nothing: the run's record is written into its own directory.
+func TestSupervisorStartRequestDecodesAnOlderStartersRunlogDir(t *testing.T) {
+	want, err := decodeSupervisorStartRequest(mustMarshalJSON(t, minimalStartRequestJSON()))
+	if err != nil {
+		t.Fatalf("decode without runlogDir: %v", err)
+	}
+	for _, dir := range []string{"/runs", "relative/runs"} {
+		// The key is spliced into the raw frame, as an older starter sent
+		// it, so the test does not depend on the wire struct naming it.
+		var older map[string]any
+		if err := json.Unmarshal(mustMarshalJSON(t, minimalStartRequestJSON()), &older); err != nil {
+			t.Fatalf("unmarshal frame: %v", err)
+		}
+		older["runlogDir"] = dir
+		got, err := decodeSupervisorStartRequest(mustMarshalJSON(t, older))
+		if err != nil {
+			t.Fatalf("decode with runlogDir %q: %v", dir, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("decoded request with runlogDir %q = %+v, want %+v", dir, got, want)
+		}
+	}
+}
+
 // TestSupervisorStartRequestDecodeRejects covers the decode-side failures:
 // unknown fields, trailing JSON, invalid UTF-8, a wrong schema version,
 // and malformed base64 in data content.
@@ -219,9 +246,6 @@ func TestSupervisorStartRequestDecodeRejects(t *testing.T) {
 	wrongVersion := minimalStartRequestJSON()
 	wrongVersion.SchemaVersion = supervisorStartSchemaVersion + 1
 
-	relativeRunlogDir := minimalStartRequestJSON()
-	relativeRunlogDir.RunlogDir = "relative/runs"
-
 	trailing := append(append([]byte(nil), valid...), ' ', '{', '}')
 
 	// The content value is invalid base64; decoding fails on it before
@@ -238,7 +262,6 @@ func TestSupervisorStartRequestDecodeRejects(t *testing.T) {
 		{"invalid utf-8", []byte("{\"workspace\":\"\xff\"}"), "not valid UTF-8"},
 		{"wrong version", mustMarshalJSON(t, wrongVersion), "schemaVersion must be 1, got 2"},
 		{"malformed base64", malformedBase64, "illegal base64"},
-		{"relative runlogDir", mustMarshalJSON(t, relativeRunlogDir), "runlogDir must be an absolute path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -293,7 +316,6 @@ func TestSupervisorStartRequestEncodeValidation(t *testing.T) {
 		{"worktree invalid name", func(r *supervisorStartRequest) { r.worktree.Name = "Bad!" }, "invalid name"},
 		{"worktree branch mismatch", func(r *supervisorStartRequest) { r.worktree.Branch = "main" }, "branch must be run/"},
 		{"empty pi executable", func(r *supervisorStartRequest) { r.piExecutable = "" }, "piExecutable is required"},
-		{"relative runlogDir", func(r *supervisorStartRequest) { r.runlogDir = "runs" }, "runlogDir must be an absolute path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

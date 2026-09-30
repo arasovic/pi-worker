@@ -22,8 +22,11 @@ contract for agents and other machine consumers.
   the writer and can never be out of step, and a file older than the
   reader is safe only when the new field may be absent, because an
   older file lacks it. The run document persists — as `result` in
-  `<state>/background/<runId>/snapshot.json` and as `result` on the
-  finish line of a run record — and its readers ignore unknown
+  the run's `snapshot.json` and as `result` on the finish line of its
+  run record, both in the run's own directory `<state>/runs/<runId>/`
+  beside its `debug.log` and `owner.lock` (a run an older version
+  started keeps its snapshot in `<state>/background/<runId>/` and its
+  record in `<state>/runs/<runId>.jsonl`) — and its readers ignore unknown
   fields (the snapshot reader also refuses an unsupported
   `schemaVersion`; the run record reader does not check it), so a
   new field there must be optional (absent is valid and no validation requires it)
@@ -165,38 +168,38 @@ native status exit code.
 ## `runs list --json`
 
 The root object has exactly `schemaVersion` and `runs`. `runs` is always an
-array, ordered newest first, and includes both run records (the
-`.jsonl` files in the records directory) and background runs (one
-`snapshot.json` per run directory in the background store, and the run
-directories `<runId>/` inside the records directory, read the same way). A
-background run also writes a record into the records directory; a run found
-in both is listed once, as its background entry, because the snapshot is the state
-`runs status` and `runs wait` read. Each entry has exactly these fields:
+array, ordered newest first, and includes every run: each run directory
+`<runId>/` inside the records directory (read from its `snapshot.json`),
+the `.jsonl` records older versions wrote into the records directory, and
+the run directories older versions kept in the background directory. A run
+found both as a run directory and as a `.jsonl` record is listed once, as
+its run directory, because the snapshot is the state `runs status` and
+`runs wait` read. Each entry has exactly these fields:
 
-- `runId`: the record filename without `.jsonl`; for a background run, its
-  run directory name
+- `runId`: the run directory name; for an older `.jsonl` record, its
+  filename without `.jsonl`
 - `startedAt`: the start timestamp, or `""` when the start fields are
-  unreadable; for a background run, its `acceptedAt`
+  unreadable; for a run directory, its `acceptedAt`
 - `workspace`: the recorded workspace, or `""` when unreadable
 - `tasks`: the number of recorded tasks, or `0` when unreadable; for a
-  background run, its worker count
+  run directory, its worker count
 - `models`: the models the run's tasks named, in task order and without
   repeats, or `[]` when there are none or the start fields are unreadable
 - `outcome`: the recorded outcome, `error`, `running`, `interrupted`, or
-  `unknown`; a finished background run reports its own outcome, `running`
+  `unknown`; a finished run directory reports its own outcome, `running`
   while its owner lock is held (for an older run without one, while its
   supervisor is alive), `interrupted` when the owner is gone before it
   finished, and `unknown` when its state cannot be read
-- `path`: the record path; for a background run, its run directory
+- `path`: the run directory; for an older `.jsonl` record, that file
 
 No root or entry field is omitted. Missing or unreadable display fields use
 their zero values. A foreground record with no usable start line remains an
 entry with `outcome: "unknown"` and its filename-derived `runId` and `path`;
-its other entry fields carry their zero values. A background run whose
+its other entry fields carry their zero values. A run directory whose
 snapshot cannot be read is likewise an entry with `outcome: "unknown"`, its
 directory-derived `runId`, and its run directory as `path`. A successful command
 exits `0`, including when `runs` is empty. Usage errors exit `2`; a records-
-directory or background-root resolution or read failure exits `9`. Those
+directory or older-background-directory resolution or read failure exits `9`. Those
 failure paths emit no JSON document.
 
 ## `runs prune --json`

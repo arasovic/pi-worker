@@ -15,6 +15,7 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // newRunningSnapshot builds a valid running-state Snapshot derived from an
@@ -72,18 +73,32 @@ func TestNewStore_ExplicitTempRootHasNoSideEffect(t *testing.T) {
 }
 
 // DefaultRoot is exactly UserDir / background.
-func TestDefaultRoot_EqualsUserDirBackground(t *testing.T) {
-	userDir, err := config.UserDir()
-	if err != nil {
-		t.Fatalf("config.UserDir: %v", err)
-	}
+func TestDefaultRoot_EqualsRunlogDir(t *testing.T) {
 	got, err := DefaultRoot()
 	if err != nil {
 		t.Fatalf("DefaultRoot: %v", err)
 	}
-	want := filepath.Join(userDir, "background")
+	want, err := runlog.Dir()
+	if err != nil {
+		t.Fatalf("runlog.Dir: %v", err)
+	}
 	if got != want {
 		t.Errorf("DefaultRoot() = %q; want %q", got, want)
+	}
+}
+
+func TestLegacyRoot_EqualsUserDirBackground(t *testing.T) {
+	userDir, err := config.UserDir()
+	if err != nil {
+		t.Fatalf("config.UserDir: %v", err)
+	}
+	got, err := LegacyRoot()
+	if err != nil {
+		t.Fatalf("LegacyRoot: %v", err)
+	}
+	want := filepath.Join(userDir, "background")
+	if got != want {
+		t.Errorf("LegacyRoot() = %q; want %q", got, want)
 	}
 }
 

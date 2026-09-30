@@ -25,10 +25,22 @@ var backgroundPiExecutable = "pi"
 var backgroundRoleExecutable = ""
 
 // newBackgroundManager is the seam the background run command constructs its
-// Manager through. Tests replace it to point one run's state at a directory of
-// their own; production always resolves the default location.
+// Manager through. The Manager's root is the records directory runlogDir
+// resolves, so a run's own directory — its snapshot, record, debug log and
+// owner lock — sits where every records reader looks, and a test that moves
+// runlogDir moves the supervisor's writes with it. The legacy root is where
+// older versions kept their snapshots, read and never written. Tests replace
+// the seam to make the Manager itself fail.
 var newBackgroundManager = func(admissionRoot string, maxModelWorkers int) (*background.Manager, error) {
-	return background.NewManager("", admissionRoot, maxModelWorkers)
+	recordsDir, err := runlogDir()
+	if err != nil {
+		return nil, fmt.Errorf("determine records directory: %w", err)
+	}
+	legacyRoot, err := backgroundRoot()
+	if err != nil {
+		return nil, fmt.Errorf("determine the older background directory: %w", err)
+	}
+	return background.NewManager(recordsDir, legacyRoot, admissionRoot, maxModelWorkers)
 }
 
 // acceptedTask hides the prompt the caller has just sent; every other task
@@ -120,18 +132,14 @@ func startSupervisedRun(ctx context.Context, opts runOptions, tasks []run.Task, 
 		return nil, background.StartedRun{}, contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
 
-	// The records directory is resolved once: the earlier-run scans read
-	// it, and the supervisor writes this run's record into the same
-	// directory. When it cannot be resolved the run starts without a
-	// record.
+	// The earlier-run scans read the records directory the Manager above
+	// was built from: the supervisor writes this run's directory there. It
+	// already resolved once for the Manager, so in production it cannot
+	// fail here.
 	preflightPiVersion(ctx, stderr)
 	warnSharedWorkspace(tasks, stderr)
-	recordsDir, err := runlogDir()
-	if err == nil {
+	if recordsDir, err := runlogDir(); err == nil {
 		warnEarlierRuns(recordsDir, stderr)
-	} else {
-		recordsDir = ""
-		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", err)
 	}
 
 	started, err := manager.Start(ctx, background.StartOptions{
@@ -143,7 +151,6 @@ func startSupervisedRun(ctx context.Context, opts runOptions, tasks []run.Task, 
 		WorktreeName:     opts.worktree,
 		RoleExecutable:   backgroundRoleExecutable,
 		Debug:            opts.debug,
-		RunlogDir:        recordsDir,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)

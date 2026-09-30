@@ -56,7 +56,7 @@ func TestManagerCancelTerminalSnapshotDoesNotSignal(t *testing.T) {
 	if err := createUnlockedSnapshot(store, snap); err != nil {
 		t.Fatalf("store terminal snapshot: %v", err)
 	}
-	manager, err := NewManager(root, t.TempDir(), 1)
+	manager, err := NewManager(root, "", t.TempDir(), 1)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestManagerCancelSignalsOnlyWhenOwnerLockIsHeld(t *testing.T) {
 			root := t.TempDir()
 			runID := storeLiveSnapshot(t, root, liveIdentity(t))
 			tc.arrange(t, filepath.Join(root, runID))
-			manager, err := NewManager(root, t.TempDir(), 1)
+			manager, err := NewManager(root, "", t.TempDir(), 1)
 			if err != nil {
 				t.Fatalf("NewManager: %v", err)
 			}

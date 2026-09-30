@@ -66,9 +66,17 @@ type Store struct {
 	root string
 }
 
-// DefaultRoot returns the default background-snapshot directory inside the
-// user configuration tree: <UserConfigDir>/pi-worker/background.
+// DefaultRoot returns the directory every run's own directory lives in:
+// the run-records directory [runlog.Dir] names, so a run's snapshot, its
+// record, its debug log and its owner lock sit together in <root>/<runId>/.
 func DefaultRoot() (string, error) {
+	return runlog.Dir()
+}
+
+// LegacyRoot returns the directory older versions kept each run's snapshot
+// in: <UserConfigDir>/pi-worker/background. Runs found there are read, and
+// nothing new is ever written there.
+func LegacyRoot() (string, error) {
 	userDir, err := config.UserDir()
 	if err != nil {
 		return "", err

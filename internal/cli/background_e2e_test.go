@@ -94,11 +94,14 @@ func setupBackgroundCLI(t *testing.T, finalText string) *background.Manager {
 
 	root, admissionRoot := t.TempDir(), t.TempDir()
 	lastRunSecond = time.Time{}
-	manager, err := background.NewManager(root, admissionRoot, 2)
+	manager, err := background.NewManager(root, "", admissionRoot, 2)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
 
+	// The records directory is the Manager's root, as it is in production:
+	// every reader of the records directory sees the runs it starts.
+	withRunlogDir(t, root)
 	originalManager, originalPi, originalRole := newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable
 	newBackgroundManager = func(string, int) (*background.Manager, error) { return manager, nil }
 	backgroundPiExecutable = fakePiBin

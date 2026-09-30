@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -319,20 +320,15 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 	return joinSupervisorStartErrors(errs...)
 }
 
-// startRunRecord writes the start line of the run record a foreground run
-// writes, into the directory the starter named, and returns its recorder:
-// the start line's pid and creation time are this supervisor's, which is
-// how a later run tells a killed supervisor's record from a live one. No
-// directory, or a record that cannot be started, returns nil, on which
-// every recorder method is a no-op. Record failures are dropped here and at
-// Finish, never joined into the run's errors: a record problem must not fail
-// the run, and a supervisor's stderr reaches nobody, so there is no one to
-// warn.
+// startRunRecord writes the start line of the run's record into the run's
+// own directory, beside its snapshot, and returns its recorder: the start
+// line's pid and creation time are this supervisor's. A record that cannot
+// be started returns nil, on which every recorder method is a no-op. Record
+// failures are dropped here and at Finish, never joined into the run's
+// errors: a record problem must not fail the run, and a supervisor's stderr
+// reaches nobody, so there is no one to warn.
 func startRunRecord(req supervisorStartRequest) *runlog.Recorder {
-	if req.runlogDir == "" {
-		return nil
-	}
-	recorder, err := runlog.StartWithID(req.runlogDir, req.runID, req.acceptedAt, req.workspace, req.tasks)
+	recorder, err := runlog.StartAt(filepath.Join(req.backgroundRoot, req.runID), req.runID, req.acceptedAt, req.workspace, req.tasks)
 	if err != nil {
 		return nil
 	}
