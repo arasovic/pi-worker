@@ -120,3 +120,30 @@ func RunOutcome(status RunStatus, runError *RunError) Outcome {
 		return OutcomeInternalError
 	}
 }
+
+// OutcomeExitCode maps an outcome word back onto the exit code of the
+// (status, error kind) pair it was derived from, so a reader holding only
+// a stored outcome exits the way the run that stored it would have:
+// OutcomeExitCode(RunOutcome(s, e)) == ExitCode(s, e) for every pair.
+func OutcomeExitCode(outcome Outcome) int {
+	switch outcome {
+	case OutcomeCompleted:
+		return 0
+	case OutcomeUsage:
+		return 2
+	case OutcomeWorkersUnavailable:
+		return 3
+	case OutcomeUndeclaredWrites:
+		return 4
+	case OutcomeTaskFailed, OutcomePartial:
+		return 5
+	case OutcomeVerificationFailed:
+		return 6
+	case OutcomeTimeout:
+		return 7
+	case OutcomeCancelled:
+		return 8
+	default:
+		return 9
+	}
+}

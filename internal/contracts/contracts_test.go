@@ -45,3 +45,23 @@ func TestExitCodeMapping(t *testing.T) {
 		})
 	}
 }
+
+// TestOutcomeExitCodeInvertsRunOutcome requires that the exit code read back
+// from an outcome word equals the exit code of the (status, error kind) pair
+// the word was derived from, for every pair the enums define. A reader that
+// only has a stored outcome must exit the way the run that stored it would.
+func TestOutcomeExitCodeInvertsRunOutcome(t *testing.T) {
+	statuses := []RunStatus{RunCompleted, RunPartial, RunFailed, RunTimedOut, RunCancelled}
+	runErrors := []*RunError{nil}
+	for _, kind := range []ErrorKind{ErrorUsage, ErrorReadiness, ErrorPolicy, ErrorTask, ErrorVerification, ErrorTimeout, ErrorCancellation, ErrorInternal} {
+		runErrors = append(runErrors, &RunError{Kind: kind})
+	}
+	for _, status := range statuses {
+		for _, runError := range runErrors {
+			outcome := RunOutcome(status, runError)
+			if got, want := OutcomeExitCode(outcome), ExitCode(status, runError); got != want {
+				t.Errorf("status %q, error %+v: OutcomeExitCode(%q) = %d, want %d", status, runError, outcome, got, want)
+			}
+		}
+	}
+}

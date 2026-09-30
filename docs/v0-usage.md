@@ -492,7 +492,7 @@ pi-worker runs cancel <id> [--json]
   because this command never finishes a record on its behalf.
 - Exit codes: a run that has finished exits with the code that same
   result produces in the foreground — the snapshot carries the run's own
-  result and it goes through the one mapping under `### Exit codes`. A
+  `outcome` and it goes through the one mapping under `### Exit codes`. A
   `runs status` of a run still going exits `0`: it asked one question
   and answered it. A run whose supervisor is gone before it finished
   makes `runs status` and `runs wait` print the latest state, say so on
