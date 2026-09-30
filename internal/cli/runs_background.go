@@ -179,6 +179,13 @@ func runsCancelCommand(parent context.Context, opts runsOptions, stdout, stderr 
 // code of the state that was printed: a finished run's own code, and the
 // timeout code 7 for the live state a wait that ran out reports.
 func runsRenderWaited(stdout, stderr io.Writer, opts runsOptions, snap background.Snapshot, note string) int {
+	// A finished run with its result document prints what the same run
+	// prints in the foreground; a wait that ran out, and a terminal state
+	// with no result document, keep the table.
+	if !opts.json && note == "" && snap.Terminal && snap.Result != nil {
+		printRunResult(*snap.Result, stdout, stderr)
+		return runsFinishedExitCode(snap)
+	}
 	if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, note); code != 0 {
 		return code
 	}
@@ -291,9 +298,10 @@ func runsFinishedExitCode(snap background.Snapshot) int {
 }
 
 // renderRunsSnapshot prints one snapshot: the documented background document
-// verbatim with --json, and otherwise the short block `runs status` and `runs
-// wait` share — the run's identity and state, each worker's state, and for a
-// finished run what each worker answered. note is the one line a caller adds
+// verbatim with --json, and otherwise the short block `runs status`, `runs
+// cancel` and an unfinished `runs wait` share — the run's identity and state,
+// each worker's state, and for a finished run what each worker answered and
+// the run's check lines. note is the one line a caller adds
 // for itself, and it goes to stderr: a wait that ran out says so beside the
 // state it printed, where a machine reading stdout is unaffected.
 func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap background.Snapshot, note string) int {
@@ -337,6 +345,11 @@ func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap backgrou
 	}
 
 	if snap.Terminal {
+		// A finished run's check lines follow the table exactly as they
+		// follow the worker lines in the foreground.
+		if snap.Result != nil {
+			printRunChecks(*snap.Result, stdout, stderr)
+		}
 		// The outcome line is the same word the foreground run prints, and
 		// it is the word the exit code the command returns was taken from.
 		outcome := ""

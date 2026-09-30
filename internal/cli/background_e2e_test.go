@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/background"
+	"github.com/arasovic/pi-worker/internal/run"
+	"github.com/arasovic/pi-worker/internal/runlog"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
@@ -81,6 +84,9 @@ func setupBackgroundCLI(t *testing.T, finalText string) *background.Manager {
 	// needs to run inside the module, and the run itself must not.
 	roleBin := piWorkerBinForBackground(t)
 	setupFakePiScript(t, backgroundHappyScript(finalText))
+	// An earlier in-process foreground run left its marker in this
+	// process's environment; see TestRunsWaitPrintsWhatTheForegroundRunPrints.
+	t.Setenv(run.RunMarkerEnv, "")
 	t.Chdir(t.TempDir())
 
 	root, admissionRoot := t.TempDir(), t.TempDir()
@@ -224,6 +230,41 @@ func TestRunBackgroundRefusedStartExitsNonZero(t *testing.T) {
 	}
 	if strings.Contains(stdout, "accepted") {
 		t.Fatalf("stdout = %q, want no accepted run reported", stdout)
+	}
+}
+
+// TestRunBackgroundPrintsThePreRunWarnings requires that `run --background`
+// prints the pre-run warnings a foreground run prints, in the same order and
+// before the accepted line: the Pi version, an interrupted earlier run, and
+// the processes an earlier run may have left running.
+func TestRunBackgroundPrintsThePreRunWarnings(t *testing.T) {
+	manager := setupBackgroundCLI(t, "background answer")
+	logDir := t.TempDir()
+	leftoverPath := filepath.Join(logDir, "20260830T100000Z-2.jsonl")
+	originalDir, originalLeftovers, originalProbe := runlogDir, runlogLeftovers, runVersionProbe
+	runlogDir = func() (string, error) { return logDir, nil }
+	runlogLeftovers = func(string) ([]runlog.Leftover, error) {
+		return []runlog.Leftover{{RunID: "20260830T100000Z-2", Path: leftoverPath, PIDs: []int{4111}}}, nil
+	}
+	runVersionProbe = func(context.Context) (string, error) { return "", errors.New("pi unavailable") }
+	t.Cleanup(func() { runlogDir, runlogLeftovers, runVersionProbe = originalDir, originalLeftovers, originalProbe })
+	interruptedPath := writeRecordFile(t, logDir, "20260830T101500Z-1", deadPID, "")
+
+	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	runID := runIDFromHumanOutput(t, stdout)
+	t.Cleanup(func() {
+		if _, err := manager.Wait(context.Background(), runID, 90*time.Second); err != nil {
+			t.Errorf("drain run %s: %v", runID, err)
+		}
+	})
+	want := "pi-worker: warning: Pi version could not be verified; continuing\n" +
+		"pi-worker: warning: an earlier run was interrupted: " + interruptedPath + "\n" +
+		"pi-worker: warning: an earlier run may have left processes running: " + leftoverPath + " (pids 4111)\n"
+	if stderr != want {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
 

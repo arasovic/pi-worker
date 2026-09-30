@@ -359,8 +359,9 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   when a prune delete fails (a failure is reported on stderr, does
   not stop the other deletions, and the exit is `9`), or when the
   prune is cancelled.
-- At the start of every run, pi-worker also checks whether an earlier
-  settled run may have left processes running, and warns on stderr when
+- At the start of every run, `--background` included, pi-worker also
+  checks whether an earlier settled foreground run may have left
+  processes running, and warns on stderr when
   it finds any: one line per run naming the record's full path and the
   possibly-leftover pids — up to ten, then a count of the rest, inside
   the same parentheses — capped at five runs with one summary line
@@ -416,6 +417,15 @@ pi-worker runs cancel <id> [--json]
   each task's prompt, which the caller has just sent; `runs status --json`
   shows it. Exit `0`
   means accepted, not finished: no task has produced a result yet.
+- Before the start, `run --background` prints the same pre-run warnings
+  on stderr as a foreground run, in the same order: the Pi version probe
+  (see `### Model selection`), the shared-workspace warning, interrupted
+  earlier runs, and processes an earlier run may have left running (see
+  `## Run records`), including their `check unavailable` forms. The two
+  earlier-run scans read foreground run records only, because a
+  background run writes none; they also update the same once-only
+  marker, so an interrupted run reported by a background start is not
+  reported again by the next foreground run.
 - A start that was refused exits non-zero without leaving a run behind:
   `2` when the workspace or the requested private checkout is refused,
   `7` when the acceptance handshake ran out of time, `8` when the start
@@ -424,9 +434,12 @@ pi-worker runs cancel <id> [--json]
   and returns. It waits for nothing, so a run in flight is answered
   immediately, and asking again reports whatever has become durable
   since.
-- Without `--json`, `runs status` and `runs wait` print one aligned summary
-  table: a run row, one row per worker with its state, model, and answer,
-  plus `outcome=` for a finished run. No task prompt appears in that table.
+- Without `--json`, `runs status` and `runs cancel` print one aligned
+  summary table, and so does `runs wait` when the wait ran out or the
+  supervisor is gone: a run row, one row per worker with its state, model,
+  and answer, plus, for a finished run, the verification, git, change,
+  write-check, and leftover-process lines a foreground run prints (see
+  `### Output`) and `outcome=`. No task prompt appears in that table.
   A running worker that has reported Pi activity shows it in the answer
   column as `active <lastEventAt>, <toolCalls> tool calls`, followed by
   `, last <lastTool>` once a tool has started; the times use the table's
@@ -439,8 +452,13 @@ pi-worker runs cancel <id> [--json]
   runs status <runId> --json` line follows and points at the machine document
   that carries the full text; the block is separated from the table by one
   empty line, and nothing is added for a run whose workers have no such lines.
+  The check lines come after that block, before `outcome=`.
 - `runs wait <id>` reads the same state repeatedly until the run
-  finishes, then prints the finished run. Waiting is reading and nothing
+  finishes, then prints the finished run. Without `--json` it prints what
+  a foreground `run` of the same task prints — the worker lines, the check
+  lines, and `outcome=`, on the same streams (see `### Output`) — and no
+  table. A finished run whose snapshot carries no result document is
+  printed as the table instead. Waiting is reading and nothing
   else: it never cancels, kills, or attaches to the run.
 - `runs wait --timeout <duration>` bounds the wait. Without one the
   bound is `30m`. When the bound arrives first, the command prints the
@@ -658,7 +676,8 @@ two runs from distinct configuration files do not share a gate.
 
 ### Model selection
 
-- Before starting workers, `run` probes `pi --version` once for the whole run.
+- Before starting workers, `run` probes `pi --version` once for the whole run;
+  `run --background` probes before the start.
   An unverified, unreadable, timed-out, or otherwise failed probe writes one
   bounded warning to stderr and execution continues. It never changes JSON
   stdout or creates a new exit path; the RPC lifecycle still validates the
@@ -1148,6 +1167,8 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   line to stdout after the change manifest and write-check lines; the
   word and the exit code are the same decision wherever a document or a
   human summary is produced.
+- `runs wait` without `--json` prints this same human summary for a
+  finished background run, on the same streams; see `## Background runs`.
 - `--json` emits **exactly one** JSON object (single document) only after argument/input validation succeeds and a run starts, with:
   - `schemaVersion` = `1`
   - `status`

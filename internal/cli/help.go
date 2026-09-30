@@ -90,10 +90,10 @@ list    every run on this machine, newest first, foreground and background,
         with its outcome: the run's own, running, interrupted (its process
         is gone) or unknown (its record cannot be read)
 status  one background run's latest state, at once; waits for nothing
-wait    reads a background run until it finishes, then prints it; it never
-        cancels the run. --timeout bounds the wait, default 30m. When it
-        runs out, the latest state is printed, the exit is 7 and the run
-        keeps going: wait again or ask status later
+wait    reads a background run until it finishes, then prints what run
+        prints for it; it never cancels the run. --timeout bounds the wait,
+        default 30m. When it runs out, the latest state is printed, the exit
+        is 7 and the run keeps going: wait again or ask status later
 cancel  asks a background run to stop and returns at once; follow it with
         wait to see it end as cancelled
 prune   deletes foreground run records, keeping the newest <n>. A running
