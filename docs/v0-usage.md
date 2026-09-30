@@ -27,7 +27,10 @@ distributed runtime targets. Windows, FreeBSD, OpenBSD, NetBSD, Solaris, and
 Plan 9 are compile gates only — CI cross-compiles the Windows binary and its
 test packages and compile-checks the other targets' binaries, but none is
 runtime-tested in the current release gates or a released platform. Windows
-requires a source build. Native archives for those runtime targets are
+requires a source build. Every run is carried out by a supervisor process
+that only macOS and Linux can host, so on every other target `pi-worker run`
+exits `9` with `pi-worker: run is not supported on this platform`. Native
+archives for those runtime targets are
 published on [GitHub Releases](https://github.com/arasovic/pi-worker/releases).
 
 Install the public package normally, or keep installer diagnostics visible:
@@ -260,10 +263,10 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   `.tmp-*` stages, and any other file are not.
 - `runs list` is read-only: it prints one line per record, newest
   first, and writes nothing — no marker, no watermark, no
-  interrupted-run warning. It also lists every run started with
-  `--background`, read from the background store — one `snapshot.json`
+  interrupted-run warning. It also lists every supervised run (every
+  `run`, with or without `--background`), read from the background store — one `snapshot.json`
   per run directory under pi-worker's background directory — merged
-  with the run records and sorted newest first. A background run also
+  with the run records and sorted newest first. A supervised run also
   writes a run record, so it is found in both places; it is listed
   once, as its background entry, because the snapshot is the state
   `runs status` and `runs wait` read. A background run's `path` is its
@@ -414,6 +417,26 @@ pi-worker runs wait <id> [--timeout <duration>] [--debug] [--json]
 pi-worker runs cancel <id> [--json]
 ```
 
+- Every run is a supervised run. `run` without `--background` starts the
+  run exactly as `run --background` does — the same pre-run warnings, the
+  same checkout, the same supervisor and acceptance handshake — and then
+  waits for it in the same command. Once the run is accepted it prints
+  `pi-worker: run <runId>` on stderr, once; `run --background` prints no
+  such line, since its accepted output already names the run. When the run
+  has finished, `run` prints what `runs wait <runId>` prints for it — the
+  human summary, or with `--json` the run's result document — on the same
+  streams, and exits with the code of the run's stored outcome.
+- A waiting `run` that is killed — `SIGKILL`, or its terminal closed —
+  leaves the run going: it finishes by itself, bounded by its `--timeout`
+  (default `30m`), and `runs list` or the identity on the
+  `pi-worker: run <runId>` line finds it for `runs status` and
+  `runs wait`. A Ctrl-C cancels the run instead; see
+  `### Ctrl-C / timeout cleanup and lifecycle boundary`.
+- A waiting `run` whose supervisor is gone before the run finished prints
+  `pi-worker: run <runId>: supervisor is no longer there; the run was
+  interrupted and will not finish` on stderr and exits `9`; one that can
+  no longer read the run's state prints `pi-worker: read run <runId>:
+  <error>` and exits `9`. Neither prints a document.
 - `run --background` accepts the run, hands it to a detached supervisor
   process, and returns as soon as that supervisor has written the
   accepted state durably. The tasks keep going after the command exits.
@@ -425,30 +448,36 @@ pi-worker runs cancel <id> [--json]
   each task's prompt, which the caller has just sent; `runs status --json`
   shows it. Exit `0`
   means accepted, not finished: no task has produced a result yet.
-- Before the start, `run --background` prints the same pre-run warnings
-  on stderr as a foreground run, in the same order: the Pi version probe
-  (see `### Model selection`), the shared-workspace warning, interrupted
-  earlier runs, and processes an earlier run may have left running (see
-  `## Run records`), including their `check unavailable` forms. The two
-  earlier-run scans read the same run records a foreground run reads and
-  update the same once-only marker, so an interrupted run reported by a
-  background start is not reported again by the next foreground run.
-- A background run writes the same run record a foreground run writes,
-  into the records directory the starting command resolved: its
+- Before the start, every `run` prints its pre-run warnings on stderr in
+  this order: the Pi version probe (see `### Model selection`), the
+  shared-workspace warning, interrupted earlier runs, and processes an
+  earlier run may have left running (see `## Run records`), including
+  their `check unavailable` forms. After acceptance come the
+  `pi-worker: worktree` line of a `--worktree` run, then, without
+  `--background`, the `pi-worker: run <runId>` line. The two earlier-run
+  scans read the run records and update one once-only marker, so an
+  interrupted run reported by one start is not reported again by the next.
+- Every run writes a run record into the records directory the starting
+  command resolved: its
   supervisor writes the start line before any worker starts, a worker
   line per started worker, a descendant line per descendant process, and
   the finish line after the terminal state, carrying the same result
   document. The start line names the supervisor process, so a supervisor
   killed without warning leaves a record the next run reports as
-  interrupted, and a settled run's leftover processes are reported the
-  same way as a foreground run's. When the records directory cannot be
+  interrupted, and a settled run's leftover processes are reported by the
+  next run's start. When the records directory cannot be
   resolved, the start prints `run record unavailable` and the run starts
   without a record. A record the supervisor cannot write never fails the
   run and is not reported: the supervisor has no terminal to report to.
-- A start that was refused exits non-zero without leaving a run behind:
-  `2` when the workspace or the requested private checkout is refused,
+- A start that was refused exits non-zero without leaving a run behind,
+  with or without `--background`, and prints no document:
+  `2` when the workspace or the requested private checkout is refused or
+  the start request is too large (see `### Carried material`),
   `7` when the acceptance handshake ran out of time, `8` when the start
-  was cancelled, and `9` for any other internal failure.
+  was cancelled, and `9` for any other internal failure. The handshake
+  waits at most 2 minutes for the supervisor to accept the run. A
+  `--worktree` checkout prepared for a start that was then refused is
+  removed again.
 - `runs status <id>` reads that run's latest durable state exactly once
   and returns. It waits for nothing, so a run in flight is answered
   immediately, and asking again reports whatever has become durable
@@ -457,7 +486,7 @@ pi-worker runs cancel <id> [--json]
   summary table, and so does `runs wait` when the wait ran out or the
   supervisor is gone: a run row, one row per worker with its state, model,
   and answer, plus, for a finished run, the verification, git, change,
-  write-check, and leftover-process lines a foreground run prints (see
+  write-check, and leftover-process lines `run` prints (see
   `### Output`) and `outcome=`. No task prompt appears in that table.
   A running worker that has reported Pi activity shows it in the answer
   column as `active <lastEventAt>, <toolCalls> tool calls`, followed by
@@ -474,7 +503,7 @@ pi-worker runs cancel <id> [--json]
   The check lines come after that block, before `outcome=`.
 - `runs wait <id>` reads the same state repeatedly until the run
   finishes, then prints the finished run. Without `--json` it prints what
-  a foreground `run` of the same task prints — the worker lines, the check
+  `run` prints for it — the worker lines, the check
   lines, and `outcome=`, on the same streams (see `### Output`) — and no
   table. A finished run whose snapshot carries no result document is
   printed as the table instead. Waiting is reading and nothing
@@ -483,7 +512,7 @@ pi-worker runs cancel <id> [--json]
   `--verify` command that could not start — makes `runs wait`,
   `runs status`, and `runs cancel` print `pi-worker: <error>` on stderr
   before the result,
-  the same line a foreground run prints, with or without `--json`; the
+  the same line `run` prints, with or without `--json`; the
   `--json` document also carries it as `error`.
 - `runs wait --timeout <duration>` bounds the wait. Without one the
   bound is `30m`. When the bound arrives first, the command prints the
@@ -515,8 +544,8 @@ pi-worker runs cancel <id> [--json]
   `### Ctrl-C / timeout cleanup and lifecycle boundary`; use `runs wait` to
   follow it. A stale or unavailable supervisor is not signalled and exits `9`
   because this command never finishes a record on its behalf.
-- Exit codes: a run that has finished exits with the code that same
-  result produces in the foreground — the snapshot carries the run's own
+- Exit codes: a run that has finished exits with the code `run` exits
+  with for it — the snapshot carries the run's own
   `outcome` and it goes through the one mapping under `### Exit codes`. A
   `runs status` of a run still going exits `0`: it asked one question
   and answered it. A run whose supervisor is gone before it finished
@@ -644,10 +673,10 @@ Replace the provider/model placeholder with one exact selector printed by
 - `config set max-model-workers <n>` accepts a positive integer, updates only
   `maxModelWorkers`, and preserves `defaultModel`. It never queries the model
   catalog and never contacts Pi. The setter is a local-only write.
-- `maxModelWorkers` is enforced machine-wide across foreground processes through a
+- `maxModelWorkers` is enforced machine-wide across runs through a
   file-backed admission gate. The effective default is 3, overridable only through
   `pi-worker config set max-model-workers <n>`. There is no run-level override,
-  no daemon, no environment variable, and no foreground priority mechanism.
+  no daemon, no environment variable, and no priority mechanism.
 - Configuration writes use a same-directory temporary file, file sync, atomic
   replacement, and owner-only permissions where supported.
 - When the configuration path itself is a symbolic link, `config set` refuses
@@ -673,16 +702,18 @@ Replace the provider/model placeholder with one exact selector printed by
 
 ## Behavior
 
-### Foreground admission
+### Admission
 
-Every foreground task joins one file-backed machine-wide FIFO before Pi starts.
-There is no daemon, no foreground priority, no preemption, no run-level flag,
-and no environment variable to bypass admission.
+Every task of every run joins one file-backed machine-wide FIFO before Pi
+starts; the run's supervisor process enqueues the tickets and holds the
+leases, with or without `--background`. There is no daemon, no priority, no
+preemption, no run-level flag, and no environment variable to bypass
+admission.
 
-All task tickets for one run are durably enqueued in request order before any
-task waits for a lease, so a multi-task run cannot jump an older ticket. The
-`runId` recorded in each admission ticket is the same identifier written to the
-run record.
+All task tickets for one run are durably enqueued in request order before the
+supervisor accepts the run and before any task waits for a lease, so a
+multi-task run cannot jump an older ticket. The `runId` recorded in each
+admission ticket is the same identifier written to the run record.
 
 Each task's queue budget is fixed at 15 minutes from the time the run is
 accepted. Queue time is measured independently of `--timeout` and does not
@@ -691,10 +722,11 @@ consume any execution budget.
 `--timeout` (default 30m) is the per-task execution budget starting after that
 task receives an admission lease. An admitted successful run's optional
 verification command gets its own same-sized budget when verification starts.
-Worktree setup and the version preflight are outside this execution clock but
-remain parent-cancellable.
+Worktree setup, the version preflight, and the acceptance handshake are outside
+this execution clock; a Ctrl-C during them cancels the start.
 
-Parent cancellation removes every queued ticket and cancels running workers.
+Cancelling the run — a Ctrl-C to the waiting `run`, or `runs cancel` — removes
+every queued ticket and cancels running workers.
 Leases are held through settled-output attribution and released on terminal
 paths. Stale ownership is detected by PID plus creation-time fail-safe: a
 ticket whose owner process is absent from the process table or whose creation
@@ -707,7 +739,7 @@ queue, the run outcome is `timeout`. Each timed-out ticket is removed
 from the gate.
 
 `maxModelWorkers` (effective default 3, overridable through config only) limits
-the number of concurrent leased tasks across all foreground processes on the
+the number of concurrent leased tasks across all runs on the
 same machine. The admission gate lives inside Pi Worker's user configuration
 directory and is shared across all processes that resolve the same config root;
 two runs from distinct configuration files do not share a gate.
@@ -805,7 +837,7 @@ two runs from distinct configuration files do not share a gate.
   `logFile` in the `verification` object.
 - A context that expires while the check runs is not a verification
   failure: the run ran out of time and exits the way a timed-out run
-  exits (`7`).
+  exits (`7`), with the timed-out document.
 - `completed` means the workers' turns ended normally and every configured
   check passed, not that the deliverable is done. A worker's final text can
   be a mid-work sentence, as when an upstream response was cut short but
@@ -1096,9 +1128,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   Identity includes content/kind/executable state and relevant
   directory/nested-repository shape; contents/hashes are never exposed.
   Pi-worker never restores or overwrites files to repair interference. A
-  required settlement/final snapshot failure returns a controller error;
-  the CLI exits 9 on stderr and emits no result/JSON document — no
-  clean/success result is produced.
+  required settlement/final snapshot failure ends the run with a run-level
+  error: the CLI prints it on stderr and exits 9, and the document it
+  prints carries outcome `internal-error` — no clean/success result is
+  produced.
   Honest limits (still post-hoc, not a sandbox, not continuous tracing):
   a foreign write fully made and reverted before the owner's settlement
   snapshot is invisible; so is an interim post-settlement write restored
@@ -1160,15 +1193,17 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   anywhere in the argument list, before the `--task` or `--task-file`
   included, and a prompt read from stdin — a run with no task flag at
   all — declares its material the same way.
-- Foreground runs have **no** size limit and **no** count limit, per
+- There is **no** cost-driven size limit and **no** count limit, per
   task or per run: pi-worker cannot know the caller's budget, model, or
   context window, so any ceiling would be a cost opinion wearing a safety
-  guard's clothes. A background run is the one exception, and for a
-  transport reason rather than a cost one: its prompts and `--data` files
-  travel to the detached supervisor as one framed request with a 64 MiB
-  ceiling, so a `run --background` whose prompts and data files together
-  encode to more than 64 MiB is refused with exit `2` before any process
-  starts — shrink the input or run without `--background`.
+  guard's clothes. The one ceiling is a transport one: every run's prompts
+  and `--data` files travel to its supervisor process as one framed
+  request with a 64 MiB ceiling on the encoded request, so a `run`, with
+  or without `--background`, whose prompts and data files together encode
+  to more than 64 MiB is refused with exit `2` before any process starts.
+  File content travels base64-encoded, about 1.33 times its size on disk,
+  so the data files alone reach the ceiling at roughly 48 MiB. Shrink the
+  input or split it across runs.
 - Every data file is read once, up front, before any worker starts, in
   the same pass that validates the rest of the command line. A missing,
   unreadable, or otherwise failing file is a usage error that exits `2`
@@ -1216,7 +1251,7 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   - each confirmed worker's effective `thinkingLevel`; explicit requests also
     include `requestedThinkingLevel`
   - each worker's timeline, stamped by the run layer rather than by the
-    worker process: `acceptedAt` (the moment the run was accepted),
+    worker process: `acceptedAt` (the moment the run was accepted, truncated to whole seconds),
     `startedAt` (the moment execution actually began), and `finishedAt`
     (the moment it settled), each an RFC 3339 timestamp in UTC. A worker
     whose admission wait failed before it ever ran carries `acceptedAt`
@@ -1251,11 +1286,14 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     exactly two string fields, `path` (the checkout path assigned to the
     run) and `branch` (the branch created for the checkout); absent
     otherwise
-  A run whose first worker starts emits a document on every terminal
-  status, timed-out and cancelled included. An ending before the first worker
-  starts emits no document. A timeout or cancellation landing while the
-  `--verify` check runs also emits no document; these shapes are deliberate
-  rather than partial documents, and only the exit code and stderr remain.
+  Once the supervisor has accepted the run — the `pi-worker: run <runId>`
+  line — every terminal status emits a document, timed-out and cancelled
+  included, and so does a timeout or cancellation landing while the
+  `--verify` check runs. No document is emitted when the start is refused
+  or cancelled before acceptance, when the run's supervisor is gone before
+  the run finished, or when the run's state cannot be read; these shapes
+  are deliberate rather than partial documents, and only the exit code and
+  stderr remain.
 - Pre-run usage/input validation errors are written to stderr and may produce no JSON output.
 
 Example:
@@ -1296,9 +1334,11 @@ document carries either way. Contract breach outranks quality signal.
 
 ### `--debug` debug stream
 
-`--debug` writes sanitized lifecycle progress only to stderr; a background
-run writes it to its `debug.log` instead, and `runs wait --debug` copies that
-file to stderr (see `## Background runs`). It includes:
+`--debug` writes sanitized lifecycle progress to the run's `debug.log`, never
+to stdout. `run --debug` copies that file to stderr while it waits, whole
+lines only, and prints no `pi-worker: debug log` line; `run --background
+--debug` prints that line instead, and `runs wait --debug` copies the file
+to stderr (see `## Background runs`). It includes:
 - worker identity and start line
 - RPC request status/duration (`get_available_models`, `set_model`,
   `get_state`, `get_available_thinking_levels`, `set_thinking_level`, `prompt`,
@@ -1320,12 +1360,11 @@ file to stderr (see `## Background runs`). It includes:
 - settlement line
 - worker completion and total duration
 
-The debug stream is bounded to 512 lines per run: 315 regular lifecycle/tool/RPC
-lines, 180 heartbeat lines, 16 reserved terminal lines, and one fixed budget
-notice. A background run's workers each run in a process of their own, so
-there the same bound applies to each worker instead: up to 512 lines per
-worker. A background run's elapsed stamps count from its `acceptedAt`, which
-is whole seconds. The heartbeat is disabled, including its timer and
+The debug stream is bounded to 512 lines per worker: 315 regular
+lifecycle/tool/RPC lines, 180 heartbeat lines, 16 reserved terminal lines, and
+one fixed budget notice. Each worker runs in a process of its own and writes
+its own lines. The elapsed stamps count from the run's `acceptedAt`, which is
+whole seconds. The heartbeat is disabled, including its timer and
 goroutine, when `--debug` is not enabled.
 
 It does **not** print:
@@ -1338,7 +1377,20 @@ It does **not** print:
 
 ### Ctrl-C / timeout cleanup and lifecycle boundary
 
-- Ctrl-C and timeout cancel the shared run context.
+- A Ctrl-C or `SIGTERM` to a waiting `run` after the run was accepted
+  cancels the run the way `runs cancel` does, then keeps waiting until the
+  run has finished and exits with its stored outcome — `8` with the
+  cancelled document for a cancelled run. A cancel that cannot be sent is
+  reported as `pi-worker: cancel run <runId>: <error>` and the wait goes
+  on. Further Ctrl-Cs during that wait are ignored; `SIGKILL` ends the
+  waiting command and leaves the run going, bounded by its `--timeout`
+  (default `30m`), and `runs list` or the `pi-worker: run <runId>` line
+  finds it.
+- A Ctrl-C before the run was accepted — during the version probe, the
+  checkout, or the acceptance handshake — cancels the start: exit `8`, no
+  document, no run left behind.
+- Inside the run, a cancellation and the timeout cancel the shared run
+  context.
 - macOS/Linux: each child runs in its own process group, but cleanup avoids signalling that reusable numeric group; it kills Pi through Go's process handle and performs a best-effort, creation-time-verified descendant sweep.
 - Windows: children are placed in a Job Object with kill-on-close.
 - This is recovery, not a sandbox. Deliberately daemonized/reparented processes, processes spawned during the post-snapshot window, and the short Windows pre-assignment window can escape. A run reports those of them that still carry its marker in root `leftoverProcesses`; see the run JSON contract for what it cannot see.

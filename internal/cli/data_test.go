@@ -187,7 +187,7 @@ func TestRunDataJSONCarriesPathAndByteCountNotContent(t *testing.T) {
 
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, args, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -232,7 +232,7 @@ func TestRunDataSeveralFilesPerTask(t *testing.T) {
 
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, args, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -310,7 +310,7 @@ func TestRunDataAbsolutePathAccepted(t *testing.T) {
 
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, args, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -339,7 +339,7 @@ func TestRunDataJSONSha256DistinguishesSameLengthFiles(t *testing.T) {
 
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, args, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)

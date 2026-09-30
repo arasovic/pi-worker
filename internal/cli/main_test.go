@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,11 +11,9 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/config"
@@ -102,170 +99,41 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// fakeWorker is the scripted worker installed through the newWorker seam.
-type fakeWorker struct {
-	defaultResult   pi.WorkerResult
-	resultsByWorker map[int]pi.WorkerResult
-	resultsByPrompt map[string]pi.WorkerResult
-	requests        map[int]pi.WorkerRequest
-	deadlines       map[int]time.Time
-	hasDeadline     map[int]bool
-	calls           int
-	active          int
-	maxActive       int
-	startGate       chan struct{}
-	startGateAt     int
-	startGateClosed bool
-	releaseByWorker map[int]chan struct{}
-	releaseByPrompt map[string]chan struct{}
-	completed       chan int
-	ignoreContext   bool
-	runHook         func()
-	onRequest       func(pi.WorkerRequest)
-	mu              sync.Mutex
-}
-
-func (f *fakeWorker) Run(ctx context.Context, req pi.WorkerRequest) (result pi.WorkerResult) {
-	var scope *pi.WorkerScope
-
-	f.mu.Lock()
-	f.calls++
-	f.requests[req.WorkerID] = req
-	if deadline, ok := ctx.Deadline(); ok {
-		f.deadlines[req.WorkerID] = deadline
-		f.hasDeadline[req.WorkerID] = true
-	}
-	f.active++
-	if f.active > f.maxActive {
-		f.maxActive = f.active
-	}
-	if f.startGate != nil && !f.startGateClosed && f.active >= f.startGateAt {
-		close(f.startGate)
-		f.startGateClosed = true
-	}
-	f.mu.Unlock()
-
-	// onRequest observes the request right after it was stored. It is nil
-	// on every existing test; a test that needs it sets it explicitly.
-	if f.onRequest != nil {
-		f.onRequest(req)
-	}
-
-	if f.runHook != nil {
-		f.runHook()
-	}
-
-	if req.Debug != nil {
-		scope = req.Debug.Worker(req.WorkerID)
-		scope.Log("phase=starting", "provider=acme", "model=m-1")
-	}
-
-	defer func() {
-		f.mu.Lock()
-		f.active--
-		f.mu.Unlock()
-	}()
-
-	if scope != nil {
-		defer func() {
-			scope.Log("status="+result.Status, "total="+scope.Elapsed().String())
-		}()
-	}
-
-	if f.startGate != nil {
-		<-f.startGate
-	}
-	if ch := f.releaseByPrompt[req.Prompt]; ch != nil {
-		select {
-		case <-ch:
-		case <-ctx.Done():
-		}
-	}
-	if ch := f.releaseByWorker[req.WorkerID]; ch != nil {
-		select {
-		case <-ch:
-		case <-ctx.Done():
-		}
-	}
-
-	if err := ctx.Err(); err != nil && !f.ignoreContext {
-		if errors.Is(err, context.DeadlineExceeded) {
-			result = pi.WorkerResult{Model: req.Model, Status: pi.StatusTimedOut, Error: "timed out"}
-		} else {
-			result = pi.WorkerResult{Model: req.Model, Status: pi.StatusCancelled, Error: "cancelled"}
-		}
-	} else {
-		f.mu.Lock()
-		if byWorker, ok := f.resultsByWorker[req.WorkerID]; ok {
-			result = byWorker
-		} else if byPrompt, ok := f.resultsByPrompt[req.Prompt]; ok {
-			result = byPrompt
-		} else {
-			result = f.defaultResult
-		}
-		f.mu.Unlock()
-		if result.Model == "" {
-			result.Model = req.Model
-		}
-	}
-
-	if f.completed != nil {
-		f.completed <- req.WorkerID
-	}
-
-	return result
-}
-
-func (f *fakeWorker) requestForWorker(id int) (pi.WorkerRequest, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	request, ok := f.requests[id]
-	return request, ok
-}
-
-func (f *fakeWorker) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
-func (f *fakeWorker) maxConcurrency() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.maxActive
-}
-
-func (f *fakeWorker) deadlineForWorker(id int) (time.Time, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	deadline, ok := f.deadlines[id]
-	return deadline, ok && f.hasDeadline[id]
-}
-
-// installFakeWorker replaces the private newWorker seam so tests never
-// launch the user's real Pi profile.
-func installFakeWorker(t *testing.T, result pi.WorkerResult) *fakeWorker {
-	t.Helper()
-	fake := &fakeWorker{
-		defaultResult:   result,
-		resultsByWorker: make(map[int]pi.WorkerResult),
-		resultsByPrompt: make(map[string]pi.WorkerResult),
-		requests:        make(map[int]pi.WorkerRequest),
-		deadlines:       make(map[int]time.Time),
-		hasDeadline:     make(map[int]bool),
-	}
-	original := newWorker
-	newWorker = func() pi.Worker { return fake }
-	t.Cleanup(func() { newWorker = original })
-	return fake
-}
-
 func runCLI(t *testing.T, args []string, stdin string) (int, string, string) {
 	t.Helper()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	ran := separateRunSeconds(args)
 	code := Main(args, strings.NewReader(stdin), &stdout, &stderr)
+	ran(code)
 	return code, stdout.String(), stderr.String()
+}
+
+// lastRunSecond is the second the latest in-process `run` command that may
+// have started a run returned in. A run identity is the start second plus
+// the starting process's pid, and every run started in-process shares this
+// test process's pid, so two runs started in one second against one state
+// root would claim the same identity. A helper that gives a test a fresh
+// state root clears it, since no earlier run can collide there.
+var lastRunSecond time.Time
+
+// separateRunSeconds keeps in-process runs in distinct seconds: before a
+// `run` command it waits until the clock has left the second the previous
+// run returned in — that run was accepted no later than that — and the
+// returned func records the second this command returned in, unless it was
+// refused as a usage error and so started nothing.
+func separateRunSeconds(args []string) func(code int) {
+	if len(args) == 0 || args[0] != "run" {
+		return func(int) {}
+	}
+	if now := time.Now().Truncate(time.Second); !now.After(lastRunSecond) {
+		time.Sleep(time.Until(lastRunSecond.Add(time.Second)))
+	}
+	return func(code int) {
+		if code != 2 {
+			lastRunSecond = time.Now().Truncate(time.Second)
+		}
+	}
 }
 
 // runCLIWithContext drives the private Main seam with an explicit parent
@@ -275,7 +143,9 @@ func runCLIWithContext(t *testing.T, ctx context.Context, args []string, stdin s
 	t.Helper()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	ran := separateRunSeconds(args)
 	code := mainWithContext(ctx, args, strings.NewReader(stdin), &stdout, &stderr)
+	ran(code)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -332,35 +202,25 @@ func withBuildInfo(t *testing.T, version, commit, buildDate string) {
 	})
 }
 
-// installRealFakePiWorker points the newWorker seam at the fakepi test
-// double so CLI cancellation tests exercise the real process lifecycle,
-// reaping, and session-directory cleanup instead of the scripted stub.
-func installRealFakePiWorker(t *testing.T) {
-	t.Helper()
-	original := newWorker
-	newWorker = func() pi.Worker { return pi.New(fakePiBin) }
-	t.Cleanup(func() { newWorker = original })
-}
-
 // useFakePi points every run this test starts at the fakepi test double
-// answering from scriptConfig, through each path a run can take: the
-// in-process worker today, and the background start a run goes through
-// once it no longer runs in-process. The background state stays under this
-// test's own directory, and the admission root and limit the run resolved
-// reach the Manager unchanged, as they do in production.
-func useFakePi(t *testing.T, scriptConfig *script.Script) {
+// answering from scriptConfig, through the supervisor the built binary
+// starts. The background state stays under this test's own directory, and
+// the admission root and limit the run resolved reach the Manager unchanged,
+// as they do in production. The returned Manager reads that state.
+func useFakePi(t *testing.T, scriptConfig *script.Script) *background.Manager {
 	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("fake-Pi runs need a platform that can host a role process")
 	}
 	roleBin := piWorkerBinForBackground(t)
 	setupFakePiScript(t, scriptConfig)
-	// An in-process run puts its marker into this process's environment;
-	// see setupBackgroundCLI.
-	t.Setenv(run.RunMarkerEnv, "")
-	installRealFakePiWorker(t)
 
 	root := t.TempDir()
+	lastRunSecond = time.Time{}
+	reader, err := background.NewManager(root, t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
 	originalManager, originalPi, originalRole := newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable
 	newBackgroundManager = func(admissionRoot string, maxModelWorkers int) (*background.Manager, error) {
 		return background.NewManager(root, admissionRoot, maxModelWorkers)
@@ -370,6 +230,33 @@ func useFakePi(t *testing.T, scriptConfig *script.Script) {
 	t.Cleanup(func() {
 		newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable = originalManager, originalPi, originalRole
 	})
+	return reader
+}
+
+// runLinePattern matches the one stderr line `run` prints once its run is
+// accepted.
+var runLinePattern = regexp.MustCompile(`(?m)^pi-worker: run ([0-9]{8}T[0-9]{6}Z-[0-9]+)\n`)
+
+// withoutRunLine returns stderr with the accepted run's line removed, so a
+// test can compare the rest of stderr exactly. It fails the test unless that
+// line appears exactly once.
+func withoutRunLine(t *testing.T, stderr string) string {
+	t.Helper()
+	if n := len(runLinePattern.FindAllString(stderr, -1)); n != 1 {
+		t.Fatalf("stderr = %q, want exactly one run line, got %d", stderr, n)
+	}
+	return runLinePattern.ReplaceAllString(stderr, "")
+}
+
+// runIDFromRunLine returns the identity the accepted run's stderr line
+// names.
+func runIDFromRunLine(t *testing.T, stderr string) string {
+	t.Helper()
+	match := runLinePattern.FindStringSubmatch(stderr)
+	if match == nil {
+		t.Fatalf("stderr = %q, want a run line", stderr)
+	}
+	return match[1]
 }
 
 // fakePiDoneLines is the human summary of workers 1 to n that each answered
@@ -614,41 +501,6 @@ func decodeRunOutput(t *testing.T, stdout string) runOutput {
 		t.Fatalf("decode json stdout: %v (%q)", err, stdout)
 	}
 	return output
-}
-
-func mustWorkerRequest(t *testing.T, fake *fakeWorker, id int) pi.WorkerRequest {
-	t.Helper()
-	request, ok := fake.requestForWorker(id)
-	if !ok {
-		t.Fatalf("worker %d never invoked", id)
-	}
-	return request
-}
-
-func waitForWorkerCount(t *testing.T, fake *fakeWorker, want int) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if fake.callCount() >= want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d workers started, want %d", fake.callCount(), want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func waitForWorkerCompleted(t *testing.T, ch <-chan int, want int) {
-	t.Helper()
-	select {
-	case got := <-ch:
-		if got != want {
-			t.Fatalf("worker %d completed first, want %d", got, want)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for worker %d to complete", want)
-	}
 }
 
 func TestMainVersion(t *testing.T) {
@@ -1164,7 +1016,7 @@ func TestRunWritesBeforeSingleTaskReachesThatTask(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%v: exit = %d, want 0; stderr = %q", args, code, stderr)
 		}
-		if stderr != "" {
+		if withoutRunLine(t, stderr) != "" {
 			t.Fatalf("%v: stderr = %q", args, stderr)
 		}
 		want := fakePiDoneLines(1) +
@@ -1188,7 +1040,7 @@ func TestRunWritesWithStdinPromptReachesTheStdinTask(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	want := fakePiDoneLines(1) +
@@ -1264,7 +1116,7 @@ func TestRunWritesNothingDeclarationAcceptedBeforeSingleTask(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	want := fakePiDoneLines(1) +
@@ -1310,7 +1162,7 @@ func TestRunSuccessHuman(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=medium]: All done.\n")
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	if got, want := fakePiCwd(t, metaPath), resolvedDir(t, workspace); got != want {
@@ -1656,7 +1508,7 @@ func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
 		t.Fatalf("version probe count = %d, want 1", got)
 	}
 	const wantWarning = "pi-worker: warning: Pi version 0.99.0 is unverified; verified version is " + piversion.VerifiedVersion + "; continuing\n"
-	if stderr != wantWarning || strings.Contains(stderr, "child-secret-must-not-leak") {
+	if withoutRunLine(t, stderr) != wantWarning || strings.Contains(stderr, "child-secret-must-not-leak") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	_ = decodeRunOutput(t, stdout)
@@ -2009,73 +1861,6 @@ func TestRunTimeoutFlag(t *testing.T) {
 	}
 }
 
-func TestRunParentDeadlineExits7FromTimedOutContext(t *testing.T) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	_ = installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x", "--json"}, "")
-	if code != 7 {
-		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
-	}
-	output := decodeRunOutput(t, stdout)
-	if output.Status != "timed-out" {
-		t.Fatalf("status = %q", output.Status)
-	}
-	if output.Outcome != contracts.OutcomeTimeout {
-		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeTimeout)
-	}
-	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusTimedOut {
-		t.Fatalf("workers = %#v", output.Workers)
-	}
-	// The context was already done at inspection: the manifest must
-	// read as omitted with a stated reason, never as an absent field.
-	if output.Changes == nil || output.Changes.Omitted != "context already done" {
-		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
-	}
-}
-
-func TestRunParentCancellationExits8FromCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_ = installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x", "--json"}, "")
-	if code != 8 {
-		t.Fatalf("exit = %d, want 8; stderr = %q", code, stderr)
-	}
-	output := decodeRunOutput(t, stdout)
-	if output.Status != "cancelled" {
-		t.Fatalf("status = %q", output.Status)
-	}
-	if output.Outcome != contracts.OutcomeCancelled {
-		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
-	}
-	if len(output.Workers) != 1 || output.Workers[0].Status != pi.StatusCancelled {
-		t.Fatalf("workers = %#v", output.Workers)
-	}
-	// The context was already done at inspection: the manifest must
-	// read as omitted with a stated reason, never as an absent field.
-	if output.Changes == nil || output.Changes.Omitted != "context already done" {
-		t.Fatalf("changes = %#v, want omitted with %q", output.Changes, "context already done")
-	}
-}
-
-func TestRunTimedOutContextHumanPrintsOutcomeLineLast(t *testing.T) {
-	// The timed-out worker's message goes to stderr; stdout is exactly
-	// the change-manifest line followed by the final outcome line, and
-	// the outcome word names the timed-out exit.
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
-	if code != 7 {
-		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
-	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=timeout" {
-		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=timeout", stdout)
-	}
-}
-
 func TestRunTimedOutHumanPrintsPartialTextOnStdout(t *testing.T) {
 	// A timed-out worker that salvaged partial text: the result carries
 	// the salvaged explanation, the error line still goes to stderr
@@ -2136,23 +1921,6 @@ func TestRunCompletedHumanOutputUnchanged(t *testing.T) {
 	}
 }
 
-func TestRunCancelledContextHumanPrintsOutcomeLineLast(t *testing.T) {
-	// The cancelled worker's message goes to stderr; stdout is exactly
-	// the change-manifest line followed by the final outcome line, and
-	// the outcome word names the cancelled exit.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
-	if code != 8 {
-		t.Fatalf("exit = %d, want 8; stderr = %q", code, stderr)
-	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || lines[1] != "outcome=cancelled" {
-		t.Fatalf("human stdout = %q, want one changes: line then exactly outcome=cancelled", stdout)
-	}
-}
-
 func TestRunUsageShowsDebugAndThinkingFlags(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2165,215 +1933,6 @@ func TestRunUsageShowsDebugAndThinkingFlags(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--thinking <level>") {
 		t.Fatalf("usage does not mention --thinking: %q", stderr.String())
-	}
-}
-
-func TestRunDebugPassesSinkAndLogsToStderr(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix it", "--debug"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	requireChangesTail(t, stdout, "worker 1: All done.\n")
-	request := mustWorkerRequest(t, fake, 1)
-	if request.Debug == nil {
-		t.Fatalf("debug sink not passed to worker")
-	}
-	if !strings.Contains(stderr, "[pi-worker +") || !strings.Contains(stderr, "worker=1 phase=starting provider=acme model=m-1") || !strings.Contains(stderr, "worker=1 status=completed total=") {
-		t.Fatalf("stderr missing lifecycle logs: %q", stderr)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
-		if !strings.HasPrefix(line, "[pi-worker +") {
-			t.Fatalf("stderr line without debug prefix: %q", line)
-		}
-	}
-}
-
-func TestRunWithoutDebugKeepsStderrClean(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if request := mustWorkerRequest(t, fake, 1); request.Debug != nil {
-		t.Fatalf("debug sink passed without --debug")
-	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty without --debug", stderr)
-	}
-}
-
-func TestRunDebugJSONKeepsStdoutSingleDocument(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "JSON answer"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--debug"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
-		t.Fatalf("stdout has more than one line: %q", stdout)
-	}
-	output := decodeRunOutput(t, stdout)
-	if output.SchemaVersion != 1 || output.Status != "completed" || output.Workers[0].Explanation != "JSON answer" {
-		t.Fatalf("output = %#v", output)
-	}
-	request := mustWorkerRequest(t, fake, 1)
-	if request.Debug == nil {
-		t.Fatalf("debug sink not passed with --json --debug")
-	}
-	if !strings.Contains(stderr, "[pi-worker +") {
-		t.Fatalf("stderr missing debug logs: %q", stderr)
-	}
-}
-
-func TestRunParallelDebugLabelsWorkers1To3(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"},
-		3: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"},
-	}
-	fake.startGate = make(chan struct{})
-	fake.startGateAt = 3
-	fake.releaseByWorker = map[int]chan struct{}{
-		1: make(chan struct{}),
-		2: make(chan struct{}),
-		3: make(chan struct{}),
-	}
-	fake.completed = make(chan int, 3)
-
-	var code int
-	var stdout, stderr string
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		code, stdout, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b", "--task", "c", "--debug"}, "")
-	}()
-	waitForWorkerCount(t, fake, 3)
-	close(fake.releaseByWorker[3])
-	waitForWorkerCompleted(t, fake.completed, 3)
-	close(fake.releaseByWorker[2])
-	waitForWorkerCompleted(t, fake.completed, 2)
-	close(fake.releaseByWorker[1])
-	waitForWorkerCompleted(t, fake.completed, 1)
-	<-done
-
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	requireChangesTail(t, stdout, "worker 1: done\nworker 2: done\nworker 3: done\n")
-	lines := strings.Split(strings.TrimSpace(stderr), "\n")
-	var debugLines []string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "pi-worker: warning:") {
-			continue
-		}
-		if !strings.HasPrefix(line, "[pi-worker +") {
-			t.Fatalf("stderr line without debug prefix: %q", line)
-		}
-		if strings.Count(line, "worker=") != 1 {
-			t.Fatalf("stderr line has wrong worker labels: %q", line)
-		}
-		debugLines = append(debugLines, line)
-	}
-	if len(debugLines) != 6 {
-		t.Fatalf("debug lines = %d, want 6: %q", len(debugLines), debugLines)
-	}
-	for _, worker := range []string{"worker=1 ", "worker=2 ", "worker=3 "} {
-		if !strings.Contains(stderr, worker) {
-			t.Fatalf("stderr missing %s: %q", worker, stderr)
-		}
-	}
-}
-
-func TestRunAlreadyCancelledContextExits8WithoutLaunchingPi(t *testing.T) {
-	// An already-cancelled parent context must flow through runCommand into
-	// the worker and surface as status "cancelled" with exit code 8. The
-	// host executable must never be launched, so no session directory is
-	// created and no process needs reaping.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{})
-	metaPath := filepath.Join(t.TempDir(), "meta.json")
-	t.Setenv("FAKEPI_META", metaPath)
-
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
-	if code != 8 {
-		t.Fatalf("exit = %d, want 8; stderr = %q", code, stderr)
-	}
-	output := decodeRunOutput(t, stdout)
-	if output.Status != "cancelled" {
-		t.Fatalf("status = %q, want cancelled", output.Status)
-	}
-	if output.Outcome != contracts.OutcomeCancelled {
-		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
-	}
-	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
-		t.Fatalf("pi was launched for an already-cancelled run")
-	}
-}
-
-func TestRunCancellationDuringRunExits8ReapsAndCleansUp(t *testing.T) {
-	// Cancelling the parent context mid-run must terminate and reap the
-	// child through the worker's normal cleanup (process exit debug line
-	// proves cmd.Wait returned), remove the private session directory, and
-	// exit 8 with status "cancelled" — never the OS default signal exit.
-	scriptConfig := &script.Script{Triggers: map[string][]script.Step{
-		"get_available_models": {
-			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
-		},
-		"set_model": {
-			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
-		},
-		"prompt": {
-			{Response: &script.Response{Success: true}},
-			{SleepMS: 10000},
-		},
-	}}
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, scriptConfig)
-	metaPath := filepath.Join(t.TempDir(), "meta.json")
-	t.Setenv("FAKEPI_META", metaPath)
-
-	// Cancel only after the child demonstrably received the prompt: the
-	// child boot time varies by machine, so a fixed timer would race it.
-	// This proves cancellation during a real mid-run, not during startup.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var code int
-	var stdout, stderr string
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var out bytes.Buffer
-		var errBuf bytes.Buffer
-		code = mainWithContext(ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--debug"}, strings.NewReader(""), &out, &errBuf)
-		stdout, stderr = out.String(), errBuf.String()
-	}()
-	waitForRequestLog(t, os.Getenv("FAKEPI_LOG"), "prompt")
-	cancel()
-	<-done
-
-	if code != 8 {
-		t.Fatalf("exit = %d, want 8; stderr = %q", code, stderr)
-	}
-	output := decodeRunOutput(t, stdout)
-	if output.Status != "cancelled" {
-		t.Fatalf("status = %q, want cancelled", output.Status)
-	}
-	if output.Outcome != contracts.OutcomeCancelled {
-		t.Fatalf("outcome = %q, want %q", output.Outcome, contracts.OutcomeCancelled)
-	}
-	if _, err := os.Stat(sessionDirFromMeta(t, metaPath)); !os.IsNotExist(err) {
-		t.Fatalf("session directory left behind after cancellation: %v", err)
-	}
-	// The child was reaped through normal cleanup: the worker's completion
-	// line is logged by the run defer only after the reaping-close defer
-	// (child Wait collected, session directory removed), both before the
-	// CLI exits.
-	if !strings.Contains(stderr, "worker=1 status=cancelled total=") {
-		t.Fatalf("stderr missing cancelled completion line: %q", stderr)
 	}
 }
 
@@ -3015,81 +2574,6 @@ func TestRunExitCodePrecedence(t *testing.T) {
 	}
 }
 
-func TestRunOpensForegroundAdmissionFromResolvedConfig(t *testing.T) {
-	t.Run("passes root and limit", func(t *testing.T) {
-		configDir := t.TempDir()
-		configPath := filepath.Join(configDir, "config.json")
-		if err := config.Save(configPath, config.Config{SchemaVersion: 2, MaxModelWorkers: 1}); err != nil {
-			t.Fatal(err)
-		}
-		installConfigPath(t, configPath)
-
-		var capturedRoot string
-		var capturedMax int
-		original := openAdmission
-		openAdmission = func(root string, maxLive int) (*admission.Gate, error) {
-			capturedRoot = root
-			capturedMax = maxLive
-			return admission.Open(t.TempDir(), maxLive)
-		}
-		t.Cleanup(func() { openAdmission = original })
-
-		installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-		code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "work"}, "")
-		if code != 0 {
-			t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-		}
-		if got := capturedMax; got != 1 {
-			t.Fatalf("captured max = %d, want 1", got)
-		}
-		wantRoot := filepath.Join(filepath.Dir(configPath), "admission")
-		if got := capturedRoot; got != wantRoot {
-			t.Fatalf("captured root = %q, want %q", got, wantRoot)
-		}
-	})
-
-	t.Run("open failure starts nothing", func(t *testing.T) {
-		configDir := t.TempDir()
-		configPath := filepath.Join(configDir, "nonexistent.json")
-		installConfigPath(t, configPath)
-
-		var capturedRoot string
-		var capturedMax int
-		original := openAdmission
-		openAdmission = func(root string, maxLive int) (*admission.Gate, error) {
-			capturedRoot = root
-			capturedMax = maxLive
-			return nil, errors.New("admission unavailable")
-		}
-		t.Cleanup(func() { openAdmission = original })
-
-		fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--json", "--task", "work"}, "")
-		if code != 9 {
-			t.Fatalf("exit = %d, want 9; stderr = %q", code, stderr)
-		}
-		if stdout != "" {
-			t.Fatalf("stdout = %q, want empty", stdout)
-		}
-		if !strings.Contains(stderr, "pi-worker: open foreground admission: admission unavailable") {
-			t.Fatalf("stderr = %q, want it to contain the admission error", stderr)
-		}
-		if strings.Contains(stderr, "usage:") {
-			t.Fatalf("stderr must not contain usage text: %q", stderr)
-		}
-		if fake.callCount() != 0 {
-			t.Fatalf("worker invoked %d times, want 0", fake.callCount())
-		}
-		if got := capturedMax; got != 3 {
-			t.Fatalf("captured max = %d, want 3", got)
-		}
-		wantRoot := filepath.Join(configDir, "admission")
-		if got := capturedRoot; got != wantRoot {
-			t.Fatalf("captured root = %q, want %q", got, wantRoot)
-		}
-	})
-}
-
 func TestRunConfiguredMaxModelWorkersSerializesForegroundTasks(t *testing.T) {
 	// Save schema-2 config with MaxModelWorkers 1 and install it so the
 	// admission gate derived beside the config file is test-scoped.
@@ -3116,7 +2600,7 @@ func TestRunConfiguredMaxModelWorkersSerializesForegroundTasks(t *testing.T) {
 	requireChangesTail(t, stdout, fakePiDoneLines(2))
 	// The existing shared-workspace warning on stderr is allowed; reject
 	// worker or internal error lines.
-	for _, line := range strings.Split(stderr, "\n") {
+	for _, line := range strings.Split(withoutRunLine(t, stderr), "\n") {
 		if line == "" {
 			continue
 		}

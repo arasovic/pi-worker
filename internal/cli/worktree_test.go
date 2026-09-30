@@ -210,7 +210,7 @@ func TestRunWorktreeCreatesPrivateCheckout(t *testing.T) {
 	// the product's own path helper.
 	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
 	wantLine := "pi-worker: worktree " + checkout + " on branch run/probe\n"
-	if stderr != wantLine {
+	if stderr := withoutRunLine(t, stderr); stderr != wantLine {
 		t.Fatalf("stderr = %q, want exactly %q", stderr, wantLine)
 	}
 	if workspace := fakePiCwd(t, metaPath); workspace != resolvedDir(t, checkout) {
@@ -277,7 +277,7 @@ func TestRunWorktreeRefusesTakenName(t *testing.T) {
 		t.Fatalf("stdout = %q, want no JSON document", stdout)
 	}
 	checkout := filepath.Join(repo, ".pi-worker", "worktrees", "probe")
-	want := "pi-worker: worktree " + checkout + " already exists; collect it or choose another name\n"
+	want := "worktree " + checkout + " already exists; collect it or choose another name\n"
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
 	}
@@ -319,7 +319,7 @@ func TestRunWorktreeRefusesLeftoverBranch(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no JSON document", stdout)
 	}
-	want := "pi-worker: branch run/probe already exists; collect it or choose another name\n"
+	want := "branch run/probe already exists; collect it or choose another name\n"
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
 	}
@@ -371,12 +371,12 @@ func TestRunWorktreeRefusesGitCollision(t *testing.T) {
 	if got := fakePiLog(t); got != "" {
 		t.Fatalf("fake Pi log = %q, want no request for the refused run", got)
 	}
-	entries, err := os.ReadDir(logDir)
+	records, err := filepath.Glob(filepath.Join(logDir, "*.jsonl"))
 	if err != nil {
-		t.Fatalf("read record dir: %v", err)
+		t.Fatalf("list record dir: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("record dir = %v, want empty: the refusal happens before any run record is written", entries)
+	if len(records) != 0 {
+		t.Fatalf("records = %v, want none: the refusal happens before any run record is written", records)
 	}
 }
 
@@ -407,7 +407,7 @@ func TestRunWorktreePreparationExitPrecedence(t *testing.T) {
 				return ctx
 			},
 			wantCode:   7,
-			wantOutput: "resolve repository root",
+			wantOutput: "context deadline exceeded",
 		},
 		{
 			name: "cancellation",
@@ -502,7 +502,7 @@ func TestRunWorktreeRequiresGitWorkTree(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no JSON document", stdout)
 	}
-	want := "pi-worker: --worktree requires the current directory to be inside a git work tree\n"
+	want := "--worktree requires the current directory to be inside a git work tree\n"
 	if !strings.Contains(stderr, want) {
 		t.Fatalf("stderr = %q, want it to contain %q", stderr, want)
 	}

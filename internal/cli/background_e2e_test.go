@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/background"
-	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/runlog"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
@@ -91,12 +90,10 @@ func setupBackgroundCLI(t *testing.T, finalText string) *background.Manager {
 	// needs to run inside the module, and the run itself must not.
 	roleBin := piWorkerBinForBackground(t)
 	setupFakePiScript(t, backgroundHappyScript(finalText))
-	// An earlier in-process foreground run left its marker in this
-	// process's environment; see TestRunsWaitPrintsWhatTheForegroundRunPrints.
-	t.Setenv(run.RunMarkerEnv, "")
 	t.Chdir(t.TempDir())
 
 	root, admissionRoot := t.TempDir(), t.TempDir()
+	lastRunSecond = time.Time{}
 	manager, err := background.NewManager(root, admissionRoot, 2)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)

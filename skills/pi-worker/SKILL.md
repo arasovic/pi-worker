@@ -47,9 +47,10 @@ pi-worker run --model <provider/model> --thinking <level> \
 Do not pipe stdout: when no document comes back, the exit code is the signal.
 When the host may cut the call off, add `--background` and wait in slices with
 `pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out
-leaves the run going. With `--debug`, pass it to each wait too: every wait
-prints the run's debug lines from the start. Exit 9 with "supervisor is no longer there" means
-the run was interrupted and waiting again will not help. In that document
+leaves the run going, as does a cut-off `run`, until `--timeout` (default
+30m); `runs list` or its `run <id>` line finds it. Give each wait `--debug`
+to replay debug lines. Exit 9 with "supervisor is no longer there" means
+the run was interrupted; waiting again will not help. In that document
 the result sits under `result`.
 
 ## Result

@@ -55,6 +55,12 @@ Flags:
                          go to a file in the run's state, named on
                          stderr; runs wait <id> --debug streams them
 
+Every run is carried out by a supervisor process. Without --background,
+run starts it, prints "pi-worker: run <id>" on stderr once it is accepted,
+and waits for it. Ctrl-C cancels the run and still waits for it (exit 8).
+If this command is killed, the run keeps going until its --timeout;
+runs list or that id finds it, and runs wait <id> follows it.
+
 Result (--json): read root outcome first. Report each worker's model,
 thinkingLevel, status, explanation (or partialExplanation when there is
 none), error and warning, and root changes, writes, verification and

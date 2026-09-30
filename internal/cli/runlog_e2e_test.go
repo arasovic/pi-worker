@@ -8,21 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/arasovic/pi-worker/internal/pi"
-	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
-// TestRunLogRecordsSuccessfulRunEndToEnd drives a completed run with the
-// real runlog.Start and runlog.Finish running inside runCommand and
-// asserts the on-disk record: exactly one file holding exactly two
-// lines, the second carrying the finish event and the same outcome the
-// run reported. This is the only test that proves Finish is wired into
-// runCommand at all.
+// TestRunLogRecordsSuccessfulRunEndToEnd drives a completed run whose
+// supervisor writes the record into the directory the command resolved,
+// and asserts the on-disk record: exactly one file whose last line carries
+// the finish event and the same outcome the run reported.
 func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -54,10 +50,7 @@ func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
 		t.Fatalf("read record: %v", err)
 	}
 	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("record lines = %d, want 2", len(lines))
-	}
-	finish := decodeJSONObject(t, lines[1])
+	finish := decodeJSONObject(t, lines[len(lines)-1])
 	if finish["event"] != "finish" {
 		t.Fatalf("second line event = %v, want finish", finish["event"])
 	}
@@ -74,18 +67,13 @@ func TestRunLogRecordsSuccessfulRunEndToEnd(t *testing.T) {
 	}
 }
 
-// TestRunLogRecordsWorkerProcessEndToEnd drives a run whose fake worker
-// reports a process identity through OnProcessStart and asserts the
-// record carries exactly one worker line with the exact pid the test
-// passed in. This is the only test that proves the whole chain from the
-// CLI through the controller into the record.
+// TestRunLogRecordsWorkerProcessEndToEnd drives a run and asserts the
+// record carries exactly one worker line with the pid the run's own
+// snapshot names for its worker: the whole chain from the CLI through the
+// supervisor and the controller into the record.
 func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
-	fake.onRequest = func(req pi.WorkerRequest) {
-		if req.OnProcessStart != nil {
-			req.OnProcessStart(req.WorkerID, 4242)
-		}
-	}
+	newGitWorkspace(t)
+	manager := useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -95,6 +83,14 @@ func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
+	snap, err := manager.Status(runIDFromRunLine(t, stderr))
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(snap.Workers) != 1 || snap.Workers[0].Process == nil {
+		t.Fatalf("workers = %+v, want one worker with its process", snap.Workers)
+	}
+	wantPID := float64(snap.Workers[0].Process.PID)
 
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
@@ -130,8 +126,8 @@ func TestRunLogRecordsWorkerProcessEndToEnd(t *testing.T) {
 		if worker["workerId"] != float64(1) {
 			t.Fatalf("worker line workerId = %v, want 1", worker["workerId"])
 		}
-		if worker["pid"] != float64(4242) {
-			t.Fatalf("worker line pid = %v, want 4242", worker["pid"])
+		if worker["pid"] != wantPID {
+			t.Fatalf("worker line pid = %v, want the snapshot's %v", worker["pid"], wantPID)
 		}
 	}
 	if workerLines != 1 {
@@ -186,7 +182,8 @@ func TestRunlogDirStaysUnderSystemTemp(t *testing.T) {
 // and the record-unavailable warning appears on stderr: a record that
 // cannot be written must never fail or block a run.
 func TestRunLogUnavailableDoesNotFailRun(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return "", errors.New("records disabled") }
 	t.Cleanup(func() { runlogDir = originalDir })
@@ -251,27 +248,6 @@ func writeRecordFile(t *testing.T, dir, runID string, pid int, finishOutcome str
 	return path
 }
 
-// advanceRunlogStart wraps the runlogStart seam so that consecutive
-// calls in the same process cannot land on the same UTC second.  It
-// truncates each incoming startedAt to a UTC second and advances it
-// past the preceding one, guaranteeing distinct record IDs without
-// sleeping.  Only the two multi-invocation shared-history tests need
-// this; single-invocation tests are unaffected.
-func advanceRunlogStart(t *testing.T) {
-	t.Helper()
-	var prevSec time.Time
-	orig := runlogStart
-	runlogStart = func(dir string, startedAt time.Time, workspace string, tasks []run.Task) (*runlog.Recorder, error) {
-		sec := startedAt.UTC().Truncate(time.Second)
-		if !sec.After(prevSec) {
-			sec = prevSec.Add(time.Second)
-		}
-		prevSec = sec
-		return orig(dir, sec, workspace, tasks)
-	}
-	t.Cleanup(func() { runlogStart = orig })
-}
-
 // TestRunWarnsAboutInterruptedRunOnceEndToEnd writes one record whose
 // run was interrupted — no finish line, pid long gone — drives two
 // consecutive runs, and asserts the warning appears once, naming the
@@ -280,12 +256,12 @@ func advanceRunlogStart(t *testing.T) {
 // is the only test that proves the whole chain from runCommand through
 // runlog.Interrupted into the on-disk marker.
 func TestRunWarnsAboutInterruptedRunOnceEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
 	t.Cleanup(func() { runlogDir = originalDir })
-	advanceRunlogStart(t)
 
 	recordPath := writeRecordFile(t, logDir, "20260830T101500Z-1", deadPID, "")
 
@@ -294,8 +270,8 @@ func TestRunWarnsAboutInterruptedRunOnceEndToEnd(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	wantWarning := "pi-worker: warning: an earlier run was interrupted: " + recordPath + "\n"
-	if stderr != wantWarning {
-		t.Fatalf("stderr = %q, want %q", stderr, wantWarning)
+	if got := withoutRunLine(t, stderr); got != wantWarning {
+		t.Fatalf("stderr = %q, want %q", got, wantWarning)
 	}
 	if _, err := os.Stat(filepath.Join(logDir, "reported.json")); err != nil {
 		t.Fatalf("marker missing after the first run: %v", err)
@@ -305,8 +281,8 @@ func TestRunWarnsAboutInterruptedRunOnceEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("second exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
-		t.Fatalf("second run stderr = %q, want no warning", stderr)
+	if got := withoutRunLine(t, stderr); got != "" {
+		t.Fatalf("second run stderr = %q, want no warning", got)
 	}
 }
 
@@ -332,7 +308,7 @@ func TestRunSilentAboutAliveAndFinishedRecordsEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if stderr := withoutRunLine(t, stderr); stderr != "" {
 		t.Fatalf("stderr = %q, want no warning", stderr)
 	}
 }
@@ -344,12 +320,12 @@ func TestRunSilentAboutAliveAndFinishedRecordsEndToEnd(t *testing.T) {
 // the warning appears exactly once across two runs, carrying the full
 // record path.
 func TestRunWarnsOnceForInterruptedRunAfterStillRunningEndToEnd(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
 	t.Cleanup(func() { runlogDir = originalDir })
-	advanceRunlogStart(t)
 
 	writeRecordFile(t, logDir, "20260830T101500Z-1", os.Getpid(), "")
 	recordPath := writeRecordFile(t, logDir, "20260830T103000Z-2", deadPID, "")
@@ -359,16 +335,16 @@ func TestRunWarnsOnceForInterruptedRunAfterStillRunningEndToEnd(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	wantWarning := "pi-worker: warning: an earlier run was interrupted: " + recordPath + "\n"
-	if stderr != wantWarning {
-		t.Fatalf("stderr = %q, want the single warning %q", stderr, wantWarning)
+	if got := withoutRunLine(t, stderr); got != wantWarning {
+		t.Fatalf("stderr = %q, want the single warning %q", got, wantWarning)
 	}
 
 	code, _, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go"}, "")
 	if code != 0 {
 		t.Fatalf("second exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
-		t.Fatalf("second run stderr = %q, want no warning", stderr)
+	if got := withoutRunLine(t, stderr); got != "" {
+		t.Fatalf("second run stderr = %q, want no warning", got)
 	}
 }
 
@@ -397,7 +373,7 @@ func TestRunWarnsFiveInterruptedRunsPlusCountEndToEnd(t *testing.T) {
 		fmt.Fprintf(&want, "pi-worker: warning: an earlier run was interrupted: %s\n", path)
 	}
 	fmt.Fprintf(&want, "pi-worker: warning: 2 more interrupted runs in %s\n", logDir)
-	if stderr != want.String() {
+	if stderr := withoutRunLine(t, stderr); stderr != want.String() {
 		t.Fatalf("stderr = %q, want %q", stderr, want.String())
 	}
 }
@@ -464,7 +440,7 @@ func TestRunWarnsAboutLeftoverProcessesEndToEnd(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	want := "pi-worker: warning: an earlier run may have left processes running: " + recordPath + " (pids 4111, 4112)\n"
-	if stderr != want {
+	if stderr := withoutRunLine(t, stderr); stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 	// decodeJSONObject fails unless stdout is exactly one JSON document:
@@ -504,7 +480,7 @@ func TestRunWarnsFiveLeftoverRunsPlusCountEndToEnd(t *testing.T) {
 		fmt.Fprintf(&want, "pi-worker: warning: an earlier run may have left processes running: %s (pids %d)\n", leftover.Path, leftover.PIDs[0])
 	}
 	fmt.Fprintf(&want, "pi-worker: warning: 1 more runs may have left processes running in %s\n", logDir)
-	if stderr != want.String() {
+	if stderr := withoutRunLine(t, stderr); stderr != want.String() {
 		t.Fatalf("stderr = %q, want %q", stderr, want.String())
 	}
 }
@@ -536,7 +512,7 @@ func TestRunWarnsCapsLeftoverPidsAtTenEndToEnd(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	want := "pi-worker: warning: an earlier run may have left processes running: " + recordPath + " (pids 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 4 more)\n"
-	if stderr != want {
+	if stderr := withoutRunLine(t, stderr); stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
@@ -547,7 +523,8 @@ func TestRunWarnsCapsLeftoverPidsAtTenEndToEnd(t *testing.T) {
 // run still proceeds to start its record: a records problem never
 // fails a run.
 func TestRunLeftoverCheckFailureWarnsAndContinues(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	logDir := t.TempDir()
 	originalDir := runlogDir
 	runlogDir = func() (string, error) { return logDir, nil }
@@ -560,7 +537,7 @@ func TestRunLeftoverCheckFailureWarnsAndContinues(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "pi-worker: warning: leftover-process check unavailable: process table unreadable\n" {
+	if stderr := withoutRunLine(t, stderr); stderr != "pi-worker: warning: leftover-process check unavailable: process table unreadable\n" {
 		t.Fatalf("stderr = %q, want the check-unavailable warning", stderr)
 	}
 	entries, err := os.ReadDir(logDir)
@@ -599,7 +576,7 @@ func TestRunSilentWithNoLeftoversEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if stderr := withoutRunLine(t, stderr); stderr != "" {
 		t.Fatalf("stderr = %q, want no warning", stderr)
 	}
 }
@@ -626,7 +603,7 @@ func TestRunSilentAboutLeftoverWithNoPidsEndToEnd(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if stderr := withoutRunLine(t, stderr); stderr != "" {
 		t.Fatalf("stderr = %q, want no warning", stderr)
 	}
 }

@@ -15,3 +15,7 @@ import (
 func (m *Manager) Start(context.Context, StartOptions) (StartedRun, error) {
 	return StartedRun{}, fmt.Errorf("background manager start: %w", errRoleProcessUnsupported)
 }
+
+// ReapSupervisor does nothing here: no supervisor can be started on this
+// platform, so there is none to reap.
+func ReapSupervisor(int) {}
