@@ -157,3 +157,70 @@ func TestWorkerCleanupOrderProcessBeforeClient(t *testing.T) {
 	waitProcessGone(t, fixture.rootPID)
 	waitProcessGone(t, fixture.descendantPID)
 }
+
+// TestCatalogCleanupOrderProcessBeforeClient is the catalog regression for
+// the Process+Client teardown order: catalog.List must close the Process
+// BEFORE the Client, through closeProcessThenClient. Client.Close closes the
+// child stdout pipe; if that happens first, the gated root writes, exits on
+// the broken pipe, and is reaped before Process.Close can snapshot its
+// lineage, so the sleep descendant escapes cleanup. With the corrected order
+// the root is still live when Process.Close snapshots and reaps the tree,
+// and the descendant is gone once List returns.
+func TestCatalogCleanupOrderProcessBeforeClient(t *testing.T) {
+	// Shorten Process.Close's bounded kill so the teardown is quick; the
+	// previous value is restored for the rest of the package.
+	original := processCloseGrace
+	processCloseGrace = 250 * time.Millisecond
+	t.Cleanup(func() { processCloseGrace = original })
+
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "gate")
+	pidFile := filepath.Join(dir, "descendant.pid")
+
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatalf("look up sh: %v", err)
+	}
+	body := "#!" + shPath + "\n" +
+		"sleep 120 &\n" +
+		"echo $! > \"$FIXTURE_PIDFILE\"\n" +
+		"IFS= read -r request_line\n" +
+		"id=$(printf '%s\\n' \"$request_line\" | sed -n 's/.*\"id\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p')\n" +
+		"printf '{\"type\":\"response\",\"id\":\"%s\",\"command\":\"get_available_models\",\"success\":true,\"data\":{\"models\":[{\"provider\":\"acme\",\"id\":\"a\"}]}}\\n' \"$id\"\n" +
+		"while [ ! -f \"$FIXTURE_GATE\" ]; do sleep 0.05; done\n" +
+		"printf 'catalog-ready\\n'\n" +
+		"read fixture_line || exit 0\n"
+	scriptPath := filepath.Join(dir, "fixture.sh")
+	if err := os.WriteFile(scriptPath, []byte(body), 0o700); err != nil {
+		t.Fatalf("write fixture script: %v", err)
+	}
+	t.Setenv("FIXTURE_PIDFILE", pidFile)
+	t.Setenv("FIXTURE_GATE", gate)
+
+	originalStdout := catalogStdout
+	catalogStdout = func(proc *Process) io.ReadCloser {
+		return &gatedStdout{ReadCloser: proc.Stdout(), proc: proc, gate: gate}
+	}
+	t.Cleanup(func() { catalogStdout = originalStdout })
+
+	descendantPID := 0
+	t.Cleanup(func() {
+		if descendantPID > 0 {
+			if processAlive(descendantPID) {
+				_ = syscall.Kill(descendantPID, syscall.SIGKILL)
+			}
+			waitProcessGone(t, descendantPID)
+		}
+	})
+
+	models, err := NewCatalog(scriptPath).List(context.Background(), CatalogRequest{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatalf("list catalog: %v", err)
+	}
+	if len(models) != 1 || models[0] != (ModelProjection{Provider: "acme", ID: "a"}) {
+		t.Fatalf("models = %#v, want exactly [{Provider:acme ID:a}]", models)
+	}
+
+	descendantPID = readPIDFile(t, pidFile)
+	waitProcessGone(t, descendantPID)
+}

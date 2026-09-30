@@ -30,19 +30,28 @@ func NewCatalog(executable string) ModelCatalog {
 	return &catalog{executable: executable}
 }
 
+// catalogStdout builds the stdout reader the catalog client reads from. The
+// product never reassigns it and always runs the Process.Stdout value below;
+// the variable exists only so a test can wrap the reader and pin the
+// process-before-client teardown order.
+var catalogStdout = (*Process).Stdout
+
 // List starts a read-only catalog process and issues exactly one
 // get_available_models request: it never activates a model, submits a
 // prompt, or issues any other RPC. The returned catalog is sorted by
 // provider then id. An explicitly empty catalog is a readiness failure (Pi
 // is configured but unusable); malformed data is preserved as a protocol
-// error. The process is always closed, so cancellation or timeout
-// terminates the child and removes its session directory.
+// error. Teardown runs through closeProcessThenClient so the process is
+// always closed before the client, for the reason closeProcessThenClient
+// gives, and cancellation or timeout terminates the child and removes its
+// session directory.
 func (c *catalog) List(ctx context.Context, req CatalogRequest) ([]ModelProjection, error) {
 	proc, err := newCatalogProcess(c.executable, req.Workspace)
 	if err != nil {
 		return nil, err
 	}
-	defer proc.Close()
+	var client *Client
+	defer func() { closeProcessThenClient(proc, client) }()
 
 	if err := proc.Start(ctx); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -52,8 +61,7 @@ func (c *catalog) List(ctx context.Context, req CatalogRequest) ([]ModelProjecti
 	}
 	// A catalog query is a single process with no worker id of its own, so
 	// its debug lines carry the direct-caller label.
-	client := NewClient(proc.Stdin(), proc.Stdout(), nil, req.Debug.Worker(1))
-	defer client.Close()
+	client = NewClient(proc.Stdin(), catalogStdout(proc), nil, req.Debug.Worker(1))
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
 		// The kill callback can close the stream before Client observes the
