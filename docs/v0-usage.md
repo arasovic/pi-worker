@@ -460,6 +460,12 @@ pi-worker runs cancel <id> [--json]
   table. A finished run whose snapshot carries no result document is
   printed as the table instead. Waiting is reading and nothing
   else: it never cancels, kills, or attaches to the run.
+- A finished run that ended with a run-level error — for example a
+  `--verify` command that could not start — makes `runs wait`,
+  `runs status`, and `runs cancel` print `pi-worker: <error>` on stderr
+  before the result,
+  the same line a foreground run prints, with or without `--json`; the
+  `--json` document also carries it as `error`.
 - `runs wait --timeout <duration>` bounds the wait. Without one the
   bound is `30m`. When the bound arrives first, the command prints the
   latest state on stdout, says on stderr that the wait ran out, exits

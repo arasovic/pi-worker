@@ -275,7 +275,11 @@ non-null `workers`. `state` is `accepted`, `running`, `completed`,
 the run has finished; only a terminal document carries `status`,
 `outcome`, and `result`, and `result` is exactly the `run --json`
 document described above. `worktree` is present only for a run that works
-in a managed private checkout.
+in a managed private checkout. `error` is optional and appears only on a
+terminal document whose run ended with a run-level error — for example a
+`--verify` command that could not start. It holds the text a foreground run
+prints after `pi-worker: ` on stderr, which the `result` document has no field
+for. A snapshot written before this field existed simply lacks it.
 
 Each entry of `workers` carries `workerId` (1-based, request order),
 `state`, `acceptedAt`, `queueDeadline`, `executionTimeout`, and `task`;

@@ -386,3 +386,48 @@ func TestRunsWaitExitsByStoredOutcome(t *testing.T) {
 		t.Fatalf("exit = %d, want 9", code)
 	}
 }
+
+// TestRunsRenderPrintsTheRunError requires that a finished run whose
+// controller returned an error prints that error on stderr exactly once, the
+// way a foreground run does, on every render path: the foreground-shaped
+// result, the table, and --json, where the document also carries it.
+func TestRunsRenderPrintsTheRunError(t *testing.T) {
+	const runErr = `verification: exec: "x": executable file not found in $PATH`
+	const wantLine = "pi-worker: " + runErr + "\n"
+	failed := contracts.OutcomeInternalError
+	snap := background.Snapshot{
+		RunID:    "20260926T222744Z-7099",
+		State:    background.RunFailed,
+		Terminal: true,
+		Outcome:  &failed,
+		Result:   &run.Result{Status: contracts.RunFailed, Outcome: failed},
+		Error:    runErr,
+		Workers: []background.WorkerSnapshot{{
+			WorkerID: 1,
+			State:    background.WorkerCompleted,
+			Task:     run.TaskProjection{Model: "acme/m-1"},
+			Result:   &pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"},
+		}},
+	}
+	tableOnly := snap
+	tableOnly.Result = nil
+
+	for name, render := range map[string]func(stdout, stderr *bytes.Buffer){
+		"result": func(stdout, stderr *bytes.Buffer) { runsRenderWaited(stdout, stderr, runsOptions{}, snap, "") },
+		"table":  func(stdout, stderr *bytes.Buffer) { renderRunsSnapshot(stdout, stderr, false, tableOnly, "") },
+		"json": func(stdout, stderr *bytes.Buffer) {
+			runsRenderWaited(stdout, stderr, runsOptions{json: true}, snap, "")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			render(&stdout, &stderr)
+			if !strings.HasPrefix(stderr.String(), wantLine) || strings.Count(stderr.String(), wantLine) != 1 {
+				t.Fatalf("stderr = %q, want it to start with %q once", stderr.String(), wantLine)
+			}
+			if name == "json" && !strings.Contains(stdout.String(), `"error":`) {
+				t.Fatalf("json stdout = %q, want the error field", stdout.String())
+			}
+		})
+	}
+}

@@ -333,6 +333,10 @@ func observerFailures(runID string, errs []error) []error {
 // rather than its status word alone. Whichever value is used is carried into
 // the stored result copy, which keeps the snapshot's three views of the run
 // consistent.
+//
+// The controller error's text is kept as the snapshot's Error: it is the
+// line a foreground run prints after "pi-worker: ", and the result document
+// has no field that carries it.
 func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *supervisorRunObserver, runErr error) (Snapshot, error) {
 	status := runResult.Status
 	var runError *contracts.RunError
@@ -369,6 +373,9 @@ func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *sup
 	terminal.Status = &status
 	terminal.Outcome = &outcome
 	terminal.Result = &result
+	if runErr != nil {
+		terminal.Error = runErr.Error()
+	}
 
 	for i := range terminal.Workers {
 		worker := &terminal.Workers[i]

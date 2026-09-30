@@ -374,6 +374,24 @@ func TestValidate_RegressionCases(t *testing.T) {
 			wantErr: "running: result must be nil",
 		},
 		{
+			name: "accepted_error_rejected",
+			adjust: func(s Snapshot) Snapshot {
+				s.Error = "verification: boom" // only a terminal snapshot carries it
+				return s
+			},
+			wantErr: "accepted: error must be empty",
+		},
+		{
+			name: "running_error_rejected",
+			adjust: func(s Snapshot) Snapshot {
+				s.State = RunRunning
+				s.Terminal = false
+				s.Error = "verification: boom"
+				return s
+			},
+			wantErr: "running: error must be empty",
+		},
+		{
 			name: "terminal_nil_outcome_no_panic",
 			adjust: func(s Snapshot) Snapshot {
 				s.State = RunCompleted
