@@ -90,7 +90,7 @@ const maxSnapshotBytes int64 = 32 << 20
 // snapshot path and the open of that path. The product never assigns
 // to it and always runs the no-op below; the variable exists only so
 // a test can replace it with a function that changes the path's
-// target inside that window and pin the re-check after the open.
+// target inside that window and pin the checks on the opened file.
 var beforeSnapshotOpen = func() {}
 
 // Load reads and validates the snapshot for the given run ID. It first
@@ -110,10 +110,11 @@ var beforeSnapshotOpen = func() {}
 //     non-blocking, so a name that became a named pipe between the check
 //     and the open opens immediately instead of blocking forever, and
 //     the re-check below then refuses the pipe for what it is.
-//   - After the open, the file that was opened is checked itself: it must
-//     still be a regular file, it must be the very file the checks
-//     described, and it must still be within the size ceiling, so a name
-//     replaced between the check and the open is refused rather than read.
+//   - After the open, the opened file's own stat decides: it must
+//     be a regular file and within the size ceiling. The snapshot is
+//     replaced by atomic rename while it is read, so a different file
+//     behind the name at open time is normal and is read as long as
+//     the file actually opened is regular and within the ceiling.
 //   - Exactly one JSON document is decoded with DisallowUnknownFields
 //     from a reader limited to maxSnapshotBytes; trailing data is
 //     rejected, then Snapshot.Validate is called.
@@ -173,13 +174,13 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load snapshot (%s): stat snapshot %s: %w", runID, path, err)
 	}
-	// The re-check of the open file: a name replaced between the
-	// check and the open hands the open a different file, and a file
-	// that grew past the ceiling after the check must not be read
-	// whole. The first condition also refuses a symlink that
-	// appeared in the gap.
-	if !opened.Mode().IsRegular() || !os.SameFile(si, opened) {
-		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot %s changed before reading", runID, path)
+	// The checks on the opened file: the snapshot is replaced by
+	// atomic rename while it is read, so a different file behind the
+	// name at open time is normal. The file actually read is the one
+	// the descriptor points at, so its own stat decides: it must be
+	// a regular file and within the ceiling.
+	if !opened.Mode().IsRegular() {
+		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot %s is not a regular file", runID, path)
 	}
 	if opened.Size() < 0 || opened.Size() > maxSnapshotBytes {
 		return Snapshot{}, fmt.Errorf("load snapshot (%s): snapshot %s is too large (%d bytes exceeds %d bytes)", runID, path, opened.Size(), maxSnapshotBytes)

@@ -62,14 +62,12 @@ func TestLoadRefusesOversizedSnapshot(t *testing.T) {
 	}
 }
 
-// TestLoadRefusesSnapshotSwappedBeforeOpen pins the post-open re-check: a
-// different regular file renamed over snapshot.json between the Lstat
-// checks and the open is refused rather than read. Without the SameFile
-// re-check, Load would open and return the replacement. The decoy holds
-// the snapshot's exact bytes, so the pre-open regular-file and size arms
-// stay silent, and it is a regular file like the original, so only the
-// same-file re-check can refuse it.
-func TestLoadRefusesSnapshotSwappedBeforeOpen(t *testing.T) {
+// TestLoadRefusesOversizedSnapshotSwappedInBeforeOpen pins the post-open
+// size check: a valid snapshot passes the pre-open checks, then an
+// oversized regular file is renamed over snapshot.json between the Lstat
+// checks and the open. Only the opened file's own size check can refuse
+// it: without it, Load would open and read the replacement.
+func TestLoadRefusesOversizedSnapshotSwappedInBeforeOpen(t *testing.T) {
 	root := t.TempDir()
 	runID := makeRunID(fixtureTime)
 	store := setUpRunDir(t, root, runID, validSnapshotBytes(t))
@@ -82,6 +80,9 @@ func TestLoadRefusesSnapshotSwappedBeforeOpen(t *testing.T) {
 	if err := os.WriteFile(swapPath, validSnapshotBytes(t), 0o600); err != nil {
 		t.Fatalf("write swap file: %v", err)
 	}
+	if err := os.Truncate(swapPath, maxSnapshotBytes+1); err != nil {
+		t.Fatalf("truncate swap file: %v", err)
+	}
 
 	t.Cleanup(func() { beforeSnapshotOpen = func() {} })
 	beforeSnapshotOpen = func() {
@@ -92,10 +93,65 @@ func TestLoadRefusesSnapshotSwappedBeforeOpen(t *testing.T) {
 
 	_, err := store.Load(runID)
 	if err == nil {
-		t.Fatal("expected error for snapshot swapped before open")
+		t.Fatal("expected error for oversized snapshot swapped in before open")
 	}
-	if !strings.Contains(err.Error(), "changed before reading") {
-		t.Errorf("want 'changed before reading' refusal, got: %v", err)
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("want 'too large' refusal, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), strconv.FormatInt(maxSnapshotBytes+1, 10)) {
+		t.Errorf("want refusal to name the size, got: %v", err)
+	}
+}
+
+// TestLoadReadsSnapshotReplacedBeforeOpen pins that a legitimate atomic
+// replace between the Lstat checks and the open is read, not refused: a
+// second valid snapshot for the same runId renamed over snapshot.json in
+// that window must be opened and returned. If the SameFile identity
+// re-check came back, Load would refuse this healthy replace with a
+// spurious error instead of returning the second snapshot.
+func TestLoadReadsSnapshotReplacedBeforeOpen(t *testing.T) {
+	root := t.TempDir()
+	runID := makeRunID(fixtureTime)
+	store := setUpRunDir(t, root, runID, validSnapshotBytes(t))
+	if _, err := store.Load(runID); err != nil {
+		t.Fatalf("baseline Load: %v", err)
+	}
+
+	second := buildValidSnapshot(t)
+	second.UpdatedAt = fixtureTime.Add(time.Second)
+	if err := second.Validate(); err != nil {
+		t.Fatalf("validate second snapshot: %v", err)
+	}
+	secondData, err := encodeSnapshot(second)
+	if err != nil {
+		t.Fatalf("encode second snapshot: %v", err)
+	}
+
+	snapPath := snapshotPath(root, runID)
+	swapPath := filepath.Join(root, "swap.json")
+	if err := os.WriteFile(swapPath, secondData, 0o600); err != nil {
+		t.Fatalf("write swap file: %v", err)
+	}
+
+	t.Cleanup(func() { beforeSnapshotOpen = func() {} })
+	beforeSnapshotOpen = func() {
+		if err := os.Rename(swapPath, snapPath); err != nil {
+			t.Errorf("rename swap over snapshot: %v", err)
+		}
+	}
+
+	got, err := store.Load(runID)
+	if err != nil {
+		t.Fatalf("Load of replaced snapshot: %v", err)
+	}
+	if got.RunID != runID {
+		t.Errorf("RunID = %q; want %q", got.RunID, runID)
+	}
+	if !got.UpdatedAt.Equal(second.UpdatedAt) {
+		t.Errorf("UpdatedAt = %v; want %v", got.UpdatedAt, second.UpdatedAt)
+	}
+	if err := got.Validate(); err != nil {
+		t.Errorf("validate replaced snapshot: %v", err)
 	}
 }
 
