@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
 // errRoleRequestClosed reports that the parent has closed its request
@@ -135,6 +136,13 @@ func startRoleProcess(executable string, r role) (*roleProcess, error) {
 	}
 
 	cmd := exec.Command(executable, string(r))
+	if r == roleSupervisor {
+		// A supervisor outlives the command that started it, so it leads a
+		// new session with no controlling terminal: a Ctrl-C or hangup in
+		// the starting terminal reaches only that command. Worker hosts are
+		// started by the supervisor and inherit its session.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
 	if r == roleWorkerHost {
 		cmd.ExtraFiles = []*os.File{requestReader, responseWriter, ownershipReader}
 	} else {
