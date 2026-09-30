@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,51 +100,16 @@ func runsListCommand(parent context.Context, opts runsOptions, stdout, stderr io
 		fmt.Fprintf(stderr, "pi-worker: determine records directory: %v\n", err)
 		return 9
 	}
-	runs, err := runlogList(dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: list runs: %v\n", err)
-		return 9
-	}
-	// Background runs live in their own store, so the inventory is the
-	// union of both readers. A background run also writes a run record,
-	// so it appears in both: its background entry is the one listed,
-	// because the snapshot is the state runs status and wait read, it
-	// turns terminal before the record's finish line is written, and it
-	// outlives a record runs prune deleted. Only runs list merges them:
-	// runs prune keeps calling runlogList alone and never touches a
-	// background snapshot.
 	bgRoot, err := backgroundRoot()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
 		return 9
 	}
-	bgRuns, err := backgroundListRuns(bgRoot)
+	runs, _, err := listRunInventory(dir, bgRoot)
 	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
+		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
 		return 9
 	}
-	// A run directory <id>/ inside the records directory is read by the
-	// same reader as the background store: it wins over a flat record
-	// with the same id, exactly like a background entry. The reader
-	// skips everything that is not a directory named by a run id, so
-	// the flat records and reported.json beside it are not listed twice.
-	dirRuns, err := backgroundListRuns(dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: list run directories: %v\n", err)
-		return 9
-	}
-	bgRuns = append(bgRuns, dirRuns...)
-	inBackground := make(map[string]bool, len(bgRuns))
-	for _, bgRun := range bgRuns {
-		inBackground[bgRun.RunID] = true
-	}
-	runs = slices.DeleteFunc(runs, func(r runlog.Run) bool { return inBackground[r.RunID] })
-	runs = append(runs, bgRuns...)
-	// Both readers return their own entries newest first; the merged
-	// slice is sorted again so the interleaving of the two streams is
-	// chronological. Stable ordering leaves equal ids in first-seen
-	// order; a run in both stores was deduplicated above.
-	sort.SliceStable(runs, func(i, j int) bool { return runs[i].RunID > runs[j].RunID })
 	if runs == nil {
 		// The empty document is an empty array, never null, whatever
 		// the reader returned.
@@ -191,18 +156,80 @@ func renderRunTable(w io.Writer, runs []runlog.Run) {
 	tab.Flush()
 }
 
-// runsPruneCommand deletes run records. Selection starts on top of
-// runlogList — the same reader runs list uses — so prune and list
-// can never disagree about what is a record, what its outcome is, or
-// which runs are still alive. An affirmed interactive prune lists the
-// delete candidates again immediately before deletion and refuses to
-// delete anything if that second deletion list no longer matches the
-// first. This is the first code in pi-worker that deletes a user's
-// files; the identity of each selected record's file is captured when
-// the candidate is chosen, and removeRunRecord re-validates each path
-// against the directory and the .jsonl rule, re-checks that the name
-// still holds the file that was listed, and re-asks the grace-window
-// question of unknown records, immediately before the removal.
+// runArtifact is one place a run was found: a run directory — read by
+// the background reader, either inside the records directory or in the
+// legacy background root — or a flat .jsonl record in the records
+// directory.
+type runArtifact struct {
+	runlog.Run
+	dir bool
+}
+
+// listRunInventory is the one listing runs list shows and runs prune
+// selects from: one entry per run id, newest first, plus every artifact
+// each id was found under. Three readers feed it — the run directories
+// inside the records directory, the legacy background root, and the
+// flat records — and an id found more than once is listed once, from
+// the first of them in that order: a run directory carries the snapshot
+// runs status and wait read, it turns terminal before the record's
+// finish line is written, and the newer layout wins over the legacy
+// one. The artifacts map keeps every place an id was found, each path
+// once, directories first, so a prune of the run removes all of them.
+func listRunInventory(dir, bgRoot string) ([]runlog.Run, map[string][]runArtifact, error) {
+	flatRuns, err := runlogList(dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list runs: %w", err)
+	}
+	// The directory reader skips everything that is not a directory
+	// named by a run id, so the flat records and reported.json inside
+	// the records directory are not read twice.
+	dirRuns, err := backgroundListRuns(dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list run directories: %w", err)
+	}
+	bgRuns, err := backgroundListRuns(bgRoot)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list background runs: %w", err)
+	}
+	var runs []runlog.Run
+	artifacts := make(map[string][]runArtifact)
+	seenPath := make(map[string]bool)
+	for _, source := range []struct {
+		runs []runlog.Run
+		dir  bool
+	}{{dirRuns, true}, {bgRuns, true}, {flatRuns, false}} {
+		for _, r := range source.runs {
+			if _, listed := artifacts[r.RunID]; !listed {
+				runs = append(runs, r)
+			}
+			if seenPath[r.Path] {
+				continue
+			}
+			seenPath[r.Path] = true
+			artifacts[r.RunID] = append(artifacts[r.RunID], runArtifact{Run: r, dir: source.dir})
+		}
+	}
+	// Each reader returns its own entries newest first; the merged slice
+	// is sorted again so the interleaving is chronological. Ids are
+	// unique after the merge, so the order is total.
+	sort.Slice(runs, func(i, j int) bool { return runs[i].RunID > runs[j].RunID })
+	return runs, artifacts, nil
+}
+
+// runsPruneCommand deletes runs. Selection starts on top of
+// listRunInventory — the same listing runs list shows — so prune and
+// list can never disagree about what is a run, what its outcome is, or
+// which runs are still alive, and --keep counts runs, not files: a run
+// found as a run directory and as a flat record is one run, and
+// deleting it removes every place it was found. An affirmed
+// interactive prune lists the delete candidates again immediately
+// before deletion and refuses to delete anything if that second
+// deletion list no longer matches the first. This is the first code in
+// pi-worker that deletes a user's files; the identity of each selected
+// artifact is captured when the candidate is chosen, and
+// removeRunRecord and removeRunDir re-validate each one, re-check that
+// the name still holds what was listed, and re-ask the grace-window
+// question of unknown runs, immediately before the removal.
 func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader, stdout, stderr io.Writer) int {
 	// Without --yes, both documented non-deletion modes refuse before
 	// anything else: JSON callers must never be handed a prompt, and a
@@ -219,13 +246,15 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		fmt.Fprintf(stderr, "pi-worker: determine records directory: %v\n", err)
 		return 9
 	}
-	runs, err := runlogList(dir)
+	bgRoot, err := backgroundRoot()
 	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: list runs: %v\n", err)
+		fmt.Fprintf(stderr, "pi-worker: list background runs: %v\n", err)
 		return 9
 	}
-	if runs == nil {
-		runs = []runlog.Run{}
+	runs, artifacts, err := listRunInventory(dir, bgRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
+		return 9
 	}
 
 	// The first --keep entries are kept whatever their outcome and
@@ -236,8 +265,8 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// classify is kept when its file could be one being written,
 	// the same freshness question asked a second time at the moment
 	// of each delete because the prompt below can wait on a person —
-	// see selectPruneRuns and removeRunRecord.
-	selection := selectPruneRuns(runs, opts.keep)
+	// see selectPruneRuns, removeRunRecord, and removeRunDir.
+	selection := selectPruneRuns(runs, artifacts, opts.keep)
 
 	// Nothing selected is not an error: a missing or empty records
 	// directory lists no runs, and every later record may belong to a
@@ -259,9 +288,10 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		return 0
 	}
 
-	// The records directory is resolved exactly once, here, before the
-	// question is asked, and every deletion goes through that one
-	// handle by bare name. os.Remove resolves every parent component of
+	// Each parent a selected run was found in — the records directory,
+	// the legacy background root, or both — is resolved exactly once,
+	// here, before the question is asked, and every deletion goes
+	// through that parent's one handle by bare name. os.Remove resolves every parent component of
 	// the path it is given, so a full-path remove could be redirected
 	// at a file the listing never named by a records directory swapped
 	// before the removal; a remove relative to this handle cannot be
@@ -269,26 +299,40 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 	// during the question, or mid-delete — because nothing after this
 	// point resolves the directory again. os.OpenRoot follows a symlink
 	// in the name it is given, so a deliberately symlinked records
-	// directory keeps working. The root is opened only now that there
-	// is something to delete, so a missing records directory with
-	// nothing to prune behaves exactly as it did before, and it is
+	// directory keeps working. A root is opened only now that there is
+	// something to delete in it, so a missing directory with nothing to
+	// prune in it behaves exactly as it did before, and every root is
 	// closed on the way out.
 	//
 	// One window stays open, and is accepted by design, in the style of
 	// the limits in internal/runlog/interrupted.go:
 	//
-	//   - The directory can still be swapped between runlogList's walk
-	//     above and this open. No human wait sits in that window —
+	//   - A directory can still be swapped between the listing above
+	//     and this open. No human wait sits in that window —
 	//     nothing between the listing and the open blocks on a person —
 	//     and the open itself resolves whatever the name points at
 	//     then, so a swap there would send the deletes at the
 	//     swapped-in directory's files under the listed names.
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: open records directory: %v\n", err)
-		return 9
+	roots := make(map[string]*os.Root)
+	defer func() {
+		for _, root := range roots {
+			root.Close()
+		}
+	}()
+	for _, run := range selection.toDelete {
+		for _, art := range selection.artifacts[run.RunID] {
+			parent := pruneParent(dir, bgRoot, art)
+			if parent == "" || roots[parent] != nil {
+				continue
+			}
+			root, err := os.OpenRoot(parent)
+			if err != nil {
+				fmt.Fprintf(stderr, "pi-worker: open %s: %v\n", parent, err)
+				return 9
+			}
+			roots[parent] = root
+		}
 	}
-	defer root.Close()
 
 	if !opts.yes {
 		// The prompt shows exactly what it is about to delete before
@@ -349,16 +393,16 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		if parent.Err() != nil {
 			return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		}
-		freshRuns, err := runlogList(dir)
+		freshRuns, freshArtifacts, err := listRunInventory(dir, bgRoot)
 		if parent.Err() != nil {
 			return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "pi-worker: runs prune retry: list runs: %v\n", err)
+			fmt.Fprintf(stderr, "pi-worker: runs prune retry: %v\n", err)
 			return 9
 		}
-		freshSelection := selectPruneRuns(freshRuns, opts.keep)
-		if !pruneDeletionSelectionEqual(selection.toDelete, freshSelection.toDelete) {
+		freshSelection := selectPruneRuns(freshRuns, freshArtifacts, opts.keep)
+		if !pruneDeletionSelectionEqual(selection, freshSelection) {
 			fmt.Fprintln(stderr, "pi-worker: runs prune retry: selection changed")
 			return 9
 		}
@@ -380,14 +424,14 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 		return cancelledPrune(stdout, stderr, opts, nil, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 	}
 
-	// Each candidate is deleted one at a time, oldest first, and a
-	// failure never stops the others: every selected record is tried,
-	// each failure is reported on stderr, and the exit code is 9 at the
-	// end. Records already deleted stay deleted, which the deleted lines
-	// below say. Each name is re-checked against the file that was
-	// listed immediately before its removal — see removeRunRecord — so
-	// a candidate refused there is a failure like any other, and one
-	// spared there is reported as kept, not as deleted.
+	// Each candidate run is deleted one at a time, oldest first, and a
+	// failure never stops the others: every selected run is tried, each
+	// failure is reported on stderr, and the exit code is 9 at the end.
+	// Runs already deleted stay deleted, which the deleted lines below
+	// say. Each artifact's name is re-checked against what was listed
+	// immediately before its removal — see removePruneRun — so a run
+	// refused there is a failure like any other, and one spared there is
+	// reported as kept, not as deleted.
 	code := 0
 	deletedIDs := make([]string, 0, len(selection.toDelete))
 	for i := len(selection.toDelete) - 1; i >= 0; i-- {
@@ -398,21 +442,25 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 			return cancelledPrune(stdout, stderr, opts, deletedIDs, selection.keptRunningIDs, selection.keptUnreadableIDs, selection.keptNewest)
 		}
 		run := selection.toDelete[i]
-		spared, err := removeRunRecord(root, dir, run, selection.listedFiles[run.Path])
+		spared, err := removePruneRun(roots, dir, bgRoot, selection.artifacts[run.RunID], selection.listedFiles)
 		if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: delete %s: %v\n", run.RunID, err)
 			code = 9
 			continue
 		}
-		if spared {
-			// A delete-time spare is exactly the unreadable kind:
-			// removeRunRecord spares only a record it could not
-			// classify whose file changed within the grace window,
-			// never one it knows is running, so the record and its id
-			// join the keptUnreadable summary count and --json array
-			// just as a selection-time spare did.
-			selection.keptUnreadable = append(selection.keptUnreadable, run)
-			selection.keptUnreadableIDs = append(selection.keptUnreadableIDs, run.RunID)
+		if spared != "" {
+			// A delete-time spare joins the summary count and --json
+			// array of its kind, just as a selection-time spare did: a
+			// run directory whose owner lock is held now is running, and
+			// an artifact that could not be classified and changed
+			// within the grace window is unreadable.
+			if spared == "running" {
+				selection.keptRunning = append(selection.keptRunning, run)
+				selection.keptRunningIDs = append(selection.keptRunningIDs, run.RunID)
+			} else {
+				selection.keptUnreadable = append(selection.keptUnreadable, run)
+				selection.keptUnreadableIDs = append(selection.keptUnreadableIDs, run.RunID)
+			}
 			if !opts.json {
 				fmt.Fprintf(stdout, "kept %s\n", run.RunID)
 			}
@@ -468,65 +516,78 @@ func runsPruneCommand(parent context.Context, opts runsOptions, stdin io.Reader,
 }
 
 // pruneSelection is one prune's whole selection in runs-newest-first
-// order: the records to delete, the running and unreadable records
-// spared and reported apart — with keptRunningIDs and
-// keptUnreadableIDs holding their ids in the same order — the
-// per-path file each delete candidate was when chosen, which
-// removeRunRecord compares the name against at the delete, and
-// keptNewest, the kept count capped at the number of listed runs.
+// order: the runs to delete, the running and unreadable runs spared
+// and reported apart — with keptRunningIDs and keptUnreadableIDs
+// holding their ids in the same order — every artifact each run was
+// found under, the per-path file each delete candidate's artifact was
+// when chosen, which removeRunRecord and removeRunDir compare the name
+// against at the delete, and keptNewest, the kept count capped at the
+// number of listed runs.
 type pruneSelection struct {
 	toDelete          []runlog.Run
 	keptRunning       []runlog.Run
 	keptUnreadable    []runlog.Run
 	keptRunningIDs    []string
 	keptUnreadableIDs []string
+	artifacts         map[string][]runArtifact
 	listedFiles       map[string]os.FileInfo
 	keptNewest        int
 }
 
 // selectPruneRuns chooses what a prune deletes and what it spares,
-// running entirely on top of runlogList. The first keep entries are
+// running entirely on top of listRunInventory. The first keep runs are
 // kept whatever their outcome and are never candidates. Every later
-// entry is a candidate. Two kinds of candidate are kept, and they are
-// reported apart. A candidate whose run is still running is kept and
+// run is a candidate, judged by every artifact it was found under. Two
+// kinds of candidate are kept, and they are reported apart. A
+// candidate any of whose artifacts is still running is kept and
 // reported as running — a run still writing to its record must never
-// have that record pulled out from under it. A candidate too
-// unreadable to classify is kept and reported separately when its
-// file could be one being written: either the file changed within the
-// grace window, or its timestamp could not be read at all — a record
-// whose timestamp this reader cannot even examine is exactly the one
-// not to delete. The same freshness question is asked a second time,
-// at the moment of each delete, because the prompt can wait on a
-// person: a record stale when listed may be freshly changed by the
-// time the delete happens — see removeRunRecord. Every other
-// candidate is deleted, stale unknown ones included: an unreadable
-// record is exactly the junk this command exists to clear.
-func selectPruneRuns(runs []runlog.Run, keep int) pruneSelection {
+// have that record pulled out from under it, and a background run's
+// flat record can still read running after its snapshot turned
+// terminal. A candidate with an artifact too unreadable to classify is
+// kept and reported separately when that artifact could be one being
+// written: either it changed within the grace window, or its timestamp
+// could not be read at all — an artifact whose timestamp this reader
+// cannot even examine is exactly the one not to delete. The same
+// freshness question is asked a second time, at the moment of each
+// delete, because the prompt can wait on a person: an artifact stale
+// when listed may be freshly changed by the time the delete happens —
+// see removeRunRecord and removeRunDir. Every other candidate is
+// deleted, stale unknown ones included: an unreadable record is
+// exactly the junk this command exists to clear.
+func selectPruneRuns(runs []runlog.Run, artifacts map[string][]runArtifact, keep int) pruneSelection {
 	var selection pruneSelection
+	selection.artifacts = artifacts
 	selection.keptNewest = keep
 	if selection.keptNewest > len(runs) {
 		selection.keptNewest = len(runs)
 	}
-	// A candidate whose file cannot be looked up here keeps nothing
-	// for its path: what delete-time would compare is absent, and
-	// removeRunRecord refuses any record it cannot examine, so the
-	// entry-less candidate gets exactly that refusal at the delete.
+	// A candidate artifact whose file cannot be looked up here keeps
+	// nothing for its path: what delete-time would compare is absent,
+	// and the removal refuses any artifact it cannot examine, so the
+	// entry-less artifact gets exactly that refusal at the delete.
 	selection.listedFiles = make(map[string]os.FileInfo)
 	for i, run := range runs {
 		if i < keep {
 			continue
 		}
-		if run.Outcome == "running" {
+		running, unreadable := false, false
+		for _, art := range artifacts[run.RunID] {
+			running = running || art.Outcome == "running"
+			unreadable = unreadable || (art.Outcome == "unknown" && recordRecentlyModified(art.Path))
+		}
+		if running {
 			selection.keptRunning = append(selection.keptRunning, run)
 			continue
 		}
-		if run.Outcome == "unknown" && recordRecentlyModified(run.Path) {
+		if unreadable {
 			selection.keptUnreadable = append(selection.keptUnreadable, run)
 			continue
 		}
 		selection.toDelete = append(selection.toDelete, run)
-		if info, err := os.Lstat(run.Path); err == nil {
-			selection.listedFiles[run.Path] = info
+		for _, art := range artifacts[run.RunID] {
+			if info, err := os.Lstat(art.Path); err == nil {
+				selection.listedFiles[art.Path] = info
+			}
 		}
 	}
 	selection.keptRunningIDs = make([]string, 0, len(selection.keptRunning))
@@ -540,13 +601,25 @@ func selectPruneRuns(runs []runlog.Run, keep int) pruneSelection {
 	return selection
 }
 
-func pruneDeletionSelectionEqual(a, b []runlog.Run) bool {
-	if len(a) != len(b) {
+// pruneDeletionSelectionEqual reports whether two selections would
+// delete the same runs, in the same order, each through the same
+// artifact paths.
+func pruneDeletionSelectionEqual(a, b pruneSelection) bool {
+	if len(a.toDelete) != len(b.toDelete) {
 		return false
 	}
-	for i := range a {
-		if a[i].Path != b[i].Path || a[i].RunID != b[i].RunID {
+	for i := range a.toDelete {
+		if a.toDelete[i].Path != b.toDelete[i].Path || a.toDelete[i].RunID != b.toDelete[i].RunID {
 			return false
+		}
+		artsA, artsB := a.artifacts[a.toDelete[i].RunID], b.artifacts[b.toDelete[i].RunID]
+		if len(artsA) != len(artsB) {
+			return false
+		}
+		for j := range artsA {
+			if artsA[j].Path != artsB[j].Path {
+				return false
+			}
 		}
 	}
 	return true
@@ -748,6 +821,169 @@ func removeRunRecord(root *os.Root, dir string, run runlog.Run, listed os.FileIn
 		return false, err
 	}
 	return false, nil
+}
+
+// pruneParent names the directory whose opened root an artifact is
+// removed through: the records directory for a flat record — whose own
+// path removeRunRecord checks — and, for a run directory, the
+// directory it sits in, which must be the records directory or the
+// legacy background root. Any other parent names nothing, and the
+// removal refuses the artifact.
+func pruneParent(dir, bgRoot string, art runArtifact) string {
+	if !art.dir {
+		return filepath.Clean(dir)
+	}
+	parent := filepath.Dir(art.Path)
+	if parent == filepath.Clean(dir) || parent == filepath.Clean(bgRoot) {
+		return parent
+	}
+	return ""
+}
+
+// removePruneRun deletes every artifact of one run, run directories
+// first and the flat record last, each through its parent's root. The
+// first artifact spared or refused stops the run there: a run
+// directory whose owner lock is held now keeps the run's flat record
+// too, and the run is reported once — spared, failed, or deleted —
+// never once per artifact.
+func removePruneRun(roots map[string]*os.Root, dir, bgRoot string, arts []runArtifact, listed map[string]os.FileInfo) (spared string, err error) {
+	for _, art := range arts {
+		root := roots[pruneParent(dir, bgRoot, art)]
+		if root == nil {
+			return "", fmt.Errorf("refusing to delete %q: outside the records directory and the background directory", art.Path)
+		}
+		if art.dir {
+			spared, err = removeRunDir(root, art.Run, listed[art.Path])
+		} else {
+			var unreadable bool
+			unreadable, err = removeRunRecord(root, dir, art.Run, listed[art.Path])
+			if unreadable {
+				spared = "unreadable"
+			}
+		}
+		if err != nil || spared != "" {
+			return spared, err
+		}
+	}
+	return "", nil
+}
+
+// pruneRunDirEntry reports whether name is one a run directory may
+// hold: what the supervisor writes into it, and a snapshot replacement
+// stage a killed supervisor can leave behind.
+func pruneRunDirEntry(name string) bool {
+	switch name {
+	case "record.jsonl", "snapshot.json", "debug.log", runlog.OwnerLockName:
+		return true
+	}
+	return strings.HasPrefix(name, ".snapshot.json.tmp-")
+}
+
+// removeRunDir deletes one run directory through its parent's root,
+// after the same re-validation removeRunRecord does for a flat record,
+// plus two questions only a directory raises. It never removes a tree
+// wholesale: it deletes the entries it knows by name and then the
+// empty directory, so anything it does not recognise stays.
+//
+//   - The name must still be a real directory — Lstat, so a symlink is
+//     refused by what it is — and a run classified unknown at selection
+//     whose directory changed within the grace window is spared as
+//     unreadable, before identity is asked, exactly as removeRunRecord
+//     spares a fresh unknown record.
+//   - The directory is opened as its own root and checked to be the
+//     directory the Lstat saw, so a name swapped for a symlink after
+//     the Lstat is refused.
+//   - When the directory has an owner lock, the lock is taken without
+//     waiting and held through the deletes. A lock held by someone
+//     else — a run that owns it now, or another prune deleting it — is
+//     spared as running, before identity is asked: sparing destroys
+//     nothing, so it may come first, as freshness does.
+//   - The directory must be the one that was listed: the same file and
+//     modification time as at selection. Size is not compared; a
+//     directory's size says nothing about its content.
+//   - Every entry must be a name the supervisor writes, or a snapshot
+//     replacement stage, and a regular file or a symlink. Anything
+//     else — a notes file, a subdirectory — refuses the whole
+//     directory before a single entry is removed.
+//
+// One ceiling is accepted by design: an entry can still appear between
+// the scan and the final removal of the directory. Nothing then
+// removes it; the directory's own removal fails because it is not
+// empty, and that failure is reported like any other.
+func removeRunDir(parent *os.Root, run runlog.Run, listed os.FileInfo) (spared string, err error) {
+	name := filepath.Base(run.Path)
+	if _, err := runlog.ParseRunID(name); err != nil {
+		return "", fmt.Errorf("refusing to delete %q: not a run directory", run.Path)
+	}
+	info, err := parent.Lstat(name)
+	if err != nil {
+		return "", fmt.Errorf("refusing to delete %q: cannot be examined: %v", run.Path, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("refusing to delete %q: not a directory", run.Path)
+	}
+	if run.Outcome == "unknown" && time.Since(info.ModTime()) <= pruneGraceWindow {
+		return "unreadable", nil
+	}
+	runRoot, err := parent.OpenRoot(name)
+	if err != nil {
+		return "", err
+	}
+	defer runRoot.Close()
+	if now, err := runRoot.Stat("."); err != nil || !os.SameFile(now, info) {
+		return "", fmt.Errorf("refusing to delete %q: no longer the run directory that was listed", run.Path)
+	}
+
+	var lock *os.File
+	lockInfo, err := runRoot.Lstat(runlog.OwnerLockName)
+	switch {
+	case err == nil:
+		if !lockInfo.Mode().IsRegular() {
+			return "", fmt.Errorf("refusing to delete %q: its owner lock is not a regular file", run.Path)
+		}
+		lock, err = runRoot.OpenFile(runlog.OwnerLockName, os.O_RDONLY, 0)
+		if err != nil {
+			return "", err
+		}
+		defer lock.Close()
+		held, err := runlog.TryLockOwner(lock)
+		if err != nil {
+			return "", fmt.Errorf("refusing to delete %q: %v", run.Path, err)
+		}
+		if !held {
+			return "running", nil
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return "", fmt.Errorf("refusing to delete %q: cannot examine its owner lock: %v", run.Path, err)
+	}
+	if listed == nil || !os.SameFile(listed, info) || !listed.ModTime().Equal(info.ModTime()) {
+		return "", fmt.Errorf("refusing to delete %q: no longer the run directory that was listed", run.Path)
+	}
+
+	entries, err := fs.ReadDir(runRoot.FS(), ".")
+	if err != nil {
+		return "", fmt.Errorf("refusing to delete %q: cannot be read: %v", run.Path, err)
+	}
+	for _, entry := range entries {
+		if !pruneRunDirEntry(entry.Name()) || (!entry.Type().IsRegular() && entry.Type()&fs.ModeSymlink == 0) {
+			return "", fmt.Errorf("refusing to delete %q: unexpected entry %q", run.Path, entry.Name())
+		}
+	}
+	for _, entry := range entries {
+		if entry.Name() == runlog.OwnerLockName {
+			continue
+		}
+		if err := runRoot.Remove(entry.Name()); err != nil {
+			return "", err
+		}
+	}
+	if lock != nil {
+		if err := runRoot.Remove(runlog.OwnerLockName); err != nil {
+			return "", err
+		}
+		lock.Close()
+	}
+	return "", parent.Remove(name)
 }
 
 func parseRunsArgs(args []string) (runsOptions, error) {

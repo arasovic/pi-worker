@@ -229,36 +229,36 @@ func TestRunBackgroundWritesTheRunRecord(t *testing.T) {
 	}
 }
 
-// TestRunsPruneDeletesABackgroundRunsRecordButNotItsSnapshot requires that
-// prune, which reads only the records directory, deletes the record a
-// finished background run wrote there like any foreground record, and never
-// its background snapshot. The background root is pointed at the run's real
-// store, so a prune that wrongly reached into it would fail here.
-func TestRunsPruneDeletesABackgroundRunsRecordButNotItsSnapshot(t *testing.T) {
+// TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory requires that
+// prune deletes a finished background run whole — its run directory in
+// the background store and the record it wrote into the records
+// directory — reports it once, and that the pruned run is then unknown
+// to runs status. The background root is pointed at the run's real
+// store.
+func TestRunsPruneDeletesABackgroundRunsRecordAndItsDirectory(t *testing.T) {
 	manager, root := setupBackgroundRun(t, backgroundHappyScript("prune answer"))
 
 	foregroundDir := t.TempDir()
 	withRunlogDir(t, foregroundDir)
 	withBackgroundRoot(t, root)
 
-	backgroundRunID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m")
+	// Started without startBackgroundRun: its cleanup drains the run,
+	// which cannot be read once pruned. The run is drained here instead.
+	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
+	if code != 0 {
+		t.Fatalf("run --background = (%d, %q, %q), want 0", code, stdout, stderr)
+	}
+	backgroundRunID, _ := decodeJSONObject(t, stdout)["runId"].(string)
 	if _, err := manager.Wait(context.Background(), backgroundRunID, 90*time.Second); err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	snapshotPath := filepath.Join(root, backgroundRunID, "snapshot.json")
-	if _, err := os.Stat(snapshotPath); err != nil {
-		t.Fatalf("background snapshot %s missing before prune: %v", snapshotPath, err)
-	}
+	runDir := filepath.Join(root, backgroundRunID)
 	recordPath := filepath.Join(foregroundDir, backgroundRunID+".jsonl")
 	waitForFinishedRecord(t, recordPath)
-	writeListRecord(t, foregroundDir, "20000101T000000Z-1", deadPID, "2000-01-01T00:00:00Z", "/ws-fg", 1, true, "completed", "")
 
-	code, stdout, stderr := runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
+	code, stdout, stderr = runCLI(t, []string{"runs", "prune", "--keep", "0", "--yes", "--json"}, "")
 	if code != 0 || stderr != "" {
 		t.Fatalf("runs prune = (%d, %q, %q), want exit 0 with empty stderr", code, stdout, stderr)
-	}
-	if _, err := os.Stat(snapshotPath); err != nil {
-		t.Fatalf("background snapshot %s vanished after prune: %v", snapshotPath, err)
 	}
 	var document struct {
 		Deleted []string `json:"deleted"`
@@ -266,10 +266,17 @@ func TestRunsPruneDeletesABackgroundRunsRecordButNotItsSnapshot(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatalf("decode runs prune document: %v\n%s", err, stdout)
 	}
-	if !slices.Contains(document.Deleted, backgroundRunID) {
-		t.Fatalf("prune deleted %v, want the background run's record %s among them", document.Deleted, backgroundRunID)
+	if !slices.Equal(document.Deleted, []string{backgroundRunID}) {
+		t.Fatalf("prune deleted %v, want the background run %s once", document.Deleted, backgroundRunID)
 	}
-	if _, err := os.Stat(recordPath); !os.IsNotExist(err) {
-		t.Fatalf("background run record %s after prune: %v, want it deleted", recordPath, err)
+	for _, path := range []string{runDir, recordPath} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s after prune: %v, want it deleted", path, err)
+		}
+	}
+
+	code, stdout, stderr = runCLI(t, []string{"runs", "status", backgroundRunID}, "")
+	if code != 2 || !strings.Contains(stderr, "unknown run") {
+		t.Fatalf("runs status of the pruned run = (%d, %q, %q), want exit 2 unknown run", code, stdout, stderr)
 	}
 }

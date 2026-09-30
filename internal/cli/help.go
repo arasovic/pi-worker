@@ -106,11 +106,11 @@ wait    reads a background run until it finishes, then prints what run
         to stderr
 cancel  asks a background run to stop and returns at once; follow it with
         wait to see it end as cancelled
-prune   deletes run records, keeping the newest <n>. A running run is never
-        deleted, and neither is an unreadable record changed in the last
-        hour. A background run's record is deleted like any other, but its
-        background state is never touched: status and wait still answer
-        for it. It asks first; --yes skips the question and is required
+prune   deletes runs, keeping the newest <n>: a run's directory and its
+        record go together. A running run is never deleted, and neither
+        is an unreadable one changed in the last hour. A pruned run is
+        gone: status and wait no longer know it, so collect its result
+        first. It asks first; --yes skips the question and is required
         with --json or without a terminal
 
 A finished background run exits with the code the same run would have in the
