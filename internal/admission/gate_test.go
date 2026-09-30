@@ -8,7 +8,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -602,6 +604,187 @@ func TestGateOpenFailsClosedSymlinkedState(t *testing.T) {
 	_, err := Open(root, 1)
 	if err == nil {
 		t.Fatal("Open(symlink) = nil, want error")
+	}
+}
+
+// TestLoadStateRefusesNamedPipe pins the pre-open regular-file check and
+// the fail-closed gate: a named pipe at state.json must be refused with
+// an error — never an empty state that would let the gate admit runs it
+// cannot account for — and the read must return instead of blocking
+// forever in the open of a writerless pipe.
+func TestLoadStateRefusesNamedPipe(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state.json")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Skipf("cannot create a named pipe on %s: %v", "darwin||linux", err)
+	}
+
+	// The open of a writerless pipe cannot be interrupted, so the
+	// read runs in a goroutine and a deadline turns a blocked open
+	// into the named failure below instead of a hung suite.
+	type outcome struct {
+		st  state
+		err error
+	}
+	read := make(chan outcome, 1)
+	go func() {
+		st, err := loadState(root)
+		read <- outcome{st, err}
+	}()
+	var got outcome
+	select {
+	case got = <-read:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("loadState blocked in the open of a named pipe")
+	}
+	if got.err == nil {
+		t.Fatal("loadState(pipe) = nil, want error")
+	}
+	if len(got.st.Tickets) != 0 || got.st.NextSequence != 0 {
+		t.Fatalf("loadState(pipe) state = %+v, want the zero state, not an empty state", got.st)
+	}
+}
+
+// TestLoadStateRefusesOversizedState asserts a state file above the size
+// ceiling is refused before it is read. The file is a short valid state
+// extended with os.Truncate to one byte above the ceiling, which makes a
+// sparse file: nothing near the ceiling is ever written to disk, and the
+// refusal happens on the stat, before any read. The file is left
+// untouched: the size is unchanged afterwards.
+func TestLoadStateRefusesOversizedState(t *testing.T) {
+	root := t.TempDir()
+	writeStateFile(t, root, `{"schemaVersion":1,"nextSequence":1,"tickets":[]}`)
+	// One byte above the ceiling.
+	oversized := maxStateBytes + 1
+	path := filepath.Join(root, "state.json")
+	if err := os.Truncate(path, oversized); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	_, err := loadState(root)
+	if err == nil {
+		t.Fatal("loadState(oversized) = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("loadState(oversized) error = %v, want it to mention the size", err)
+	}
+	info, serr := os.Stat(path)
+	if serr != nil {
+		t.Fatalf("stat: %v", serr)
+	}
+	if info.Size() != oversized {
+		t.Fatalf("state.json size = %d, want %d: the refused file must be left untouched", info.Size(), oversized)
+	}
+}
+
+// TestLoadStateRefusesPipeSwappedInBeforeOpen pins the non-blocking open
+// and the re-check after it: the seam renames a writerless named pipe
+// over the state path, where it is called, so the open always meets the
+// pipe on every run. The read must return — O_NONBLOCK keeps the open
+// of a writerless pipe from blocking forever — and the re-check must
+// refuse the pipe: a pipe is not a regular file. This is the only test
+// that reaches the open with a pipe, so it is the one that fails if
+// O_NONBLOCK is removed.
+func TestLoadStateRefusesPipeSwappedInBeforeOpen(t *testing.T) {
+	root := t.TempDir()
+	writeStateFile(t, root, `{"schemaVersion":1,"nextSequence":1,"tickets":[]}`)
+	path := filepath.Join(root, "state.json")
+	pipe := filepath.Join(root, "pipe")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Skipf("cannot create a named pipe on %s: %v", "darwin||linux", err)
+	}
+
+	beforeStateOpen = func() {
+		if err := os.Rename(pipe, path); err != nil {
+			t.Errorf("plant the pipe over the state path: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeStateOpen = func() {} })
+
+	// The open of a planted writerless pipe cannot be interrupted, so
+	// the read runs in a goroutine and a deadline turns a blocked
+	// open into the named failure below instead of a hung suite.
+	type outcome struct {
+		st  state
+		err error
+	}
+	read := make(chan outcome, 1)
+	go func() {
+		st, err := loadState(root)
+		read <- outcome{st, err}
+	}()
+	var got outcome
+	select {
+	case got = <-read:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("loadState blocked in the open of a planted named pipe")
+	}
+	if got.err == nil {
+		t.Fatal("loadState(pipe) = nil, want error")
+	}
+}
+
+// TestLoadStateRefusesSwappedState pins the re-check that loadState
+// performs on the file it opened: a state whose name is replaced
+// between the check and the open is refused even though the
+// replacement is a regular file of the same size. The seam
+// beforeStateOpen performs the replacement where it is called,
+// between the check and the open, so the open always meets the
+// decoy on every run. The decoy has the state's exact bytes and
+// size, so the pre-open regular-file and size arms stay silent, and
+// it is a regular file like the state, so the post-open
+// regular-file arm stays silent too — only the same-file re-check
+// can refuse it.
+func TestLoadStateRefusesSwappedState(t *testing.T) {
+	root := t.TempDir()
+	content := `{"schemaVersion":1,"nextSequence":1,"tickets":[]}`
+	path := writeStateFile(t, root, content)
+	decoy := filepath.Join(root, "decoy")
+	if err := os.WriteFile(decoy, []byte(content), 0o600); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+	beforeStateOpen = func() {
+		if err := os.Rename(decoy, path); err != nil {
+			t.Errorf("swap the decoy over the state name: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeStateOpen = func() {} })
+	if _, err := loadState(root); err == nil || !strings.Contains(err.Error(), "state changed before reading") {
+		t.Fatalf("loadState(swapped) = %v, want error containing %q", err, "state changed before reading")
+	}
+}
+
+// TestGateOpenFailsClosedNamedPipeState asserts Open with a named pipe
+// at state.json returns an error — the gate stays fail-closed — instead
+// of blocking forever in the open of a writerless pipe.
+func TestGateOpenFailsClosedNamedPipeState(t *testing.T) {
+	restoreGateSeams(t, 5000, 5000000, map[int]pidResp{
+		5000: {exists: true, createTime: 5000000},
+	})
+	root := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(root, "state.json"), 0o600); err != nil {
+		t.Skipf("cannot create a named pipe on %s: %v", "darwin||linux", err)
+	}
+
+	type outcome struct {
+		g   *Gate
+		err error
+	}
+	opened := make(chan outcome, 1)
+	go func() {
+		g, err := Open(root, 1)
+		opened <- outcome{g, err}
+	}()
+	var got outcome
+	select {
+	case got = <-opened:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Open blocked in the open of a named pipe state")
+	}
+	if got.err == nil {
+		t.Fatal("Open(pipe state) = nil, want error")
+	}
+	if got.g != nil {
+		t.Fatalf("Open(pipe state) gate = %+v, want nil", got.g)
 	}
 }
 

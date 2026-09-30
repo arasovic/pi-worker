@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeRecord writes one hand-built record file into dir: a start line
@@ -235,6 +236,51 @@ func TestInterruptedIgnoresMissingOrInvalidMarker(t *testing.T) {
 				t.Fatalf("interrupted = %v, want %v", paths, want)
 			}
 		})
+	}
+}
+
+// TestInterruptedTreatsNamedPipeMarkerAsAbsent pins the guarded marker
+// open: a named pipe at the marker path must be treated as absent —
+// the scan returns, with no error, and reports the interrupted record
+// — instead of blocking forever in the open of a writerless pipe.
+// A bare os.ReadFile of the marker would hang here: the test would
+// fail on the deadline below instead of passing. On the platforms
+// whose open carries no non-blocking flag there is nothing to assert
+// and the test skips.
+func TestInterruptedTreatsNamedPipeMarkerAsAbsent(t *testing.T) {
+	if openNonBlock == 0 {
+		t.Skip("the marker open is blocking on this platform by design; a planted writerless pipe would hang the reader")
+	}
+	withPidAlive(t, func(pid int32) (bool, error) { return false, nil })
+	dir := t.TempDir()
+	path := writeRecord(t, dir, "20260830T103000Z-2", 4242, false)
+	pipe := filepath.Join(dir, markerFileName)
+	if err := mkfifo(pipe); err != nil {
+		t.Skipf("cannot create a named pipe on %s: %v", runtime.GOOS, err)
+	}
+
+	// The read runs in a goroutine and a deadline turns a blocked
+	// open into the named failure below instead of a hung suite.
+	type outcome struct {
+		paths []string
+		err   error
+	}
+	scan := make(chan outcome, 1)
+	go func() {
+		paths, err := Interrupted(dir)
+		scan <- outcome{paths, err}
+	}()
+	var got outcome
+	select {
+	case got = <-scan:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Interrupted blocked in the open of a named pipe marker")
+	}
+	if got.err != nil {
+		t.Fatalf("Interrupted(pipe marker) error = %v, want nil", got.err)
+	}
+	if want := []string{path}; !slices.Equal(got.paths, want) {
+		t.Fatalf("Interrupted(pipe marker) = %v, want %v", got.paths, want)
 	}
 }
 
