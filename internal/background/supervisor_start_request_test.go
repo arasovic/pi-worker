@@ -120,6 +120,7 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 		t.Fatalf("test prompt too small: %d bytes", len(big))
 	}
 	req.tasks[0].Prompt = big
+	req.runlogDir = "/runs"
 
 	encoded, err := encodeSupervisorStartRequest(req)
 	if err != nil {
@@ -142,7 +143,7 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 	if back.backgroundRoot != req.backgroundRoot || back.admissionRoot != req.admissionRoot {
 		t.Fatalf("roots mismatch: %q %q", back.backgroundRoot, back.admissionRoot)
 	}
-	if back.maxModelWorkers != req.maxModelWorkers || back.piExecutable != req.piExecutable || back.debug != req.debug {
+	if back.maxModelWorkers != req.maxModelWorkers || back.piExecutable != req.piExecutable || back.debug != req.debug || back.runlogDir != "/runs" {
 		t.Fatalf("scalars mismatch: %+v", back)
 	}
 	if !slices.Equal(back.verify, []string{"go", "test", "./..."}) {
@@ -218,6 +219,9 @@ func TestSupervisorStartRequestDecodeRejects(t *testing.T) {
 	wrongVersion := minimalStartRequestJSON()
 	wrongVersion.SchemaVersion = supervisorStartSchemaVersion + 1
 
+	relativeRunlogDir := minimalStartRequestJSON()
+	relativeRunlogDir.RunlogDir = "relative/runs"
+
 	trailing := append(append([]byte(nil), valid...), ' ', '{', '}')
 
 	// The content value is invalid base64; decoding fails on it before
@@ -234,6 +238,7 @@ func TestSupervisorStartRequestDecodeRejects(t *testing.T) {
 		{"invalid utf-8", []byte("{\"workspace\":\"\xff\"}"), "not valid UTF-8"},
 		{"wrong version", mustMarshalJSON(t, wrongVersion), "schemaVersion must be 1, got 2"},
 		{"malformed base64", malformedBase64, "illegal base64"},
+		{"relative runlogDir", mustMarshalJSON(t, relativeRunlogDir), "runlogDir must be an absolute path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -288,6 +293,7 @@ func TestSupervisorStartRequestEncodeValidation(t *testing.T) {
 		{"worktree invalid name", func(r *supervisorStartRequest) { r.worktree.Name = "Bad!" }, "invalid name"},
 		{"worktree branch mismatch", func(r *supervisorStartRequest) { r.worktree.Branch = "main" }, "branch must be run/"},
 		{"empty pi executable", func(r *supervisorStartRequest) { r.piExecutable = "" }, "piExecutable is required"},
+		{"relative runlogDir", func(r *supervisorStartRequest) { r.runlogDir = "runs" }, "runlogDir must be an absolute path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

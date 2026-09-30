@@ -107,6 +107,7 @@ func (m *Manager) startWithExecutable(ctx context.Context, executable string, op
 		maxModelWorkers:  m.maxModelWorkers,
 		piExecutable:     opts.PiExecutable,
 		debug:            opts.Debug,
+		runlogDir:        opts.RunlogDir,
 	}
 
 	// The worktree is the one thing this call creates that the handoff

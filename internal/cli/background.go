@@ -94,14 +94,18 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 	}
 
 	// The same pre-run warnings the foreground prints, in the same order:
-	// --background changes who waits, not what runs. The earlier-run scans
-	// read foreground run records only, because a background run writes
-	// none yet (#409); when the records directory cannot be resolved there
-	// is nothing to scan, and no record of this run to warn about either.
+	// --background changes who waits, not what runs. The records directory
+	// is resolved once: the earlier-run scans read it, and the supervisor
+	// writes this run's record into the same directory. When it cannot be
+	// resolved the run starts without a record, as a foreground run does.
 	preflightPiVersion(ctx, stderr)
 	warnSharedWorkspace(tasks, stderr)
-	if dir, err := runlogDir(); err == nil {
-		warnEarlierRuns(dir, stderr)
+	recordsDir, err := runlogDir()
+	if err == nil {
+		warnEarlierRuns(recordsDir, stderr)
+	} else {
+		recordsDir = ""
+		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", err)
 	}
 
 	started, err := manager.Start(ctx, background.StartOptions{
@@ -113,6 +117,7 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 		WorktreeName:     opts.worktree,
 		RoleExecutable:   backgroundRoleExecutable,
 		Debug:            opts.debug,
+		RunlogDir:        recordsDir,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)

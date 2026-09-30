@@ -165,10 +165,12 @@ native status exit code.
 ## `runs list --json`
 
 The root object has exactly `schemaVersion` and `runs`. `runs` is always an
-array, ordered newest first, and includes both foreground records (the
+array, ordered newest first, and includes both run records (the
 `.jsonl` files in the records directory) and background runs (one
-`snapshot.json` per run directory in the background store). Each entry has
-exactly these fields:
+`snapshot.json` per run directory in the background store). A background run
+also writes a record into the records directory; a run found in both is
+listed once, as its background entry, because the snapshot is the state
+`runs status` and `runs wait` read. Each entry has exactly these fields:
 
 - `runId`: the record filename without `.jsonl`; for a background run, its
   run directory name
