@@ -679,23 +679,9 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	var recorder *runlog.Recorder
 	dir, err := runlogDir()
 	if err == nil {
-		// Earlier runs are scanned for interruptions — and for the
-		// live processes a settled run left behind — before this
-		// run's own record exists, so the current run cannot block
-		// its own watermark. A scan failure — an unreadable records
-		// directory or an unwritable marker — is one warning in the
-		// existing style, what the scans did find is still printed,
-		// and the run continues: a record problem never fails a run.
-		paths, scanErr := runlogInterrupted(dir)
-		if scanErr != nil {
-			fmt.Fprintf(stderr, "pi-worker: warning: interrupted-run check unavailable: %v\n", scanErr)
-		}
-		warnInterruptedRuns(paths, dir, stderr)
-		leftovers, leftoversErr := runlogLeftovers(dir)
-		if leftoversErr != nil {
-			fmt.Fprintf(stderr, "pi-worker: warning: leftover-process check unavailable: %v\n", leftoversErr)
-		}
-		warnLeftoverProcesses(leftovers, dir, stderr)
+		// Earlier runs are scanned before this run's own record
+		// exists, so the current run cannot block its own watermark.
+		warnEarlierRuns(dir, stderr)
 		recorder, err = runlogStart(dir, startedAt, workspace, tasks)
 	}
 	if err != nil {
@@ -761,13 +747,8 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	if recordErr := recorder.Finish(finishedAt, &result, nil); recordErr != nil {
 		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", recordErr)
 	}
-	for i, worker := range result.Workers {
-		if worker.Warning != "" {
-			fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Warning)
-		}
-	}
-
 	if opts.json {
+		printWorkerWarnings(result, stderr)
 		data, err := json.Marshal(result)
 		if err != nil {
 			fmt.Fprintf(stderr, "pi-worker: encode result: %v\n", err)
@@ -784,6 +765,27 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		return code
 	}
 
+	printRunResult(result, stdout, stderr)
+	return code
+}
+
+// printWorkerWarnings prints one stderr line per worker warning. It is the
+// one part of the human summary a --json run prints too, and in both modes
+// it comes first.
+func printWorkerWarnings(result run.Result, stderr io.Writer) {
+	for i, worker := range result.Workers {
+		if worker.Warning != "" {
+			fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Warning)
+		}
+	}
+}
+
+// printRunResult prints a finished run's human summary: the worker warnings,
+// one line per worker, the run-level checks, and the outcome line. A
+// foreground run and a `runs wait` of a finished background run both print
+// it, so the two cannot drift.
+func printRunResult(result run.Result, stdout, stderr io.Writer) {
+	printWorkerWarnings(result, stderr)
 	for i, worker := range result.Workers {
 		label := workerOutputLabel(i+1, worker)
 		if worker.Status == pi.StatusCompleted {
@@ -807,6 +809,15 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 			fmt.Fprintf(stdout, "%s (incomplete): %s\n", label, worker.PartialExplanation)
 		}
 	}
+	printRunChecks(result, stdout, stderr)
+	fmt.Fprintf(stdout, "outcome=%s\n", result.Outcome)
+}
+
+// printRunChecks prints the run-level check lines of the human summary:
+// verification, git state, the change manifest, the write check, and the
+// processes the run left running. `runs status` prints them under its table
+// for a finished run too.
+func printRunChecks(result run.Result, stdout, stderr io.Writer) {
 	if result.Verification != nil {
 		printVerification(result.Verification, stdout, stderr)
 	}
@@ -829,8 +840,24 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	if len(result.LeftoverProcesses) > 0 {
 		printRunLeftovers(result.LeftoverProcesses, stderr)
 	}
-	fmt.Fprintf(stdout, "outcome=%s\n", result.Outcome)
-	return code
+}
+
+// warnEarlierRuns scans the run records in dir for interrupted runs and for
+// the live processes a settled run left behind, and prints what it finds on
+// stderr. A scan failure — an unreadable records directory or an unwritable
+// marker — is one warning in the existing style, what the scans did find is
+// still printed, and the run continues: a record problem never fails a run.
+func warnEarlierRuns(dir string, stderr io.Writer) {
+	paths, scanErr := runlogInterrupted(dir)
+	if scanErr != nil {
+		fmt.Fprintf(stderr, "pi-worker: warning: interrupted-run check unavailable: %v\n", scanErr)
+	}
+	warnInterruptedRuns(paths, dir, stderr)
+	leftovers, leftoversErr := runlogLeftovers(dir)
+	if leftoversErr != nil {
+		fmt.Fprintf(stderr, "pi-worker: warning: leftover-process check unavailable: %v\n", leftoversErr)
+	}
+	warnLeftoverProcesses(leftovers, dir, stderr)
 }
 
 // warnInterruptedRuns prints one stderr warning line per interrupted

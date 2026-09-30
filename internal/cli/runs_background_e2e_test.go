@@ -13,6 +13,7 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/contracts"
+	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
@@ -49,6 +50,9 @@ func setupBackgroundRun(t *testing.T, s *script.Script) (*background.Manager, st
 	// needs to run inside the module, and the run itself must not.
 	roleBin := piWorkerBinForBackground(t)
 	setupFakePiScript(t, s)
+	// An earlier in-process foreground run left its marker in this
+	// process's environment; see TestRunsWaitPrintsWhatTheForegroundRunPrints.
+	t.Setenv(run.RunMarkerEnv, "")
 	workspace := t.TempDir()
 	t.Chdir(workspace)
 
@@ -384,8 +388,8 @@ func TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode(t *testing.T) {
 	if code == 0 {
 		t.Fatal("a run whose verification failed must not exit 0")
 	}
-	if !strings.Contains(stdout, string(background.RunCompleted)) || !strings.Contains(stdout, "outcome=") {
-		t.Fatalf("stdout = %q, want the finished run's state and outcome", stdout)
+	if !strings.Contains(stdout, "outcome="+string(contracts.OutcomeVerificationFailed)) {
+		t.Fatalf("stdout = %q, want the finished run's outcome", stdout)
 	}
 	if !strings.Contains(stdout, "waited answer") {
 		t.Fatalf("stdout = %q, want the worker's answer", stdout)
@@ -450,6 +454,64 @@ func TestRunsWaitResultCarriesTheWorktreeLikeAForegroundRun(t *testing.T) {
 	if checkout := filepath.Join(repo, ".pi-worker", "worktrees", "back"); worktree["path"] != checkout || worktree["branch"] != "run/back" {
 		t.Fatalf("result.worktree = %v, want path %q and branch run/back", worktree, checkout)
 	}
+}
+
+// TestRunsWaitPrintsWhatTheForegroundRunPrints requires that a human `runs
+// wait` of a finished run prints what `run` prints for the same task: the
+// same stdout byte for byte, and the same stderr lines once the start's own
+// lines are added in front. Only the verification log path, which names each
+// run's own file, is compared by its prefix.
+func TestRunsWaitPrintsWhatTheForegroundRunPrints(t *testing.T) {
+	manager, _ := setupBackgroundRun(t, backgroundHappyScript("parity answer"))
+	args := append([]string{"--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, writeAlwaysFailingVerifyCommand(t)...)
+
+	installRealFakePiWorker(t)
+	foregroundCode, foregroundStdout, foregroundStderr := runCLI(t, append([]string{"run"}, args...), "")
+	if !strings.Contains(foregroundStderr, "verification failed") {
+		t.Fatalf("foreground stderr = %q, want the failing verification so stderr is compared too", foregroundStderr)
+	}
+	// The in-process foreground run left its marker in this process's
+	// environment, and both run ids are this process's pid plus the start
+	// second: a supervisor started within that second would inherit its own
+	// run's marker and report itself as a leftover. One CLI process never
+	// runs twice outside tests.
+	t.Setenv(run.RunMarkerEnv, "")
+
+	code, startStdout, startStderr := runCLI(t, append([]string{"run", "--background"}, args...), "")
+	if code != 0 {
+		t.Fatalf("run --background = (%d, %q, %q), want 0", code, startStdout, startStderr)
+	}
+	runID := runIDFromHumanOutput(t, startStdout)
+	t.Cleanup(func() {
+		if _, err := manager.Wait(context.Background(), runID, 90*time.Second); err != nil {
+			t.Errorf("drain run %s: %v", runID, err)
+		}
+	})
+
+	waitCode, waitStdout, waitStderr := runCLI(t, []string{"runs", "wait", runID}, "")
+	if waitCode != foregroundCode {
+		t.Fatalf("runs wait exit = %d, want the foreground code %d", waitCode, foregroundCode)
+	}
+	if waitStdout != foregroundStdout {
+		t.Fatalf("runs wait stdout = %q, want the foreground stdout %q", waitStdout, foregroundStdout)
+	}
+	got, want := comparableStderrLines(startStderr+waitStderr), comparableStderrLines(foregroundStderr)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("background stderr lines = %q, want the foreground lines %q", got, want)
+	}
+}
+
+// comparableStderrLines splits stderr into lines and cuts the verification
+// log line down to its prefix, since each run writes a log file of its own.
+func comparableStderrLines(stderr string) []string {
+	const logPrefix = "pi-worker: verification log: "
+	lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, logPrefix) {
+			lines[i] = logPrefix
+		}
+	}
+	return lines
 }
 
 // TestRunsWaitTimeoutReportsLatestStateAndLeavesTheRunGoing requires that a

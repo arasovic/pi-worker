@@ -93,10 +93,16 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
 
-	// The same warning the foreground prints: --background changes who
-	// waits, not what runs, and a multi-task run nobody declared for is
-	// legal on both paths.
+	// The same pre-run warnings the foreground prints, in the same order:
+	// --background changes who waits, not what runs. The earlier-run scans
+	// read foreground run records only, because a background run writes
+	// none yet (#409); when the records directory cannot be resolved there
+	// is nothing to scan, and no record of this run to warn about either.
+	preflightPiVersion(ctx, stderr)
 	warnSharedWorkspace(tasks, stderr)
+	if dir, err := runlogDir(); err == nil {
+		warnEarlierRuns(dir, stderr)
+	}
 
 	started, err := manager.Start(ctx, background.StartOptions{
 		Tasks:            tasks,

@@ -322,3 +322,31 @@ func TestRenderRunsSnapshotJSONIsUnchangedByExtraLines(t *testing.T) {
 		t.Fatalf("json stderr = %q, want empty", stderr.String())
 	}
 }
+
+// TestRenderRunsSnapshotPrintsRunChecksBeforeOutcome requires that a finished
+// run carrying its result document shows the same check lines a foreground
+// run prints, between the table and the outcome line.
+func TestRenderRunsSnapshotPrintsRunChecksBeforeOutcome(t *testing.T) {
+	snap := background.Snapshot{
+		RunID:    "20260926T222744Z-7099",
+		State:    background.RunCompleted,
+		Terminal: true,
+		Outcome:  outcomePtr(contracts.OutcomeCompleted),
+		Result: &run.Result{
+			Outcome:      contracts.OutcomeCompleted,
+			Verification: &run.Verification{ExitCode: 0},
+			Changes:      &run.Changes{Omitted: "not a git repository"},
+		},
+		Workers: []background.WorkerSnapshot{{
+			WorkerID: 1,
+			State:    background.WorkerCompleted,
+			Task:     run.TaskProjection{Model: "acme/m-1"},
+			Result:   &pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "the final answer"},
+		}},
+	}
+	out := renderRunsSnapshotText(t, snap)
+	const want = "verification: ok\nchanges: omitted: not a git repository\noutcome=completed\n"
+	if !strings.HasSuffix(out, want) {
+		t.Fatalf("stdout = %q, want it to end with %q", out, want)
+	}
+}
