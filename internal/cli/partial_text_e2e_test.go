@@ -91,7 +91,7 @@ func TestRunJSONOmitsPartialTextWhenRunCompletes(t *testing.T) {
 	}})
 
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)

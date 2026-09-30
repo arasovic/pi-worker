@@ -518,8 +518,9 @@ func (p *roleProcess) Close() error {
 // writer and the parent response reader, and it calls
 // cmd.Process.Release. Release only drops the Go handle so the starter
 // can never reap the child through Wait; it does not itself reparent
-// the child. The starter's imminent process exit is what lets the OS
-// reparent the still-running supervisor. Every step is attempted and
+// the child. A starter that returns at once exits and lets the OS
+// reparent the still-running supervisor; a starter that waits for the run
+// stays its parent and reaps it through ReapSupervisor. Every step is attempted and
 // their errors are joined. It never calls Kill, Wait, CloseOwnership,
 // or signals the child. Detach is nil-safe and idempotent: repeated
 // calls return the cached result.

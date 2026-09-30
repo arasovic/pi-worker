@@ -4,12 +4,14 @@ package background
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/arasovic/pi-worker/internal/runlog"
 	"github.com/arasovic/pi-worker/internal/worktree"
+	"golang.org/x/sys/unix"
 )
 
 // startSupervisorHandoffFunc is the starter-side supervisor start handoff
@@ -152,4 +154,23 @@ func (m *Manager) startWithExecutable(ctx context.Context, executable string, op
 		return StartedRun{}, joinStartErrors(err, giveBackWorktree())
 	}
 	return StartedRun{}, joinStartErrors(errSupervisorRejected, giveBackWorktree())
+}
+
+// ReapSupervisor collects the exit status of a supervisor this process
+// started, in the background, once it exits. A caller that waits for its own
+// run is that supervisor's parent: Detach released the handle without
+// waiting, and an exited child nobody waits for stays a zombie, which the
+// liveness check still counts as alive — a supervisor that died without a
+// terminal snapshot would then be waited for forever. It is not part of
+// Detach, because a starter that returns at once leaves its supervisor to be
+// reparented instead.
+func ReapSupervisor(pid int) {
+	go func() {
+		var status unix.WaitStatus
+		for {
+			if _, err := unix.Wait4(pid, &status, 0, nil); !errors.Is(err, unix.EINTR) {
+				return
+			}
+		}
+	}()
 }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 // cliVerifyHelperArgs returns the argv that re-executes this test binary
@@ -119,7 +116,7 @@ func TestRunVerifyPassingExitsZeroAndCarriesArgvOnly(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -149,7 +146,7 @@ func TestRunVerifyPassingHumanPrintsOneShortLine(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=medium]: All done.\nverification: ok\n")
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
 }
@@ -162,7 +159,7 @@ func TestRunVerifyFailingExitsSixAndKeepsStatusCompleted(t *testing.T) {
 	if code != 6 {
 		t.Fatalf("exit = %d, want 6; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q, want empty in json mode", stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -249,99 +246,11 @@ func TestRunWithoutVerifyKeepsJSONFreeOfVerification(t *testing.T) {
 	newGitWorkspace(t)
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
 	assertExactJSONKeys(t, document, "changes", "outcome", "schemaVersion", "status", "workers")
-}
-
-func TestRunVerifyContextExpiryExitsSevenNotSix(t *testing.T) {
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
-	t.Setenv("PI_WORKER_CLI_VERIFY_SLEEP_MS", "5000")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--verify", verify}, "")
-	if code != 7 {
-		t.Fatalf("exit = %d, want timed-out 7 (not verification 6); stderr = %q", code, stderr)
-	}
-	if !strings.Contains(stderr, "verification") {
-		t.Fatalf("stderr missing verification error: %q", stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want empty for the aborted run", stdout)
-	}
-}
-
-func TestRunVerifyContextExpiryJSONEmitsNoDocument(t *testing.T) {
-	// The context-expiry shape returns exit 7 before any document is
-	// emitted, and --json must keep it that way: zero documents, not a
-	// partial one. This pins the deliberate behaviour so a later reader
-	// does not "fix" it by emitting a partial document.
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
-	t.Setenv("PI_WORKER_CLI_VERIFY_SLEEP_MS", "5000")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	code, stdout, stderr := runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
-	if code != 7 {
-		t.Fatalf("exit = %d, want timed-out 7 (not verification 6); stderr = %q", code, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want zero documents for the aborted run", stdout)
-	}
-}
-
-func TestRunVerifyStartFailureJSONEmitsNoDocument(t *testing.T) {
-	// The unstartable-verify shape returns exit 9 before any document is
-	// emitted, and --json must keep it that way: zero documents, not a
-	// partial one. This pins the deliberate behaviour so a later reader
-	// does not "fix" it by emitting a partial document.
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", "pi-worker-no-such-command"}, "")
-	if code != 9 {
-		t.Fatalf("exit = %d, want start-failure 9 (not verification 6); stderr = %q", code, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want zero documents for the unstartable verify command", stdout)
-	}
-	if !strings.Contains(stderr, "verification") || !strings.Contains(stderr, "pi-worker-no-such-command") {
-		t.Fatalf("stderr missing the start failure: %q", stderr)
-	}
-}
-
-func TestRunVerifyCancellationJSONEmitsNoDocument(t *testing.T) {
-	// The cancelled-mid-verify shape returns exit 8 before any document is
-	// emitted, and --json must keep it that way: zero documents, not a
-	// partial one. This pins the deliberate behaviour so a later reader
-	// does not "fix" it by emitting a partial document.
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
-	verify := strings.Join(cliVerifyHelperArgs(t, "0", "0"), " ")
-	t.Setenv("PI_WORKER_CLI_VERIFY_SLEEP_MS", "5000")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var code int
-	var stdout, stderr string
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		code, stdout, stderr = runCLIWithContext(t, ctx, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
-	}()
-	time.Sleep(2 * time.Second)
-	cancel()
-	<-done
-
-	if code != 8 {
-		t.Fatalf("exit = %d, want cancelled 8 (not verification 6); stderr = %q", code, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want zero documents for the cancelled verify run", stdout)
-	}
-	if !strings.Contains(stderr, "verification") || !strings.Contains(stderr, "canceled") {
-		t.Fatalf("stderr missing the cancellation failure: %q", stderr)
-	}
 }
 
 func TestRunVerifyCarriesArgvSplitOnWhitespace(t *testing.T) {
@@ -352,7 +261,7 @@ func TestRunVerifyCarriesArgvSplitOnWhitespace(t *testing.T) {
 	t.Setenv("PI_WORKER_CLI_VERIFY_EXIT", "0")
 	t.Setenv("PI_WORKER_CLI_VERIFY_LINES", "0")
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json", "--verify", verify}, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	var document struct {

@@ -14,7 +14,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/arasovic/pi-worker/internal/admission"
 	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/buildinfo"
 	"github.com/arasovic/pi-worker/internal/contracts"
@@ -26,7 +25,7 @@ import (
 	"golang.org/x/term"
 )
 
-// defaultRunTimeout bounds one foreground worker run.
+// defaultRunTimeout bounds one worker of a run given no --timeout.
 const defaultRunTimeout = 30 * time.Minute
 
 // errNoRunModel is the rejection for a run that needs a run-level model
@@ -34,12 +33,6 @@ const defaultRunTimeout = 30 * time.Minute
 // reportRunInputError can answer with the remedy instead of the synopsis:
 // the argument shape was legal and only the machine state was incomplete.
 var errNoRunModel = errors.New("missing required flag --model and no configured default model")
-
-// newWorker is a private dependency-injection seam. Tests replace it with a
-// scripted fake so CLI tests never launch the user's real Pi profile.
-var newWorker = func() pi.Worker { return pi.New("pi") }
-
-var openAdmission = admission.Open
 
 const runVersionProbeTimeout = 5 * time.Second
 
@@ -63,16 +56,15 @@ func defaultRunVersionProbe(parent context.Context) (string, error) {
 // model catalog command.
 var newCatalog = func() pi.ModelCatalog { return pi.NewCatalog("pi") }
 
-// runlogDir, runlogStart, and runlogInterrupted are the private
-// dependency-injection seams for the run record written while a run is
-// in flight and for the reader that scans earlier records for
-// interrupted runs before a run starts. runlogLeftovers is the seam
-// for the reader that finds the live processes an earlier settled run
-// left behind, on the same pre-run scan. Tests replace them with a
-// temporary directory and with scripted failures; the production
-// values write and read records in the user's config directory.
+// runlogDir and runlogInterrupted are the private dependency-injection
+// seams for the directory the supervisor writes a run's record into and
+// for the reader that scans earlier records for interrupted runs before a
+// run starts. runlogLeftovers is the seam for the reader that finds the
+// live processes an earlier settled run left behind, on the same pre-run
+// scan. Tests replace them with a temporary directory and with scripted
+// failures; the production values read records in the user's config
+// directory.
 var runlogDir = runlog.Dir
-var runlogStart = runlog.Start
 var runlogInterrupted = runlog.Interrupted
 var runlogLeftovers = runlog.Leftovers
 
@@ -600,157 +592,67 @@ type runOptions struct {
 }
 
 // runCommand runs one to three parallel workers with an already-resolved
-// task list. Foreground tasks are admitted through the machine-wide queue
-// and each receives its requested execution timeout once its lease is
-// granted; Ctrl-C (or any parent cancellation) still cancels the whole
-// run, and with --verify a completed run's workspace is checked once
-// before returning with its own timeout budget.
+// task list. The run is started exactly as `run --background` starts it, by
+// a supervisor in a process of its own, and without --background this
+// command then waits for that run and prints its result. Ctrl-C (or any
+// parent cancellation) while waiting asks the supervisor to stop the run,
+// as `runs cancel` does, and the command keeps waiting until the run
+// reports how it ended. A waiting command that is killed outright leaves the
+// run going, bounded by its --timeout.
 func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
 	// A background run is accepted here and waited for by nobody: the
 	// command returns while the run keeps going in a process of its own.
 	if opts.background {
 		return backgroundRunCommand(parent, opts, tasks, stdout, stderr)
 	}
-
-	workspace, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
-	}
-
-	// With --worktree the run works in a checkout of its own instead of
-	// the caller's current directory: a linked working directory of
-	// HEAD on branch run/<name> under <root>/.pi-worker/worktrees/<name>
-	// — not a clone, the linked worktree shares the repository's object
-	// store with the caller's tree. The checkout is created before
-	// anything else happens — before the version probe, before the run
-	// record exists, before any worker starts — and the one stderr line
-	// naming it is printed at creation time, so a run that is killed
-	// later still leaves the caller knowing where its checkout is. A
-	// refusal here — a taken name or branch, or a checkout git itself
-	// refuses to create — exits 2; nothing is ever removed on any path.
-	var runWorktree *run.Worktree
-	if opts.worktree != "" {
-		prepared, err := worktree.Prepare(parent, workspace, opts.worktree)
-		if err != nil {
-			fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-			switch {
-			case errors.Is(err, context.DeadlineExceeded):
-				return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
-			case errors.Is(err, context.Canceled):
-				return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
-			case worktree.IsRefusal(err):
-				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorUsage, Message: err.Error()})
-			default:
-				return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
-			}
-		}
-		workspace = prepared.Path
-		runWorktree = &run.Worktree{Path: prepared.Path, Branch: prepared.Branch}
-		fmt.Fprintf(stderr, "pi-worker: worktree %s on branch %s\n", prepared.Path, prepared.Branch)
-	}
-
-	var debug *pi.DebugSink
-	if opts.debug {
-		debug = pi.NewDebugSink(stderr)
-	}
-
-	preflightPiVersion(parent, stderr)
-
-	warnSharedWorkspace(tasks, stderr)
-
-	gate, err := openAdmission(opts.admissionRoot, opts.maxModelWorkers)
-	if err != nil {
-		fmt.Fprintf(stderr, "pi-worker: open foreground admission: %v\n", err)
+	if !backgroundSupportsRuns() {
+		fmt.Fprintln(stderr, "pi-worker: run is not supported on this platform")
 		return 9
 	}
 
-	// The run record is written while the run is in flight: the start
-	// line reaches disk before any worker starts, and Finish appends the
-	// finish line on the way out, so a run killed without warning —
-	// Ctrl-C, timeout, a closed terminal, a killed supervisor — still
-	// leaves its record with no finish line, which is how a later reader
-	// recognizes the interruption. A record that cannot be written must
-	// never fail or block a run: the warning is printed and the run
-	// continues with no recorder, on which Finish and WorkerProcess are
-	// no-ops.
-	startedAt := time.Now()
-	runID := runlog.RunID(startedAt)
-	var recorder *runlog.Recorder
-	dir, err := runlogDir()
-	if err == nil {
-		// Earlier runs are scanned before this run's own record
-		// exists, so the current run cannot block its own watermark.
-		warnEarlierRuns(dir, stderr)
-		recorder, err = runlogStart(dir, startedAt, workspace, tasks)
+	manager, started, code := startSupervisedRun(parent, opts, tasks, stderr)
+	if code != 0 {
+		return code
 	}
+	runID := started.RunID
+	fmt.Fprintf(stderr, "pi-worker: run %s\n", runID)
+	// This command is the supervisor's parent: without a wait for its exit,
+	// a supervisor that died without finishing would stay a zombie and look
+	// alive to the wait below for ever.
+	background.ReapSupervisor(started.Snapshot.Supervisor.PID)
+
+	stopDebug := func() {}
+	if opts.debug {
+		stopDebug = followDebugLog(manager.DebugLogPath(runID), stderr)
+	}
+	snap, err := manager.Wait(parent, runID, 0)
+	if err != nil && errors.Is(err, parent.Err()) {
+		// The caller asked to stop: the run is cancelled the way `runs
+		// cancel` cancels it, and its end is still waited for, so the
+		// result reports what the run did before it stopped.
+		if _, cancelErr := manager.Cancel(runID); cancelErr != nil {
+			fmt.Fprintf(stderr, "pi-worker: cancel run %s: %v\n", runID, cancelErr)
+		}
+		snap, err = manager.Wait(context.Background(), runID, 0)
+	}
+	stopDebug()
 	if err != nil {
-		recorder = nil
-		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", err)
+		var unavailable *background.SupervisorUnavailableError
+		if errors.As(err, &unavailable) {
+			fmt.Fprintf(stderr, "pi-worker: run %s: supervisor is no longer there; the run was interrupted and will not finish\n", runID)
+		} else {
+			fmt.Fprintf(stderr, "pi-worker: read run %s: %v\n", runID, err)
+		}
+		return 9
 	}
 
-	// Every run records the workspace git state before and after, so a
-	// task that moves HEAD, the branch, or the stash list shows up in
-	// the result whether or not --verify was passed; there is no flag
-	// for this feature.
-	var controller *run.Controller
-	if len(opts.verify) > 0 {
-		controller = run.New(newWorker(), run.WithVerifier(run.NewDefaultVerifier()), run.WithGitInspector(run.NewDefaultGitInspector()), run.WithForegroundAdmission(gate, runID, startedAt, opts.timeout))
-	} else {
-		controller = run.New(newWorker(), run.WithGitInspector(run.NewDefaultGitInspector()), run.WithForegroundAdmission(gate, runID, startedAt, opts.timeout))
-	}
-	result, err := controller.Run(parent, run.Request{
-		Tasks:     tasks,
-		Workspace: workspace,
-		Verify:    opts.verify,
-		Debug:     debug,
-		OnProcessStart: func(workerID int, pid int) {
-			// The closure is safe on a nil recorder: WorkerProcess is a
-			// no-op then, exactly like Finish.
-			recorder.WorkerProcess(time.Now(), workerID, pid)
-		},
-	})
-	finishedAt := time.Now()
-	if err != nil {
-		// The finish line carries the run-level error text, so a failed
-		// run is still fully recorded; a record write failure is the
-		// same kind of warning and changes no exit code.
-		if recordErr := recorder.Finish(finishedAt, nil, err); recordErr != nil {
-			fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", recordErr)
-		}
-		// Defensive: the CLI validates the input surface first — the
-		// write declaration through run.ValidateWrites in resolveRunInput
-		// like every other field — so a controller validation error here
-		// is unreachable from CLI input and really is an internal
-		// failure. A verification context that expired mid-check is not
-		// a check failure: the run ran out of time and exits like a
-		// timed-out run.
-		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-		switch {
-		case errors.Is(err, context.DeadlineExceeded):
-			return contracts.ExitCode(contracts.RunTimedOut, &contracts.RunError{Kind: contracts.ErrorTimeout})
-		case errors.Is(err, context.Canceled):
-			return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
-		default:
+	printRunError(snap, stderr)
+	if snap.Result != nil {
+		if err := printRunDocument(*snap.Result, opts.json, stdout, stderr); err != nil {
 			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 		}
 	}
-
-	outcome, code := runOutcome(result)
-	result.Outcome = outcome
-	// The worktree object rides the result document like the outcome:
-	// it is filled here, after the controller returns and before the
-	// finish line, so the record and the document carry the same value.
-	result.Worktree = runWorktree
-	// The finish line rides the normal path after the outcome is
-	// assigned, so the record carries exactly what the run reports.
-	if recordErr := recorder.Finish(finishedAt, &result, nil); recordErr != nil {
-		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", recordErr)
-	}
-	if err := printRunDocument(result, opts.json, stdout, stderr); err != nil {
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
-	}
-	return code
+	return runsFinishedExitCode(snap)
 }
 
 // printRunDocument prints a finished run's document, whose outcome is already

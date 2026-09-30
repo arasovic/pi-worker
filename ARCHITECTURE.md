@@ -54,19 +54,23 @@ user's host permissions and can reach outside it. Selecting a workspace scopes
 where Pi's own tools resolve relative paths; it is not a filesystem boundary.
 Pi Worker provides lifecycle management, not a sandbox.
 
-### Foreground admission
+### Admission
 
-Every foreground task joins one file-backed machine-wide FIFO before any Pi
-process starts. The gate is rooted beside the configuration file (in the
-`admission` subdirectory) and is shared across all Pi Worker processes on the
-same host.
+Every run is carried out by a detached supervisor process: `run` starts it
+through the same path as `run --background` and then waits for its terminal
+snapshot, reaping the supervisor child it started so a dead supervisor is
+seen as gone. Every task of every run joins one file-backed machine-wide FIFO
+before any Pi process starts; the supervisor enqueues the run's tickets
+before it accepts the run and holds the leases. The gate is rooted beside the
+configuration file (in the `admission` subdirectory) and is shared across all
+Pi Worker processes on the same host.
 
 All task tickets for one run are durably enqueued in request order before any
 task waits for a grant, so a multi-task run cannot jump an older ticket.
 `maxModelWorkers` (effective default 3, overridable through config only)
 controls the maximum number of concurrent leased tasks. There is no daemon, no
-foreground priority, no preemption, no run-level flag, and no environment
-variable to bypass admission.
+priority, no preemption, no run-level flag, and no environment variable to
+bypass admission.
 
 Each task's queue budget is fixed at 15 minutes from the time the run is
 accepted. Queue time is measured independently of `--timeout` and does not
@@ -75,7 +79,8 @@ starting after that task receives an admission lease. Verification, when
 configured on a completed admitted run, gets its own same-sized budget starting
 when verification begins.
 
-Parent cancellation removes every queued ticket and cancels running workers.
+Cancelling the run (a Ctrl-C to the waiting `run`, or `runs cancel`) removes
+every queued ticket and cancels running workers.
 Leases are held through settled-output attribution and released on terminal
 paths. Stale ownership is detected by PID plus creation-time fail-safe: a
 ticket whose owner process is absent from the process table or whose

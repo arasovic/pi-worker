@@ -13,7 +13,6 @@ import (
 
 	"github.com/arasovic/pi-worker/internal/background"
 	"github.com/arasovic/pi-worker/internal/contracts"
-	"github.com/arasovic/pi-worker/internal/run"
 	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
@@ -50,13 +49,11 @@ func setupBackgroundRun(t *testing.T, s *script.Script) (*background.Manager, st
 	// needs to run inside the module, and the run itself must not.
 	roleBin := piWorkerBinForBackground(t)
 	setupFakePiScript(t, s)
-	// An earlier in-process foreground run left its marker in this
-	// process's environment; see TestRunsWaitPrintsWhatTheForegroundRunPrints.
-	t.Setenv(run.RunMarkerEnv, "")
 	workspace := t.TempDir()
 	t.Chdir(workspace)
 
 	root, admissionRoot := t.TempDir(), t.TempDir()
+	lastRunSecond = time.Time{}
 	manager, err := background.NewManager(root, admissionRoot, 2)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -360,158 +357,6 @@ func TestRunsCancelLiveRunRequestsStopAndWaitSeesCancelled(t *testing.T) {
 	if !final.Terminal || final.State != background.RunCancelled {
 		t.Fatalf("final run = state %q terminal=%v, want cancelled terminal", final.State, final.Terminal)
 	}
-}
-
-// TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode requires that a wait
-// comes back with the run that finished, that it says what the workers
-// answered, and that its exit code is the code the same result produces in
-// the foreground — measured against a real foreground run of the same task
-// and the same verification command, not against a hardcoded number.
-func TestRunsWaitReturnsTheFinishedRunAndItsForegroundCode(t *testing.T) {
-	manager, _ := setupBackgroundRun(t, backgroundHappyScript("waited answer"))
-	verify := writeAlwaysFailingVerifyCommand(t)
-
-	// The same run in the foreground: a verification that fails on a run
-	// whose workers all completed is the contract's own exit 6, and that is
-	// the code a background run of the same thing must report.
-	installRealFakePiWorker(t)
-	foregroundCode, foregroundStdout, foregroundStderr := runCLI(t, append([]string{"run", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, verify...), "")
-	if !strings.Contains(foregroundStdout, "waited answer") && foregroundCode == 0 {
-		t.Fatalf("foreground run = (%d, %q, %q), want the failing verification to be reported", foregroundCode, foregroundStdout, foregroundStderr)
-	}
-
-	runID := startBackgroundRun(t, manager, append([]string{"--task", "go", "--timeout", "5m"}, verify...)...)
-	code, stdout, stderr := runCLI(t, []string{"runs", "wait", runID}, "")
-	if code != foregroundCode {
-		t.Fatalf("runs wait exit = %d, want the foreground code %d for the same result; stderr = %q", code, foregroundCode, stderr)
-	}
-	if code == 0 {
-		t.Fatal("a run whose verification failed must not exit 0")
-	}
-	if !strings.Contains(stdout, "outcome="+string(contracts.OutcomeVerificationFailed)) {
-		t.Fatalf("stdout = %q, want the finished run's outcome", stdout)
-	}
-	if !strings.Contains(stdout, "waited answer") {
-		t.Fatalf("stdout = %q, want the worker's answer", stdout)
-	}
-
-	// --json prints the run's own terminal document: the state, the
-	// outcome, and the exit code all agree with the human block.
-	code, stdout, stderr = runCLI(t, []string{"runs", "wait", runID, "--json"}, "")
-	if code != foregroundCode || stderr != "" {
-		t.Fatalf("runs wait --json = (%d, %q, %q), want the finished run's code %d with empty stderr", code, stdout, stderr, foregroundCode)
-	}
-	document := decodeJSONObject(t, stdout)
-	if terminal, _ := document["terminal"].(bool); !terminal {
-		t.Fatal("terminal = false for a run the wait reported as finished")
-	}
-	if _, ok := document["result"].(map[string]any); !ok {
-		t.Fatalf("result = %#v, want the run's own result document", document["result"])
-	}
-}
-
-// TestRunsWaitResultCarriesTheWorktreeLikeAForegroundRun requires that the
-// result of a background run started with --worktree is the run --json
-// document: it carries the worktree object a foreground run of the same kind
-// reports, with the checkout the snapshot itself names.
-func TestRunsWaitResultCarriesTheWorktreeLikeAForegroundRun(t *testing.T) {
-	manager, _ := setupBackgroundRun(t, backgroundHappyScript("checkout answer"))
-	repo := canonicalRepo(t, newGitWorkspace(t))
-
-	installRealFakePiWorker(t)
-	code, stdout, stderr := runCLI(t, []string{"run", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m", "--worktree", "front"}, "")
-	if code != 0 {
-		t.Fatalf("foreground run = (%d, %q, %q), want 0", code, stdout, stderr)
-	}
-	foreground, ok := decodeJSONObject(t, stdout)["worktree"].(map[string]any)
-	if !ok {
-		t.Fatalf("foreground run --json = %q, want a worktree object", stdout)
-	}
-	assertExactJSONKeys(t, foreground, "path", "branch")
-
-	runID := startBackgroundRun(t, manager, "--task", "go", "--timeout", "5m", "--worktree", "back")
-	code, stdout, stderr = runCLI(t, []string{"runs", "wait", runID, "--json"}, "")
-	if code != 0 {
-		t.Fatalf("runs wait --json = (%d, %q, %q), want 0", code, stdout, stderr)
-	}
-	document := decodeJSONObject(t, stdout)
-	result, ok := document["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("result = %#v, want the run's own result document", document["result"])
-	}
-	worktree, ok := result["worktree"].(map[string]any)
-	if !ok {
-		t.Fatalf("result.worktree = %#v, want object", result["worktree"])
-	}
-	assertExactJSONKeys(t, worktree, "path", "branch")
-	root, ok := document["worktree"].(map[string]any)
-	if !ok {
-		t.Fatalf("worktree = %#v, want the snapshot's checkout", document["worktree"])
-	}
-	if worktree["path"] != root["path"] || worktree["branch"] != root["branch"] {
-		t.Fatalf("result.worktree = %v, want the snapshot's path %v and branch %v", worktree, root["path"], root["branch"])
-	}
-	if checkout := filepath.Join(repo, ".pi-worker", "worktrees", "back"); worktree["path"] != checkout || worktree["branch"] != "run/back" {
-		t.Fatalf("result.worktree = %v, want path %q and branch run/back", worktree, checkout)
-	}
-}
-
-// TestRunsWaitPrintsWhatTheForegroundRunPrints requires that a human `runs
-// wait` of a finished run prints what `run` prints for the same task: the
-// same stdout byte for byte, and the same stderr lines once the start's own
-// lines are added in front. Only the verification log path, which names each
-// run's own file, is compared by its prefix.
-func TestRunsWaitPrintsWhatTheForegroundRunPrints(t *testing.T) {
-	manager, _ := setupBackgroundRun(t, backgroundHappyScript("parity answer"))
-	args := append([]string{"--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, writeAlwaysFailingVerifyCommand(t)...)
-
-	installRealFakePiWorker(t)
-	foregroundCode, foregroundStdout, foregroundStderr := runCLI(t, append([]string{"run"}, args...), "")
-	if !strings.Contains(foregroundStderr, "verification failed") {
-		t.Fatalf("foreground stderr = %q, want the failing verification so stderr is compared too", foregroundStderr)
-	}
-	// The in-process foreground run left its marker in this process's
-	// environment, and both run ids are this process's pid plus the start
-	// second: a supervisor started within that second would inherit its own
-	// run's marker and report itself as a leftover. One CLI process never
-	// runs twice outside tests.
-	t.Setenv(run.RunMarkerEnv, "")
-
-	code, startStdout, startStderr := runCLI(t, append([]string{"run", "--background"}, args...), "")
-	if code != 0 {
-		t.Fatalf("run --background = (%d, %q, %q), want 0", code, startStdout, startStderr)
-	}
-	runID := runIDFromHumanOutput(t, startStdout)
-	t.Cleanup(func() {
-		if _, err := manager.Wait(context.Background(), runID, 90*time.Second); err != nil {
-			t.Errorf("drain run %s: %v", runID, err)
-		}
-	})
-
-	waitCode, waitStdout, waitStderr := runCLI(t, []string{"runs", "wait", runID}, "")
-	if waitCode != foregroundCode {
-		t.Fatalf("runs wait exit = %d, want the foreground code %d", waitCode, foregroundCode)
-	}
-	if waitStdout != foregroundStdout {
-		t.Fatalf("runs wait stdout = %q, want the foreground stdout %q", waitStdout, foregroundStdout)
-	}
-	got, want := comparableStderrLines(startStderr+waitStderr), comparableStderrLines(foregroundStderr)
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("background stderr lines = %q, want the foreground lines %q", got, want)
-	}
-}
-
-// comparableStderrLines splits stderr into lines and cuts the verification
-// log line down to its prefix, since each run writes a log file of its own.
-func comparableStderrLines(stderr string) []string {
-	const logPrefix = "pi-worker: verification log: "
-	lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, logPrefix) {
-			lines[i] = logPrefix
-		}
-	}
-	return lines
 }
 
 // TestRunsWaitTimeoutReportsLatestStateAndLeavesTheRunGoing requires that a

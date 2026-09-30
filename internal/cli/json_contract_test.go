@@ -189,7 +189,7 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 		fakePi.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium","high"]}`)}}}
 		useFakePi(t, fakePi)
 		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "work", "--json"}, "")
-		if code != 0 || stderr != "pi-worker: worker 1: requested thinking=max unavailable; continuing with Pi default thinking=medium\n" {
+		if code != 0 || withoutRunLine(t, stderr) != "pi-worker: worker 1: requested thinking=max unavailable; continuing with Pi default thinking=medium\n" {
 			t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 		}
 		document := decodeJSONObject(t, stdout)
@@ -289,7 +289,7 @@ func TestRunJSONGitObjectExactKeysWithBranchAndStash(t *testing.T) {
 		}
 		gitRun(t, repo, "stash", "push", "-q", "-m", "saved")
 	})
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -342,7 +342,7 @@ func TestRunJSONGitObjectExactKeysOmitsDetachedBranch(t *testing.T) {
 		gitRun(t, repo, "add", "file.txt")
 		gitRun(t, repo, "commit", "-q", "-m", "detached")
 	})
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 	}
 	document := decodeJSONObject(t, stdout)

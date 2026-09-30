@@ -14,10 +14,9 @@ import (
 	"github.com/arasovic/pi-worker/internal/worktree"
 )
 
-// backgroundPiExecutable is the Pi program a background worker drives. It is
-// the same program a foreground worker drives, named here because a background
-// worker runs in a process that resolves nothing for itself. It is a seam only
-// so a test can point one run at a stand-in Pi.
+// backgroundPiExecutable is the Pi program every worker drives, named here
+// because a worker runs in a process that resolves nothing for itself. It is a
+// seam only so a test can point one run at a stand-in Pi.
 var backgroundPiExecutable = "pi"
 
 // backgroundRoleExecutable names the program a supervisor is spawned from.
@@ -73,31 +72,58 @@ func acceptSnapshot(s background.Snapshot) acceptedSnapshot {
 
 // backgroundRunCommand starts one run in the background and returns as soon as
 // it is accepted, while the run keeps going in a process of its own. Every
-// option a foreground run takes keeps its meaning here: --background changes
-// who waits, not what runs.
+// option a waited run takes keeps its meaning here: --background changes who
+// waits, not what runs.
 //
 // The accepted run's identity is what the caller needs afterwards — it is the
 // argument every later question about the run takes — so it is printed on
 // stdout, and with --json the accepted snapshot is printed there instead, with
 // each task's prompt left out because the caller has just sent it.
 func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task, stdout, stderr io.Writer) int {
+	manager, started, code := startSupervisedRun(ctx, opts, tasks, stderr)
+	if code != 0 {
+		return code
+	}
+	if opts.debug {
+		fmt.Fprintf(stderr, "pi-worker: debug log %s\n", manager.DebugLogPath(started.RunID))
+	}
+
+	if opts.json {
+		data, err := json.Marshal(acceptSnapshot(started.Snapshot))
+		if err != nil {
+			fmt.Fprintf(stderr, "pi-worker: encode accepted run: %v\n", err)
+			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+		}
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "run %s accepted with %d worker(s); it continues in the background\n",
+		started.RunID, len(started.Snapshot.Workers))
+	return 0
+}
+
+// startSupervisedRun is the one way a run starts, waited for or not: the
+// pre-run warnings, the hand-over to a supervisor of its own, and the
+// worktree line once the run is accepted. A start that was not accepted has
+// printed its reason and returns a non-zero exit code.
+func startSupervisedRun(ctx context.Context, opts runOptions, tasks []run.Task, stderr io.Writer) (*background.Manager, background.StartedRun, int) {
 	workspace, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: determine workspace: %v\n", err)
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+		return nil, background.StartedRun{}, contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
 
 	manager, err := newBackgroundManager(opts.admissionRoot, opts.maxModelWorkers)
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+		return nil, background.StartedRun{}, contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 	}
 
-	// The same pre-run warnings the foreground prints, in the same order:
-	// --background changes who waits, not what runs. The records directory
-	// is resolved once: the earlier-run scans read it, and the supervisor
-	// writes this run's record into the same directory. When it cannot be
-	// resolved the run starts without a record, as a foreground run does.
+	// The records directory is resolved once: the earlier-run scans read
+	// it, and the supervisor writes this run's record into the same
+	// directory. When it cannot be resolved the run starts without a
+	// record.
 	preflightPiVersion(ctx, stderr)
 	warnSharedWorkspace(tasks, stderr)
 	recordsDir, err := runlogDir()
@@ -121,35 +147,18 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)
-		return backgroundStartExitCode(err)
+		return nil, background.StartedRun{}, backgroundStartExitCode(err)
 	}
 
 	if worktreeOf := started.Snapshot.Worktree; worktreeOf != nil {
 		fmt.Fprintf(stderr, "pi-worker: worktree %s on branch %s\n", worktreeOf.Path, worktreeOf.Branch)
 	}
-	if opts.debug {
-		fmt.Fprintf(stderr, "pi-worker: debug log %s\n", manager.DebugLogPath(started.RunID))
-	}
-
-	if opts.json {
-		data, err := json.Marshal(acceptSnapshot(started.Snapshot))
-		if err != nil {
-			fmt.Fprintf(stderr, "pi-worker: encode accepted run: %v\n", err)
-			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
-		}
-		fmt.Fprintln(stdout, string(data))
-		return 0
-	}
-
-	fmt.Fprintf(stdout, "run %s accepted with %d worker(s); it continues in the background\n",
-		started.RunID, len(started.Snapshot.Workers))
-	return 0
+	return manager, started, 0
 }
 
-// backgroundStartExitCode maps a start failure onto the code the same failure
-// would produce in the foreground: a refusal the caller can correct is a usage
-// error, an expired or cancelled wait keeps its own code, and anything else is
-// internal.
+// backgroundStartExitCode maps a start failure onto its exit code: a refusal
+// the caller can correct is a usage error, an expired or cancelled wait keeps
+// its own code, and anything else is internal.
 func backgroundStartExitCode(err error) int {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):

@@ -65,7 +65,7 @@ func TestRunJSONCarriesWritesForDeclaredRun(t *testing.T) {
 	newGitWorkspace(t)
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt", "--json"}, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -99,7 +99,7 @@ func TestRunJSONDeclaredEmptyWritesCarriesCleanVerdict(t *testing.T) {
 	newGitWorkspace(t)
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "", "--json"}, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -265,7 +265,7 @@ func TestRunDirtyBeforeStatePrintsMeasuredAndChecked(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
@@ -289,7 +289,7 @@ func TestRunDirtyBeforeStateJSONCarriesCleanVerdict(t *testing.T) {
 	}
 	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--writes", "file.txt", "--json"}, "")
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)
@@ -326,7 +326,7 @@ func TestRunDeclaredEmptyOnDirtyBeforeStateRunsCheck(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
@@ -411,7 +411,7 @@ func TestRunDirtyBeforeEntryPrintsClauseOnChangesLine(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	// The committed file.txt holds "one\n", so the final two lines read
@@ -441,7 +441,7 @@ func TestRunCleanBeforeStateChangesLineHasNoClause(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if stderr != "" {
+	if withoutRunLine(t, stderr) != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	const want = "worker 1 [model=acme/m-1 thinking=medium]: done\n" +
@@ -475,7 +475,7 @@ func TestRunDirtyBeforeJSONCarriesFieldOnlyOnDirtyEntry(t *testing.T) {
 			t.Errorf("write new file during run: %v", err)
 		}
 	})
-	if code != 0 || stderr != "" {
+	if code != 0 || withoutRunLine(t, stderr) != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	document := decodeJSONObject(t, stdout)

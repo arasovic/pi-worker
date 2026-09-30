@@ -91,7 +91,7 @@ is optional and may be an empty string; otherwise it must be one exact
 `provider/model` selector. `maxModelWorkers` is required and must be a positive
 integer. Loading rejects unknown fields, trailing data, invalid selectors,
 unsupported schema versions, and zero or negative `maxModelWorkers`.
-`maxModelWorkers` is the machine-wide foreground admission capacity (default 3,
+`maxModelWorkers` is the machine-wide admission capacity (default 3,
 config-only; no run or environment variable override).
 
 **Schema 1 (accepted, migrated in memory).** A schema-1 document is accepted
@@ -279,7 +279,7 @@ the run has finished; only a terminal document carries `status`,
 document described above. `worktree` is present only for a run that works
 in a managed private checkout. `error` is optional and appears only on a
 terminal document whose run ended with a run-level error — for example a
-`--verify` command that could not start. It holds the text a foreground run
+`--verify` command that could not start. It holds the text `run`
 prints after `pi-worker: ` on stderr, which the `result` document has no field
 for. A snapshot written before this field existed simply lacks it.
 
@@ -312,6 +312,16 @@ Required root fields are `schemaVersion`, `status`, `outcome`, and non-null
 `workers`. Root status is `completed`, `partial`, `failed`, `timed-out`, or
 `cancelled`. Workers remain in request order even when concurrent completion
 order differs.
+
+`run --json` without `--background` prints this document once its run has
+finished: it is the `result` of the run's terminal snapshot, the same
+document `runs wait --json` and `runs status --json` carry as `result`.
+Every run the supervisor accepted prints it, timed-out and cancelled runs
+included, and a run that ended with a run-level error prints it after the
+`pi-worker: <error>` line on stderr. No document is printed when the start is
+refused or cancelled before acceptance, when the run's supervisor is gone
+before the run finished, or when the run's state cannot be read; exit code
+and stderr carry those.
 
 Queue timeout introduces no new JSON field. Each timed-out ticket uses the
 existing per-worker `timed-out` status. Root `outcome` is `partial` when at
@@ -763,8 +773,9 @@ JSON field or schema version changes. Identity covers
 content/kind/executable state and relevant directory/nested-repository
 shape; contents/hashes are never exposed. Pi-worker never restores or
 overwrites files to repair interference. A required settlement/final
-snapshot failure returns a controller error; the CLI exits 9 on stderr
-and emits no result/JSON document — no clean/success result is produced.
+snapshot failure ends the run with a run-level error: the CLI prints it on
+stderr and exits 9, and the document it prints carries outcome
+`internal-error` — no clean/success result is produced.
 Honest limits (still post-hoc, not a sandbox, not continuous tracing): a
 foreign write fully made and reverted before the owner's settlement
 snapshot is invisible; so is an interim post-settlement write restored to
