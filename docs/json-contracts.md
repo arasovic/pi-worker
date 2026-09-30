@@ -421,6 +421,13 @@ Worker fields are conditionally present:
 - `executionTimeout`: present only when admission is configured; the
   Go duration string of the execution budget the task was given
 
+A background run whose controller result could not be recorded in its
+terminal snapshot reports each worker with only `model`, `status`
+(`error`) and `error`, which carries the cause; every other worker field,
+including `acceptedAt`, `startedAt` and `finishedAt`, is absent there, and
+the snapshot's worker records still hold the run's own timeline in
+`acceptedAt`, `startedAt` and `finishedAt`.
+
 Partial text reporting is additive and optional, so `schemaVersion`
 stays `1`. Worker `partialExplanation` appears only when a run ended
 without a final text — timed out, cancelled, or failed before
