@@ -47,7 +47,9 @@ pi-worker run --model <provider/model> --thinking <level> \
 Do not pipe stdout: when no document comes back, the exit code is the signal.
 When the host may cut the call off, add `--background` and wait in slices with
 `pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out
-leaves the run going. In that document the result sits under `result`.
+leaves the run going. Exit 9 with "supervisor is no longer there" means
+the run was interrupted and waiting again will not help. In that document
+the result sits under `result`.
 
 ## Result
 

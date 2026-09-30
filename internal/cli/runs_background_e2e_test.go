@@ -319,6 +319,19 @@ func TestRunsCancelStaleSupervisorRefusesToSignal(t *testing.T) {
 	if code != 9 || stdout != "" || !strings.Contains(stderr, "supervisor is no longer there") {
 		t.Fatalf("runs cancel stale = (%d, %q, %q), want refusal with no stdout", code, stdout, stderr)
 	}
+	// The planted identity reads as gone to the new Status/Wait liveness
+	// check, so put the true creation time back before the draining
+	// cleanup waits on the real supervisor.
+	latest, err := store.Load(runID)
+	if err != nil {
+		t.Fatalf("Load after cancel: %v", err)
+	}
+	if !latest.Terminal {
+		latest.Supervisor.CreateTime--
+		if err := store.Replace(latest); err != nil {
+			t.Fatalf("Replace restored snapshot: %v", err)
+		}
+	}
 }
 
 func TestRunsCancelUnknownRunRejectsTheIdentity(t *testing.T) {

@@ -105,7 +105,7 @@ A finished background run exits with the code the same run would have in the
 foreground: see pi-worker run --help. status of a run still going exits 0.
 Otherwise: 0 done or declined; 2 bad arguments, an unknown run id, or prune
 refused; 9 the records or the background store cannot be read, a delete
-failed, or cancel found no live supervisor.
+failed, or status, wait or cancel found no live supervisor.
 `,
 	"worktrees": `pi-worker worktrees - list and remove the checkouts run --worktree made
 

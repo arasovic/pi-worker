@@ -53,8 +53,17 @@ func runsStatusCommand(parent context.Context, opts runsOptions, stdout, stderr 
 	if _, err := runlog.ParseRunID(opts.runID); err != nil {
 		return runsUnknownRun(opts.runID, stderr)
 	}
-	snap, code := runsReadStatus(opts.runID, stderr)
-	if code != 0 {
+	snap, readErr, code := runsReadStatus(opts.runID, stderr)
+	if readErr != nil {
+		var unavailable *background.SupervisorUnavailableError
+		if errors.As(readErr, &unavailable) {
+			if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, fmt.Sprintf(
+				"pi-worker: runs status %s: supervisor is no longer there; the run was interrupted and will not finish",
+				opts.runID)); code != 0 {
+				return code
+			}
+			return 9
+		}
 		return code
 	}
 	if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, ""); code != 0 {
@@ -104,6 +113,15 @@ func runsWaitCommand(parent context.Context, opts runsOptions, stdout, stderr io
 		fmt.Fprintf(stderr, "pi-worker: runs wait %s cancelled\n", opts.runID)
 		return contracts.ExitCode(contracts.RunCancelled, &contracts.RunError{Kind: contracts.ErrorCancellation})
 	default:
+		var unavailable *background.SupervisorUnavailableError
+		if errors.As(err, &unavailable) {
+			if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, fmt.Sprintf(
+				"pi-worker: runs wait %s: supervisor is no longer there; the run was interrupted and will not finish",
+				opts.runID)); code != 0 {
+				return code
+			}
+			return 9
+		}
 		if code := runsReadFailure(opts.runID, err, stderr); code != 0 {
 			return code
 		}
@@ -171,21 +189,26 @@ func runsRenderWaited(stdout, stderr io.Writer, opts runsOptions, snap backgroun
 }
 
 // runsReadStatus resolves the Manager and reads one run's latest durable
-// snapshot exactly once, reporting a failure with its exit code already
-// chosen.
-func runsReadStatus(runID string, stderr io.Writer) (background.Snapshot, int) {
+// snapshot, reporting a failure with its exit code already chosen. A dead
+// supervisor is not a read failure: the snapshot comes back with the
+// SupervisorUnavailableError so the caller can print the state it is.
+func runsReadStatus(runID string, stderr io.Writer) (background.Snapshot, error, int) {
 	manager, code := runsManager(stderr)
 	if code != 0 {
-		return background.Snapshot{}, code
+		return background.Snapshot{}, nil, code
 	}
 	snap, err := manager.Status(runID)
 	if err != nil {
-		if code := runsReadFailure(runID, err, stderr); code != 0 {
-			return background.Snapshot{}, code
+		var unavailable *background.SupervisorUnavailableError
+		if errors.As(err, &unavailable) {
+			return snap, err, 9
 		}
-		return background.Snapshot{}, 9
+		if code := runsReadFailure(runID, err, stderr); code != 0 {
+			return background.Snapshot{}, err, code
+		}
+		return background.Snapshot{}, err, 9
 	}
-	return snap, 0
+	return snap, nil, 0
 }
 
 // runsManager resolves the settings a background run would have used and

@@ -447,7 +447,10 @@ pi-worker runs cancel <id> [--json]
   latest state on stdout, says on stderr that the wait ran out, exits
   `7`, and leaves the run alone — the run keeps going and finishes by
   itself, and a later `runs status` reports its result. `runs status`
-  takes no `--timeout`: it waits for nothing.
+  takes no `--timeout`: it waits for nothing. A run whose supervisor is
+  gone before it finished makes `runs status` and `runs wait` print the
+  latest state, say so on stderr, and exit `9`; `runs wait` returns
+  at once instead of waiting out the bound.
 - `runs cancel <id>` reads and prints the latest state once, and, when the
   supervisor identity still matches the live process, requests a stop with
   `SIGTERM` and returns without waiting or writing a snapshot. The supervisor
@@ -460,9 +463,11 @@ pi-worker runs cancel <id> [--json]
   result produces in the foreground — the snapshot carries the run's own
   result and it goes through the one mapping under `### Exit codes`. A
   `runs status` of a run still going exits `0`: it asked one question
-  and answered it. An identity no run is recorded under, or one that
-  cannot be a run identity at all, is a usage error and exits `2` with
-  nothing on stdout.
+  and answered it. A run whose supervisor is gone before it finished
+  makes `runs status` and `runs wait` print the latest state, say so on
+  stderr, and exit `9`. An identity no run is recorded under, or one
+  that cannot be a run identity at all, is a usage error and exits `2`
+  with nothing on stdout.
 - Both commands are refused where no background run can exist — a
   platform whose supervisor process cannot start — with exit `9` and no
   document on stdout.
