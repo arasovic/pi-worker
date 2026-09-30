@@ -722,7 +722,7 @@ func continuationNoProgressWarning(attempt int) string {
 // wrapUpPromptFailedWarning is the one wrap-up warning when Pi did not accept
 // the wrap-up prompt, so no report turn ever started. It still names how long
 // stopping the interrupted turn took, whether earlier assistant text was
-// retained before the wrap-up prompt, and the level the report turn ran at.
+// retained before the wrap-up prompt, and the level set for the report turn, which never started.
 func wrapUpPromptFailedWarning(stop time.Duration, earlierTextPresent bool, reportThinking ThinkingLevel) string {
 	return fmt.Sprintf("timeout wrap-up: stopping took %s; report prompt could not be sent%s%s", stop.Round(time.Millisecond), earlierTextClause(earlierTextPresent), reportThinkingClause(reportThinking))
 }

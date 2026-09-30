@@ -362,7 +362,7 @@ Worker fields are conditionally present:
   `earlier text` clause says whether assistant text was retained immediately
   before the wrap-up prompt, i.e. whether `partialExplanation` would have
   carried earlier text had the report added none. The `report thinking` clause
-  names the level the wrap-up report ran at, which is the lowest level the
+  names the level set for the wrap-up report, which is the lowest level the
   model offers when that is lower than the working level and Pi accepted the
   switch, otherwise the working level; `thinkingLevel` still names the working
   level.
