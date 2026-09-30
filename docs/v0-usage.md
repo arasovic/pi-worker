@@ -259,14 +259,18 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   the `runs` directory inside pi-worker's user configuration directory
   — the operating system's user configuration directory plus
   `pi-worker/runs`, the location `runlog.Dir()` resolves. Only
-  `*.jsonl` files in that directory are records; `reported.json`, its
-  `.tmp-*` stages, and any other file are not.
+  `*.jsonl` files and run directories named by a run id (`<id>/`,
+  holding `record.jsonl` and `snapshot.json`) in that directory are
+  records; `reported.json`, its `.tmp-*` stages, and any other entry
+  are not.
 - `runs list` is read-only: it prints one line per record, newest
   first, and writes nothing — no marker, no watermark, no
   interrupted-run warning. It also lists every supervised run (every
   `run`, with or without `--background`), read from the background store — one `snapshot.json`
-  per run directory under pi-worker's background directory — merged
-  with the run records and sorted newest first. A supervised run also
+  per run directory under pi-worker's background directory, and the
+  run directories inside the records directory — merged with the run
+  records and sorted newest first. A run directory is listed instead of
+  a `.jsonl` record with the same run id. A supervised run also
   writes a run record, so it is found in both places; it is listed
   once, as its background entry, because the snapshot is the state
   `runs status` and `runs wait` read. A background run's `path` is its
@@ -456,8 +460,12 @@ pi-worker runs cancel <id> [--json]
   their `check unavailable` forms. After acceptance come the
   `pi-worker: worktree` line of a `--worktree` run, then, without
   `--background`, the `pi-worker: run <runId>` line. The two earlier-run
-  scans read the run records and update one once-only marker, so an
-  interrupted run reported by one start is not reported again by the next.
+  scans read the run records — both the `<id>.jsonl` files and the run
+  directories `<id>/` in the records directory — and update one
+  once-only marker, so an interrupted run reported by one start is not
+  reported again by the next. A run directory is judged by its
+  `snapshot.json` and its owner lock, and an interrupted one is named by
+  the directory's path.
 - Every run writes a run record into the records directory the starting
   command resolved: its
   supervisor writes the start line before any worker starts, a worker
