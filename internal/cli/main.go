@@ -747,26 +747,37 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 	if recordErr := recorder.Finish(finishedAt, &result, nil); recordErr != nil {
 		fmt.Fprintf(stderr, "pi-worker: warning: run record unavailable: %v\n", recordErr)
 	}
-	if opts.json {
-		printWorkerWarnings(result, stderr)
-		data, err := json.Marshal(result)
-		if err != nil {
-			fmt.Fprintf(stderr, "pi-worker: encode result: %v\n", err)
-			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
-		}
-		fmt.Fprintln(stdout, string(data))
-		if code != 0 {
-			for i, worker := range result.Workers {
-				if worker.Status != pi.StatusCompleted && worker.Error != "" {
-					fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Error)
-				}
+	if err := printRunDocument(result, opts.json, stdout, stderr); err != nil {
+		return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
+	}
+	return code
+}
+
+// printRunDocument prints a finished run's document, whose outcome is already
+// assigned: with jsonOutput the worker warnings, the one result document, and
+// one stderr line per failing worker when the run did not succeed; otherwise
+// the human summary. An error means the document could not be encoded, and its
+// stderr line is already printed.
+func printRunDocument(result run.Result, jsonOutput bool, stdout, stderr io.Writer) error {
+	if !jsonOutput {
+		printRunResult(result, stdout, stderr)
+		return nil
+	}
+	printWorkerWarnings(result, stderr)
+	data, err := json.Marshal(result)
+	if err != nil {
+		fmt.Fprintf(stderr, "pi-worker: encode result: %v\n", err)
+		return err
+	}
+	fmt.Fprintln(stdout, string(data))
+	if _, code := runOutcome(result); code != 0 {
+		for i, worker := range result.Workers {
+			if worker.Status != pi.StatusCompleted && worker.Error != "" {
+				fmt.Fprintf(stderr, "pi-worker: worker %d: %s\n", i+1, worker.Error)
 			}
 		}
-		return code
 	}
-
-	printRunResult(result, stdout, stderr)
-	return code
+	return nil
 }
 
 // printWorkerWarnings prints one stderr line per worker warning. It is the

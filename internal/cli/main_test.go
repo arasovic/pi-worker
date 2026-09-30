@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -35,8 +36,9 @@ const interruptHelperEnv = "PI_WORKER_INTERRUPT_HELPER"
 func TestMain(m *testing.M) {
 	// The signal-helper subprocess exits while blocked on stdin and never
 	// reaches a worker. Skip the unrelated fake-Pi build so it can run with
-	// a deliberately minimal environment.
-	if os.Getenv(interruptHelperEnv) == "1" {
+	// a deliberately minimal environment. The verification-command helper
+	// runs in the run's workspace, where the fake-Pi package cannot build.
+	if os.Getenv(interruptHelperEnv) == "1" || os.Getenv("PI_WORKER_CLI_VERIFY_HELPER") == "1" {
 		os.Exit(m.Run())
 	}
 	dir, err := os.MkdirTemp("", "pi-worker-cli-fakepi-bin-*")
@@ -340,6 +342,111 @@ func installRealFakePiWorker(t *testing.T) {
 	t.Cleanup(func() { newWorker = original })
 }
 
+// useFakePi points every run this test starts at the fakepi test double
+// answering from scriptConfig, through each path a run can take: the
+// in-process worker today, and the background start a run goes through
+// once it no longer runs in-process. The background state stays under this
+// test's own directory, and the admission root and limit the run resolved
+// reach the Manager unchanged, as they do in production.
+func useFakePi(t *testing.T, scriptConfig *script.Script) {
+	t.Helper()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("fake-Pi runs need a platform that can host a role process")
+	}
+	roleBin := piWorkerBinForBackground(t)
+	setupFakePiScript(t, scriptConfig)
+	// An in-process run puts its marker into this process's environment;
+	// see setupBackgroundCLI.
+	t.Setenv(run.RunMarkerEnv, "")
+	installRealFakePiWorker(t)
+
+	root := t.TempDir()
+	originalManager, originalPi, originalRole := newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable
+	newBackgroundManager = func(admissionRoot string, maxModelWorkers int) (*background.Manager, error) {
+		return background.NewManager(root, admissionRoot, maxModelWorkers)
+	}
+	backgroundPiExecutable = fakePiBin
+	backgroundRoleExecutable = roleBin
+	t.Cleanup(func() {
+		newBackgroundManager, backgroundPiExecutable, backgroundRoleExecutable = originalManager, originalPi, originalRole
+	})
+}
+
+// fakePiDoneLines is the human summary of workers 1 to n that each answered
+// "done" through backgroundHappyScript: the fake Pi reports the model and
+// its default thinking level, so each line carries both.
+func fakePiDoneLines(n int) string {
+	var lines strings.Builder
+	for id := 1; id <= n; id++ {
+		fmt.Fprintf(&lines, "worker %d [model=acme/m-1 thinking=medium]: done\n", id)
+	}
+	return lines.String()
+}
+
+// heldHappyScript is backgroundHappyScript with the prompt held for holdMS
+// after it is accepted, so the worker stays in flight that long.
+func heldHappyScript(finalText string, holdMS int) *script.Script {
+	s := backgroundHappyScript(finalText)
+	prompt := s.Triggers["prompt"]
+	held := append([]script.Step{prompt[0], {SleepMS: holdMS}}, prompt[1:]...)
+	s.Triggers["prompt"] = held
+	return s
+}
+
+// fakePiRequestOrder reads the fake Pi request log every worker of a run
+// appended to and returns its prompt and answer requests in order, P for a
+// prompt and A for a request for the answer. Concurrent appends may split a
+// line from its newline, so the log is scanned for the request types rather
+// than split into lines.
+func fakePiRequestOrder(t *testing.T, logPath string) string {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake Pi log: %v", err)
+	}
+	pattern := regexp.MustCompile(`"type":"(prompt|get_last_assistant_text)"`)
+	var order strings.Builder
+	for _, match := range pattern.FindAllStringSubmatch(string(data), -1) {
+		if match[1] == "prompt" {
+			order.WriteByte('P')
+		} else {
+			order.WriteByte('A')
+		}
+	}
+	return order.String()
+}
+
+// mustResolveRun resolves a run command line — args without the leading
+// "run" — the way `run` does before anything starts, and fails the test on
+// a rejection.
+func mustResolveRun(t *testing.T, args []string, stdin string) (runOptions, []run.Task) {
+	t.Helper()
+	opts, tasks, err := resolveRunInput(args, strings.NewReader(stdin))
+	if err != nil {
+		t.Fatalf("resolveRunInput(%q): %v", args, err)
+	}
+	return opts, tasks
+}
+
+// renderRun prints result the way `run` prints a finished run: it assigns
+// the outcome and returns the exit code with what reached each stream.
+func renderRun(t *testing.T, result run.Result, jsonOutput bool) (int, string, string) {
+	t.Helper()
+	outcome, code := runOutcome(result)
+	result.Outcome = outcome
+	var stdout, stderr bytes.Buffer
+	if err := printRunDocument(result, jsonOutput, &stdout, &stderr); err != nil {
+		t.Fatalf("printRunDocument: %v", err)
+	}
+	return code, stdout.String(), stderr.String()
+}
+
+// finishedRun is the result the controller returns for workers that ended
+// with the aggregate status given, measured on a clean workspace.
+func finishedRun(status contracts.RunStatus, workers ...pi.WorkerResult) run.Result {
+	return run.Result{SchemaVersion: contracts.SchemaVersion, Status: status, Workers: workers, Changes: &run.Changes{}}
+}
+
 func installProcessVersionProbe(t *testing.T, output, childStderr string, exitCode int) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -423,6 +530,52 @@ func sessionDirFromMeta(t *testing.T, metaPath string) string {
 	}
 	t.Fatalf("fakepi meta argv has no --session-dir: %v", meta.Argv)
 	return ""
+}
+
+// fakePiCwd reads the fakepi meta file and returns the directory the fake
+// Pi ran in, symlinks resolved.
+func fakePiCwd(t *testing.T, metaPath string) string {
+	t.Helper()
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read fakepi meta: %v", err)
+	}
+	var meta struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("decode fakepi meta: %v", err)
+	}
+	return resolvedDir(t, meta.Cwd)
+}
+
+// resolvedDir returns dir with symlinks resolved, so a temporary directory
+// compares equal however a process spelled it.
+func resolvedDir(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", dir, err)
+	}
+	return resolved
+}
+
+// workerExecutionTimeout returns the executionTimeout field of worker index
+// in the run --json document on stdout.
+func workerExecutionTimeout(t *testing.T, stdout string, index int) string {
+	t.Helper()
+	var document struct {
+		Workers []struct {
+			ExecutionTimeout string `json:"executionTimeout"`
+		} `json:"workers"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode json stdout: %v (%q)", err, stdout)
+	}
+	if index >= len(document.Workers) {
+		t.Fatalf("workers = %d, want worker %d", len(document.Workers), index+1)
+	}
+	return document.Workers[index].ExecutionTimeout
 }
 
 // waitForRequestLog polls the fakepi request log until the given request
@@ -632,7 +785,6 @@ func TestRunUsageErrors(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 			code, stdout, stderr := runCLI(t, test.args, test.stdin)
 			if code != 2 {
 				t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -642,9 +794,6 @@ func TestRunUsageErrors(t *testing.T) {
 			}
 			if !strings.Contains(stderr, "usage:") {
 				t.Fatalf("stderr missing usage text: %q", stderr)
-			}
-			if fake.callCount() != 0 {
-				t.Fatalf("worker invoked %d times, want 0", fake.callCount())
 			}
 		})
 	}
@@ -657,7 +806,6 @@ func TestRunUsageErrors(t *testing.T) {
 // and must not reprint the synopsis.
 func TestRunMissingModelAnswersWithRemedyNotUsage(t *testing.T) {
 	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 
 	code, stdout, stderr := runCLI(t, []string{"run"}, "do it")
 	if code != 2 {
@@ -681,9 +829,6 @@ func TestRunMissingModelAnswersWithRemedyNotUsage(t *testing.T) {
 	if stderr != want {
 		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
-	}
 }
 
 // TestRunRejectsNonUTF8TaskFile requires a task file whose bytes are not
@@ -697,7 +842,6 @@ func TestRunRejectsNonUTF8TaskFile(t *testing.T) {
 	if err := os.WriteFile(taskFile, []byte("\xff\xfe bad"), 0o600); err != nil {
 		t.Fatalf("write task file: %v", err)
 	}
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task-file", taskFile}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -710,9 +854,6 @@ func TestRunRejectsNonUTF8TaskFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "not valid UTF-8") {
 		t.Fatalf("stderr = %q, want the encoding rejection", stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
 	}
 }
 
@@ -747,7 +888,6 @@ func TestRunBackgroundRejectsNonUTF8TaskFile(t *testing.T) {
 // mechanisms, so a bad byte on stdin is the same usage error.
 func TestRunRejectsNonUTF8Stdin(t *testing.T) {
 	installConfigPath(t, filepath.Join(t.TempDir(), "config.json"))
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1"}, "\xff\xfe bad")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -757,9 +897,6 @@ func TestRunRejectsNonUTF8Stdin(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "not valid UTF-8") {
 		t.Fatalf("stderr = %q, want the encoding rejection", stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times, want 0", fake.callCount())
 	}
 }
 
@@ -776,11 +913,8 @@ func TestRunUsageShowsWritesFlag(t *testing.T) {
 }
 
 func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
-	}
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", "src/b"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -788,19 +922,13 @@ func TestRunWritesSuppressesSharedWorkspaceWarningWhenEveryTaskDeclares(t *testi
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	requireWritesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
-	if fake.callCount() != 2 {
-		t.Fatalf("worker calls = %d, want 2", fake.callCount())
-	}
+	requireWritesTail(t, stdout, fakePiDoneLines(2))
 }
 
 func TestRunWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
-	}
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
@@ -810,9 +938,7 @@ func TestRunWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares(t *testing.T) {
 	if count := strings.Count(stderr, "pi-worker: warning: 2 workers share the writable current workspace; tasks must use disjoint files"); count != 1 {
 		t.Fatalf("warning count = %d, want 1: %q", count, stderr)
 	}
-	if fake.callCount() != 2 {
-		t.Fatalf("worker calls = %d, want 2", fake.callCount())
-	}
+	requireChangesTail(t, stdout, fakePiDoneLines(2))
 }
 
 // TestRunBackgroundWritesKeepsSharedWorkspaceWarningWhenNoTaskDeclares
@@ -856,35 +982,28 @@ func TestRunWritesWithTaskFilesSuppressesWarning(t *testing.T) {
 	if err := os.WriteFile(secondPath, []byte("second task"), 0o600); err != nil {
 		t.Fatalf("write task file: %v", err)
 	}
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "first file done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "second file done"},
+	args := []string{"--model", "acme/m-1", "--task-file", firstPath, "--writes", "internal/run,docs/a.md", "--task-file", secondPath, "--writes", "internal/cli"}
+	_, tasks := mustResolveRun(t, args, "")
+	if len(tasks) != 2 || tasks[0].Prompt != "first task" || tasks[1].Prompt != "second task" {
+		t.Fatalf("tasks = %#v, want the two task files in order", tasks)
 	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task-file", firstPath, "--writes", "internal/run,docs/a.md", "--task-file", secondPath, "--writes", "internal/cli"}, "")
+
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
+	code, stdout, stderr := runCLI(t, append([]string{"run"}, args...), "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	requireWritesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
-	if req := mustWorkerRequest(t, fake, 1); !strings.HasPrefix(req.Prompt, "first task") {
-		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
-	}
-	if req := mustWorkerRequest(t, fake, 2); !strings.HasPrefix(req.Prompt, "second task") {
-		t.Fatalf("worker 2 prompt = %q, want second task", req.Prompt)
-	}
+	requireWritesTail(t, stdout, fakePiDoneLines(2))
 }
 
 func TestRunWritesOverlapRejectedBeforeAnyWorkerStarts(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", "src/a/b.go"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty for rejected run", stdout)
@@ -900,7 +1019,6 @@ func TestRunWritesOverlapRejectedBeforeAnyWorkerStarts(t *testing.T) {
 }
 
 func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	// "docs/a.md, src/x" must reach validation as the same paths as
 	// "docs/a.md,src/x": the space after the comma is formatting, not part
 	// of the path, so the overlap with task two's "src/x" is still rejected
@@ -908,9 +1026,6 @@ func TestRunWritesWhitespaceAroundCommasDoesNotDefeatOverlapCheck(t *testing.T) 
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "docs/a.md, src/x", "--task", "two", "--writes", "src/x"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
 	}
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want empty for rejected run", stdout)
@@ -965,7 +1080,6 @@ func TestRunRejectedWritesDeclarationsExitTwoWithUnchangedControllerMessage(t *t
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 			code, stdout, stderr := runCLI(t, test.args, "")
 			if code != 2 {
 				t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -980,9 +1094,6 @@ func TestRunRejectedWritesDeclarationsExitTwoWithUnchangedControllerMessage(t *t
 			}
 			if !strings.Contains(stderr, test.wantStderr) {
 				t.Fatalf("stderr = %q, want it to contain %q", stderr, test.wantStderr)
-			}
-			if fake.callCount() != 0 {
-				t.Fatalf("worker invoked %d times before rejection", fake.callCount())
 			}
 		})
 	}
@@ -1044,7 +1155,7 @@ func TestRunWritesBeforeSingleTaskReachesThatTask(t *testing.T) {
 		t.Fatalf("write task file: %v", err)
 	}
 	newGitWorkspace(t)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	for _, args := range [][]string{
 		{"run", "--model", "acme/m-1", "--writes", "file.txt", "--task", "go"},
 		{"run", "--model", "acme/m-1", "--writes", "file.txt", "--task-file", taskFile},
@@ -1056,7 +1167,7 @@ func TestRunWritesBeforeSingleTaskReachesThatTask(t *testing.T) {
 		if stderr != "" {
 			t.Fatalf("%v: stderr = %q", args, stderr)
 		}
-		const want = "worker 1: done\n" +
+		want := fakePiDoneLines(1) +
 			"changes: 0 files, +0/-0\n" +
 			"writes: ok\n" +
 			"outcome=completed\n"
@@ -1072,7 +1183,7 @@ func TestRunWritesWithStdinPromptReachesTheStdinTask(t *testing.T) {
 	// feature can be used at all in this input mode: the declaration
 	// must bind to the stdin task.
 	newGitWorkspace(t)
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--writes", "file.txt"}, "do it")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -1080,15 +1191,19 @@ func TestRunWritesWithStdinPromptReachesTheStdinTask(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	const want = "worker 1: done\n" +
+	want := fakePiDoneLines(1) +
 		"changes: 0 files, +0/-0\n" +
 		"writes: ok\n" +
 		"outcome=completed\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
-	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "do it" {
-		t.Fatalf("worker prompt = %q, want the stdin prompt", req.Prompt)
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--writes", "file.txt"}, "do it")
+	if len(tasks) != 1 || tasks[0].Prompt != "do it" {
+		t.Fatalf("tasks = %#v, want the stdin prompt", tasks)
+	}
+	if !tasks[0].Writes.Declared || len(tasks[0].Writes.Paths) != 1 || tasks[0].Writes.Paths[0] != "file.txt" {
+		t.Fatalf("writes = %#v, want file.txt bound to the stdin task", tasks[0].Writes)
 	}
 }
 
@@ -1097,7 +1212,6 @@ func TestRunWritesBeforeMultipleTasksRejectedWithRemedy(t *testing.T) {
 	// target, so the run stays rejected — but the message must say what
 	// to do, not only what is wrong: the declaration has to name its
 	// task by following it.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--writes", "src/a", "--task", "one", "--task", "two"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -1111,9 +1225,6 @@ func TestRunWritesBeforeMultipleTasksRejectedWithRemedy(t *testing.T) {
 	if !strings.Contains(stderr, "place each --writes directly after its task") {
 		t.Fatalf("stderr missing the remedy: %q", stderr)
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
-	}
 }
 
 func TestRunWritesTwiceForSingleTaskStillRejectedInAnyPosition(t *testing.T) {
@@ -1122,7 +1233,6 @@ func TestRunWritesTwiceForSingleTaskStillRejectedInAnyPosition(t *testing.T) {
 	// whatever positions the two occurrences took — pending colliding
 	// with positional, two pendings, and two pendings around a stdin
 	// prompt.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	for _, test := range []struct {
 		args  []string
 		stdin string
@@ -1142,9 +1252,6 @@ func TestRunWritesTwiceForSingleTaskStillRejectedInAnyPosition(t *testing.T) {
 			t.Fatalf("%v: stderr = %q, want the more-than-once error", test.args, stderr)
 		}
 	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
-	}
 }
 
 func TestRunWritesNothingDeclarationAcceptedBeforeSingleTask(t *testing.T) {
@@ -1152,7 +1259,7 @@ func TestRunWritesNothingDeclarationAcceptedBeforeSingleTask(t *testing.T) {
 	// the single task it must still declare the writes-nothing set,
 	// which the "writes: ok" verdict on a clean workspace proves.
 	newGitWorkspace(t)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--writes", "", "--task", "go"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -1160,7 +1267,7 @@ func TestRunWritesNothingDeclarationAcceptedBeforeSingleTask(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	const want = "worker 1: done\n" +
+	want := fakePiDoneLines(1) +
 		"changes: 0 files, +0/-0\n" +
 		"writes: ok\n" +
 		"outcome=completed\n"
@@ -1173,11 +1280,8 @@ func TestRunWritesEmptySetSuppressesSharedWorkspaceWarning(t *testing.T) {
 	// A task that declared --writes "" has declared: the run is fully
 	// contracted, so the shared-workspace warning must stay suppressed
 	// even though that task declared no paths at all.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
-	}
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("done"))
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--writes", "src/a", "--task", "two", "--writes", ""}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
@@ -1185,64 +1289,60 @@ func TestRunWritesEmptySetSuppressesSharedWorkspaceWarning(t *testing.T) {
 	if strings.Contains(stderr, "share the writable current workspace") {
 		t.Fatalf("stderr printed the shared-workspace warning: %q", stderr)
 	}
-	requireWritesTail(t, stdout, "worker 1: one done\nworker 2: two done\n")
-	if fake.callCount() != 2 {
-		t.Fatalf("worker calls = %d, want 2", fake.callCount())
-	}
+	requireWritesTail(t, stdout, fakePiDoneLines(2))
 }
 
 func TestRunSuccessHuman(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "All done."})
-	// Anchor before the run so the 30-minute default is measured from a
-	// fixed reference instead of decaying toward "now" while the run
-	// executes.
-	start := time.Now()
+	opts, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task", "fix the bug"}, "")
+	if len(tasks) != 1 || tasks[0].Model != "acme/m-1" || tasks[0].Prompt != "fix the bug" {
+		t.Fatalf("tasks = %#v", tasks)
+	}
+	if opts.timeout != 30*time.Minute {
+		t.Fatalf("timeout = %v, want the 30m default", opts.timeout)
+	}
+
+	workspace := newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("All done."))
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix the bug"}, "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	requireChangesTail(t, stdout, "worker 1: All done.\n")
+	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=medium]: All done.\n")
 	if stderr != "" {
 		t.Fatalf("stderr = %q", stderr)
 	}
-	request := mustWorkerRequest(t, fake, 1)
-	if request.Model != "acme/m-1" || request.Prompt != "fix the bug" {
-		t.Fatalf("request = %#v", request)
+	if got, want := fakePiCwd(t, metaPath), resolvedDir(t, workspace); got != want {
+		t.Fatalf("worker ran in %q, want the current directory %q", got, want)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+
+	// The default execution budget is the one the worker ran under.
+	code, stdout, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix the bug", "--json"}, "")
+	if code != 0 {
+		t.Fatalf("json exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if request.Workspace != cwd {
-		t.Fatalf("workspace = %q, want %q", request.Workspace, cwd)
-	}
-	deadline, ok := fake.deadlineForWorker(1)
-	if !ok {
-		t.Fatalf("worker 1 had no deadline")
-	}
-	fromStart := deadline.Sub(start)
-	if fromStart < 29*time.Minute || fromStart > 31*time.Minute {
-		t.Fatalf("default deadline is %v from run start, want about 30m", fromStart)
+	if got := workerExecutionTimeout(t, stdout, 0); got != "30m0s" {
+		t.Fatalf("worker executionTimeout = %q, want the 30m default", got)
 	}
 }
 
 func TestRunThinkingPropagatesAndLabelsHumanOutput(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--thinking=max", "--task", "fix the bug"}, "")
+	if len(tasks) != 1 || tasks[0].ThinkingLevel != pi.ThinkingMax {
+		t.Fatalf("tasks = %#v, want thinking max", tasks)
+	}
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted, pi.WorkerResult{
 		Model:                  "acme/m-1",
 		RequestedThinkingLevel: pi.ThinkingMax,
 		ThinkingLevel:          pi.ThinkingMax,
 		Status:                 pi.StatusCompleted,
 		Explanation:            "All done.",
-	})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking=max", "--task", "fix the bug"}, "")
+	}), false)
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
 	requireChangesTail(t, stdout, "worker 1 [model=acme/m-1 thinking=max]: All done.\n")
-	request := mustWorkerRequest(t, fake, 1)
-	if request.ThinkingLevel != pi.ThinkingMax {
-		t.Fatalf("thinking = %q, want max", request.ThinkingLevel)
-	}
 }
 
 func TestRunAcceptsEveryDocumentedThinkingLevel(t *testing.T) {
@@ -1256,12 +1356,8 @@ func TestRunAcceptsEveryDocumentedThinkingLevel(t *testing.T) {
 		pi.ThinkingMax,
 	} {
 		t.Run(string(level), func(t *testing.T) {
-			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
-			code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", string(level), "--task", "go"}, "")
-			if code != 0 || stderr != "" {
-				t.Fatalf("exit = %d, stderr = %q", code, stderr)
-			}
-			if got := mustWorkerRequest(t, fake, 1).ThinkingLevel; got != level {
+			_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--thinking", string(level), "--task", "go"}, "")
+			if got := tasks[0].ThinkingLevel; got != level {
 				t.Fatalf("thinking = %q, want %q", got, level)
 			}
 		})
@@ -1272,20 +1368,13 @@ func TestRunPerTaskModelsReachOwnWorkers(t *testing.T) {
 	// Three tasks, three different models, one run: every worker
 	// receives its own task's model, asserted per worker rather than in
 	// aggregate.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-2", Status: pi.StatusCompleted, Explanation: "two done"},
-		3: {Model: "acme/m-3", Status: pi.StatusCompleted, Explanation: "three done"},
+	_, tasks := mustResolveRun(t, []string{"--task", "one", "--model", "acme/m-1", "--task", "two", "--model", "acme/m-2", "--task", "three", "--model", "acme/m-3"}, "")
+	if len(tasks) != 3 {
+		t.Fatalf("tasks = %#v, want three", tasks)
 	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--task", "one", "--model", "acme/m-1", "--task", "two", "--model", "acme/m-2", "--task", "three", "--model", "acme/m-3"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	requireChangesTail(t, stdout, "worker 1: one done\nworker 2: two done\nworker 3: three done\n")
 	for i, want := range []string{"acme/m-1", "acme/m-2", "acme/m-3"} {
-		if req := mustWorkerRequest(t, fake, i+1); req.Model != want {
-			t.Fatalf("worker %d model = %q, want %q", i+1, req.Model, want)
+		if tasks[i].Model != want {
+			t.Fatalf("worker %d model = %q, want %q", i+1, tasks[i].Model, want)
 		}
 	}
 }
@@ -1293,19 +1382,11 @@ func TestRunPerTaskModelsReachOwnWorkers(t *testing.T) {
 func TestRunTaskThinkingLevelsDoNotLeak(t *testing.T) {
 	// Two tasks on the same model at different thinking levels: the
 	// levels bind to their own tasks and do not leak into one another.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
-	}
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--thinking", "low", "--task", "two", "--thinking", "max"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if got := mustWorkerRequest(t, fake, 1).ThinkingLevel; got != pi.ThinkingLow {
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task", "one", "--thinking", "low", "--task", "two", "--thinking", "max"}, "")
+	if got := tasks[0].ThinkingLevel; got != pi.ThinkingLow {
 		t.Fatalf("worker 1 thinking = %q, want low", got)
 	}
-	if got := mustWorkerRequest(t, fake, 2).ThinkingLevel; got != pi.ThinkingMax {
+	if got := tasks[1].ThinkingLevel; got != pi.ThinkingMax {
 		t.Fatalf("worker 2 thinking = %q, want max", got)
 	}
 }
@@ -1313,19 +1394,11 @@ func TestRunTaskThinkingLevelsDoNotLeak(t *testing.T) {
 func TestRunTaskWithoutModelFallsBackToRunLevelModel(t *testing.T) {
 	// A task with no --model of its own falls back to the run-level
 	// --model; a task with its own keeps it.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-2", Status: pi.StatusCompleted, Explanation: "two done"},
-	}
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two", "--model", "acme/m-2"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if got := mustWorkerRequest(t, fake, 1).Model; got != "acme/m-1" {
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task", "one", "--task", "two", "--model", "acme/m-2"}, "")
+	if got := tasks[0].Model; got != "acme/m-1" {
 		t.Fatalf("worker 1 model = %q, want the run-level acme/m-1", got)
 	}
-	if got := mustWorkerRequest(t, fake, 2).Model; got != "acme/m-2" {
+	if got := tasks[1].Model; got != "acme/m-2" {
 		t.Fatalf("worker 2 model = %q, want its own acme/m-2", got)
 	}
 }
@@ -1333,12 +1406,8 @@ func TestRunTaskWithoutModelFallsBackToRunLevelModel(t *testing.T) {
 func TestRunTaskThinkingOffStaysOff(t *testing.T) {
 	// A task --thinking of "off" is an explicit level, not unset: it
 	// must not fall back to the run-level thinking.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "go", "--thinking", "off"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if got := mustWorkerRequest(t, fake, 1).ThinkingLevel; got != pi.ThinkingOff {
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--thinking", "max", "--task", "go", "--thinking", "off"}, "")
+	if got := tasks[0].ThinkingLevel; got != pi.ThinkingOff {
 		t.Fatalf("thinking = %q, want off", got)
 	}
 }
@@ -1346,18 +1415,13 @@ func TestRunTaskThinkingOffStaysOff(t *testing.T) {
 func TestRunModelBeforeTasksIsRunLevelAcrossTasks(t *testing.T) {
 	// A --model that precedes every task keeps its run-level meaning on
 	// a multi-task run: every worker runs with it.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %#v, want two", tasks)
 	}
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two"}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	for i := 1; i <= 2; i++ {
-		if got := mustWorkerRequest(t, fake, i).Model; got != "acme/m-1" {
-			t.Fatalf("worker %d model = %q, want run-level acme/m-1", i, got)
+	for i, task := range tasks {
+		if task.Model != "acme/m-1" {
+			t.Fatalf("worker %d model = %q, want run-level acme/m-1", i+1, task.Model)
 		}
 	}
 }
@@ -1365,7 +1429,6 @@ func TestRunModelBeforeTasksIsRunLevelAcrossTasks(t *testing.T) {
 func TestRunSecondModelForSameTaskRejectedBeforeAnyWorkerStarts(t *testing.T) {
 	// A second --model bound to the same task is rejected with the
 	// task-naming error, before any worker starts.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--model", "acme/m-2", "--model", "acme/m-3"}, "")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -1375,9 +1438,6 @@ func TestRunSecondModelForSameTaskRejectedBeforeAnyWorkerStarts(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--model specified more than once for task 1") {
 		t.Fatalf("stderr = %q, want the more-than-once error", stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("worker invoked %d times before rejection", fake.callCount())
 	}
 }
 
@@ -1403,15 +1463,13 @@ func TestRunInvalidPerTaskModelUsesRunLevelErrorText(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			runLevel := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-			_, _, runLevelStderr := runCLI(t, []string{"run", "--model", test.value, "--task", "go"}, "")
-			perTask := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
+			runLevelCode, runLevelStdout, runLevelStderr := runCLI(t, []string{"run", "--model", test.value, "--task", "go"}, "")
+			if runLevelCode != 2 || runLevelStdout != "" {
+				t.Fatalf("invalid run-level model = (%d, %q, %q)", runLevelCode, runLevelStdout, runLevelStderr)
+			}
 			code, stdout, taskStderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--model", test.value}, "")
 			if code != 2 || stdout != "" {
 				t.Fatalf("invalid per-task model = (%d, %q, %q)", code, stdout, taskStderr)
-			}
-			if runLevel.callCount() != 0 || perTask.callCount() != 0 {
-				t.Fatalf("worker invoked for an invalid model")
 			}
 			if !strings.Contains(taskStderr, "invalid model") {
 				t.Fatalf("per-task stderr = %q, want the invalid-model error", taskStderr)
@@ -1431,13 +1489,13 @@ func TestRunNameRuleAcceptsColonAndSpaceInId(t *testing.T) {
 	// name before any worker starts.
 	for _, value := range []string{"acme/m-1:free", "acme/mo del"} {
 		t.Run(value, func(t *testing.T) {
-			fake := installFakeWorker(t, pi.WorkerResult{Model: value, Status: pi.StatusCompleted, Explanation: "done"})
-			code, stdout, stderr := runCLI(t, []string{"run", "--model", value, "--task", "go", "--json"}, "")
+			_, tasks := mustResolveRun(t, []string{"--model", value, "--task", "go", "--json"}, "")
+			if len(tasks) != 1 || tasks[0].Model != value {
+				t.Fatalf("tasks = %#v, want model %q", tasks, value)
+			}
+			code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted, pi.WorkerResult{Model: value, Status: pi.StatusCompleted, Explanation: "done"}), true)
 			if code != 0 {
 				t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-			}
-			if req := mustWorkerRequest(t, fake, 1); req.Model != value {
-				t.Fatalf("worker model = %q, want %q", req.Model, value)
 			}
 			if stderr != "" {
 				t.Fatalf("stderr = %q, want empty", stderr)
@@ -1461,7 +1519,6 @@ func TestRunNameRuleRejectsEmptyHalves(t *testing.T) {
 		{name: "empty id", value: "acme/"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
 			code, stdout, stderr := runCLI(t, []string{"run", "--model", test.value, "--task", "go"}, "")
 			if code != 2 {
 				t.Fatalf("exit = %d, want 2; stderr = %q", code, stderr)
@@ -1471,9 +1528,6 @@ func TestRunNameRuleRejectsEmptyHalves(t *testing.T) {
 			}
 			if !strings.Contains(stderr, "invalid model") {
 				t.Fatalf("stderr = %q, want the invalid-model error", stderr)
-			}
-			if fake.callCount() != 0 {
-				t.Fatalf("worker invoked %d times, want 0", fake.callCount())
 			}
 		})
 	}
@@ -1486,8 +1540,7 @@ func TestRunInventedColonNameRefusedByCatalogNotByFormat(t *testing.T) {
 	// drives the whole path: the catalog offers only the plain entry, the
 	// requested colon name is not in it, and the run exits 3 with "not in
 	// the available catalog" on stderr.
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -1514,7 +1567,7 @@ func TestRunInventedColonNameRefusedByCatalogNotByFormat(t *testing.T) {
 
 func TestRunThinkingFallbackWarnsAndKeepsSuccessfulExit(t *testing.T) {
 	warning := "requested thinking=max unavailable; continuing with Pi default thinking=medium"
-	result := pi.WorkerResult{
+	result := finishedRun(contracts.RunCompleted, pi.WorkerResult{
 		Model:                  "acme/m-1",
 		RequestedThinkingLevel: pi.ThinkingMax,
 		ThinkingLevel:          pi.ThinkingMedium,
@@ -1522,10 +1575,9 @@ func TestRunThinkingFallbackWarnsAndKeepsSuccessfulExit(t *testing.T) {
 		Warning:                warning,
 		Status:                 pi.StatusCompleted,
 		Explanation:            "Completed with default effort.",
-	}
-	_ = installFakeWorker(t, result)
+	})
 
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "go", "--json"}, "")
+	code, stdout, stderr := renderRun(t, result, true)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
@@ -1539,8 +1591,7 @@ func TestRunThinkingFallbackWarnsAndKeepsSuccessfulExit(t *testing.T) {
 }
 
 func TestRunSuccessJSON(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "JSON answer"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "JSON answer"}), true)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
@@ -1563,19 +1614,15 @@ func TestRunSuccessJSON(t *testing.T) {
 	if output.Workers[0].Model != "acme/m-1" || output.Workers[0].Explanation != "JSON answer" || output.Workers[0].Status != "completed" {
 		t.Fatalf("worker = %#v", output.Workers[0])
 	}
-	_ = fake
 }
 
 func TestRunVerifiedPiVersionProbesOnceBeforeWorkers(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "version-probed")
 	logPath := installProcessVersionProbe(t, piversion.VerifiedVersion+"\n", "", 0)
-	t.Setenv("PI_WORKER_VERSION_MARKER", marker)
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
-	fake.runHook = func() {
-		if _, err := os.Stat(marker); err != nil {
-			t.Errorf("worker started before version probe: %v", err)
-		}
-	}
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("ok"))
+	// The version probe and every fake Pi append to the same log, so the
+	// log's order is the order they ran in.
+	t.Setenv("FAKEPI_LOG", logPath)
 
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two", "--task", "three"}, "")
 	if code != 0 || stdout == "" || strings.Contains(stderr, "Pi version") {
@@ -1584,14 +1631,22 @@ func TestRunVerifiedPiVersionProbesOnceBeforeWorkers(t *testing.T) {
 	if got := versionProbeCount(t, logPath); got != 1 {
 		t.Fatalf("version probe count = %d, want 1", got)
 	}
-	if fake.callCount() != 3 {
-		t.Fatalf("worker calls = %d, want 3", fake.callCount())
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "version\n") {
+		t.Fatalf("log = %q: a worker started before the version probe", data)
+	}
+	if got := strings.Count(string(data), `"type":"prompt"`); got != 3 {
+		t.Fatalf("worker prompts = %d, want 3", got)
 	}
 }
 
 func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
 	logPath := installProcessVersionProbe(t, "0.99.0\n", "child-secret-must-not-leak", 0)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "JSON answer"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("JSON answer"))
 
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
 	if code != 0 {
@@ -1612,7 +1667,8 @@ func TestRunUnverifiedPiVersionWarnsOnceAndKeepsJSONClean(t *testing.T) {
 
 func TestRunMalformedPiVersionWarnsAndKeepsJSONClean(t *testing.T) {
 	installProcessVersionProbe(t, "pi 0.84.1\n", "", 0)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "ok"})
+	newGitWorkspace(t)
+	useFakePi(t, backgroundHappyScript("ok"))
 
 	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
 	if code != 0 || strings.Count(stderr, "pi-worker: warning: Pi version") != 1 {
@@ -1626,14 +1682,17 @@ func TestRunMalformedPiVersionWarnsAndKeepsJSONClean(t *testing.T) {
 
 func TestRunPiVersionProbeFailureKeepsExistingExitCode(t *testing.T) {
 	installProcessVersionProbe(t, "probe-output-secret", "child-stderr-secret", 7)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model unavailable"})
+	newGitWorkspace(t)
+	// The fake Pi's catalog offers acme/m-1 only, so the worker for
+	// acme/m-2 is unavailable: the run's own readiness exit.
+	useFakePi(t, backgroundHappyScript("ok"))
 
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "go", "--json"}, "")
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-2", "--task", "go", "--json"}, "")
 	if code != 3 {
 		t.Fatalf("exit = %d, want existing readiness exit 3; stderr = %q", code, stderr)
 	}
 	_ = decodeRunOutput(t, stdout)
-	if !strings.Contains(stderr, "pi-worker: warning: Pi version") || !strings.Contains(stderr, "model unavailable") {
+	if !strings.Contains(stderr, "pi-worker: warning: Pi version") || !strings.Contains(stderr, "not in the available catalog") {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	if strings.Contains(stderr, "probe-output-secret") || strings.Contains(stderr, "child-stderr-secret") {
@@ -1646,79 +1705,54 @@ func TestRunTaskFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("fix from file"), 0o600); err != nil {
 		t.Fatalf("write task file: %v", err)
 	}
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task-file", path}, "")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	requireChangesTail(t, stdout, "worker 1: ok\n")
-	request := mustWorkerRequest(t, fake, 1)
-	if request.Prompt != "fix from file" {
-		t.Fatalf("prompt = %q", request.Prompt)
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task-file", path}, "")
+	if len(tasks) != 1 || tasks[0].Prompt != "fix from file" {
+		t.Fatalf("tasks = %#v, want the task file's text", tasks)
 	}
 }
 
 func TestRunStdinTask(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1"}, "task from stdin")
-	if code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	requireChangesTail(t, stdout, "worker 1: ok\n")
-	request := mustWorkerRequest(t, fake, 1)
-	if request.Prompt != "task from stdin" {
-		t.Fatalf("prompt = %q", request.Prompt)
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1"}, "task from stdin")
+	if len(tasks) != 1 || tasks[0].Prompt != "task from stdin" {
+		t.Fatalf("tasks = %#v, want the stdin text", tasks)
 	}
 }
 
 func TestRunThreeTasksHumanSuccessIsOrderedAndConcurrent(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "first done"},
-		2: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "second done"},
-		3: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "third done"},
+	args := []string{"--model", "acme/m-1", "--task", "one", "--task", "two", "--task", "three"}
+	_, tasks := mustResolveRun(t, args, "")
+	for i, want := range []string{"one", "two", "three"} {
+		if tasks[i].Prompt != want {
+			t.Fatalf("worker %d prompt = %q, want %q", i+1, tasks[i].Prompt, want)
+		}
 	}
-	fake.startGate = make(chan struct{})
-	fake.startGateAt = 3
-	fake.releaseByWorker = map[int]chan struct{}{
-		1: make(chan struct{}),
-		2: make(chan struct{}),
-		3: make(chan struct{}),
+
+	// The summary lists the workers in input order, whatever order they
+	// finished in.
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted,
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "first done"},
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "second done"},
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "third done"},
+	), false)
+	if code != 0 || stderr != "" {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
-	fake.completed = make(chan int, 3)
+	requireChangesTail(t, stdout, "worker 1: first done\nworker 2: second done\nworker 3: third done\n")
 
-	var code int
-	var stdout, stderr string
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		code, stdout, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two", "--task", "three"}, "")
-	}()
-	waitForWorkerCount(t, fake, 3)
-	close(fake.releaseByWorker[3])
-	waitForWorkerCompleted(t, fake.completed, 3)
-	close(fake.releaseByWorker[2])
-	waitForWorkerCompleted(t, fake.completed, 2)
-	close(fake.releaseByWorker[1])
-	waitForWorkerCompleted(t, fake.completed, 1)
-	<-done
-
+	newGitWorkspace(t)
+	useFakePi(t, heldHappyScript("done", 1500))
+	code, stdout, stderr = runCLI(t, append([]string{"run"}, args...), "")
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if fake.maxConcurrency() != 3 {
-		t.Fatalf("max concurrency = %d, want 3", fake.maxConcurrency())
 	}
 	if count := strings.Count(stderr, "pi-worker: warning:"); count != 1 {
 		t.Fatalf("stderr warning count = %d, want 1", count)
 	}
-	requireChangesTail(t, stdout, "worker 1: first done\nworker 2: second done\nworker 3: third done\n")
-	requestOrder := []string{"one", "two", "three"}
-	for i, want := range requestOrder {
-		req := mustWorkerRequest(t, fake, i+1)
-		if req.Prompt != want {
-			t.Fatalf("worker %d prompt = %q, want %q", i+1, req.Prompt, want)
-		}
+	requireChangesTail(t, stdout, fakePiDoneLines(3))
+	// Each fake Pi holds its prompt: every prompt arriving before any
+	// worker asked for its answer means all three were in flight at once.
+	if got := fakePiRequestOrder(t, os.Getenv("FAKEPI_LOG")); got != "PPPAAA" {
+		t.Fatalf("request order = %q, want all three prompts before any answer (PPPAAA)", got)
 	}
 }
 
@@ -1732,60 +1766,39 @@ func TestRunRepeatedTaskFilesPreserveInputOrder(t *testing.T) {
 		t.Fatalf("write task file: %v", err)
 	}
 
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "first file done"},
-		2: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "second file done"},
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task-file", firstPath, "--task-file", secondPath}, "")
+	if len(tasks) != 2 || tasks[0].Prompt != "first task" || tasks[1].Prompt != "second task" {
+		t.Fatalf("tasks = %#v, want the two task files in order", tasks)
 	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task-file", firstPath, "--task-file", secondPath}, "")
+	var warnings bytes.Buffer
+	warnSharedWorkspace(tasks, &warnings)
+	if count := strings.Count(warnings.String(), "pi-worker: warning:"); count != 1 {
+		t.Fatalf("stderr warning count = %d, want 1", count)
+	}
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted,
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "first file done"},
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "second file done"},
+	), false)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	if count := strings.Count(stderr, "pi-worker: warning:"); count != 1 {
-		t.Fatalf("stderr warning count = %d, want 1", count)
-	}
 	requireChangesTail(t, stdout, "worker 1: first file done\nworker 2: second file done\n")
-	if req := mustWorkerRequest(t, fake, 1); req.Prompt != "first task" {
-		t.Fatalf("worker 1 prompt = %q, want first task", req.Prompt)
-	}
-	if req := mustWorkerRequest(t, fake, 2); req.Prompt != "second task" {
-		t.Fatalf("worker 2 prompt = %q, want second task", req.Prompt)
-	}
 }
 
 func TestRunTwoTaskJSONResultOrder(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "json one"},
-		2: {Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "json two"},
+	_, tasks := mustResolveRun(t, []string{"--model", "acme/m-1", "--task", "one", "--task", "two", "--json"}, "")
+	var warnings bytes.Buffer
+	warnSharedWorkspace(tasks, &warnings)
+	if strings.Count(warnings.String(), "pi-worker: warning:") != 1 {
+		t.Fatalf("stderr = %q", warnings.String())
 	}
-	fake.startGate = make(chan struct{})
-	fake.startGateAt = 2
-	fake.releaseByWorker = map[int]chan struct{}{
-		1: make(chan struct{}),
-		2: make(chan struct{}),
-	}
-	fake.completed = make(chan int, 2)
 
-	var code int
-	var stdout, stderr string
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		code, stdout, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "one", "--task", "two", "--json"}, "")
-	}()
-	waitForWorkerCount(t, fake, 2)
-	close(fake.releaseByWorker[2])
-	waitForWorkerCompleted(t, fake.completed, 2)
-	close(fake.releaseByWorker[1])
-	waitForWorkerCompleted(t, fake.completed, 1)
-	<-done
-
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted,
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "json one"},
+		pi.WorkerResult{Status: pi.StatusCompleted, Model: "acme/m-1", Explanation: "json two"},
+	), true)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
-	}
-	if strings.Count(stderr, "pi-worker: warning:") != 1 {
-		t.Fatalf("stderr = %q", stderr)
 	}
 	output := decodeRunOutput(t, stdout)
 	if output.SchemaVersion != 1 || output.Status != "completed" || output.Outcome != contracts.OutcomeCompleted {
@@ -1815,24 +1828,20 @@ func TestRunExitCodes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			installFakeWorker(t, test.res)
-			code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
+			result := finishedRun(contracts.RunFailed, test.res)
+			code, stdout, stderr := renderRun(t, result, false)
 			if code != test.want {
 				t.Fatalf("human exit = %d, want %d", code, test.want)
 			}
 			if !strings.Contains(stderr, test.res.Error) {
 				t.Fatalf("human stderr = %q, want detail %q", stderr, test.res.Error)
 			}
-			// A failed run still carries its one change-manifest line and
-			// the final outcome line: the manifest is measured on every
-			// terminal status, and the outcome word names the exit code.
 			lines := strings.Split(strings.TrimSpace(stdout), "\n")
 			if len(lines) != 2 || !strings.HasPrefix(lines[0], "changes: ") || !strings.HasPrefix(lines[1], "outcome=") {
 				t.Fatalf("human stdout = %q, want the changes: line and an outcome= line", stdout)
 			}
 
-			_ = installFakeWorker(t, test.res)
-			code, stdout, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--json"}, "")
+			code, stdout, stderr = renderRun(t, result, true)
 			if code != test.want {
 				t.Fatalf("json exit = %d, want %d", code, test.want)
 			}
@@ -1854,16 +1863,32 @@ func TestRunExitCodes(t *testing.T) {
 			}
 		})
 	}
+
+	// A failed run still carries its one change-manifest line and the
+	// final outcome line: the manifest is measured on every terminal
+	// status, and the outcome word names the exit code. The fake Pi's
+	// catalog offers acme/m-1 only, so the worker for acme/m-2 is
+	// unavailable.
+	t.Run("failed run measures its changes", func(t *testing.T) {
+		newGitWorkspace(t)
+		useFakePi(t, backgroundHappyScript("ok"))
+		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-2", "--task", "x"}, "")
+		if code != 3 {
+			t.Fatalf("exit = %d, want 3; stderr = %q", code, stderr)
+		}
+		if stdout != "changes: 0 files, +0/-0\noutcome=workers-unavailable\n" {
+			t.Fatalf("human stdout = %q, want the changes: line and the outcome= line", stdout)
+		}
+	})
 }
 
 func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "primary done"},
-		2: {Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"},
-	}
+	result := finishedRun(contracts.RunPartial,
+		pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "primary done"},
+		pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"},
+	)
 
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b"}, "")
+	code, stdout, stderr := renderRun(t, result, false)
 	if code != 5 {
 		t.Fatalf("human exit = %d, want 5", code)
 	}
@@ -1875,12 +1900,7 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 		t.Fatalf("human stderr = %q", stderr)
 	}
 
-	fake = installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "primary done"},
-		2: {Model: "acme/m-1", Status: pi.StatusFailed, Error: "agent failed"},
-	}
-	code, stdout, stderr = runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b", "--json"}, "")
+	code, stdout, stderr = renderRun(t, result, true)
 	if code != 5 {
 		t.Fatalf("json exit = %d, want 5", code)
 	}
@@ -1903,12 +1923,10 @@ func TestRunExitCodePartialAndLabeledErrors(t *testing.T) {
 }
 
 func TestRunAllUnavailableExitCode3(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusUnavailable, Error: "model unavailable"})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model unavailable"},
-		2: {Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "adapter unavailable"},
-	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b", "--json"}, "")
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunFailed,
+		pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model unavailable"},
+		pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "adapter unavailable"},
+	), true)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3", code)
 	}
@@ -1930,12 +1948,10 @@ func TestRunAllUnavailableExitCode3(t *testing.T) {
 }
 
 func TestRunStatusErrorAndUnavailableExitCode9(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusError, Error: "protocol error"},
-		2: {Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model unavailable"},
-	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "a", "--task", "b", "--json"}, "")
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunFailed,
+		pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusError, Error: "protocol error"},
+		pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusUnavailable, Error: "model unavailable"},
+	), true)
 	if code != 9 {
 		t.Fatalf("exit = %d, want 9", code)
 	}
@@ -1958,31 +1974,38 @@ func TestRunStatusErrorAndUnavailableExitCode9(t *testing.T) {
 }
 
 func TestRunTimeoutFlag(t *testing.T) {
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "ok"})
-	// Keep the worker in flight longer than the requested deadline. This makes
-	// the test about the deadline passed to the worker, rather than whether
-	// setup and a successful worker result happen to fit inside 250ms.
-	fake.runHook = func() { time.Sleep(300 * time.Millisecond) }
-	// Record when the admitted worker is actually invoked, so we can
-	// measure the full execution budget from that point.
-	var workerStarted time.Time
-	fake.onRequest = func(pi.WorkerRequest) { workerStarted = time.Now() }
-	code, _, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--timeout", "250ms"}, "")
+	opts, _ := mustResolveRun(t, []string{"--model", "acme/m-1", "--task", "x", "--timeout", "250ms"}, "")
+	if opts.timeout != 250*time.Millisecond {
+		t.Fatalf("timeout = %v, want 250ms", opts.timeout)
+	}
+
+	// The fake Pi holds its prompt far longer than the requested budget,
+	// so the run ends on the budget, not on the worker's answer.
+	newGitWorkspace(t)
+	useFakePi(t, heldHappyScript("ok", 10000))
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x", "--timeout", "250ms", "--json"}, "")
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
-	if workerStarted.IsZero() {
-		t.Fatalf("worker was never invoked")
-	}
-	deadline, ok := fake.deadlineForWorker(1)
-	if !ok {
-		t.Fatalf("worker had no deadline")
+	if got := workerExecutionTimeout(t, stdout, 0); got != "250ms" {
+		t.Fatalf("worker executionTimeout = %q, want 250ms", got)
 	}
 	// The full 250ms execution budget starts when the admitted worker
-	// is invoked, not when the CLI process begins.
-	delta := deadline.Sub(workerStarted)
-	if delta < 225*time.Millisecond || delta > 275*time.Millisecond {
-		t.Fatalf("deadline is %v after worker start, want about 250ms", delta)
+	// starts, not when the CLI process begins.
+	var document struct {
+		Workers []struct {
+			StartedAt  *time.Time `json:"startedAt"`
+			FinishedAt *time.Time `json:"finishedAt"`
+		} `json:"workers"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatalf("decode json stdout: %v (%q)", err, stdout)
+	}
+	if len(document.Workers) != 1 || document.Workers[0].StartedAt == nil || document.Workers[0].FinishedAt == nil {
+		t.Fatalf("workers = %q, want one worker with its start and finish", stdout)
+	}
+	if ran := document.Workers[0].FinishedAt.Sub(*document.Workers[0].StartedAt); ran < 225*time.Millisecond {
+		t.Fatalf("worker ran %v, want the whole 250ms budget after it started", ran)
 	}
 }
 
@@ -2058,16 +2081,12 @@ func TestRunTimedOutHumanPrintsPartialTextOnStdout(t *testing.T) {
 	// the salvaged explanation, the error line still goes to stderr
 	// exactly as before, and the salvaged text is printed on stdout in
 	// full, marked (incomplete) so it cannot read as a finished answer.
-	f := installFakeWorker(t, pi.WorkerResult{
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunTimedOut, pi.WorkerResult{
 		Model:              "acme/m-1",
 		Status:             pi.StatusTimedOut,
 		Error:              "timed out",
 		PartialExplanation: "partial text from the interrupted run",
-	})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
-	if f.callCount() != 1 {
-		t.Fatalf("worker calls = %d, want 1", f.callCount())
-	}
+	}), false)
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
@@ -2081,11 +2100,7 @@ func TestRunTimedOutHumanPrintsNothingExtraWhenPartialTextEmpty(t *testing.T) {
 	// A timed-out worker with no salvaged text prints nothing extra:
 	// stdout stays exactly the change-manifest line followed by the
 	// final outcome line, and the error line still names the timeout.
-	f := installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "x"}, "")
-	if f.callCount() != 1 {
-		t.Fatalf("worker calls = %d, want 1", f.callCount())
-	}
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunTimedOut, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusTimedOut, Error: "timed out"}), false)
 	if code != 7 {
 		t.Fatalf("exit = %d, want 7; stderr = %q", code, stderr)
 	}
@@ -2106,13 +2121,12 @@ func TestRunCompletedHumanOutputUnchanged(t *testing.T) {
 	// salvage renderer: only the plain explanation line, even when the
 	// result also carries partial text — which the worker never emits
 	// on completion, but the renderer must not depend on that guard.
-	installFakeWorker(t, pi.WorkerResult{
+	code, stdout, stderr := renderRun(t, finishedRun(contracts.RunCompleted, pi.WorkerResult{
 		Model:              "acme/m-1",
 		Status:             pi.StatusCompleted,
 		Explanation:        "All done.",
 		PartialExplanation: "must never print",
-	})
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "fix the bug"}, "")
+	}), false)
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr)
 	}
@@ -3086,118 +3100,23 @@ func TestRunConfiguredMaxModelWorkersSerializesForegroundTasks(t *testing.T) {
 	}
 	installConfigPath(t, configPath)
 
-	// Use the real default openAdmission: the config path makes its derived
-	// admission root test-scoped.
-
-	// Install a completed fake worker with per-worker release channels and
-	// an onRequest hook that records which worker IDs start.
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted})
-	fake.resultsByWorker = map[int]pi.WorkerResult{
-		1: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "one done"},
-		2: {Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "two done"},
+	// Each fake Pi holds its prompt, so a second worker admitted while the
+	// first is still in flight would reach its prompt before the first
+	// asked for its answer.
+	newGitWorkspace(t)
+	useFakePi(t, heldHappyScript("done", 300))
+	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--task", "first", "--task", "second"}, "")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
 	}
-	started := make(chan int, 2)
-	fake.onRequest = func(req pi.WorkerRequest) { started <- req.WorkerID }
-	fake.releaseByWorker = map[int]chan struct{}{
-		1: make(chan struct{}),
-		2: make(chan struct{}),
-	}
-
-	// Cancellable parent context and bounded cleanup. If an assertion
-	// fails while a worker is still held, cleanup cancels the parent so
-	// the CLI goroutine's context selects unblock; runDone then proves
-	// the goroutine actually exited and cannot outlive the test.
-	runDone := make(chan struct{})
-	parentCtx, parentCancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		parentCancel()
-		select {
-		case <-runDone:
-		case <-time.After(5 * time.Second):
-			t.Error("CLI goroutine did not exit within 5s of parent cancellation")
-		}
-	})
-
-	type cliResult struct {
-		code   int
-		stdout string
-		stderr string
-	}
-	resultCh := make(chan cliResult, 1)
-	go func() {
-		defer close(runDone)
-		code, stdout, stderr := runCLIWithContext(t, parentCtx, []string{"run", "--model", "acme/m-1", "--task", "first", "--task", "second"}, "")
-		resultCh <- cliResult{code, stdout, stderr}
-	}()
-
-	// Receive first started ID: must be worker 1.
-	select {
-	case id := <-started:
-		if id != 1 {
-			t.Fatalf("first started worker = %d, want 1", id)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for first worker to start")
-	}
-
-	// While release channel 1 is still open, assert no second worker has
-	// started and concurrency is exactly 1.
-	select {
-	case id := <-started:
-		t.Fatalf("second worker %d started while first still held, want serialization", id)
-	default:
-	}
-	if got := fake.maxConcurrency(); got != 1 {
-		t.Fatalf("max concurrency = %d while holding worker 1, want 1", got)
-	}
-
-	// Close release channel 1. Receive next started ID: must be worker 2.
-	close(fake.releaseByWorker[1])
-	select {
-	case id := <-started:
-		if id != 2 {
-			t.Fatalf("second started worker = %d, want 2", id)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for second worker to start")
-	}
-
-	// Worker 2 is now running and worker 1 has finished: with serialized
-	// foreground tasks the concurrency high-water mark must still be 1.
-	if got := fake.maxConcurrency(); got != 1 {
-		t.Fatalf("max concurrency = %d while running worker 2, want 1", got)
-	}
-	close(fake.releaseByWorker[2])
-
-	// Receive CLI result.
-	var result cliResult
-	select {
-	case result = <-resultCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for CLI result")
-	}
-
-	if result.code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr = %q", result.code, result.stderr)
-	}
-	if fake.maxConcurrency() != 1 {
-		t.Fatalf("max concurrency = %d, want 1", fake.maxConcurrency())
-	}
-	if !strings.Contains(result.stdout, "worker 1: one done") {
-		t.Fatalf("stdout missing worker 1 output: %q", result.stdout)
-	}
-	if !strings.Contains(result.stdout, "worker 2: two done") {
-		t.Fatalf("stdout missing worker 2 output: %q", result.stdout)
+	if got := fakePiRequestOrder(t, os.Getenv("FAKEPI_LOG")); got != "PAPA" {
+		t.Fatalf("request order = %q, want one worker at a time (PAPA)", got)
 	}
 	// Both outputs must appear in input order.
-	idx1 := strings.Index(result.stdout, "worker 1: one done")
-	idx2 := strings.Index(result.stdout, "worker 2: two done")
-	if idx1 >= idx2 {
-		t.Fatalf("worker 1 output (idx=%d) not before worker 2 output (idx=%d): %q", idx1, idx2, result.stdout)
-	}
+	requireChangesTail(t, stdout, fakePiDoneLines(2))
 	// The existing shared-workspace warning on stderr is allowed; reject
 	// worker or internal error lines.
-	for _, line := range strings.Split(result.stderr, "\n") {
+	for _, line := range strings.Split(stderr, "\n") {
 		if line == "" {
 			continue
 		}

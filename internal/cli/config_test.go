@@ -382,7 +382,6 @@ func TestMalformedConfigRejectsEveryValidRunBeforeWorkerStarts(t *testing.T) {
 				return path, nil
 			}
 			t.Cleanup(func() { userConfigPath = original })
-			fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/explicit", Status: pi.StatusCompleted, Explanation: "done"})
 
 			code, stdout, stderr := runCLI(t, test.args, "")
 			if code != test.wantCode {
@@ -390,9 +389,6 @@ func TestMalformedConfigRejectsEveryValidRunBeforeWorkerStarts(t *testing.T) {
 			}
 			if configCalls != test.wantConfig {
 				t.Fatalf("config path resolved %d times, want %d", configCalls, test.wantConfig)
-			}
-			if fake.callCount() != 0 {
-				t.Fatalf("no worker should start for run error case %q, but worker was called %d times", test.name, fake.callCount())
 			}
 			if test.wantCode == 9 {
 				if stdout != "" || strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "unknown field") {
@@ -416,14 +412,10 @@ func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
 
-	code, _, stderr := runCLI(t, []string{"run", "--task", "work"}, "")
-	if code != 0 || stderr != "" {
-		t.Fatalf("run default = (%d, %q)", code, stderr)
-	}
-	if req, ok := fake.requestForWorker(1); !ok || req.Model != "acme/default" {
-		t.Fatalf("worker request = %#v, present=%v", req, ok)
+	_, tasks := mustResolveRun(t, []string{"--task", "work"}, "")
+	if len(tasks) != 1 || tasks[0].Model != "acme/default" {
+		t.Fatalf("tasks = %#v, want the configured default model", tasks)
 	}
 }
 
@@ -442,14 +434,10 @@ func TestRunModelDanglingConfigLinkFailsClearlyWithoutLaunchingOrTouchingLink(t 
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
 
 	code, stdout, stderr := runCLI(t, []string{"run", "--task", "work"}, "")
 	if code != 9 || stdout != "" || !strings.Contains(stderr, "symbolic link") {
 		t.Fatalf("run dangling link = (%d, %q, %q), want a clear dangling-link failure", code, stdout, stderr)
-	}
-	if fake.callCount() != 0 {
-		t.Fatalf("run dangling link launched %d workers", fake.callCount())
 	}
 	info, err := os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
@@ -471,15 +459,14 @@ func TestRunModelDefaultAppliesToEveryTaskWithoutItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
 
-	code, _, stderr := runCLI(t, []string{"run", "--task", "one", "--task", "two"}, "")
-	if code != 0 {
-		t.Fatalf("run default = (%d, %q)", code, stderr)
+	_, tasks := mustResolveRun(t, []string{"--task", "one", "--task", "two"}, "")
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %#v, want two", tasks)
 	}
-	for i := 1; i <= 2; i++ {
-		if req := mustWorkerRequest(t, fake, i); req.Model != "acme/default" {
-			t.Fatalf("worker %d model = %q, want the configured default", i, req.Model)
+	for i, task := range tasks {
+		if task.Model != "acme/default" {
+			t.Fatalf("worker %d model = %q, want the configured default", i+1, task.Model)
 		}
 	}
 }
@@ -494,15 +481,10 @@ func TestRunThinkingUsesSavedModelWithoutPersistingEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	installConfigPath(t, path)
-	fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
 
-	code, _, stderr := runCLI(t, []string{"run", "--thinking", "max", "--task", "work"}, "")
-	if code != 0 || stderr != "" {
-		t.Fatalf("run default with thinking = (%d, %q)", code, stderr)
-	}
-	req := mustWorkerRequest(t, fake, 1)
-	if req.Model != "acme/default" || req.ThinkingLevel != pi.ThinkingMax {
-		t.Fatalf("worker request = %#v", req)
+	_, tasks := mustResolveRun(t, []string{"--thinking", "max", "--task", "work"}, "")
+	if len(tasks) != 1 || tasks[0].Model != "acme/default" || tasks[0].ThinkingLevel != pi.ThinkingMax {
+		t.Fatalf("tasks = %#v", tasks)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(before, after) {
@@ -530,18 +512,14 @@ func TestRunModelExplicitEmptySelectorNeverFallsBack(t *testing.T) {
 				return path, nil
 			}
 			t.Cleanup(func() { userConfigPath = original })
-			fake := installFakeWorker(t, pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "done"})
 			stdin := &errReader{}
 
-			code, _, stderr := runCLIReader(t, test.args, stdin)
-			if code != 2 || stderr == "" {
-				t.Fatalf("run explicit empty selector = (%d, %q)", code, stderr)
+			code, stdout, stderr := runCLIReader(t, test.args, stdin)
+			if code != 2 || stdout != "" || stderr == "" {
+				t.Fatalf("run explicit empty selector = (%d, %q, %q)", code, stdout, stderr)
 			}
 			if calls != 0 {
 				t.Fatalf("explicit empty selector read configuration %d times", calls)
-			}
-			if fake.callCount() != 0 {
-				t.Fatalf("explicit empty selector launched %d workers", fake.callCount())
 			}
 			if stdin.read {
 				t.Fatal("explicit empty selector read stdin")

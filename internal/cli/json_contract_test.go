@@ -12,6 +12,7 @@ import (
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/skillinstall"
+	"github.com/arasovic/pi-worker/internal/testutil/fakepi/script"
 )
 
 func decodeJSONObject(t *testing.T, text string) map[string]any {
@@ -181,17 +182,14 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 	})
 
 	t.Run("run", func(t *testing.T) {
-		installFakeWorker(t, pi.WorkerResult{
-			Model:                  "acme/model",
-			RequestedThinkingLevel: pi.ThinkingMax,
-			ThinkingLevel:          pi.ThinkingHigh,
-			ThinkingFallback:       true,
-			Warning:                "fallback",
-			Explanation:            "done",
-			Status:                 pi.StatusCompleted,
-		})
-		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--thinking", "max", "--task", "work", "--json"}, "")
-		if code != 0 || stderr != "pi-worker: worker 1: fallback\n" {
+		newGitWorkspace(t)
+		// The fake Pi offers no max thinking level, so the worker falls back
+		// to Pi's default and warns: every optional worker key is present.
+		fakePi := backgroundHappyScript("done")
+		fakePi.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium","high"]}`)}}}
+		useFakePi(t, fakePi)
+		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "work", "--json"}, "")
+		if code != 0 || stderr != "pi-worker: worker 1: requested thinking=max unavailable; continuing with Pi default thinking=medium\n" {
 			t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 		}
 		document := decodeJSONObject(t, stdout)
@@ -262,18 +260,35 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 	})
 }
 
+// runWhileFakePiHolds runs args against a fake Pi that holds its prompt,
+// calls during once the worker is in flight, and returns what the run
+// printed: during changes the workspace the way a worker's tools would.
+func runWhileFakePiHolds(t *testing.T, args []string, during func()) (int, string, string) {
+	t.Helper()
+	useFakePi(t, heldHappyScript("done", 2000))
+	var code int
+	var stdout, stderr string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		code, stdout, stderr = runCLI(t, args, "")
+	}()
+	waitForRequestLog(t, os.Getenv("FAKEPI_LOG"), "prompt")
+	during()
+	<-done
+	return code, stdout, stderr
+}
+
 func TestRunJSONGitObjectExactKeysWithBranchAndStash(t *testing.T) {
 	repo := newGitWorkspace(t)
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/model", Status: pi.StatusCompleted, Explanation: "done"})
-	fake.runHook = func() {
+	code, stdout, stderr := runWhileFakePiHolds(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--json"}, func() {
 		gitRun(t, repo, "checkout", "-q", "-b", "feature")
 		if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("stashed\n"), 0o644); err != nil {
 			t.Errorf("write file: %v", err)
 			return
 		}
 		gitRun(t, repo, "stash", "push", "-q", "-m", "saved")
-	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--json"}, "")
+	})
 	if code != 0 || stderr != "" {
 		t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 	}
@@ -319,16 +334,14 @@ func TestRunJSONGitObjectExactKeysWithBranchAndStash(t *testing.T) {
 func TestRunJSONGitObjectExactKeysOmitsDetachedBranch(t *testing.T) {
 	repo := newGitWorkspace(t)
 	gitRun(t, repo, "checkout", "--detach", "HEAD")
-	fake := installFakeWorker(t, pi.WorkerResult{Model: "acme/model", Status: pi.StatusCompleted, Explanation: "done"})
-	fake.runHook = func() {
+	code, stdout, stderr := runWhileFakePiHolds(t, []string{"run", "--model", "acme/m-1", "--task", "work", "--json"}, func() {
 		if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte("two\n"), 0o644); err != nil {
 			t.Errorf("write file: %v", err)
 			return
 		}
 		gitRun(t, repo, "add", "file.txt")
 		gitRun(t, repo, "commit", "-q", "-m", "detached")
-	}
-	code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/model", "--task", "work", "--json"}, "")
+	})
 	if code != 0 || stderr != "" {
 		t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 	}

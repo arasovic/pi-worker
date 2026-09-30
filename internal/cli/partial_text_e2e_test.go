@@ -19,8 +19,7 @@ import (
 // delivers them to the worker's handler, and the document carries what
 // the handler accumulated.
 func TestRunJSONCarriesPartialTextWhenRunEndsWithoutFinalText(t *testing.T) {
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -71,8 +70,7 @@ func TestRunJSONCarriesPartialTextWhenRunEndsWithoutFinalText(t *testing.T) {
 // deltas would leave the accumulator empty and make this test pass
 // whether the guard works or not.
 func TestRunJSONOmitsPartialTextWhenRunCompletes(t *testing.T) {
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},

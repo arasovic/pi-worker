@@ -17,8 +17,7 @@ import (
 // text_end frame carries the numbers — so the path exercised is the path
 // a real run takes, not a fallback.
 func TestRunJSONCarriesWorkerUsageEndToEnd(t *testing.T) {
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},
@@ -83,8 +82,7 @@ func TestRunJSONCarriesWorkerUsageEndToEnd(t *testing.T) {
 // still carries only the message's numbers. The frame travels the same
 // verbatim path a real Pi warm request's entry_appended frame takes.
 func TestRunJSONCarriesWorkerCacheWarmUsageEndToEnd(t *testing.T) {
-	installRealFakePiWorker(t)
-	setupFakePiScript(t, &script.Script{Triggers: map[string][]script.Step{
+	useFakePi(t, &script.Script{Triggers: map[string][]script.Step{
 		"get_available_models": {
 			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
 		},

@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/arasovic/pi-worker/internal/pi"
 )
 
 // TestRunHelp checks that `run --help` and `run -h` print the detailed run
@@ -104,8 +102,12 @@ func TestCommandHelp(t *testing.T) {
 // command is a help request: a --help consumed as the value of --task is a
 // task prompt, not a request for help.
 func TestRunTaskHelpIsNotHelpRequest(t *testing.T) {
+	_, tasks := mustResolveRun(t, []string{"--task", "--help", "--model", "acme/m-1"}, "")
+	if len(tasks) != 1 || tasks[0].Prompt != "--help" {
+		t.Fatalf("tasks = %#v, want the prompt --help", tasks)
+	}
 	newGitWorkspace(t)
-	installFakeWorker(t, pi.WorkerResult{Model: "acme/m-1", Status: pi.StatusCompleted, Explanation: "done"})
+	useFakePi(t, backgroundHappyScript("done"))
 	_, stdout, _ := runCLI(t, []string{"run", "--task", "--help", "--model", "acme/m-1"}, "")
 	const wantSection = "Outcome and exit code:"
 	if strings.Contains(stdout, wantSection) {
