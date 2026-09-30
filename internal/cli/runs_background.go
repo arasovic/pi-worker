@@ -188,6 +188,7 @@ func runsRenderWaited(stdout, stderr io.Writer, opts runsOptions, snap backgroun
 	// prints in the foreground; a wait that ran out, and a terminal state
 	// with no result document, keep the table.
 	if !opts.json && note == "" && snap.Terminal && snap.Result != nil {
+		printRunError(snap, stderr)
 		printRunResult(*snap.Result, stdout, stderr)
 		return runsFinishedExitCode(snap)
 	}
@@ -314,6 +315,7 @@ func runsFinishedExitCode(snap background.Snapshot) int {
 // for itself, and it goes to stderr: a wait that ran out says so beside the
 // state it printed, where a machine reading stdout is unaffected.
 func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap background.Snapshot, note string) int {
+	printRunError(snap, stderr)
 	if jsonOutput {
 		data, err := json.Marshal(snap)
 		if err != nil {
@@ -375,6 +377,15 @@ func renderRunsSnapshot(stdout, stderr io.Writer, jsonOutput bool, snap backgrou
 		fmt.Fprintln(stderr, note)
 	}
 	return 0
+}
+
+// printRunError prints the run-level error a finished run ended with on
+// stderr, the line a foreground run prints for the same error — with or
+// without --json.
+func printRunError(snap background.Snapshot, stderr io.Writer) {
+	if snap.Error != "" {
+		fmt.Fprintf(stderr, "pi-worker: %s\n", snap.Error)
+	}
 }
 
 // runsSnapshotExtraLines builds the lines that follow the human table for

@@ -86,6 +86,10 @@ type Snapshot struct {
 	Status        *contracts.RunStatus `json:"status,omitempty"`
 	Outcome       *contracts.Outcome   `json:"outcome,omitempty"`
 	Result        *run.Result          `json:"result,omitempty"`
+	// Error is the run-level error the controller returned, the same text a
+	// foreground run prints after "pi-worker: ". It exists only on a
+	// terminal snapshot, and only when the run ended with such an error.
+	Error string `json:"error,omitempty"`
 }
 
 // WorkerSnapshot is one worker's role inside a snapshot.
@@ -197,6 +201,9 @@ func (s Snapshot) Validate() error {
 		if s.Result != nil {
 			errs = append(errs, "accepted: result must be nil")
 		}
+		if s.Error != "" {
+			errs = append(errs, "accepted: error must be empty")
+		}
 		// Every worker must be queued in accepted state.
 		for _, w := range s.Workers {
 			if w.State != WorkerQueued {
@@ -229,6 +236,9 @@ func (s Snapshot) Validate() error {
 		}
 		if s.Result != nil {
 			errs = append(errs, "running: result must be nil")
+		}
+		if s.Error != "" {
+			errs = append(errs, "running: error must be empty")
 		}
 		anyRunningOrTerminal := false
 		for _, w := range s.Workers {

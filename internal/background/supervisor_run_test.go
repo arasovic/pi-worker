@@ -207,6 +207,49 @@ func TestWriteFailedTerminalSnapshotKeepsTheRunWorktree(t *testing.T) {
 	if want := (run.Worktree{Path: req.worktree.Path, Branch: req.worktree.Branch}); loaded.Result.Worktree == nil || *loaded.Result.Worktree != want {
 		t.Errorf("result.worktree = %+v, want %+v", loaded.Result.Worktree, want)
 	}
+	if loaded.Error != "controller vanished" {
+		t.Errorf("error = %q, want the cause %q", loaded.Error, "controller vanished")
+	}
+}
+
+// TestRunAcceptedRunKeepsTheControllerError requires that a run whose
+// controller returned a result together with an error stores that error's
+// text in the terminal snapshot: it is the line a foreground run prints, and
+// for a mistyped --verify command it is the only line that says what went
+// wrong.
+func TestRunAcceptedRunKeepsTheControllerError(t *testing.T) {
+	req, _, _ := newStartRequestWithTempRoots(t)
+	acceptedAt := time.Now().UTC().Truncate(time.Second)
+	req.runID = runlog.RunID(acceptedAt)
+	req.acceptedAt = acceptedAt
+	req.workspace = t.TempDir()
+	const missing = "pi-worker-test-no-such-verify-command"
+	req.verify = []string{missing}
+	_, lookErr := exec.LookPath(missing)
+	if lookErr == nil {
+		t.Fatalf("test setup: %q must not resolve", missing)
+	}
+	want := "verification: " + lookErr.Error()
+
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	stored := supervisorStartResult{request: req, preparation: prep, accepted: true}
+	if err := runAcceptedRunWith(context.Background(), &recordingWorker{}, stored); err == nil {
+		t.Fatal("runAcceptedRunWith returned nil, want the controller error")
+	}
+
+	loaded, err := prep.store.Load(req.runID)
+	if err != nil {
+		t.Fatalf("reload terminal snapshot: %v", err)
+	}
+	if loaded.Result == nil {
+		t.Fatal("result must not be nil: the controller returned one with its error")
+	}
+	if loaded.Error != want {
+		t.Errorf("error = %q, want %q", loaded.Error, want)
+	}
 }
 
 // blockingLaunchWorker is the injected pi.Worker for the running-phase guard:
