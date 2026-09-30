@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/arasovic/pi-worker/internal/pi"
 	"github.com/arasovic/pi-worker/internal/run"
 )
 
@@ -62,6 +63,32 @@ func buildGoodMap(runID string) map[string]any {
 		"supervisor":    map[string]any{"pid": float64(1), "createTime": float64(100)},
 		"workers":       []map[string]any{},
 	}
+}
+
+// runningSnapshotMap returns a valid running snapshot whose one worker
+// has reported activity, as a map so a test can add or change fields.
+func runningSnapshotMap(t *testing.T) map[string]any {
+	t.Helper()
+	snap := buildValidSnapshot(t)
+	started := fixtureTime.Add(time.Minute)
+	snap.State = RunRunning
+	snap.UpdatedAt = fixtureTime.Add(2 * time.Minute)
+	snap.Workers[0].State = WorkerRunning
+	snap.Workers[0].StartedAt = &started
+	snap.Workers[0].Process = &ProcessIdentity{PID: 2, CreateTime: 200}
+	snap.Workers[0].Activity = &pi.Activity{LastEventAt: started, LastTool: "bash", ToolCalls: 3}
+	if err := snap.Validate(); err != nil {
+		t.Fatalf("running snapshot fixture invalid: %v", err)
+	}
+	encoded, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal running snapshot: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(encoded, &m); err != nil {
+		t.Fatalf("unmarshal running snapshot: %v", err)
+	}
+	return m
 }
 
 // buildTwoDocuments returns two valid JSON snapshots separated by a newline
@@ -295,12 +322,16 @@ func loadRaw(t *testing.T, root, runID string, rawContent []byte) (*Store, Snaps
 
 // TestLoad_RawJSONTable_Failures covers every JSON-level strictness gate:
 //
-//	malformed document, unknown fields, trailing second document,
-//	decoded runId mismatch, and a structurally invalid Snapshot
-//	whose schemaVersion and runId are present but required fields are missing.
+//	malformed document, trailing second document, decoded runId
+//	mismatch, an unsupported schemaVersion, and a structurally invalid
+//	Snapshot whose schemaVersion and runId are present but required
+//	fields are missing.
 func TestLoad_RawJSONTable_Failures(t *testing.T) {
 	runID := makeRunID(fixtureTime)
-	base := buildGoodMap(runID)
+
+	// Otherwise valid, so the version is the only refusal.
+	versionTwo := runningSnapshotMap(t)
+	versionTwo["schemaVersion"] = float64(2)
 
 	tests := []rawJSONTestCase{
 		{
@@ -311,17 +342,12 @@ func TestLoad_RawJSONTable_Failures(t *testing.T) {
 			wantErr: "decode",
 		},
 		{
-			name: "unknown_field",
+			name: "unsupported_schema_version",
 			content: func(_ string) []byte {
-				m := make(map[string]any)
-				for k, v := range base {
-					m[k] = v
-				}
-				m["bogusField"] = "x"
-				b, _ := json.Marshal(m)
+				b, _ := json.Marshal(versionTwo)
 				return b
 			},
-			wantErr: "unknown field",
+			wantErr: "schemaVersion must be 1",
 		},
 		{
 			name: "trailing_second_document",
@@ -361,6 +387,37 @@ func TestLoad_RawJSONTable_Failures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoad_IgnoresUnknownFields verifies that a snapshot written by a
+// newer binary, carrying fields this one does not know at the root or
+// nested inside a worker's activity, still loads with its known fields.
+func TestLoad_IgnoresUnknownFields(t *testing.T) {
+	runID := makeRunID(fixtureTime)
+
+	t.Run("root", func(t *testing.T) {
+		m := runningSnapshotMap(t)
+		m["bogusField"] = "x"
+		raw, _ := json.Marshal(m)
+		if _, _, err := loadRaw(t, t.TempDir(), runID, raw); err != nil {
+			t.Fatalf("Load with an unknown root field: %v", err)
+		}
+	})
+
+	t.Run("worker_activity", func(t *testing.T) {
+		m := runningSnapshotMap(t)
+		activity := m["workers"].([]any)[0].(map[string]any)["activity"].(map[string]any)
+		activity["bogusField"] = "x"
+		raw, _ := json.Marshal(m)
+
+		_, got, err := loadRaw(t, t.TempDir(), runID, raw)
+		if err != nil {
+			t.Fatalf("Load with an unknown activity field: %v", err)
+		}
+		if a := got.Workers[0].Activity; a == nil || a.ToolCalls != 3 || a.LastTool != "bash" {
+			t.Fatalf("worker 1 activity = %+v, want toolCalls 3 lastTool bash", a)
+		}
+	})
 }
 
 // === Create refusals =================================================================

@@ -16,19 +16,22 @@ contract for agents and other machine consumers.
   `schemaVersion` it supports.
 - Removing a field, changing a field type or enum meaning, or making a
   required field optional requires a new schema version everywhere:
-  each takes away a guarantee a consumer relied on. A new required
-  field adds a guarantee instead, so it may stay in v1 while both
-  skews are covered: a reader older than the writer is safe when
-  it ignores unknown fields or ships with the writer and can never
-  be out of step, and a file older than the reader is safe only
-  when the document does not persist, because an older file lacks
-  the new field. The run document never persists and its readers
-  validate `schemaVersion` and ignore unknown fields; the npm
-  launcher rejects unknown fields on `skill status` but reads the
-  document from a binary shipped in the same package, so the two
-  are always in step. Config and skill receipts persist and their
-  readers reject unknown fields, so a new required field needs a
-  new version there.
+  each takes away a guarantee a consumer relied on. A new field may
+  stay in v1 only while both skews are covered: a reader older than
+  the writer is safe when it ignores unknown fields or ships with
+  the writer and can never be out of step, and a file older than the
+  reader is safe only when the new field may be absent, because an
+  older file lacks it. The run document persists — as `result` in
+  `<state>/background/<runId>/snapshot.json` and as `result` on the
+  finish line of a run record — and its readers ignore unknown
+  fields (the snapshot reader also refuses an unsupported
+  `schemaVersion`; the run record reader does not check it), so a
+  new field there must be optional (absent is valid and no validation requires it)
+  or the change needs a new version. The npm launcher rejects
+  unknown fields on `skill status` but reads the document from a
+  binary shipped in the same package, so the two are always in step.
+  Config and skill receipts persist and their readers reject unknown
+  fields, so a new required field needs a new version there.
 - Usage and early setup failures may write no JSON. Diagnostics and `--debug`
   output go to stderr and never become a second stdout document.
 
@@ -258,7 +261,9 @@ the read commands print whatever state is durable when they read, and
 difference is that the `run --background --json` acceptance document leaves out
 each task's `prompt` and `promptTruncated`, because the caller has just supplied
 them; `runs status --json`, `runs wait --json`, and `runs cancel --json` print
-the stored snapshot with them.
+the stored snapshot with them. Reading a stored snapshot ignores fields it
+does not recognise, so an older binary reads a snapshot a newer one wrote; an
+unsupported `schemaVersion` is refused.
 
 Required root fields are `schemaVersion` (`1`), `runId`, `state`,
 `terminal`, `acceptedAt`, `updatedAt`, `workspace`, `supervisor`, and
@@ -305,9 +310,13 @@ least one task completed and a sibling timed out while queued (completed
 sibling results are retained), and `timeout` when every queued task timed out
 with no completed sibling.
 
-`outcome` is a new required field, and the run document is safe on
-both versioning skews — it never persists and its readers ignore
-unknown fields — so `schemaVersion` stays `1`. Within an emitted
+`outcome` is a required field added in v1, and `schemaVersion` stays
+`1` because no stored run document lacks it: it shipped in 0.3.0,
+before the run document first persisted (the run record's finish line
+in 0.6.0, the background snapshot in 0.9.0). The background snapshot
+reader relies on that, since it requires `result.outcome` to equal the
+snapshot's `outcome`. A required field added now would not get that
+pass. Within an emitted
 run document, root `outcome` is always present, as is `changes` (the
 CLI always configures the git inspector): unlike `writes` and `git`,
 the two have no absent form, so they are never read by

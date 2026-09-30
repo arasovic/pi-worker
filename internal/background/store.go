@@ -115,9 +115,11 @@ var beforeSnapshotOpen = func() {}
 //     replaced by atomic rename while it is read, so a different file
 //     behind the name at open time is normal and is read as long as
 //     the file actually opened is regular and within the ceiling.
-//   - Exactly one JSON document is decoded with DisallowUnknownFields
-//     from a reader limited to maxSnapshotBytes; trailing data is
-//     rejected, then Snapshot.Validate is called.
+//   - Exactly one JSON document is decoded from a reader limited to
+//     maxSnapshotBytes; trailing data is rejected, then
+//     Snapshot.Validate is called. Unknown fields are ignored so an
+//     older binary reads a snapshot a newer one wrote; a breaking
+//     change bumps schemaVersion, which Validate refuses.
 //   - The decoded Snapshot.RunID must equal the requested runId (at most
 //     64 runes of a mismatched runId are quoted).
 func (s *Store) Load(runID string) (Snapshot, error) {
@@ -187,7 +189,6 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 	}
 
 	dec := json.NewDecoder(io.LimitReader(f, maxSnapshotBytes))
-	dec.DisallowUnknownFields()
 	var snap Snapshot
 	if err := dec.Decode(&snap); err != nil {
 		return Snapshot{}, fmt.Errorf("load snapshot (%s): decode: %w", runID, err)
