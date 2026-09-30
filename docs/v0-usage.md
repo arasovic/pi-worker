@@ -412,7 +412,10 @@ pi-worker runs cancel <id> [--json]
 - `run --background` accepts the run, hands it to a detached supervisor
   process, and returns as soon as that supervisor has written the
   accepted state durably. The tasks keep going after the command exits.
-  Human output is one line naming the run identity and the number of
+  The supervisor runs in its own session, so a Ctrl-C or hangup in the
+  terminal that started the run does not reach it, and its workers have
+  no controlling terminal; `runs cancel` stops the run. Human output is
+  one line naming the run identity and the number of
   workers; `--json` prints the accepted run document instead. It leaves out
   each task's prompt, which the caller has just sent; `runs status --json`
   shows it. Exit `0`
