@@ -13,7 +13,7 @@ import (
 // dispatchSupervisorRole answers the role token with, and it is reached the
 // same way — by a caller who has nothing to hand a run over to.
 func (m *Manager) Start(context.Context, StartOptions) (StartedRun, error) {
-	return StartedRun{}, fmt.Errorf("background manager start: %w", errRoleProcessUnsupported)
+	return StartedRun{}, fmt.Errorf("start: %w", errRoleProcessUnsupported)
 }
 
 // ReapSupervisor does nothing here: no supervisor can be started on this
