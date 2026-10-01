@@ -620,13 +620,14 @@ emits means anything different than it did — a consumer branching on the
 retired reason finds that branch unreachable, not misread — while a bump
 to `2` would make every 0.3.1 consumer reject all output, a total break
 to signal a change that is not one.
-The CLI always configures the git inspector, so real output normally
-carries `changes`. The exception is a run that ended with a run-level
-controller failure (`outcome` `internal-error`, the failed terminal
-snapshot): its `result` has no `changes`, `git`, `writes`, or
-`leftoverProcesses`, because no controller result was produced. A
-controller built without the git inspector also omits the field entirely.
-Unlike `git` it is not gated by a state change: a run that only left modified
+Root `changes` never vanishes from real output: the CLI always configures
+the git inspector, and with one configured the field always carries a
+value, a measurement or an omission reason. A run that ended without a
+controller result — the failed terminal snapshot, `outcome`
+`internal-error` — carries `omitted: "measurement failed"`, the same
+reason a failed measurement reports. Only a controller built without the
+git inspector omits the field entirely. Unlike `git` it is not gated by a
+state change: a run that only left modified
 files behind still carries it, because those files are what it names. It
 carries either a reason it could not be measured or the measurement, never
 both:

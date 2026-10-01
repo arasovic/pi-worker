@@ -36,6 +36,15 @@ const (
 	reasonManifestUnavailable = "change manifest unavailable"
 )
 
+// SkippedManifestUnavailable returns the write check in the skipped
+// form for a manifest that could not be measured. A run that ended
+// without a controller result reports exactly what a checked run
+// reports when its manifest is unavailable; the reason string lives in
+// one place so the two can never drift apart.
+func SkippedManifestUnavailable() *WriteCheck {
+	return &WriteCheck{Skipped: reasonManifestUnavailable}
+}
+
 // anyWritesDeclared reports whether at least one task carried a write
 // declaration — the run-level "did the caller declare at all" bit the
 // controller uses to decide whether the check runs at all. A task that

@@ -214,6 +214,76 @@ func TestWriteFailedTerminalSnapshotKeepsTheRunWorktree(t *testing.T) {
 	}
 }
 
+// writeFailedTerminalSnapshotForTest prepares a run, writes the failed
+// terminal snapshot for it, and returns that snapshot reloaded from the
+// store. It is the shared setup for the two result-shape tests below.
+func writeFailedTerminalSnapshotForTest(t *testing.T, req supervisorStartRequest) Snapshot {
+	t.Helper()
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	observer := newSupervisorRunObserver(prep.store, prep.snapshot)
+	if err := writeFailedTerminalSnapshot(observer, errors.New("controller vanished")); err != nil {
+		t.Fatalf("writeFailedTerminalSnapshot: %v", err)
+	}
+	loaded, err := prep.store.Load(req.runID)
+	if err != nil {
+		t.Fatalf("reload failed terminal snapshot: %v", err)
+	}
+	if !loaded.Terminal || loaded.Result == nil {
+		t.Fatalf("snapshot terminal=%v result=%v, want a terminal snapshot with a result", loaded.Terminal, loaded.Result)
+	}
+	return loaded
+}
+
+// TestWriteFailedTerminalSnapshotCarriesChangesAndDeclaredWrites requires
+// that a run that ended without a controller result still carries the two
+// fields the JSON contract promises. `changes` omits with the
+// measurement-failed reason, and, because the request declared writes,
+// `writes` skips with the manifest-unavailable reason.
+func TestWriteFailedTerminalSnapshotCarriesChangesAndDeclaredWrites(t *testing.T) {
+	req, _, _ := newStartRequestWithTempRoots(t)
+	for i := range req.tasks {
+		if !req.tasks[i].Writes.Declared {
+			t.Fatalf("test setup: task %d must declare writes", i+1)
+		}
+	}
+	loaded := writeFailedTerminalSnapshotForTest(t, req)
+
+	if loaded.Result.Changes == nil || loaded.Result.Changes.Omitted != "measurement failed" {
+		t.Errorf("result.changes = %#v, want omitted with %q", loaded.Result.Changes, "measurement failed")
+	}
+	if loaded.Result.Writes == nil || loaded.Result.Writes.Skipped != "change manifest unavailable" {
+		t.Errorf("result.writes = %#v, want skipped with %q", loaded.Result.Writes, "change manifest unavailable")
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("stored result shape failed validation: %v", err)
+	}
+}
+
+// TestWriteFailedTerminalSnapshotCarriesChangesWithoutDeclaredWrites
+// requires that the never-vanishing `changes` field is present even when no
+// task declared writes, and that `writes` stays absent so a caller who never
+// declared is not told a check ran.
+func TestWriteFailedTerminalSnapshotCarriesChangesWithoutDeclaredWrites(t *testing.T) {
+	req, _, _ := newStartRequestWithTempRoots(t)
+	for i := range req.tasks {
+		req.tasks[i].Writes = run.WriteDeclaration{}
+	}
+	loaded := writeFailedTerminalSnapshotForTest(t, req)
+
+	if loaded.Result.Changes == nil || loaded.Result.Changes.Omitted != "measurement failed" {
+		t.Errorf("result.changes = %#v, want omitted with %q", loaded.Result.Changes, "measurement failed")
+	}
+	if loaded.Result.Writes != nil {
+		t.Errorf("result.writes = %#v, want absent when the request declared none", loaded.Result.Writes)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("stored result shape failed validation: %v", err)
+	}
+}
+
 // TestRunAcceptedRunKeepsTheControllerError requires that a run whose
 // controller returned a result together with an error stores that error's
 // text in the terminal snapshot: it is the line a foreground run prints, and

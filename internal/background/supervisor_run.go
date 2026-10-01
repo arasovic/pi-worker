@@ -504,18 +504,33 @@ func writeFailedTerminalSnapshot(observer *supervisorRunObserver, cause error) e
 		message = cause.Error()
 	}
 	workers := make([]pi.WorkerResult, len(running.Workers))
+	declaredWrites := false
 	for i := range workers {
 		workers[i] = pi.WorkerResult{
 			Model:  running.Workers[i].Task.Model,
 			Status: string(WorkerError),
 			Error:  message,
 		}
+		if running.Workers[i].Task.WritesDeclared {
+			declaredWrites = true
+		}
 	}
-	terminal, err := buildTerminalRunSnapshot(running, run.Result{
+	// A run that ends without a controller result still owes the caller
+	// the two answer fields the contract promises: `changes` always
+	// carries a measurement or a reason, and `writes` answers exactly
+	// when the request declared writes. `git` and `leftoverProcesses`
+	// stay absent: the contract presents them only on a measured state
+	// change or when processes remain.
+	result := run.Result{
 		SchemaVersion: contracts.SchemaVersion,
 		Status:        status,
+		Changes:       run.OmittedMeasurementFailed(),
 		Workers:       workers,
-	}, observer, cause)
+	}
+	if declaredWrites {
+		result.Writes = run.SkippedManifestUnavailable()
+	}
+	terminal, err := buildTerminalRunSnapshot(running, result, observer, cause)
 	if err != nil {
 		return fmt.Errorf("run accepted run (%s): build failed terminal snapshot: %w", running.RunID, err)
 	}
