@@ -1,5 +1,5 @@
 // Package run coordinates bounded parallel worker slices: up to three
-// foreground workers execute accepted tasks concurrently in one shared
+// workers execute accepted tasks concurrently in one shared
 // workspace, and the controller aggregates their outcomes into one run
 // result.
 package run
@@ -22,8 +22,8 @@ import (
 	"github.com/arasovic/pi-worker/internal/pi"
 )
 
-// foregroundQueueTimeout is the fixed per-task queue budget.
-const foregroundQueueTimeout = 15 * time.Minute
+// queueTimeout is the fixed per-task queue budget.
+const queueTimeout = 15 * time.Minute
 
 // MaxTasks is the absolute cap on accepted tasks per run.
 const MaxTasks = 3
@@ -174,10 +174,10 @@ type Controller struct {
 	// work the manifest pass does under that budget.
 	preRunBudget time.Duration
 
-	// Admission fields. When foregroundAdmission is true, every task
+	// Admission fields. When admissionGated is true, every task
 	// waits on its prepared ticket before execution and releases the
 	// lease after execution.
-	foregroundAdmission bool
+	admissionGated bool
 	// preparedTickets are the tickets a caller prepared for this run's
 	// tasks, in task order.
 	preparedTickets  []*admission.QueueTicket
@@ -209,7 +209,7 @@ func WithGitInspector(g GitInspector) Option {
 // tickets are in task order: tickets[i] belongs to task i.
 func WithPreparedAdmission(runID string, acceptedAt time.Time, executionTimeout time.Duration, tickets []*admission.QueueTicket) Option {
 	return func(c *Controller) {
-		c.foregroundAdmission = true
+		c.admissionGated = true
 		c.preparedTickets = tickets
 		c.runID = runID
 		c.acceptedAt = acceptedAt
@@ -252,23 +252,23 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 	// Validate admission configuration when set.
-	if c.foregroundAdmission {
+	if c.admissionGated {
 		if len(c.preparedTickets) != len(req.Tasks) {
-			return Result{}, fmt.Errorf("foreground admission: %d prepared tickets for %d tasks", len(c.preparedTickets), len(req.Tasks))
+			return Result{}, fmt.Errorf("admission: %d prepared tickets for %d tasks", len(c.preparedTickets), len(req.Tasks))
 		}
 		for i, ticket := range c.preparedTickets {
 			if ticket == nil {
-				return Result{}, fmt.Errorf("foreground admission: prepared ticket %d is nil", i+1)
+				return Result{}, fmt.Errorf("admission: prepared ticket %d is nil", i+1)
 			}
 		}
 		if c.runID == "" {
-			return Result{}, fmt.Errorf("foreground admission: runId must not be empty")
+			return Result{}, fmt.Errorf("admission: runId must not be empty")
 		}
 		if c.acceptedAt.IsZero() {
-			return Result{}, fmt.Errorf("foreground admission: acceptedAt must be set")
+			return Result{}, fmt.Errorf("admission: acceptedAt must be set")
 		}
 		if c.executionTimeout <= 0 {
-			return Result{}, fmt.Errorf("foreground admission: executionTimeout must be positive")
+			return Result{}, fmt.Errorf("admission: executionTimeout must be positive")
 		}
 	}
 	// The run marker is planted in pi-worker's own environment after
@@ -430,7 +430,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// admitted worker. It is normalized to UTC and left nil when admission
 	// is not configured, where no acceptance happened.
 	var acceptedAt *time.Time
-	if c.foregroundAdmission {
+	if c.admissionGated {
 		at := c.acceptedAt.UTC()
 		acceptedAt = &at
 	}
@@ -438,7 +438,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		wg.Add(1)
 		go func(index int, task Task) {
 			defer wg.Done()
-			if !c.foregroundAdmission {
+			if !c.admissionGated {
 				startedAt := time.Now().UTC()
 				result := executeTask(ctx, index, task)
 				finishedAt := time.Now().UTC()
@@ -450,7 +450,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 			// Admission path: wait for the queue ticket, then run under
 			// an execution-timeout context that outlives the lease so the
 			// lease is always released after the worker settles.
-			queueCtx, queueCancel := c.queueContext(ctx, index+1, c.acceptedAt.Add(foregroundQueueTimeout))
+			queueCtx, queueCancel := c.queueContext(ctx, index+1, c.acceptedAt.Add(queueTimeout))
 			lease, waitErr := tickets[index].Wait(queueCtx)
 			queueCancel()
 			if waitErr != nil {
@@ -605,7 +605,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	// timed-out context would fail the command for an unrelated reason.
 	if c.verifier != nil && len(req.Verify) > 0 && result.Status == contracts.RunCompleted && ctx.Err() == nil {
 		var verifyCtx context.Context
-		if c.foregroundAdmission {
+		if c.admissionGated {
 			// For admitted runs, use a fresh execution-timeout context
 			// starting when verification begins.
 			var verifyCancel context.CancelFunc
