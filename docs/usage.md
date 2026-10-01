@@ -9,10 +9,10 @@ The canonical provider-neutral agent skill is
 selecting cheaper or separately metered models, or assigning one to three Pi
 workers. It resolves informal model names from the catalog, uses an exact
 explicit selector without fallback, and otherwise lets the configured default
-apply. It keeps model and explicit reasoning effort separate, reports any
-thinking fallback to Pi's confirmed default, uses external task files, keeps
-parallel work disjoint, and returns the parsed final JSON result without debug
-or raw protocol output.
+apply. It keeps model and explicit reasoning effort separate, falls back to
+the nearest available level when a requested one is unsupported, uses
+external task files, keeps parallel work disjoint, and returns the parsed
+final JSON result without debug or raw protocol output.
 
 ## Prerequisites
 
@@ -29,7 +29,8 @@ test packages and compile-checks the other targets' binaries, but none is
 runtime-tested in the current release gates or a released platform. Windows
 requires a source build. Every run is carried out by a supervisor process
 that only macOS and Linux can host, so on every other target `pi-worker run`
-exits `9` with `pi-worker: run is not supported on this platform`. Native
+exits `9` with `pi-worker: run is not supported on this platform`, and
+`pi-worker run --background` exits `9` with a start error on stderr. Native
 archives for those runtime targets are
 published on [GitHub Releases](https://github.com/arasovic/pi-worker/releases).
 
@@ -448,7 +449,8 @@ pi-worker runs cancel <id> [--json]
   `pi-worker: run <runId>` on stderr, once; `run --background` prints no
   such line, since its accepted output already names the run. When the run
   has finished, `run` prints what `runs wait <runId>` prints for it — the
-  human summary, or with `--json` the run's result document — on the same
+  same human summary, or with `--json` the result document, which is the
+  `result` field of the snapshot `runs wait --json` prints — on the same
   streams, and exits with the code of the run's stored outcome.
 - A waiting `run` that is killed — `SIGKILL`, or its terminal closed —
   leaves the run going: it finishes by itself, bounded by its `--timeout`
@@ -480,11 +482,12 @@ pi-worker runs cancel <id> [--json]
   `pi-worker: worktree` line of a `--worktree` run, then, without
   `--background`, the `pi-worker: run <runId>` line. The two earlier-run
   scans read the run records — both the `<id>.jsonl` files and the run
-  directories `<id>/` in the records directory — and update one
-  once-only marker, so an interrupted run reported by one start is not
-  reported again by the next. A run directory is judged by its
-  `snapshot.json` and its owner lock, and an interrupted one is named by
-  the directory's path.
+  directories `<id>/` in the records directory. Only the interrupted-run
+  scan reads and writes the once-only marker, so an interrupted run
+  reported by one start is not reported again by the next; the
+  leftover-process scan reports again on every run while the processes
+  live. A run directory is judged by its `snapshot.json` and its owner
+  lock, and an interrupted one is named by the directory's path.
 - Every run writes a run record into its run directory: its
   supervisor writes the start line before any worker starts, a worker
   line per started worker, a descendant line per descendant process, and
@@ -581,9 +584,10 @@ pi-worker runs cancel <id> [--json]
   `runs status` of a run still going exits `0`: it asked one question
   and answered it. A run whose supervisor is gone before it finished
   makes `runs status` and `runs wait` print the latest state, say so on
-  stderr, and exit `9`. An identity no run is recorded under, or one
-  that cannot be a run identity at all, is a usage error and exits `2`
-  with nothing on stdout.
+  stderr, and exit `9`. A run directory that exists but holds no snapshot
+  exits `9` with nothing on stdout. An identity no run is recorded under,
+  or one that cannot be a run identity at all, is a usage error and exits
+  `2` with nothing on stdout.
 - Both commands are refused where no background run can exist — a
   platform whose supervisor process cannot start — with exit `9` and no
   document on stdout.
@@ -958,9 +962,10 @@ two runs from distinct configuration files do not share a gate.
   dirty before the run, the line appends `(N already modified before the
   run)`: those entries' counts are measured against the last commit rather
   than against pre-run content, so they include work that was already
-  there. The sums and the clause count the carried entries only, capped
-  at 100, not all `<n>` files; the line is information, not a warning, so
-  it carries no `warning:` prefix.
+  there. It can also append `(N without a final newline)`. The sums and
+  the clauses count the carried entries only, capped at 100, not all
+  `<n>` files; the line is information, not a warning, so it carries no
+  `warning:` prefix.
 - `--json` mode carries a `changes` object. It is not gated by the git
   tripwire: a run that only left modified files behind carries `changes`
   and no `git`.
@@ -970,11 +975,12 @@ two runs from distinct configuration files do not share a gate.
 - A dirty working tree is measured by subtraction, not guessed: paths
   already dirty when the run started are stamped up front, and the ones
   whose identity never moved are subtracted — they were equally dirty
-  before the run and name no change it made. A stamp holds size,
-  modification time, and the executable bit — the one mode bit git
-  tracks, so a chmod between two non-executable modes does not register
-  as a change — plus the SHA-256 of the path's content, read once up
-  front and never retained, reported, or transmitted. The content
+  before the run and name no change it made. A stamp holds the entry's
+  kind (file, link, …), size, modification time, and the executable bit
+  — the one mode bit git tracks, so a chmod between two non-executable
+  modes does not register as a change — plus the SHA-256 of the path's
+  content, read once up front and never retained, reported, or
+  transmitted. A kind change counts as changed. The content
   identity is captured for every entry kind it defines — a tracked
   path, and an untracked regular file or symlink, which a worker can
   rewrite in place the same way — while an untracked directory tree,
@@ -1058,7 +1064,8 @@ two runs from distinct configuration files do not share a gate.
 
 - The current working directory is the writable workspace.
 - Each worker's Pi session directory is its transcript directory `worker-<n>/` in the run's directory (see `### Worker transcripts`); with `--no-transcript` it is a fresh temporary directory created with `os.MkdirTemp("", "pi-worker-v0-*")` and removed when the worker ends.
-- For more than one worker, all workers share that workspace and a warning is printed:
+- For more than one worker, all workers share that workspace; a warning is
+  printed unless every task declared `--writes`:
 
 ```text
 pi-worker: warning: N workers share the writable current workspace; tasks must use disjoint files
@@ -1132,7 +1139,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   that proof: on an unborn HEAD, a dead context, a failed measurement, an
   unconfirmed work tree, or a manifest omitted for any of those reasons,
   the check skips with `change manifest unavailable` and the run exits
-  `0`, whatever was declared. A dirty before-state is measured rather
+  `0`, whatever was declared — unless the settled-output monitor proved a
+  write after a task settled, in which case those paths are reported as
+  undeclared and the run exits `4`. A dirty before-state is measured rather
   than skipped, so there the check runs — except when the trust state
   makes the measurement unavailable, in which case the manifest is
   omitted with `measurement failed` and the check skips like any other
@@ -1203,7 +1212,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   succeeded stays `completed`, and the process exit code, the reported
   error, and the root `outcome` carry the failure. When the change
   manifest was not measured, the check is skipped with a stated reason
-  rather than answered.
+  rather than answered — unless the settled-output monitor proved a write
+  after a task settled, in which case those paths are reported as
+  undeclared and the run exits `4`.
 
 ### Carried material
 
@@ -1327,8 +1338,9 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     `exitCode` always; `output` (the captured excerpt), `truncated`, and
     `logFile` only for a failing check
   - `git`, when the run moved HEAD, the branch, or the stash list:
-    `before` and `after` states, each with `head`, `branch`, `dirty`,
-    and `stashes`
+    `before` and `after` states, each with `head`, `dirty`, and `stashes`,
+    plus `branch` only when HEAD is attached to a branch; a detached or
+    unborn HEAD omits it
   - `worktree`, only for a run started with `--worktree`: an object with
     exactly two string fields, `path` (the checkout path assigned to the
     run) and `branch` (the branch created for the checkout); absent
@@ -1372,7 +1384,9 @@ Example:
 - `7` timeout (`outcome=timeout`)
 - `8` cancellation (`outcome=cancelled`)
 - `9` protocol/internal; for runs, no worker succeeded and any worker reported an
-  internal error (`outcome=internal-error`)
+  internal error (`outcome=internal-error`), or a worker's process identity
+  could not be recorded even though its task completed; its changes are
+  still listed
 
 A caller parsing `--json` should read root `outcome` rather than
 reconstruct it from `status` plus the check objects.
