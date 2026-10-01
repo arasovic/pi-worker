@@ -702,6 +702,46 @@ func TestConfigSetDefaultModelPreservesMaxModelWorkers(t *testing.T) {
 	}
 }
 
+// savingCatalog answers the catalog while writing a different
+// maxModelWorkers to the same config file, modelling a second `config set`
+// that lands while `config set default-model` is waiting on the catalog.
+type savingCatalog struct {
+	path string
+	cfg  config.Config
+}
+
+func (c *savingCatalog) List(_ context.Context, _ pi.CatalogRequest) ([]pi.ModelProjection, error) {
+	if err := config.Save(c.path, c.cfg); err != nil {
+		return nil, err
+	}
+	return []pi.ModelProjection{{Provider: "acme", ID: "model"}}, nil
+}
+
+func TestConfigSetDefaultModelDoesNotRevertConcurrentMaxModelWorkers(t *testing.T) {
+	// The first config set loads the document, then a slow catalog query runs;
+	// meanwhile a second setter saves a new maxModelWorkers. Saving the copy
+	// loaded before the query would silently revert that value. The second
+	// load right before the save must carry it forward.
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 3}); err != nil {
+		t.Fatal(err)
+	}
+	installConfigPath(t, path)
+	installFakeCatalog(t, &savingCatalog{
+		path: path,
+		cfg:  config.Config{SchemaVersion: 2, DefaultModel: "acme/old", MaxModelWorkers: 11},
+	})
+
+	code, stdout, stderr := runCLI(t, []string{"config", "set", "default-model", "acme/model"}, "")
+	if code != 0 || stdout != "default-model: acme/model\n" || stderr != "" {
+		t.Fatalf("config set = (%d, %q, %q)", code, stdout, stderr)
+	}
+	got, err := config.Load(path)
+	if err != nil || got != (config.Config{SchemaVersion: 2, DefaultModel: "acme/model", MaxModelWorkers: 11}) {
+		t.Fatalf("saved config = %#v, %v; want both the new model and the concurrent maxModelWorkers", got, err)
+	}
+}
+
 func TestConfigSetInvalidExistingConfigFailsBeforeCatalog(t *testing.T) {
 	// A malformed on-disk config is rejected before the catalog is accessed,
 	// and the bytes on disk are left unchanged.

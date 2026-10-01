@@ -225,3 +225,113 @@ Pi 1.2.3 matches the pin already.
 		t.Fatalf("Check after Write reports %#v, want none", reports)
 	}
 }
+
+// pinFixture builds a minimal repository-shaped tree whose pin and Go
+// constant already agree at 1.2.3, plus the given Markdown files.
+func pinFixture(t *testing.T, markdown map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"compat/pi/package.json": `{
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.3"
+  }
+}
+`,
+		"internal/piversion/version.go": `package piversion
+
+const (
+	// VerifiedVersion is the only Pi version verified by pi-worker.
+	VerifiedVersion = "1.2.3"
+)
+`,
+	}
+	for path, content := range markdown {
+		files[path] = content
+	}
+	root := t.TempDir()
+	writeFixture(t, root, files)
+	return root
+}
+
+func TestCheckReportsWrappedPiVersion(t *testing.T) {
+	// Pi ends one line and the stale version begins the next: the gate must
+	// still see the version, reported on the line that writes it.
+	root := pinFixture(t, map[string]string{
+		"docs/wrapped.md": "# Wrapped\nTo be verified with Pi\n1.2.4 and nothing else.\n",
+	})
+	reports, err := Check(root)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	want := []string{"docs/wrapped.md:3: version 1.2.4, pin is 1.2.3"}
+	if len(reports) != 1 || reports[0] != want[0] {
+		t.Fatalf("Check reports = %#v, want %#v", reports, want)
+	}
+}
+
+func TestCheckReportsEveryVersionAfterPiOnALine(t *testing.T) {
+	// Both version tokens after Pi count, not only the first. The two stale
+	// versions differ in length from the pin so a rewrite must not let one
+	// replacement shift the other's offset.
+	root := pinFixture(t, map[string]string{
+		"docs/two.md": "Pi 1.2.40 and 1.2.5 are both stale.\n",
+	})
+	reports, err := Check(root)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	want := []string{
+		"docs/two.md:1: version 1.2.40, pin is 1.2.3",
+		"docs/two.md:1: version 1.2.5, pin is 1.2.3",
+	}
+	if len(reports) != len(want) {
+		t.Fatalf("Check reports = %#v, want %#v", reports, want)
+	}
+	for i := range want {
+		if reports[i] != want[i] {
+			t.Fatalf("Check report %d = %q, want %q", i, reports[i], want[i])
+		}
+	}
+}
+
+func TestWriteFixesEveryVersionAfterPiOnALine(t *testing.T) {
+	root := pinFixture(t, map[string]string{
+		"docs/two.md": "Pi 1.2.40 and 1.2.5 are both stale.\n",
+	})
+	changed, err := Write(root)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if len(changed) != 2 {
+		t.Fatalf("Write changed %d sites, want 2: %#v", len(changed), changed)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "docs/two.md"))
+	if err != nil {
+		t.Fatalf("read docs/two.md: %v", err)
+	}
+	want := "Pi 1.2.3 and 1.2.3 are both stale.\n"
+	if string(data) != want {
+		t.Fatalf("docs/two.md after Write = %q, want %q", data, want)
+	}
+}
+
+func TestWriteFixesWrappedPiVersion(t *testing.T) {
+	root := pinFixture(t, map[string]string{
+		"docs/wrapped.md": "# Wrapped\nTo be verified with Pi\n1.2.4 and nothing else.\n",
+	})
+	changed, err := Write(root)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if len(changed) != 1 {
+		t.Fatalf("Write changed %d sites, want 1: %#v", len(changed), changed)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "docs/wrapped.md"))
+	if err != nil {
+		t.Fatalf("read docs/wrapped.md: %v", err)
+	}
+	want := "# Wrapped\nTo be verified with Pi\n1.2.3 and nothing else.\n"
+	if string(data) != want {
+		t.Fatalf("docs/wrapped.md after Write = %q, want %q", data, want)
+	}
+}
