@@ -1169,16 +1169,16 @@ func TestStartSupervisorHandoffCloseRequestDiagnosticJoinsDecodeFailure(t *testi
 	assertRoleChildGone(t, pid)
 }
 
-// TestStartSupervisorHandoffCloseRequestDiagnosticJoinsCancelBeforeDecode
+// TestStartSupervisorHandoffCloseRequestDiagnosticJoinsAcceptedCancel
 // injects the CloseRequest failure and fires the handshake cancellation
 // at the before-decode linearization point: the complete reply frame has
-// arrived but nothing is decoded. The cancellation must still win —
-// accepted=false carrying the cancellation — and the returned error must
-// join the close request diagnostic while the child is closed and
-// reaped.
-func TestStartSupervisorHandoffCloseRequestDiagnosticJoinsCancelBeforeDecode(t *testing.T) {
+// arrived but nothing is decoded. Acceptance wins — the handoff returns
+// accepted=true, keeps the accepted snapshot, and detaches the child —
+// and the returned error still joins the close request diagnostic while
+// the child stays alive and exits voluntarily.
+func TestStartSupervisorHandoffCloseRequestDiagnosticJoinsAcceptedCancel(t *testing.T) {
 	t.Setenv(supervisorHandoffChildEnv, "1s")
-	req, _, _ := exchangeStartRequest(t)
+	req, backgroundRoot, _ := exchangeStartRequest(t)
 	var proc *roleProcess
 	var pid int
 	start, _ := captureHandoffStart(t, &proc, &pid)
@@ -1193,15 +1193,31 @@ func TestStartSupervisorHandoffCloseRequestDiagnosticJoinsCancelBeforeDecode(t *
 	defer func() { supervisorStartCancelProbe = nil }()
 
 	result, err := startSupervisorHandoffWithProcess(ctx, testExe(t), req, start)
-	if result.accepted {
-		t.Fatal("cancellation before decoding reported acceptance")
+	if !result.accepted {
+		t.Fatal("cancellation after the complete reply frame refused the accepted start")
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error %v does not carry the cancellation", err)
+	if err == nil {
+		t.Fatal("close request diagnostic handoff returned no error")
 	}
 	if !strings.Contains(err.Error(), "close request writer") {
 		t.Fatalf("error %q does not join the close request diagnostic", err)
 	}
+	if result.snapshot.RunID != req.runID || result.snapshot.Supervisor.PID != pid {
+		t.Fatalf("accepted snapshot not bound to the request and child: runId=%q pid=%d",
+			result.snapshot.RunID, result.snapshot.Supervisor.PID)
+	}
+
+	// The accepted snapshot is kept: this cancellation never rolled it back.
+	snapPath := filepath.Join(backgroundRoot, req.runID, "snapshot.json")
+	if _, statErr := os.Stat(snapPath); statErr != nil {
+		t.Fatalf("accepted snapshot missing: stat %s = %v", snapPath, statErr)
+	}
+
+	// The accepted supervisor was detached, not killed.
+	assertRoleProcessReleased(t, proc)
+	assertRoleChildAlive(t, pid)
+	status := reapHandoffChild(t, pid, 4*time.Second)
+	assertVoluntaryExit(t, status)
 	assertRoleChildGone(t, pid)
 }
 

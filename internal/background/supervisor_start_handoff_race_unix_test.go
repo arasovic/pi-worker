@@ -5,7 +5,6 @@ package background
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,15 +12,15 @@ import (
 	"time"
 )
 
-// TestStartSupervisorHandoffCancelBeforeDecodeClosesChild fires the
-// handshake cancellation at the before-decode linearization point: the
-// child's complete accepted reply frame has arrived, but strict decoding
-// has not begun. The cancellation must win — the handoff reports
-// accepted=false with the cancellation error and closes and reaps the
-// child. The child writes its reply only after its acceptance is durable,
-// so the durable artifacts prove the cancellation landed exactly in that
-// window rather than earlier.
-func TestStartSupervisorHandoffCancelBeforeDecodeClosesChild(t *testing.T) {
+// TestStartSupervisorHandoffCancelBeforeDecodeAcceptsAndDetaches fires
+// the handshake cancellation at the before-decode linearization point:
+// the child's complete accepted reply frame has arrived, but strict
+// decoding has not begun. Acceptance wins — the handoff reports
+// accepted=true, keeps the accepted snapshot and its run directory, and
+// never kills the child. The child writes its reply only after its
+// acceptance is durable, so the durable artifacts prove the cancellation
+// landed exactly in that window rather than earlier.
+func TestStartSupervisorHandoffCancelBeforeDecodeAcceptsAndDetaches(t *testing.T) {
 	t.Setenv(supervisorHandoffChildEnv, "1s")
 	req, backgroundRoot, admissionRoot := exchangeStartRequest(t)
 	var proc *roleProcess
@@ -39,32 +38,89 @@ func TestStartSupervisorHandoffCancelBeforeDecodeClosesChild(t *testing.T) {
 	gosBefore := runtime.NumGoroutine()
 
 	result, err := startSupervisorHandoffWithProcess(ctx, testExe(t), req, start)
-	if result.accepted {
-		t.Fatal("cancellation before decoding reported acceptance")
+	if !result.accepted {
+		t.Fatal("a cancellation after the complete reply frame was read refused the accepted start")
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error %v does not carry the cancellation", err)
+	if err != nil {
+		t.Fatalf("cancellation after a complete reply frame must not disturb the acceptance: %v", err)
 	}
-	assertRoleChildGone(t, pid)
+	if result.snapshot.RunID != req.runID || result.snapshot.Supervisor.PID != pid {
+		t.Fatalf("accepted snapshot not bound to the request and child: runId=%q pid=%d",
+			result.snapshot.RunID, result.snapshot.Supervisor.PID)
+	}
 
-	// The child's acceptance was already durable when the cancellation
-	// landed: the complete reply frame precedes the probe, and the reply
-	// is written only after the Snapshot and tickets are durable. The
-	// starter gave up without accepting, so the snapshot and its run
-	// directory must have been rolled back by the time the call returns.
+	// The child's acceptance was durable before the reply frame arrived:
+	// the accepted snapshot and its run directory are kept, and no rollback
+	// ran.
 	runDir := filepath.Join(backgroundRoot, req.runID)
 	snapPath := filepath.Join(runDir, "snapshot.json")
-	if _, statErr := os.Stat(snapPath); !errors.Is(statErr, fs.ErrNotExist) {
-		t.Fatalf("snapshot survived a non-accepted start: stat %s = %v", snapPath, statErr)
+	if _, statErr := os.Stat(snapPath); statErr != nil {
+		t.Fatalf("accepted snapshot missing: stat %s = %v", snapPath, statErr)
 	}
-	if _, statErr := os.Stat(runDir); !errors.Is(statErr, fs.ErrNotExist) {
-		t.Fatalf("run directory survived a non-accepted start: stat %s = %v", runDir, statErr)
+	if _, statErr := os.Stat(runDir); statErr != nil {
+		t.Fatalf("accepted run directory missing: stat %s = %v", runDir, statErr)
 	}
 	if st := readAdmissionState(t, admissionRoot); len(st.Tickets) != len(req.tasks) {
-		t.Fatalf("durable tickets = %d, want %d when the cancellation landed", len(st.Tickets), len(req.tasks))
+		t.Fatalf("durable tickets = %d, want %d for an accepted run", len(st.Tickets), len(req.tasks))
 	}
 
+	// The accepted supervisor was detached, not killed: released handle,
+	// live child, voluntary exit.
+	assertRoleProcessReleased(t, proc)
+	assertRoleChildAlive(t, pid)
+	status := reapHandoffChild(t, pid, 4*time.Second)
+	assertVoluntaryExit(t, status)
+	assertRoleChildGone(t, pid)
+
 	requireNoHandoffLeak(t, fdsBefore, gosBefore)
+}
+
+// TestAwaitSupervisorStartReplyFrameOutranksReadyCancel verifies the
+// phase-5 linearization directly: when a complete reply frame is already
+// waiting and the context is already cancelled before the read select runs,
+// the frame wins whichever ready channel the random select picks. Without
+// the non-blocking re-read, the cancellation arm would refuse a start the
+// frame had already conceded. Run with -count=20 to exercise both arms;
+// the loop inside makes a regression fail in a single run too.
+func TestAwaitSupervisorStartReplyFrameOutranksReadyCancel(t *testing.T) {
+	done := make(chan receiveOutcome, 1)
+	want := []byte("one complete reply frame")
+	for i := 0; i < 64; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // the cancellation is ready before the select runs
+		done <- receiveOutcome{frame: want}
+
+		frame, cancelled, readErr := awaitSupervisorStartReply(ctx, done)
+		if cancelled {
+			t.Fatalf("iteration %d: a complete reply frame lost to a ready cancellation", i)
+		}
+		if readErr != nil {
+			t.Fatalf("iteration %d: read error %v", i, readErr)
+		}
+		if string(frame) != string(want) {
+			t.Fatalf("iteration %d: frame = %q, want %q", i, frame, want)
+		}
+	}
+}
+
+// TestAwaitSupervisorStartReplyCancelWithoutFrameCancels verifies the
+// other half of the phase-5 linearization: a cancellation with no reply
+// frame delivered is still a cancelled start.
+func TestAwaitSupervisorStartReplyCancelWithoutFrameCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan receiveOutcome, 1)
+
+	frame, cancelled, readErr := awaitSupervisorStartReply(ctx, done)
+	if !cancelled {
+		t.Fatal("a cancellation with no reply frame did not cancel the start")
+	}
+	if frame != nil {
+		t.Fatalf("cancelled start returned frame %q", frame)
+	}
+	if readErr != nil {
+		t.Fatalf("cancelled start returned read error %v", readErr)
+	}
 }
 
 // TestStartSupervisorHandoffCancelAfterBindAcceptsAndDetaches fires the
