@@ -116,7 +116,7 @@ test("README is the concise public entry point with the approved contract", () =
       "https://raw.githubusercontent.com/arasovic/pi-worker/main/assets/brand/github-social-preview.png",
       "https://github.com/arasovic/pi-worker/actions/workflows/ci.yml/badge.svg",
       "https://img.shields.io/npm/v/pi-worker.svg",
-      "https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white",
+      "https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white",
       "https://img.shields.io/badge/MIT-green.svg",
     ],
     "README has the approved badges and project image",
@@ -175,6 +175,7 @@ test("installed skill states the worker authority boundary before delegation", (
     "changes",
     "writes",
     "verification",
+    "git",
     "leftoverProcesses",
   ]) {
     assert.match(normalizedSkill, new RegExp("`" + field + "`"), `skill names ${field}`);
@@ -259,7 +260,7 @@ test("security guidance states the current public reporting boundary", () => {
     const url = rawUrl.replaceAll("&amp;", "&");
     assert.match(
       url,
-      /^(?:https:\/\/github\.com\/arasovic\/pi-worker\/(?:actions\/workflows\/ci\.yml(?:\/badge\.svg)?|releases|security\/advisories\/new)$|https:\/\/www\.npmjs\.com\/package\/pi-worker$|https:\/\/img\.shields\.io\/(?:npm\/v\/pi-worker\.svg|badge\/(?:Go-1\.25%2B-00ADD8\?logo=go&logoColor=white|Node\.js-22\.20%2B-339933\?logo=nodedotjs&logoColor=white|macOS-000000\?logo=apple&logoColor=white|Linux-FCC624\?logo=linux&logoColor=black|Windows-compile%20only-0078D4|MIT-green\.svg))$|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$|https:\/\/pi\.dev\/$)/,
+      /^(?:https:\/\/github\.com\/arasovic\/pi-worker\/(?:actions\/workflows\/ci\.yml(?:\/badge\.svg)?|releases|security\/advisories\/new)$|https:\/\/www\.npmjs\.com\/package\/pi-worker$|https:\/\/img\.shields\.io\/(?:npm\/v\/pi-worker\.svg|badge\/(?:Go-1\.26%2B-00ADD8\?logo=go&logoColor=white|Node\.js-22\.20%2B-339933\?logo=nodedotjs&logoColor=white|macOS-000000\?logo=apple&logoColor=white|Linux-FCC624\?logo=linux&logoColor=black|Windows-compile%20only-0078D4|MIT-green\.svg))$|https:\/\/raw\.githubusercontent\.com\/arasovic\/pi-worker\/main\/assets\/brand\/github-social-preview\.png$|https:\/\/pi\.dev\/$)/,
     );
   }
   assert.doesNotMatch(publicDocs, /mailto:|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/i);

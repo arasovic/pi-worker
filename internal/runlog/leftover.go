@@ -341,12 +341,15 @@ func Leftovers(dir string) ([]Leftover, error) {
 			for _, pid := range byGroup[w.pid] {
 				row := byPID[pid]
 				// A process that already existed before the worker
-				// started was not started by it, and a process created
-				// after the run ended was not started by the run either.
-				// The ceiling is zero for a record with no usable finish
-				// instant, which turns the upper test off; every
-				// uncertainty about the ceiling resolves toward silence,
-				// never toward dropping a member on a guess.
+				// started was not started by it. A process created
+				// after the run ended is not reported: it may still
+				// descend from a survivor, but past the finish time a
+				// reused group number cannot be told apart, so the
+				// ceiling drops it. The ceiling is zero for a record
+				// with no usable finish instant, which turns the upper
+				// test off; every uncertainty about the ceiling
+				// resolves toward silence, never toward dropping a
+				// member on a guess.
 				if row.createTime < w.createTime || seen[pid] ||
 					(candidate.finishCeilingMillis != 0 && row.createTime > candidate.finishCeilingMillis) {
 					continue

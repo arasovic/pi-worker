@@ -69,7 +69,7 @@ runs list or that id finds it, and runs wait <id> follows it.
 Result (--json): read root outcome first. Report each worker's model,
 thinkingLevel, status, explanation (or partialExplanation when there is
 none), error, warning and transcript (its path only), and root changes,
-writes, verification and leftoverProcesses. A failed run's changes still
+writes, verification, git and leftoverProcesses. A failed run's changes still
 lists what was written; nothing is rolled back.
 
 Outcome and exit code:

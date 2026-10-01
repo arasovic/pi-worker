@@ -281,7 +281,9 @@ uses an assigned Job Object; on macOS/Linux it kills Pi through Go's
 reaped-aware process handle and best-effort sweeps its descendant lineage,
 including ordinary descendants that moved to another process group. The sweep
 records Pi's creation-time identity at startup and identity-checks the root and
-each target to protect against pid reuse. This is lifecycle
+each target, which narrows (but does not close) the window in which a reused
+pid could be signalled: a target that exits and whose pid is reused between
+the check and the kill can still receive the signal. This is lifecycle
 recovery, not a sandbox or a no-escape guarantee: a deliberately daemonized
 or reparented Unix process, a descendant spawned during the teardown sweep
 itself, a surviving descendant after Pi exits and is reaped before cleanup can

@@ -234,7 +234,7 @@ func TestCommandHelpCoversEveryFlag(t *testing.T) {
 // The search is scoped to each paragraph so a field mentioned elsewhere does
 // not mask its removal from the list.
 func TestRunResultFieldsMatchSkill(t *testing.T) {
-	fields := []string{"model", "thinkingLevel", "status", "explanation", "partialExplanation", "error", "warning", "transcript", "changes", "writes", "verification", "leftoverProcesses"}
+	fields := []string{"model", "thinkingLevel", "status", "explanation", "partialExplanation", "error", "warning", "transcript", "changes", "writes", "verification", "git", "leftoverProcesses"}
 
 	help := commandHelp["run"]
 	start := strings.Index(help, "Result (--json):")
