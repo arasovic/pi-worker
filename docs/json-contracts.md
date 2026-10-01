@@ -99,10 +99,11 @@ unsupported schema versions, and zero or negative `maxModelWorkers`.
 config-only; no run or environment variable override).
 
 **Schema 1 (accepted, migrated in memory).** A schema-1 document is accepted
-only when it carries its historical fields (`schemaVersion` and `defaultModel`)
-and does not contain `maxModelWorkers`. On load it is returned as a schema-2
-`Config` with `maxModelWorkers` set to `3`; the original on-disk content is
-not rewritten. A schema-1 document that contains `maxModelWorkers` is rejected.
+when it does not contain `maxModelWorkers`; `defaultModel` may be absent and
+is then the empty string, exactly as in schema 2. On load it is returned as a
+schema-2 `Config` with `maxModelWorkers` set to `3`; the original on-disk
+content is not rewritten. A schema-1 document that contains `maxModelWorkers`
+is rejected.
 
 On output both `defaultModel` and `maxModelWorkers` always appear, and
 `schemaVersion` is always `2` — even when the on-disk file was schema 1.
@@ -256,7 +257,8 @@ and exits `2`. A successful removal exits `0` and the root object has exactly
 - `path`: the absolute checkout path that was removed
 - `branch`: the branch that was removed (`run/<name>`)
 
-Successful removal removes the checkout first and then its exact branch. If
+Successful removal removes the checkout first and then its exact branch.
+Files git ignores in the checkout are deleted with the checkout. If
 branch deletion fails after checkout removal, the command makes one bounded
 non-force attempt to restore that exact checkout from the still-existing
 branch and still exits `9` without success output. If restoration also fails,
@@ -273,7 +275,10 @@ exit `2`, resolution or mutation failures exit `9`.
 All four print the background run snapshot the supervisor persisted, on one
 line. There is no second shape — `run --background` prints the accepted state,
 the read commands print whatever state is durable when they read, and
-`runs cancel` prints the one snapshot it read before requesting a stop. The one
+`runs cancel` prints the one snapshot it read before requesting a stop. A
+cancel that lands after the supervisor accepted cancels the run, and
+`run --background` then prints the finished run's `run --json` document and
+exits with its code (`8`). The one
 difference is that the `run --background --json` acceptance document leaves out
 each task's `prompt` and `promptTruncated`, because the caller has just supplied
 them; `runs status --json`, `runs wait --json`, and `runs cancel --json` print
@@ -330,10 +335,10 @@ terminal record after the run finishes.
 
 A `runs wait` whose bound arrived first prints the latest non-terminal
 document — `terminal` is `false` and there is no `result` — and says on
-stderr, never in the document, that the wait ran out. A run whose
-supervisor is gone before it finished makes `runs status` and `runs wait`
-print the stored snapshot, still non-terminal, and say on stderr with
-exit `9` that the supervisor is no longer there.
+stderr, never in the document, that the wait ran out; the exit code is `7`.
+A run whose supervisor is gone before it finished makes `runs status` and
+`runs wait` print the stored snapshot, still non-terminal, and say on stderr
+with exit `9` that the supervisor is no longer there.
 
 ## `run --json`
 
@@ -559,7 +564,9 @@ the verification command runs, so files the check creates, changes,
 commits, or removes never appear in them. The verification result records
 only the command's own exit code and output; a caller who needs a clean
 evidence report must keep the check read-only or inspect its artifacts
-separately.
+separately. Output from processes the check leaves running is collected
+for at most 5 seconds after the check exits or times out; those processes
+are not stopped, and such a check that exited `0` passes.
 
 - `argv`: the check command split into argv (always present)
 - `exitCode`: the process exit code (always present); a passing check
@@ -613,11 +620,13 @@ emits means anything different than it did — a consumer branching on the
 retired reason finds that branch unreachable, not misread — while a bump
 to `2` would make every 0.3.1 consumer reject all output, a total break
 to signal a change that is not one.
-Root `changes` never vanishes from real output: the CLI always configures
-the git inspector, and with one configured the field always carries a
-value. Only a
-controller built without the git inspector omits the field entirely. Unlike
-`git` it is not gated by a state change: a run that only left modified
+The CLI always configures the git inspector, so real output normally
+carries `changes`. The exception is a run that ended with a run-level
+controller failure (`outcome` `internal-error`, the failed terminal
+snapshot): its `result` has no `changes`, `git`, `writes`, or
+`leftoverProcesses`, because no controller result was produced. A
+controller built without the git inspector also omits the field entirely.
+Unlike `git` it is not gated by a state change: a run that only left modified
 files behind still carries it, because those files are what it names. It
 carries either a reason it could not be measured or the measurement, never
 both:
@@ -848,8 +857,10 @@ reason it could not run or the verdict, never both:
   `measurement failed`, and the check then skips like any other. A
   declaration where
   some tasks declare and others do not is rejected before the run as a
-  usage error, never reported as a skip. `undeclaredCount`, `undeclared`,
-  and `truncated` carry no meaning when `skipped` is present
+  usage error, never reported as a skip; so is a run that declares more
+  than 10 000 write paths in total. Both exit `2` and print no document.
+  `undeclaredCount`, `undeclared`, and `truncated` carry no meaning when
+  `skipped` is present
 - `undeclaredCount`: always present on a verdict; the true number of
   paths in `undeclared` — both final changed paths no task declared and
   task-owned output paths proven changed/added/erased after their owner

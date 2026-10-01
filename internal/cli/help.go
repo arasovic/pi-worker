@@ -32,7 +32,8 @@ Flags:
                          path segments: internal/run covers
                          internal/run/x.go, not internal/runner.go. Every
                          task declares or none does; --writes "" declares
-                         no writes; declarations must not overlap
+                         no writes; declarations must not overlap, and a
+                         run may declare at most 10 000 paths in total
   --data <paths>         comma-separated files appended to the task as
                          material to work on, not instructions. Advisory,
                          not containment: pass nothing the worker should
@@ -69,14 +70,15 @@ runs list or that id finds it, and runs wait <id> follows it.
 Result (--json): read root outcome first. Report each worker's model,
 thinkingLevel, status, explanation (or partialExplanation when there is
 none), error, warning and transcript (its path only), and root changes,
-writes, verification, git and leftoverProcesses. A failed run's changes still
-lists what was written; nothing is rolled back.
+writes, verification, git, leftoverProcesses and worktree (its path and
+branch, present only with --worktree). A failed run's changes still lists
+what was written; nothing is rolled back.
 
 Outcome and exit code:
   0  completed            the only success; still read the deliverable
   2  (refused)            fix the arguments and run again
   3  workers-unavailable  Pi or the model was not ready: a setup problem
-  4  undeclared-writes    a file outside --writes changed
+  4  undeclared-writes    a write outside its task's --writes was found
   5  task-failed, partial a worker failed; a provider refusal such as 403
                           in its error is an access problem, not the task
   6  verification-failed  --verify failed; read verification
@@ -100,8 +102,9 @@ Usage:
   pi-worker runs prune --keep <n> [--yes] [--json]
 
 list    every run on this machine, newest first, foreground and background,
-        with its outcome: the run's own, running, interrupted (its owner
-        is gone) or unknown (its record cannot be read)
+        with its outcome: the run's own, error (the finish line carried
+        no result), running, interrupted (its owner is gone) or unknown
+        (its record cannot be read)
 status  one background run's latest state, at once; waits for nothing
 wait    reads a background run until it finishes, then prints what run
         prints for it; it never cancels the run. --timeout bounds the wait,
@@ -208,7 +211,8 @@ max-model-workers  how many workers may run at once across this machine,
 
 Exit: 0 done; 2 bad arguments; 3 Pi is missing or unavailable, or the
 selector is not in the catalog; 7 timeout; 8 cancelled; 9 the configuration
-cannot be read or written, or config.json is a symbolic link.
+cannot be read or written, a read through a dangling config.json link, or
+a write through any config.json link.
 `,
 	"skill": `pi-worker skill - report on the installed agent skill
 
