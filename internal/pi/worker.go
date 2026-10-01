@@ -49,11 +49,11 @@ const wrapUpPrompt = "Your time is almost up. Stop working and do not call any m
 //
 // and remaining is measured once, right before the first prompt of the task. A
 // context without a deadline derives no working context and keeps no reserve:
-// there is no flag, config key, or tunable for either constant.
-const (
-	timeoutReserveFraction = 10
-	maxTimeoutReserve      = 2 * time.Minute
-)
+// there is no flag or config key; tests override timeoutReserveFraction to get
+// a reserve that is large compared to scheduler jitter.
+var timeoutReserveFraction = 10
+
+const maxTimeoutReserve = 2 * time.Minute
 
 // ProcessObserver is told the identity of the process one worker
 // started, at the moment it starts: the worker id it ran under and the
@@ -455,7 +455,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	workCtx := ctx
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
-		reserve := remaining / timeoutReserveFraction
+		reserve := remaining / time.Duration(timeoutReserveFraction)
 		if reserve > maxTimeoutReserve {
 			reserve = maxTimeoutReserve
 		}

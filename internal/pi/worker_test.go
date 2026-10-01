@@ -2162,18 +2162,30 @@ func TestWorkerWrapUpPromptRejected(t *testing.T) {
 		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
 		{Response: &script.Response{Success: true}},
 	}
+	// Give the worker a reserve large compared to scheduler jitter: half of
+	// the 4 s parent context makes the reserve 2 s and the working deadline
+	// about 2 s after start, without making the test wait out a small reserve.
+	originalFraction := timeoutReserveFraction
+	timeoutReserveFraction = 2
+	t.Cleanup(func() { timeoutReserveFraction = originalFraction })
+
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
+	start := time.Now()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
 		Prompt:    "go",
 		Workspace: t.TempDir(),
 	})
+	elapsed := time.Since(start)
 
 	if ctx.Err() != nil {
 		t.Fatalf("ctx.Err() = %v, want nil: the worker must return before the parent deadline", ctx.Err())
+	}
+	if elapsed >= 3*time.Second {
+		t.Fatalf("elapsed = %v, want < 3s: the rejected wrap-up must not wait out the 2s reserve", elapsed)
 	}
 	if result.Status != StatusTimedOut {
 		t.Fatalf("status = %q, want timed-out; result = %#v", result.Status, result)
