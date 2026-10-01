@@ -42,6 +42,49 @@ func TestLoadRejectsUnknownFieldsAndTrailingJSON(t *testing.T) {
 	})
 }
 
+func TestLoadRejectsInexactFieldCase(t *testing.T) {
+	// encoding/json matches struct tags case-insensitively, so without an
+	// exact-key check these documents decode as if the key were lowercase.
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	valid := mustMarshalReceipt(t, validReceipt(target, OutcomeInstalled))
+
+	t.Run("valid receipt still loads", func(t *testing.T) {
+		if _, err := Load(writeReceiptBytes(t, root, valid)); err != nil {
+			t.Fatalf("Load() = %v, want nil", err)
+		}
+	})
+
+	t.Run("root key case", func(t *testing.T) {
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(valid, &raw); err != nil {
+			t.Fatalf("unmarshal base receipt: %v", err)
+		}
+		raw["SchemaVersion"] = raw["schemaVersion"]
+		delete(raw, "schemaVersion")
+		path := writeReceiptBytes(t, root, mustMarshalJSON(raw))
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "SchemaVersion") {
+			t.Fatalf("Load() = %v, want an error naming SchemaVersion", err)
+		}
+	})
+
+	t.Run("file key case", func(t *testing.T) {
+		var raw map[string]any
+		if err := json.Unmarshal(valid, &raw); err != nil {
+			t.Fatalf("unmarshal base receipt: %v", err)
+		}
+		targets := raw["targets"].([]any)
+		files := targets[0].(map[string]any)["files"].([]any)
+		file := files[0].(map[string]any)
+		file["Path"] = file["path"]
+		delete(file, "path")
+		path := writeReceiptBytes(t, root, mustMarshalJSON(raw))
+		if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "Path") {
+			t.Fatalf("Load() = %v, want an error naming Path", err)
+		}
+	})
+}
+
 func TestLoadRejectsMalformedStructure(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")

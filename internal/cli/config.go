@@ -78,21 +78,22 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 		return 0
 	}
 
-	cfg, err := configpkg.Load(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		cfg = configpkg.Empty()
-	} else if err != nil {
+	// Load the document once up front so a broken file fails before any work
+	// (for default-model, before the catalog is queried). The value is not
+	// kept: saveConfigField reloads it immediately before writing.
+	if _, err := loadConfig(path); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: load config: %v\n", err)
 		return 9
 	}
 
 	if opts.setter == "max-model-workers" {
-		cfg.MaxModelWorkers = opts.maxWorkers
-		if err := configpkg.Save(path, cfg); err != nil {
+		if err := saveConfigField(path, func(cfg *configpkg.Config) {
+			cfg.MaxModelWorkers = opts.maxWorkers
+		}); err != nil {
 			fmt.Fprintf(stderr, "pi-worker: save config: %v\n", err)
 			return 9
 		}
-		fmt.Fprintf(stdout, "max-model-workers: %d\n", cfg.MaxModelWorkers)
+		fmt.Fprintf(stdout, "max-model-workers: %d\n", opts.maxWorkers)
 		return 0
 	}
 
@@ -121,13 +122,45 @@ func configCommand(parent context.Context, args []string, stdout, stderr io.Writ
 	if err := ctx.Err(); err != nil {
 		return modelsErrorCode(ctx, err, stderr)
 	}
-	cfg.DefaultModel = opts.model
-	if err := configpkg.Save(path, cfg); err != nil {
+	if err := saveConfigField(path, func(cfg *configpkg.Config) {
+		cfg.DefaultModel = opts.model
+	}); err != nil {
 		fmt.Fprintf(stderr, "pi-worker: save config: %v\n", err)
 		return 9
 	}
 	fmt.Fprintf(stdout, "default-model: %s\n", opts.model)
 	return 0
+}
+
+// saveConfigField persists one changed configuration field. The command
+// loads the document once up front so a broken file fails before any work,
+// but that first copy is stale by the time a slow catalog query finishes;
+// saving it back would silently revert a value another `config set` wrote in
+// the meantime. This helper reloads the document immediately before the
+// save and sets only the field the caller changes, so every other on-disk
+// field is carried forward. A missing file is the empty configuration, as on
+// the initial load.
+//
+// ponytail: two setters within the same few milliseconds can still lose one
+// update, because the reload and the save are not atomic together. The
+// upgrade is a file lock around the whole load-and-save.
+func saveConfigField(path string, apply func(*configpkg.Config)) error {
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return err
+	}
+	apply(&cfg)
+	return configpkg.Save(path, cfg)
+}
+
+// loadConfig loads the configuration document at path, treating a missing
+// file as the empty configuration exactly as the initial load does.
+func loadConfig(path string) (configpkg.Config, error) {
+	cfg, err := configpkg.Load(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return configpkg.Empty(), nil
+	}
+	return cfg, err
 }
 
 func parseConfigArgs(args []string) (configOptions, error) {

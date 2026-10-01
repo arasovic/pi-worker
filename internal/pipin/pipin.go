@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/arasovic/pi-worker/internal/piversion"
@@ -116,10 +117,14 @@ func Sites(root string) ([]Site, error) {
 		if err != nil {
 			return err
 		}
-		for i, line := range strings.Split(string(data), "\n") {
-			if site, ok := markdownSite(relative, i+1, line); ok {
-				sites = append(sites, site)
+		lines := strings.Split(string(data), "\n")
+		for i, line := range lines {
+			next := ""
+			hasNext := i+1 < len(lines)
+			if hasNext {
+				next = lines[i+1]
 			}
+			sites = append(sites, markdownSites(relative, i+1, line, next, hasNext)...)
 		}
 		return nil
 	})
@@ -163,30 +168,39 @@ func siteFromVersionGo(root string) (Site, error) {
 	return Site{}, fmt.Errorf("%s: no VerifiedVersion constant declared", versionGoPath)
 }
 
-// markdownSite finds the version site on one Markdown line, if any. A site is
-// a bare semantic version token on a line where the word Pi appears earlier
-// on that same line. The ordering is load-bearing: README.md contains
-// "22.20.0" followed by "[Pi]" on one line, and requiring Pi to come first
-// excludes it. A pattern that only required Pi and a version on the same
-// line would corrupt that line.
-func markdownSite(path string, lineNumber int, line string) (Site, bool) {
-	pi := strings.Index(line, "Pi")
-	if pi < 0 {
-		return Site{}, false
+// markdownSites returns every version site recorded on one Markdown line. A
+// site is a bare semantic version token after the word Pi on the line, and
+// every such token counts: a line may carry more than one. A line whose last
+// word is Pi also looks for a version that begins the next line, so prose
+// rewrapped with Pi ending one line and the version starting the next is
+// still a site, reported on the line that writes the version. The ordering is
+// load-bearing: README.md contains "22.20.0" followed by "[Pi]" on one line,
+// and requiring Pi to come first excludes it. A pattern that only required Pi
+// and a version on the same line would corrupt that line.
+func markdownSites(path string, lineNumber int, line, next string, hasNext bool) []Site {
+	var sites []Site
+	if pi := strings.Index(line, "Pi"); pi >= 0 {
+		for _, site := range semverTokens(line, pi+len("Pi")) {
+			site.Path = path
+			site.Line = lineNumber
+			sites = append(sites, site)
+		}
 	}
-	version, start, ok := firstSemver(line, pi+len("Pi"))
-	if !ok {
-		return Site{}, false
+	if hasNext && endsWithPiWord(line) {
+		if version, start, ok := firstVersionOfLine(next); ok {
+			sites = append(sites, Site{Path: path, Line: lineNumber + 1, Version: version, start: start, end: start + len(version)})
+		}
 	}
-	return Site{Path: path, Line: lineNumber, Version: version, start: start, end: start + len(version)}, true
+	return sites
 }
 
-// firstSemver returns the first bare semantic version token at or after start
+// semverTokens returns every bare semantic version token at or after start
 // with its byte range in the line. A token is a maximal run of version
 // characters, and the whole run must satisfy the SemVer 2.0.0 grammar, so the
 // token is not anchored to surrounding punctuation: real sites are wrapped in
 // backticks, double asterisks, or nothing at all.
-func firstSemver(line string, start int) (string, int, bool) {
+func semverTokens(line string, start int) []Site {
+	var tokens []Site
 	for i := start; i < len(line); i++ {
 		if line[i] < '0' || line[i] > '9' {
 			continue
@@ -196,10 +210,81 @@ func firstSemver(line string, start int) (string, int, bool) {
 			j++
 		}
 		if piversion.ValidSemanticVersion(line[i:j]) {
-			return line[i:j], i, true
+			tokens = append(tokens, Site{Version: line[i:j], start: i, end: j})
+			i = j - 1
 		}
 	}
-	return "", 0, false
+	return tokens
+}
+
+// endsWithPiWord reports whether the last word of the line is Pi, ignoring
+// trailing whitespace and Markdown punctuation such as "**", "]", or a
+// backtick. A wrapped pair is one where Pi ends a line and the version begins
+// the next.
+func endsWithPiWord(line string) bool {
+	end := len(line)
+	for end > 0 && isLineSpaceOrPunctuation(line[end-1]) {
+		end--
+	}
+	if end < len("Pi") || line[end-len("Pi"):end] != "Pi" {
+		return false
+	}
+	before := end - len("Pi")
+	if before == 0 {
+		return true
+	}
+	return isLineSpaceOrPunctuation(line[before-1])
+}
+
+// firstVersionOfLine returns the version token that is the first word of the
+// line, after skipping leading whitespace, Markdown punctuation, and any list
+// marker. It is the second half of the wrapped-site rule.
+func firstVersionOfLine(line string) (string, int, bool) {
+	i := skipLeadingMarkdown(line)
+	// An ordered list marker is digits followed by "." or ")" and a space.
+	j := i
+	for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+		j++
+	}
+	if j > i && j+1 < len(line) && (line[j] == '.' || line[j] == ')') && (line[j+1] == ' ' || line[j+1] == '\t') {
+		i = j + 1 + skipLeadingMarkdown(line[j+1:])
+	}
+	if i >= len(line) || line[i] < '0' || line[i] > '9' {
+		return "", 0, false
+	}
+	end := i
+	for end < len(line) && isVersionCharacter(line[end]) {
+		end++
+	}
+	version := line[i:end]
+	if !piversion.ValidSemanticVersion(version) {
+		return "", 0, false
+	}
+	return version, i, true
+}
+
+// skipLeadingMarkdown returns the offset of the first byte of line that is not
+// leading whitespace or Markdown punctuation.
+func skipLeadingMarkdown(line string) int {
+	i := 0
+	for i < len(line) && isLineSpaceOrPunctuation(line[i]) {
+		i++
+	}
+	return i
+}
+
+// isLineSpaceOrPunctuation reports whether c is whitespace that may trail a
+// line or ASCII punctuation that can decorate a Markdown token. Version
+// characters are never punctuation.
+func isLineSpaceOrPunctuation(c byte) bool {
+	if c == ' ' || c == '\t' || c == '\r' {
+		return true
+	}
+	switch c {
+	case '!', '"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '=', '>', '?', '@', '[', '\\', ']', '^', '_', '`', '{', '|', '}', '~':
+		return true
+	}
+	return false
 }
 
 // Check compares every site against the pin and returns one report line per
@@ -235,36 +320,62 @@ func Write(root string) ([]Site, error) {
 		return nil, err
 	}
 	changed := make([]Site, 0, len(sites))
+	byFile := map[string][]Site{}
+	var order []string
 	for _, site := range sites {
 		if site.Version == pin {
 			continue
 		}
-		if err := rewriteSite(root, site, pin); err != nil {
+		if _, seen := byFile[site.Path]; !seen {
+			order = append(order, site.Path)
+		}
+		byFile[site.Path] = append(byFile[site.Path], site)
+		changed = append(changed, site)
+	}
+	for _, path := range order {
+		if err := rewriteSites(root, path, byFile[path], pin); err != nil {
 			return nil, err
 		}
-		changed = append(changed, site)
 	}
 	return changed, nil
 }
 
-// rewriteSite replaces the version token on one line of one file with the
-// pin, preserving the rest of the file byte for byte.
-func rewriteSite(root string, site Site, pin string) error {
-	path := filepath.Join(root, site.Path)
-	data, err := os.ReadFile(path)
+// rewriteSites replaces every version token on the named file with the pin,
+// preserving the rest of the file byte for byte. Tokens are applied to each
+// line from the end backwards, so replacing a longer token with a shorter one
+// never shifts the offsets of an earlier token still to be replaced on the
+// same line.
+func rewriteSites(root, path string, sites []Site, pin string) error {
+	data, err := os.ReadFile(filepath.Join(root, path))
 	if err != nil {
 		return err
 	}
 	lines := strings.Split(string(data), "\n")
-	if site.Line < 1 || site.Line > len(lines) {
-		return fmt.Errorf("%s:%d: line out of range", site.Path, site.Line)
+	byLine := map[int][]Site{}
+	for _, site := range sites {
+		byLine[site.Line] = append(byLine[site.Line], site)
 	}
-	line := lines[site.Line-1]
-	if site.end > len(line) || line[site.start:site.end] != site.Version {
-		return fmt.Errorf("%s:%d: line changed since it was scanned; refusing to rewrite", site.Path, site.Line)
+	lineNumbers := make([]int, 0, len(byLine))
+	for line := range byLine {
+		lineNumbers = append(lineNumbers, line)
 	}
-	lines[site.Line-1] = line[:site.start] + pin + line[site.end:]
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	sort.Ints(lineNumbers)
+	for _, lineNumber := range lineNumbers {
+		if lineNumber < 1 || lineNumber > len(lines) {
+			return fmt.Errorf("%s:%d: line out of range", path, lineNumber)
+		}
+		line := lines[lineNumber-1]
+		candidates := byLine[lineNumber]
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].start > candidates[j].start })
+		for _, site := range candidates {
+			if site.end > len(line) || line[site.start:site.end] != site.Version {
+				return fmt.Errorf("%s:%d: line changed since it was scanned; refusing to rewrite", path, site.Line)
+			}
+			line = line[:site.start] + pin + line[site.end:]
+		}
+		lines[lineNumber-1] = line
+	}
+	return os.WriteFile(filepath.Join(root, path), []byte(strings.Join(lines, "\n")), 0o644)
 }
 
 // isVersionCharacter reports whether c can appear inside a semantic version

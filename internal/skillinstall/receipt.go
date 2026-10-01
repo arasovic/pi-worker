@@ -140,6 +140,10 @@ func Load(path string) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("load receipt %s: %w", path, err)
 	}
 
+	if err := rejectInexactReceiptKeys(data); err != nil {
+		return Receipt{}, fmt.Errorf("load receipt %s: %w", path, err)
+	}
+
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var receipt Receipt
@@ -157,6 +161,92 @@ func Load(path string) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("validate receipt %s: %w", path, err)
 	}
 	return receipt, nil
+}
+
+// The exact object keys the receipt contract declares. encoding/json matches
+// struct tags case-insensitively, so a document spelling a key
+// "SchemaVersion" or "Targets" would otherwise decode as the lowercase
+// field even though docs/json-contracts.md and the npm writer fix the exact
+// names. Load rejects any key not spelled exactly as declared.
+var (
+	receiptRootFields     = []string{"schemaVersion", "installerVersion", "skillsVersion", "outcome", "targets", "affectedTargets", "recovery"}
+	receiptTargetFields   = []string{"path", "kind", "files"}
+	receiptFileFields     = []string{"path", "sha256"}
+	receiptAffectedFields = []string{"path", "state", "recovery"}
+)
+
+// rejectInexactReceiptKeys rejects any object key whose spelling is not
+// exactly one the receipt types declare. A document that is not a JSON object
+// at the top level, or whose nested values have the wrong JSON type, is left
+// to the typed decode so its error stays the same.
+func rejectInexactReceiptKeys(data []byte) error {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	if err := rejectUnknownKeys(root, receiptRootFields); err != nil {
+		return err
+	}
+	for _, raw := range listField(root["targets"]) {
+		var target map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &target); err != nil {
+			continue
+		}
+		if err := rejectUnknownKeys(target, receiptTargetFields); err != nil {
+			return err
+		}
+		for _, fileRaw := range listField(target["files"]) {
+			var file map[string]json.RawMessage
+			if err := json.Unmarshal(fileRaw, &file); err != nil {
+				continue
+			}
+			if err := rejectUnknownKeys(file, receiptFileFields); err != nil {
+				return err
+			}
+		}
+	}
+	for _, raw := range listField(root["affectedTargets"]) {
+		var affected map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &affected); err != nil {
+			continue
+		}
+		if err := rejectUnknownKeys(affected, receiptAffectedFields); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectUnknownKeys returns an error naming the first key not present in
+// allowed. The sets are tiny, so a linear scan keeps this readable.
+func rejectUnknownKeys(object map[string]json.RawMessage, allowed []string) error {
+	for key := range object {
+		known := false
+		for _, name := range allowed {
+			if key == name {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("unknown field %q", key)
+		}
+	}
+	return nil
+}
+
+// listField decodes a JSON array of raw elements. It returns nil for a
+// missing key or a value that is not an array so the typed decode reports the
+// type error it already would.
+func listField(raw json.RawMessage) []json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil
+	}
+	return list
 }
 
 func Inspect(path string) (Inspection, error) {
