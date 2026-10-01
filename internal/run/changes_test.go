@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -898,6 +899,63 @@ func TestControllerChangesDirtyBeforeStateUntrackedSymlinkRewriteReported(t *tes
 	}
 }
 
+func TestSnapshotStampEntryKindDistinguishesSymlinkFromRegularFile(t *testing.T) {
+	// Regression for #449: a symlink's Lstat size is its target length and
+	// its content hash is its target string, so a symlink replaced by a
+	// regular file holding exactly that string with matching mode bits and
+	// a restored modification time has the same size, exec bit, time, and
+	// content hash as the original. The entry kind recorded at snapshot
+	// time is the only field that separates them; without it stampMatches
+	// reports the replacement untouched and hides the write.
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks are not reliably creatable on Windows")
+	}
+	dir := newGitRepo(t)
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink("payload", link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("stat symlink: %v", err)
+	}
+	stampTime := info.ModTime()
+	stamp, err := snapshotStamp(dir, "link", true)
+	if err != nil {
+		t.Fatalf("snapshotStamp: %v", err)
+	}
+	// A symlink still compared with itself must match: the kind check
+	// must not break the untouched case.
+	matches, err := stampMatches(dir, "link", stamp)
+	if err != nil {
+		t.Fatalf("stampMatches symlink: %v", err)
+	}
+	if !matches {
+		t.Fatalf("symlink must match its own stamp")
+	}
+	// Replace the symlink with a regular file holding the target string,
+	// then restore the modification time and match the executable bit.
+	if err := os.Remove(link); err != nil {
+		t.Fatalf("remove symlink: %v", err)
+	}
+	if err := os.WriteFile(link, []byte("payload"), 0o755); err != nil {
+		t.Fatalf("write regular file: %v", err)
+	}
+	if err := os.Chmod(link, 0o755); err != nil {
+		t.Fatalf("chmod regular file: %v", err)
+	}
+	if err := os.Chtimes(link, stampTime, stampTime); err != nil {
+		t.Fatalf("chtimes regular file: %v", err)
+	}
+	matches, err = stampMatches(dir, "link", stamp)
+	if err != nil {
+		t.Fatalf("stampMatches regular file: %v", err)
+	}
+	if matches {
+		t.Fatalf("regular file holding the symlink target string must not match a symlink stamp")
+	}
+}
+
 func TestControllerChangesDirtyBeforeStateUntrackedUntouchedAbsent(t *testing.T) {
 	// An already-dirty untracked file the worker never touched is
 	// subtracted like a tracked one: the run contributed nothing to it.
@@ -1202,6 +1260,49 @@ func TestControllerChangesDirtyBeforeStateDeletedThenRestoredReported(t *testing
 	file := changes.Files[0]
 	if file.Path != "file.txt" || file.Status != "modified" || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore {
 		t.Fatalf("file = %#v, want file.txt modified +0/-0 with dirtyBefore", file)
+	}
+}
+
+func TestControllerChangesDirtyBeforeStateRenamedAwayThenRestoredReported(t *testing.T) {
+	// Regression for #450: a staged rename a.txt -> b.txt before the run
+	// makes git's default rename detection collapse the pair, so a pre-run
+	// diff without --no-renames lists only b.txt and never stamps the
+	// deleted a.txt. A worker that recreates a.txt with its committed
+	// bytes and stages it then restores a path the run never stamped, and
+	// the manifest goes silent. With --no-renames on both passes a.txt is
+	// stamped absent and its restoration is reported exactly as the
+	// deleted-then-restored case is, and --writes b.txt leaves a.txt
+	// undeclared.
+	dir := newGitRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	gitCommit(t, dir)
+	runGit(t, dir, "mv", "a.txt", "b.txt")
+	result := runWithWrites(t, &changesMutatingWorker{mutate: func(dir string) error {
+		if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644); err != nil {
+			return err
+		}
+		runGit(t, dir, "add", "a.txt")
+		return nil
+	}}, dir, []string{"a"}, []WriteDeclaration{declaredPaths("b.txt")})
+	changes := result.Changes
+	if changes == nil || changes.Omitted != "" {
+		t.Fatalf("changes = %#v, want a measured manifest", changes)
+	}
+	if changes.TotalFiles != 1 || len(changes.Files) != 1 || changes.Truncated {
+		t.Fatalf("changes = %#v, want the restored a.txt in the manifest", changes)
+	}
+	file := changes.Files[0]
+	if file.Path != "a.txt" || file.Status != "modified" || file.Added != 0 || file.Deleted != 0 || !file.DirtyBefore {
+		t.Fatalf("file = %#v, want a.txt modified +0/-0 with dirtyBefore", file)
+	}
+	writes := result.Writes
+	if writes == nil || writes.Skipped != "" {
+		t.Fatalf("writes = %#v, want a verdict", writes)
+	}
+	if writes.UndeclaredCount != 1 || len(writes.Undeclared) != 1 || writes.Undeclared[0] != "a.txt" || writes.Truncated {
+		t.Fatalf("writes = %#v, want exactly a.txt undeclared", writes)
 	}
 }
 

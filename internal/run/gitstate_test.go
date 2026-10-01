@@ -180,6 +180,22 @@ func TestDefaultGitInspectorCountsStashEntries(t *testing.T) {
 	}
 }
 
+func TestNonEmptyLinesHandlesLineOverScannerLimit(t *testing.T) {
+	// Regression for #451: bufio.Scanner's default 64 KiB token limit
+	// stopped the scan at the first oversized line and ignored the error,
+	// so a stash subject longer than that emptied the entire list. The
+	// split-based walk must return the long line and every line after it,
+	// in order.
+	long := strings.Repeat("a", 70000)
+	got := nonEmptyLines(long + "\nshort\n")
+	if len(got) != 2 {
+		t.Fatalf("nonEmptyLines returned %d entries, want 2", len(got))
+	}
+	if got[0] != long || got[1] != "short" {
+		t.Fatalf("nonEmptyLines entries out of order or truncated (first len %d, second %q)", len(got[0]), got[1])
+	}
+}
+
 // stashPush modifies the tracked file and pushes one stash entry,
 // returning its "<sha> <subject>" identity as git stash list prints it.
 func stashPush(t *testing.T, dir, content string) string {

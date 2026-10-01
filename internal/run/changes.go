@@ -616,6 +616,14 @@ type fileStamp struct {
 	modTime time.Time
 	exec    bool
 	absent  bool
+	// kind is the entry type from Lstat (info.Mode().Type()): a regular
+	// file is 0, a symlink is os.ModeSymlink, and so on. Size, mode, time,
+	// and content can all coincide across kinds — a symlink's Lstat size
+	// is its target length and its content hash is its target string, so a
+	// symlink replaced by a regular file holding exactly that string with
+	// matching mode and modification time would otherwise match its own
+	// stamp and hide the replacement.
+	kind os.FileMode
 	// dir is true when the stamped path is a directory, not a file.
 	dir bool
 	// gitMarker is true when the directory had a .git entry at the
@@ -1140,7 +1148,7 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 	if err != nil {
 		return nil, err
 	}
-	trackedOut, err := gitOutput(ctx, root, "diff", "--name-only", "--ignore-submodules=all", "-z", "HEAD", "--")
+	trackedOut, err := gitOutput(ctx, root, "diff", "--name-only", "--no-renames", "--ignore-submodules=all", "-z", "HEAD", "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only: %w", err)
 	}
@@ -1192,7 +1200,7 @@ func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp,
 			return nil, fmt.Errorf("stat %s: %w", path, err)
 		}
 		if info.IsDir() {
-			stamp := fileStamp{dir: true}
+			stamp := fileStamp{dir: true, kind: info.Mode().Type()}
 			gitMarker, err := gitMarkerPresent(root, path)
 			if err != nil {
 				return nil, fmt.Errorf("stat %s/.git: %w", path, err)
@@ -1292,7 +1300,7 @@ func snapshotStamp(root, path string, captureHash bool) (fileStamp, error) {
 		}
 		return fileStamp{}, fmt.Errorf("stat %s: %w", path, err)
 	}
-	stamp := fileStamp{size: info.Size(), modTime: info.ModTime(), exec: info.Mode()&0o111 != 0}
+	stamp := fileStamp{size: info.Size(), modTime: info.ModTime(), exec: info.Mode()&0o111 != 0, kind: info.Mode().Type()}
 	if !captureHash {
 		return stamp, nil
 	}
@@ -1358,8 +1366,9 @@ func contentMatchesHash(root, path string, info os.FileInfo, want [sha256.Size]b
 }
 
 // stampMatches reports whether the workspace path currently carries the
-// captured pre-run identity: both present with the same size, the same
-// modification time, and the same executable bit — plus, when the
+// captured pre-run identity: both present with the same entry kind, the
+// same size, the same modification time, and the same executable bit —
+// plus, when the
 // pre-run stamp captured a content hash, the same content, which is
 // the identity captured for tracked paths, regular-file untracked
 // paths, and symlinks. Absent then and absent now also matches. The
@@ -1367,7 +1376,10 @@ func contentMatchesHash(root, path string, info os.FileInfo, want [sha256.Size]b
 // modification time from being subtracted as untouched: the stat
 // fields match by construction, and only the hash can see that the
 // bytes are not the ones the run started with, or that a link's target
-// string is not the one the run started with. A path that was not
+// string is not the one the run started with. The entry kind is what
+// keeps a symlink from matching a regular file that holds its target
+// string: the size, executable bit, modification time, and target-string
+// hash all coincide across the two kinds. A path that was not
 // absent before but is a directory now has changed — a file replaced
 // by a directory is not the same path it was. root is the repository
 // root and path is root-relative, so a stamp taken in a run started
@@ -1381,6 +1393,9 @@ func stampMatches(root, path string, stamp fileStamp) (bool, error) {
 		return false, err
 	}
 	if stamp.absent || info.IsDir() {
+		return false, nil
+	}
+	if info.Mode().Type() != stamp.kind {
 		return false, nil
 	}
 	if info.Size() != stamp.size || !info.ModTime().Equal(stamp.modTime) || (info.Mode()&0o111 != 0) != stamp.exec {
