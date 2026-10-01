@@ -58,7 +58,7 @@ command -v pi-worker
 
 ## Source build
 
-For the current checkout, the repository declares Go 1.25 language compatibility
+For the current checkout, the repository declares Go 1.26 language compatibility
 and a Go 1.26.1 toolchain:
 
 ```sh
@@ -417,6 +417,9 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   number's group, and any member still carrying that group number is
   the run's genuine survivor, reported under the same age floor as any
   other.
+- A process created after the earlier run finished is not reported, even
+  when a surviving process of that run started it: the finish time is the
+  cut-off that keeps a reused group number from being blamed on the run.
 - A record whose worker line carries no creation time is never
   reported: every record written before that field existed is this
   class, and the identity of the process the number names cannot be
@@ -566,7 +569,10 @@ pi-worker runs cancel <id> [--json]
   takes, with the same limits described under
   `### Ctrl-C / timeout cleanup and lifecycle boundary`; use `runs wait` to
   follow it. A stale or unavailable supervisor is not signalled and exits `9`
-  because this command never finishes a record on its behalf.
+  because this command never finishes a record on its behalf. The identity
+  check and the signal are two steps: a supervisor that exits in between, and
+  whose pid is reused in that instant, would receive nothing while the new
+  holder of the pid receives the SIGTERM; the window is narrow but not closed.
 - Exit codes: a run that has finished exits with the code `run` exits
   with for it — the snapshot carries the run's own
   `outcome` and it goes through the one mapping under `### Exit codes`. A

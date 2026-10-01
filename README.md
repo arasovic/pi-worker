@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/arasovic/pi-worker/actions/workflows/ci.yml"><img src="https://github.com/arasovic/pi-worker/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.npmjs.com/package/pi-worker"><img src="https://img.shields.io/npm/v/pi-worker.svg" alt="npm version"></a>
-  <img src="https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&amp;logoColor=white" alt="Go 1.25+">
+  <img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&amp;logoColor=white" alt="Go 1.26+">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/MIT-green.svg" alt="MIT license"></a>
 </p>
 

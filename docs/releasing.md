@@ -7,7 +7,7 @@ sections require explicit authorization because they change GitHub and npm.
 
 - macOS or Linux.
 - Node.js 22.20.0 or newer and npm.
-- Go 1.26.1; the module language baseline is Go 1.25.0.
+- Go 1.26.1; the module language baseline is Go 1.26.0.
 - A clean Git checkout.
 
 ## Local snapshot commands

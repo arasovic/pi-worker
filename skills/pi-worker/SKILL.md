@@ -59,7 +59,7 @@ Read root `outcome`. `completed` (exit 0) is the only success;
 `pi-worker run --help` gives each outcome its exit code and next move.
 Whatever the outcome, read and report each worker's `model`, `thinkingLevel`,
 `status`, `explanation` (or `partialExplanation` when there is none), `error`,
-`warning`, and `transcript`, plus `changes`, `writes`, `verification`, and
+`warning`, `transcript`, plus `changes`, `writes`, `verification`, `git`, and
 `leftoverProcesses`. A failed run's `changes` still lists what workers wrote;
 nothing is rolled back.
 

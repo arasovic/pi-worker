@@ -96,8 +96,10 @@ Worker validates them before treating them as effective configuration.
 
 Catalog discovery alone is not sufficient. The runtime checks exact catalog
 membership, activates the model, and confirms the resulting session state.
-Unsupported thinking levels remain on the same model, use Pi's confirmed
-default, and produce an explicit warning.
+An unsupported thinking level falls back to the nearest level the model
+offers (the nearest lower one, otherwise the nearest higher one), on the same
+model, with an explicit warning; Pi's confirmed default is kept only when no
+listed level can be applied.
 
 This validation boundary is the main reason Pi Worker uses RPC instead of only
 forwarding command-line arguments to Pi.
