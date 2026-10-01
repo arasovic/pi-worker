@@ -292,7 +292,9 @@ in a managed private checkout. `error` is optional and appears only on a
 terminal document whose run ended with a run-level error — for example a
 `--verify` command that could not start. It holds the text `run`
 prints after `pi-worker: ` on stderr, which the `result` document has no field
-for. A snapshot written before this field existed simply lacks it.
+for. A snapshot written before this field existed simply lacks it. A worker
+whose process identity could not be recorded fails the run as an internal
+failure even when its task completed; its `result.changes` are still listed.
 
 Each entry of `workers` carries `workerId` (1-based, request order),
 `state`, `acceptedAt`, `queueDeadline`, `executionTimeout`, and `task`;

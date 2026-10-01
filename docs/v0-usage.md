@@ -539,7 +539,9 @@ pi-worker runs cancel <id> [--json]
   `runs status`, and `runs cancel` print `pi-worker: <error>` on stderr
   before the result,
   the same line `run` prints, with or without `--json`; the
-  `--json` document also carries it as `error`.
+  `--json` document also carries it as `error`. A worker whose process
+  identity could not be recorded fails the run as an internal failure even
+  when its task completed; its changes are still listed.
 - `runs wait --timeout <duration>` bounds the wait. Without one the
   bound is `30m`. When the bound arrives first, the command prints the
   latest state on stdout, says on stderr that the wait ran out, exits
