@@ -183,14 +183,21 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 
 	t.Run("run", func(t *testing.T) {
 		newGitWorkspace(t)
-		// The fake Pi offers no max thinking level, so the worker falls back
-		// to Pi's default and warns, and it writes a session file: every
-		// optional worker key is present.
+		// The fake Pi offers no max thinking level but does offer high, so the
+		// worker falls back to the nearest available level and warns, and it
+		// writes a session file: every optional worker key is present.
 		fakePi := backgroundHappyScript("done")
+		fakePi.TriggerSequences = map[string][][]script.Step{
+			"get_state": {
+				{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium","isStreaming":false}`)}}},
+				{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"high","isStreaming":false}`)}}},
+			},
+		}
 		fakePi.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium","high"]}`)}}}
+		fakePi.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: true}}}
 		useFakePi(t, fakePi)
 		code, stdout, stderr := runCLI(t, []string{"run", "--model", "acme/m-1", "--thinking", "max", "--task", "work", "--json"}, "")
-		if code != 0 || withoutRunLine(t, stderr) != "pi-worker: worker 1: requested thinking=max unavailable; continuing with Pi default thinking=medium\n" {
+		if code != 0 || withoutRunLine(t, stderr) != "pi-worker: worker 1: requested thinking=max unavailable; continuing with nearest available thinking=high\n" {
 			t.Fatalf("run = (%d, %q, %q)", code, stdout, stderr)
 		}
 		document := decodeJSONObject(t, stdout)

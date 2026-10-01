@@ -372,6 +372,109 @@ func TestWorkerThinkingUnavailableFallsBackToConfirmedDefault(t *testing.T) {
 	}
 }
 
+func TestWorkerThinkingFallbackUsesNearestListedLevel(t *testing.T) {
+	scriptConfig := happyPathScript("nearest answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"xhigh"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["low","medium","high","xhigh"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: true}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted || result.ThinkingLevel != ThinkingXHigh || !result.ThinkingFallback {
+		t.Fatalf("result = %#v, want completed fallback to xhigh", result)
+	}
+	wantWarning := "requested thinking=max unavailable; continuing with nearest available thinking=xhigh"
+	if result.Warning != wantWarning {
+		t.Fatalf("warning = %q, want %q", result.Warning, wantWarning)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "get_available_thinking_levels", "set_thinking_level", "get_state", "prompt", "get_last_assistant_text"}
+	got := waitRequestLog(t, logPath, len(want))
+	if !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+	if n := countStrings(got, "set_thinking_level"); n != 1 {
+		t.Fatalf("request log = %v, want exactly one set_thinking_level", got)
+	}
+}
+
+func TestWorkerThinkingFallbackGoesAboveWhenNothingBelow(t *testing.T) {
+	scriptConfig := happyPathScript("above answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"high"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"low"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["high","low"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: true}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMinimal,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted || result.ThinkingLevel != ThinkingLow || !result.ThinkingFallback {
+		t.Fatalf("result = %#v, want completed fallback to low", result)
+	}
+	wantWarning := "requested thinking=minimal unavailable; continuing with nearest available thinking=low"
+	if result.Warning != wantWarning {
+		t.Fatalf("warning = %q, want %q", result.Warning, wantWarning)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "get_available_thinking_levels", "set_thinking_level", "get_state", "prompt", "get_last_assistant_text"}
+	if got := waitRequestLog(t, logPath, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+}
+
+func TestWorkerThinkingFallbackRejectionKeepsPiDefault(t *testing.T) {
+	scriptConfig := happyPathScript("rejected fallback answer")
+	scriptConfig.TriggerSequences = map[string][][]script.Step{
+		"get_state": {
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+			{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium"}`)}}},
+		},
+	}
+	scriptConfig.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["medium","xhigh"]}`)}}}
+	scriptConfig.Triggers["set_thinking_level"] = []script.Step{{Response: &script.Response{Success: false, Error: "SECRET-FALLBACK-REJECTION"}}}
+	logPath := setupFakePiEnv(t, scriptConfig)
+
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		ThinkingLevel: ThinkingMax,
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+	})
+
+	if result.Status != StatusCompleted || result.ThinkingLevel != ThinkingMedium || !result.ThinkingFallback {
+		t.Fatalf("result = %#v, want completed fallback to Pi default medium", result)
+	}
+	if strings.Contains(result.Warning+result.Error, "SECRET-FALLBACK-REJECTION") {
+		t.Fatalf("result leaked upstream rejection: %#v", result)
+	}
+	wantWarning := "requested thinking=max unavailable; continuing with Pi default thinking=medium"
+	if result.Warning != wantWarning {
+		t.Fatalf("warning = %q, want %q", result.Warning, wantWarning)
+	}
+	want := []string{"get_available_models", "set_model", "get_state", "get_available_thinking_levels", "set_thinking_level", "get_state", "prompt", "get_last_assistant_text"}
+	if got := waitRequestLog(t, logPath, len(want)); !slices.Equal(got, want) {
+		t.Fatalf("request log = %v, want %v", got, want)
+	}
+}
+
 func TestWorkerThinkingRejectionFallsBackOnlyWhenDefaultUnchanged(t *testing.T) {
 	tests := []struct {
 		name       string

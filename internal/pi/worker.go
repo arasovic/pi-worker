@@ -662,11 +662,20 @@ func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest,
 		if err != nil {
 			return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 		}
-		if !thinkingLevelsContain(levels, req.ThinkingLevel) {
+		requestedListed := thinkingLevelsContain(levels, req.ThinkingLevel)
+		target := req.ThinkingLevel
+		apply := requestedListed
+		if !requestedListed {
 			thinking.fallback = true
-			thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "unavailable")
-		} else {
-			err := client.SetThinkingLevel(ctx, req.ThinkingLevel)
+			if nearest, ok := nearestThinkingLevel(levels, req.ThinkingLevel); ok && nearest != baseline.ThinkingLevel {
+				target = nearest
+				apply = true
+			} else {
+				thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "unavailable")
+			}
+		}
+		if apply {
+			err := client.SetThinkingLevel(ctx, target)
 			var rejected *ThinkingLevelRejectedError
 			switch {
 			case err == nil:
@@ -677,10 +686,13 @@ func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest,
 				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
 					return thinking, "", w.classify(req.Model, ctx, stateErr), false, false
 				}
-				if confirmed.ThinkingLevel != req.ThinkingLevel {
+				if confirmed.ThinkingLevel != target {
 					return thinking, "", w.classify(req.Model, ctx, newProtocolError("get_state did not confirm requested thinking level")), false, false
 				}
 				thinking.effective = confirmed.ThinkingLevel
+				if !requestedListed {
+					thinking.warning = thinkingNearestWarning(req.ThinkingLevel, target)
+				}
 			case errors.As(err, &rejected):
 				confirmed, stateErr := client.GetState(ctx)
 				if stateErr != nil {
@@ -693,7 +705,11 @@ func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest,
 					return thinking, "", w.classify(req.Model, ctx, newProtocolError("rejected thinking change did not preserve Pi default")), false, false
 				}
 				thinking.fallback = true
-				thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "rejected")
+				if requestedListed {
+					thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "rejected")
+				} else {
+					thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "unavailable")
+				}
 			default:
 				return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 			}
