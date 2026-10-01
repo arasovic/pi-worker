@@ -32,6 +32,10 @@ const worktreeCleanupWait = 30 * time.Second
 // before its next poll; production never changes it.
 var waitPollInterval = 50 * time.Millisecond
 
+// ownerAlive decides whether a run's supervisor is still there; tests
+// replace it to control the liveness check.
+var ownerAlive = runlog.OwnerAlive
+
 // errSupervisorRejected is the reason of a start the supervisor answered
 // with a rejection. The handoff already joined the bounded rejection reason
 // into the error it returned, so this sentinel only classifies the outcome
@@ -295,7 +299,7 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		if snap.Terminal {
 			return snap, nil
 		}
-		if !runlog.OwnerAlive(filepath.Join(root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
+		if !ownerAlive(filepath.Join(root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 			snap, loadErr = store.Load(runID)
 			if loadErr != nil {
 				return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)
