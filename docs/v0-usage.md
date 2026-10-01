@@ -1140,6 +1140,8 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   verdict; one that changed a path reports it undeclared and exits `4`.
   Reported change paths are relative to the repository root, `--writes`
   paths to the workspace.
+  A run may declare at most 10 000 write paths in total; more is a usage
+  error (exit 2).
 - A declared path covers everything beneath it on a segment boundary:
   `src/a` covers `src/a/b.go` and does not cover `src/ab.go`, whether
   `src/a` names a file or a directory. Comparison is byte-exact per

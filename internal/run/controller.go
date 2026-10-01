@@ -743,6 +743,14 @@ func validate(req Request) error {
 	return ValidateWrites(req.Tasks)
 }
 
+// MaxDeclaredWritePaths bounds the total write paths one run may declare
+// across all its tasks. The write-overlap check compares every declared
+// path of one task with every declared path of every other task, so the
+// count is the input to a quadratic; the same limit is enforced when a
+// stored snapshot is read (internal/background), where a hand-edited
+// declaration could otherwise make the reader do unbounded work.
+const MaxDeclaredWritePaths = 10000
+
 // ValidateWrites checks the write declaration of every task: the
 // all-or-none rule that every task declares or none does, each declared
 // path validated and normalized, the rule that one task must not
@@ -769,11 +777,13 @@ func ValidateWrites(tasks []Task) error {
 		}
 	}
 	normalized := make([][]string, len(tasks))
+	totalPaths := 0
 	for i, task := range tasks {
 		entry := task.Writes
 		if !entry.Declared || len(entry.Paths) == 0 {
 			continue
 		}
+		totalPaths += len(entry.Paths)
 		seen := make(map[string]bool, len(entry.Paths))
 		normalized[i] = make([]string, 0, len(entry.Paths))
 		for _, value := range entry.Paths {
@@ -787,6 +797,12 @@ func ValidateWrites(tasks []Task) error {
 			seen[clean] = true
 			normalized[i] = append(normalized[i], clean)
 		}
+	}
+	// Bound the pairwise work before it starts: every declared path of one
+	// task is compared with every declared path of every other task, so the
+	// total declared count is the input to a quadratic.
+	if totalPaths > MaxDeclaredWritePaths {
+		return fmt.Errorf("the run declares %d write paths; at most %d are allowed", totalPaths, MaxDeclaredWritePaths)
 	}
 	for i := 0; i < len(normalized); i++ {
 		for j := i + 1; j < len(normalized); j++ {

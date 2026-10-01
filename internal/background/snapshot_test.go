@@ -3,6 +3,7 @@ package background
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -492,6 +493,76 @@ func TestValidate_RegressionCases(t *testing.T) {
 				t.Errorf("error = %q; want substring %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateBoundsDeclaredPathCount pins the read-side bound: a snapshot
+// whose workers together declare more than run.MaxDeclaredWritePaths is
+// refused with an error naming the limit, and the pairwise overlap loop is
+// skipped so the check stays linear.
+func TestValidateBoundsDeclaredPathCount(t *testing.T) {
+	tasks := []run.Task{fixtureTask(), fixtureTask()}
+	tasks[1].Writes = run.WriteDeclaration{Declared: true, Paths: []string{"b.txt"}}
+	snap, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws", ProcessIdentity{PID: 1, CreateTime: 100}, tasks, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("build base snapshot: %v", err)
+	}
+	paths := make([]string, run.MaxDeclaredWritePaths+1)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("out/path-%05d.txt", i)
+	}
+	half := run.MaxDeclaredWritePaths / 2
+	snap.Workers[0].Task.Writes = paths[:half]
+	snap.Workers[1].Task.Writes = paths[half:]
+	if got := len(snap.Workers[0].Task.Writes) + len(snap.Workers[1].Task.Writes); got != run.MaxDeclaredWritePaths+1 {
+		t.Fatalf("test setup declared %d paths; want %d", got, run.MaxDeclaredWritePaths+1)
+	}
+
+	err = snap.Validate()
+	if err == nil {
+		t.Fatalf("Validate accepted %d declared paths", run.MaxDeclaredWritePaths+1)
+	}
+	want := fmt.Sprintf("at most %d allowed", run.MaxDeclaredWritePaths)
+	if !contains(err.Error(), want) {
+		t.Fatalf("error = %q; want it to mention %q", err.Error(), want)
+	}
+}
+
+// TestValidateBoundsOverlapErrors pins the bounded error text: more than ten
+// overlapping pairs yield ten overlap entries plus one truncation marker, not
+// one entry per pair.
+func TestValidateBoundsOverlapErrors(t *testing.T) {
+	tasks := []run.Task{fixtureTask(), fixtureTask()}
+	tasks[1].Writes = run.WriteDeclaration{Declared: true, Paths: []string{"b.txt"}}
+	snap, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws", ProcessIdentity{PID: 1, CreateTime: 100}, tasks, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("build base snapshot: %v", err)
+	}
+	snap.Workers[0].Task.Writes = []string{"out"}
+	snap.Workers[1].Task.Writes = nil
+	for i := 0; i < 12; i++ {
+		snap.Workers[1].Task.Writes = append(snap.Workers[1].Task.Writes, fmt.Sprintf("out/file-%02d.txt", i))
+	}
+
+	err = snap.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted overlapping writes")
+	}
+	entries := strings.Split(err.Error(), "; ")
+	if len(entries) > 11 {
+		t.Fatalf("error has %d entries; want at most 11: %q", len(entries), err.Error())
+	}
+	if last := entries[len(entries)-1]; last != "... and more overlaps" {
+		t.Fatalf("last entry = %q; want the truncation marker: %q", last, err.Error())
+	}
+	overlapEntries := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, "worker[") {
+			overlapEntries++
+		}
+	}
+	if overlapEntries != 10 {
+		t.Fatalf("overlap entries = %d; want 10 before the marker: %q", overlapEntries, err.Error())
 	}
 }
 

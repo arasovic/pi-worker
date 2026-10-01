@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -442,6 +443,30 @@ func TestControllerRejectsOverlappingDeclaredWrites(t *testing.T) {
 				t.Fatalf("worker invoked %d times before validation", worker.callCount())
 			}
 		})
+	}
+}
+
+// TestValidateWritesRejectsDeclaredPathCountOverLimit pins the count bound:
+// the declared paths are the input to the pairwise overlap check, so a run
+// at exactly MaxDeclaredWritePaths is accepted and one path over is refused
+// as a usage error naming the limit.
+func TestValidateWritesRejectsDeclaredPathCountOverLimit(t *testing.T) {
+	atLimit := make([]string, MaxDeclaredWritePaths)
+	for i := range atLimit {
+		atLimit[i] = fmt.Sprintf("dir/path-%05d.txt", i)
+	}
+	if err := ValidateWrites([]Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths(atLimit...)}}); err != nil {
+		t.Fatalf("ValidateWrites at %d paths returned %v; want nil", MaxDeclaredWritePaths, err)
+	}
+
+	overLimit := append(append([]string{}, atLimit...), "dir/one-more.txt")
+	err := ValidateWrites([]Task{{Prompt: "a", Model: "acme/m-1", Writes: declaredPaths(overLimit...)}})
+	if err == nil {
+		t.Fatalf("ValidateWrites accepted %d declared paths", len(overLimit))
+	}
+	want := fmt.Sprintf("the run declares %d write paths; at most %d are allowed", len(overLimit), MaxDeclaredWritePaths)
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
 
