@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -29,10 +31,10 @@ type supervisorLaunch struct {
 
 // supervisorRunObserver is the run controller's process observer and the one
 // writer of every non-terminal snapshot of one run. It holds the last
-// snapshot this run made durable, the launches it observed, and every
-// persistence failure it could not return, all under mu: the controller calls
-// the observer from worker goroutines, so a launch is recorded and promoted
-// in one serialized step.
+// snapshot this run made durable, the launches it observed, and every failure
+// it could not return — split by whether the launch's identity was sampled —
+// all under mu: the controller calls the observer from worker goroutines, so a
+// launch is recorded and promoted in one serialized step.
 //
 // The in-memory snapshot is never a hypothesis about the run. It changes only
 // after a Replace succeeded, so it always mirrors the durable file, and no
@@ -44,7 +46,15 @@ type supervisorRunObserver struct {
 	store    *Store
 	durable  Snapshot
 	launched map[int]supervisorLaunch
-	recorded []error
+	// identityFailures are launches whose process identity could not be
+	// sampled: each is a fact the terminal snapshot can never carry, so each
+	// fails its run. persistFailures are running snapshots that could not be
+	// replaced: the launch itself is already recorded, so they are reported
+	// without failing the run. The two stay apart at the source so neither the
+	// run's failure nor its stderr line has to be inferred from an error's
+	// text.
+	identityRecorded []error
+	persistRecorded  []error
 }
 
 // newSupervisorRunObserver returns the observer for one accepted run. The
@@ -77,8 +87,8 @@ func (o *supervisorRunObserver) observer() pi.ProcessObserver {
 		if launch.process == nil {
 			// No identity exists, so this worker cannot be reported as
 			// running: it stays queued in the durable snapshot and the reason
-			// is recorded instead.
-			o.noteFailure(fmt.Errorf("observe worker %d launch: %w", workerID, err))
+			// is recorded instead. This fails the run.
+			o.noteIdentityFailure(fmt.Errorf("observe worker %d launch: %w", workerID, err))
 			return
 		}
 		o.launched[workerID] = launch
@@ -109,7 +119,7 @@ func (o *supervisorRunObserver) observer() pi.ProcessObserver {
 			// The worker really did launch and its identity is known, so the
 			// launch stays recorded; only the promotion is not durable yet,
 			// and the next launch retries it over the same base.
-			o.noteFailure(fmt.Errorf("persist running snapshot for worker %d: %w", workerID, err))
+			o.notePersistFailure(fmt.Errorf("persist running snapshot for worker %d: %w", workerID, err))
 			return
 		}
 		o.durable = pending
@@ -118,10 +128,10 @@ func (o *supervisorRunObserver) observer() pi.ProcessObserver {
 
 // activity returns the pi.ActivityObserver handed to every worker. It is
 // best effort: a report for a worker that is not durably running is
-// dropped, and a failed Replace is dropped silently — it never enters
-// noteFailure, whose failures fail the run — so the next report retries
-// over the same durable base. A worker that has finished keeps the last
-// activity it reported, which the terminal snapshot copies forward.
+// dropped, and a failed Replace is dropped silently — it never enters the
+// identity or persist failures, so the next report retries over the same
+// durable base. A worker that has finished keeps the last activity it
+// reported, which the terminal snapshot copies forward.
 func (o *supervisorRunObserver) activity() pi.ActivityObserver {
 	return func(workerID int, activity pi.Activity) {
 		o.mu.Lock()
@@ -156,8 +166,9 @@ func (o *supervisorRunObserver) activity() pi.ActivityObserver {
 		}
 		if err := o.store.Replace(pending); err != nil {
 			// Best effort: the durable snapshot keeps its previous activity and
-			// the next report retries. This is deliberately not noteFailure:
-			// a lost liveness report must not fail the run.
+			// the next report retries. This is deliberately not recorded as an
+			// identity or persist failure: a lost liveness report must not fail
+			// the run.
 			return
 		}
 		o.durable = pending
@@ -184,20 +195,38 @@ func (o *supervisorRunObserver) launch(workerID int) (supervisorLaunch, bool) {
 	return launch, ok
 }
 
-// failures returns every persistence failure the observer recorded, including
-// the creation-time lookups that left a worker queued. The observer answers
-// the controller with nothing, so this is where those failures surface.
-func (o *supervisorRunObserver) failures() []error {
+// identityFailures returns the launches whose process identity could not be
+// sampled. Each is a fact the terminal snapshot can never carry, so each
+// fails its run.
+func (o *supervisorRunObserver) identityFailures() []error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	errs := make([]error, len(o.recorded))
-	copy(errs, o.recorded)
+	errs := make([]error, len(o.identityRecorded))
+	copy(errs, o.identityRecorded)
 	return errs
 }
 
-// noteFailure records a failure the observer cannot return. o.mu must be held.
-func (o *supervisorRunObserver) noteFailure(err error) {
-	o.recorded = append(o.recorded, err)
+// persistFailures returns the running snapshots the observer could not
+// replace. The launch itself was recorded before the Replace, so the terminal
+// snapshot is complete without it; these never fail the run.
+func (o *supervisorRunObserver) persistFailures() []error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	errs := make([]error, len(o.persistRecorded))
+	copy(errs, o.persistRecorded)
+	return errs
+}
+
+// noteIdentityFailure records a launch whose identity could not be sampled.
+// o.mu must be held.
+func (o *supervisorRunObserver) noteIdentityFailure(err error) {
+	o.identityRecorded = append(o.identityRecorded, err)
+}
+
+// notePersistFailure records a running snapshot that could not be replaced.
+// o.mu must be held.
+func (o *supervisorRunObserver) notePersistFailure(err error) {
+	o.persistRecorded = append(o.persistRecorded, err)
 }
 
 // snapshotLocked reads the durable snapshot. o.mu must be held, and the
@@ -207,10 +236,15 @@ func (o *supervisorRunObserver) snapshotLocked() Snapshot {
 	return o.durable
 }
 
-// supervisorPidCreateTime returns the process-table creation time of pid in
+// supervisorPidCreateTime samples a process's creation time. Tests replace it
+// to control whether an identity can be recorded, the way ownerAlive is
+// replaced in manager.go.
+var supervisorPidCreateTime = pidCreateTime
+
+// pidCreateTime returns the process-table creation time of pid in
 // milliseconds. A launch can never be recorded with an invented time: the
 // process table must answer, and answer positively, for the identity to exist.
-func supervisorPidCreateTime(pid int) (int64, error) {
+func pidCreateTime(pid int) (int64, error) {
 	if pid <= 0 {
 		return 0, fmt.Errorf("invalid pid %d", pid)
 	}
@@ -227,6 +261,11 @@ func supervisorPidCreateTime(pid int) (int64, error) {
 	}
 	return created, nil
 }
+
+// supervisorStderr is where the supervisor writes the failures it must not
+// return as run errors. Production leaves it as os.Stderr; tests replace it to
+// read the line.
+var supervisorStderr io.Writer = os.Stderr
 
 // runAcceptedRun drives an accepted supervisor start result to its terminal
 // snapshot through the production private worker host. executable names the
@@ -294,10 +333,23 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 	if runErr != nil {
 		errs = append(errs, fmt.Errorf("run accepted run (%s): controller: %w", req.runID, runErr))
 	}
-	// What the observer could not persist is a failure of this run even
-	// though the run itself settled: a worker whose launch never reached disk
-	// is a fact the snapshot does not carry.
-	errs = append(errs, observerFailures(req.runID, observer.failures())...)
+	// A launch whose process identity could not be sampled is a fact the
+	// terminal snapshot can never carry, so it fails the run: the snapshot is
+	// built with an error that joins it to the controller error, and the
+	// returned error carries the same text the stored outcome names. A running
+	// snapshot that could not be persisted is not a run failure: the launch was
+	// recorded before the Replace, so the terminal snapshot is complete once
+	// its own write succeeds, and the supervisor's return value must agree with
+	// the stored outcome. Persist failures are reported on the supervisor's
+	// stderr instead.
+	identityFailures := observerFailures(req.runID, observer.identityFailures())
+	errs = append(errs, identityFailures...)
+	if len(identityFailures) > 0 {
+		runErr = joinSupervisorStartErrors(append([]error{runErr}, identityFailures...)...)
+	}
+	for _, err := range observerFailures(req.runID, observer.persistFailures()) {
+		fmt.Fprintf(supervisorStderr, "pi-worker: %v\n", err)
+	}
 
 	// Step 2 — the terminal Snapshot. Whatever the observer made durable is
 	// its base; when the observer persisted nothing, the accepted snapshot is.

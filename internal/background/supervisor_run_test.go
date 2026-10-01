@@ -561,3 +561,162 @@ func TestRunAcceptedRunWritesItsRecordInItsRunDirectory(t *testing.T) {
 		t.Fatalf("record = %q, want a start line and a finish line", record)
 	}
 }
+
+// launchReportingWorker completes every task and reports a launch for exactly
+// the worker IDs it was given, each with its own pid. A worker ID absent from
+// report is never seen launching: leaving worker 2 out lets a test fail only
+// the first running-snapshot Replace, which is worker 1's.
+type launchReportingWorker struct {
+	report map[int]int
+}
+
+func (w launchReportingWorker) Run(_ context.Context, req pi.WorkerRequest) pi.WorkerResult {
+	if pid, ok := w.report[req.WorkerID]; ok && req.OnProcessStart != nil {
+		req.OnProcessStart(req.WorkerID, pid)
+	}
+	return pi.WorkerResult{
+		Model:         req.Model,
+		ThinkingLevel: req.ThinkingLevel,
+		Explanation:   "done",
+		Status:        pi.StatusCompleted,
+	}
+}
+
+// TestRunAcceptedRunIdentityFailureFailsTheRun requires that a worker whose
+// process identity could not be sampled fails the run as an internal failure
+// even though every task completed: the terminal snapshot carries the failed
+// outcome and an error naming the worker, while the completed results and the
+// change manifest are kept. The matching outcome maps to exit code 9.
+func TestRunAcceptedRunIdentityFailureFailsTheRun(t *testing.T) {
+	req, _, _ := newStartRequestWithTempRoots(t)
+	acceptedAt := time.Now().UTC().Truncate(time.Second)
+	req.runID = runlog.RunID(acceptedAt)
+	req.acceptedAt = acceptedAt
+	req.workspace = t.TempDir()
+	req.verify = nil
+
+	const badPID = 1 << 30
+	original := supervisorPidCreateTime
+	supervisorPidCreateTime = func(pid int) (int64, error) {
+		if pid == badPID {
+			return 0, errors.New("process table cannot answer")
+		}
+		return original(pid)
+	}
+	t.Cleanup(func() { supervisorPidCreateTime = original })
+
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	stored := supervisorStartResult{request: req, preparation: prep, accepted: true}
+	worker := launchReportingWorker{report: map[int]int{1: badPID, 2: os.Getpid()}}
+	if err := runAcceptedRunWith(context.Background(), worker, stored); err == nil {
+		t.Fatal("runAcceptedRunWith returned nil, want the identity failure")
+	}
+
+	loaded, err := prep.store.Load(req.runID)
+	if err != nil {
+		t.Fatalf("reload terminal snapshot: %v", err)
+	}
+	if !loaded.Terminal {
+		t.Fatal("terminal = false, want true")
+	}
+	if loaded.Outcome == nil {
+		t.Fatal("outcome must not be nil on a terminal snapshot")
+	}
+	if *loaded.Outcome != contracts.OutcomeInternalError {
+		t.Errorf("outcome = %q, want %q", *loaded.Outcome, contracts.OutcomeInternalError)
+	}
+	if !strings.Contains(loaded.Error, "worker 1") {
+		t.Errorf("error = %q, want it to name worker 1", loaded.Error)
+	}
+	if loaded.Result == nil {
+		t.Fatal("result must not be nil: the completed workers' results are kept")
+	}
+	if len(loaded.Result.Workers) != len(req.tasks) {
+		t.Errorf("result.workers = %d, want %d", len(loaded.Result.Workers), len(req.tasks))
+	}
+	if loaded.Result.Changes == nil {
+		t.Error("result.changes must be present: a git inspector was configured")
+	}
+	// Only worker 1's identity failed; its sibling's launch was recorded.
+	if loaded.Workers[0].Process != nil {
+		t.Errorf("worker 1 process = %+v, want nil: its identity was never sampled", loaded.Workers[0].Process)
+	}
+	if loaded.Workers[1].Process == nil {
+		t.Error("worker 2 process must be set: its identity was sampled")
+	}
+	if got, want := contracts.OutcomeExitCode(*loaded.Outcome), 9; got != want {
+		t.Errorf("OutcomeExitCode(%q) = %d, want %d (internal failure)", *loaded.Outcome, got, want)
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("terminal snapshot failed validation: %v", err)
+	}
+}
+
+// TestRunAcceptedRunPersistFailureDoesNotFailTheRun requires that a running
+// snapshot that could not be persisted does not fail the run: the terminal
+// snapshot is completed, worker 1 still carries the process identity the
+// observer sampled before the failed Replace, and runAcceptedRunWith returns
+// nil. The failure is reported on the supervisor's stderr instead.
+func TestRunAcceptedRunPersistFailureDoesNotFailTheRun(t *testing.T) {
+	req, _, _ := newStartRequestWithTempRoots(t)
+	acceptedAt := time.Now().UTC().Truncate(time.Second)
+	req.runID = runlog.RunID(acceptedAt)
+	req.acceptedAt = acceptedAt
+	req.workspace = t.TempDir()
+	req.verify = nil
+
+	originalTemp := createSnapshotTemp
+	calls := 0
+	createSnapshotTemp = func(dir, pattern string) (snapshotWriteFile, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("injected running-snapshot failure")
+		}
+		return originalTemp(dir, pattern)
+	}
+	t.Cleanup(func() { createSnapshotTemp = originalTemp })
+
+	var stderr strings.Builder
+	originalStderr := supervisorStderr
+	supervisorStderr = &stderr
+	t.Cleanup(func() { supervisorStderr = originalStderr })
+
+	prep, err := prepareSupervisorStart(req)
+	if err != nil {
+		t.Fatalf("prepareSupervisorStart: %v", err)
+	}
+	stored := supervisorStartResult{request: req, preparation: prep, accepted: true}
+	worker := launchReportingWorker{report: map[int]int{1: os.Getpid()}}
+	if err := runAcceptedRunWith(context.Background(), worker, stored); err != nil {
+		t.Fatalf("runAcceptedRunWith: %v, want nil for a persist-only failure", err)
+	}
+	if calls < 2 {
+		t.Fatalf("createSnapshotTemp called %d times, want at least 2 (running and terminal)", calls)
+	}
+
+	loaded, err := prep.store.Load(req.runID)
+	if err != nil {
+		t.Fatalf("reload terminal snapshot: %v", err)
+	}
+	if !loaded.Terminal {
+		t.Fatal("terminal = false, want true")
+	}
+	if loaded.Outcome == nil {
+		t.Fatal("outcome must not be nil on a terminal snapshot")
+	}
+	if *loaded.Outcome != contracts.OutcomeCompleted {
+		t.Errorf("outcome = %q, want %q", *loaded.Outcome, contracts.OutcomeCompleted)
+	}
+	if loaded.Workers[0].Process == nil {
+		t.Error("worker 1 process must be set: the launch was recorded before the failed Replace")
+	}
+	if !strings.Contains(stderr.String(), "worker 1") {
+		t.Errorf("stderr = %q, want the persist failure line naming worker 1", stderr.String())
+	}
+	if err := loaded.Validate(); err != nil {
+		t.Fatalf("terminal snapshot failed validation: %v", err)
+	}
+}

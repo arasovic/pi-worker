@@ -77,8 +77,11 @@ func TestSupervisorRunObserverActivityReplaceFailureIsSilent(t *testing.T) {
 	}
 	observer := newSupervisorRunObserver(prep.store, prep.snapshot)
 	observer.observer()(1, os.Getpid())
-	if got := observer.failures(); len(got) != 0 {
-		t.Fatalf("failures after a successful launch = %v, want none", got)
+	if got := observer.identityFailures(); len(got) != 0 {
+		t.Fatalf("identity failures after a successful launch = %v, want none", got)
+	}
+	if got := observer.persistFailures(); len(got) != 0 {
+		t.Fatalf("persist failures after a successful launch = %v, want none", got)
 	}
 
 	// Remove the run directory so the next Replace cannot succeed.
@@ -87,7 +90,10 @@ func TestSupervisorRunObserverActivityReplaceFailureIsSilent(t *testing.T) {
 	}
 	observer.activity()(1, pi.Activity{LastEventAt: time.Now().UTC(), ToolCalls: 1})
 
-	if got := observer.failures(); len(got) != 0 {
-		t.Fatalf("failures after a dropped activity report = %v, want none", got)
+	if got := observer.identityFailures(); len(got) != 0 {
+		t.Fatalf("identity failures after a dropped activity report = %v, want none", got)
+	}
+	if got := observer.persistFailures(); len(got) != 0 {
+		t.Fatalf("persist failures after a dropped activity report = %v, want none", got)
 	}
 }
