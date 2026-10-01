@@ -223,7 +223,9 @@ function assertReleasePreparation(workflow) {
     ACTION_PINS["actions/setup-node"],
     ACTION_PINS["actions/upload-artifact"],
   ];
-  const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)(?:\s+#\s*v\d+\.\d+\.\d+)?\s*$/gm)].map(([, action]) => action);
+  const actionUsages = [...workflow.matchAll(/^\s*uses:\s+([^\s#]+)(?:\s+#\s*v\d+\.\d+\.\d+)?\s*$/gm)]
+    .map(([, action]) => action)
+    .filter((action) => action !== "./.github/workflows/ci.yml");
   assert.deepEqual([...new Set(actionUsages)].sort(), requiredActions);
   assert.match(workflow, /persist-credentials:\s*false/);
   assert.match(workflow, /^    timeout-minutes:\s*30$/m);
@@ -261,6 +263,11 @@ test("every workflow action is pinned to a full commit SHA with its release as a
     let matches = 0;
     for (const line of content.split("\n")) {
       if (!line.includes("uses:")) continue;
+      // A reusable workflow in this repository is a local path, not an action,
+      // so it has no commit SHA to pin. Allow only this exact reference.
+      if (relativePath === ".github/workflows/release.yml" && line.trim() === "uses: ./.github/workflows/ci.yml") {
+        continue;
+      }
       assert.match(
         line,
         /^\s*(?:- )?uses:\s+[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/,
@@ -280,6 +287,9 @@ test("trusted release workflow publishes tagged staged artifacts through OIDC", 
   assertReleasePreparation(workflow);
 
   assert.match(workflow, /^on:\n\s*push:\n\s*tags:\s*\['v\*'\]$/m);
+  assert.match(workflow, /^  ci:\n    uses: \.\/\.github\/workflows\/ci\.yml$/m);
+  assert.match(workflow, /^  publish:\n    needs: ci$/m);
+  assert.match(ciWorkflow, /^  workflow_call:$/m);
   assert.match(workflow, /^\s*id-token:\s*write$/m);
   assert.match(workflow, /^\s*contents:\s*read$/m);
   assert.match(workflow, /^\s*contents:\s*write$/m);

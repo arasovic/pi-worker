@@ -86,8 +86,9 @@ license, homepage, and issue URL before any publication step.
    `package.json` to it, and complete the local snapshot gate.
 2. Push the release commit to public `main`.
 3. Create and push the exact matching `vX.Y.Z` tag.
-4. Verify the `Release` workflow publishes through OIDC and attaches the four
-   native archives plus `checksums.txt` to the GitHub Release.
+4. Verify the `Release` workflow first runs the full CI matrix on the tagged
+   commit. That workflow publishes through OIDC only when it passes, attaching
+   the four native archives plus `checksums.txt` to the GitHub Release.
 
 The tag, package version, Go release version, npm tarball name, and native
 archive prefix are derived and checked as one release identity before builds or
