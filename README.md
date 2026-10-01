@@ -70,7 +70,7 @@ The requested model never silently changes. Repeat `--task` for up to three inde
 - [JSON contracts](./docs/json-contracts.md) — the versioned `--json` output shapes.
 - [Architecture](./ARCHITECTURE.md) — how a run is admitted, supervised and measured.
 
-Also: [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md) · [Release runbook](./docs/releasing.md) · [Pi compatibility surface](./docs/pi-cli-surface.md)
+Also: [Versioning](./docs/versioning.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md) · [Release runbook](./docs/releasing.md) · [Pi compatibility surface](./docs/pi-cli-surface.md)
 
 ## License
 
