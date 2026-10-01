@@ -15,7 +15,7 @@ import (
 // run in the foreground — while a start failure with no such classification
 // stays internal.
 func TestBackgroundStartExitCodeOversizedRequestIsUsage(t *testing.T) {
-	oversized := fmt.Errorf("background manager start: %w", background.ErrStartRequestTooLarge)
+	oversized := fmt.Errorf("start: %w", background.ErrStartRequestTooLarge)
 	if got, want := backgroundStartExitCode(oversized), 2; got != want {
 		t.Fatalf("oversized start exit code = %d, want %d", got, want)
 	}
@@ -23,7 +23,7 @@ func TestBackgroundStartExitCodeOversizedRequestIsUsage(t *testing.T) {
 		t.Fatalf("oversized start exit code = %d, want the usage exit code %d", got, want)
 	}
 
-	plain := errors.New("background manager start: injected internal failure")
+	plain := errors.New("start: injected internal failure")
 	if got, want := backgroundStartExitCode(plain), 9; got != want {
 		t.Fatalf("plain start failure exit code = %d, want %d", got, want)
 	}

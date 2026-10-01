@@ -60,7 +60,7 @@ func (m *Manager) Start(ctx context.Context, opts StartOptions) (StartedRun, err
 	if executable == "" {
 		resolved, err := roleExecutable()
 		if err != nil {
-			return StartedRun{}, fmt.Errorf("background manager start: %w", err)
+			return StartedRun{}, fmt.Errorf("start: %w", err)
 		}
 		executable = resolved
 	}
@@ -93,7 +93,7 @@ func (m *Manager) startWithExecutable(ctx context.Context, executable string, op
 		}
 	}
 	if budget <= 0 {
-		return StartedRun{}, fmt.Errorf("background manager start: %w", context.DeadlineExceeded)
+		return StartedRun{}, fmt.Errorf("start: %w", context.DeadlineExceeded)
 	}
 
 	acceptedAt := time.Now().UTC().Truncate(time.Second)
@@ -120,7 +120,7 @@ func (m *Manager) startWithExecutable(ctx context.Context, executable string, op
 	if opts.WorktreeName != "" {
 		prepared, err := worktree.Prepare(ctx, opts.Workspace, opts.WorktreeName)
 		if err != nil {
-			return StartedRun{}, fmt.Errorf("background manager start: prepare worktree %q: %w", opts.WorktreeName, err)
+			return StartedRun{}, fmt.Errorf("start: prepare worktree %q: %w", opts.WorktreeName, err)
 		}
 		req.worktree = &prepared
 		req.workspace = prepared.Path
@@ -128,7 +128,7 @@ func (m *Manager) startWithExecutable(ctx context.Context, executable string, op
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupWait)
 			defer cancel()
 			if err := remove(cleanupCtx, opts.Workspace, prepared); err != nil {
-				return fmt.Errorf("background manager start: remove the worktree %q prepared for a start that was not accepted: %w", prepared.Path, err)
+				return fmt.Errorf("start: remove the worktree %q prepared for a start that was not accepted: %w", prepared.Path, err)
 			}
 			return nil
 		}

@@ -40,7 +40,7 @@ var ownerAlive = runlog.OwnerAlive
 // with a rejection. The handoff already joined the bounded rejection reason
 // into the error it returned, so this sentinel only classifies the outcome
 // for errors.Is; it never replaces that reason.
-var errSupervisorRejected = errors.New("background manager start: supervisor did not accept the run")
+var errSupervisorRejected = errors.New("start: supervisor did not accept the run")
 
 // Manager starts background runs, reports what one run's latest durable
 // Snapshot says, and waits for a run to become terminal. It is the whole
@@ -75,19 +75,19 @@ func NewManager(root, legacyRoot, admissionRoot string, maxModelWorkers int) (*M
 	if root == "" {
 		defaultRoot, err := DefaultRoot()
 		if err != nil {
-			return nil, fmt.Errorf("background manager: resolve the user configuration directory: %w", err)
+			return nil, fmt.Errorf("resolve the user configuration directory: %w", err)
 		}
 		root = defaultRoot
 	}
 	if admissionRoot == "" {
 		userDir, err := config.UserDir()
 		if err != nil {
-			return nil, fmt.Errorf("background manager: resolve the user configuration directory: %w", err)
+			return nil, fmt.Errorf("resolve the user configuration directory: %w", err)
 		}
 		admissionRoot = filepath.Join(userDir, "admission")
 	}
 	if maxModelWorkers <= 0 {
-		return nil, fmt.Errorf("background manager: maxModelWorkers must be positive, got %d", maxModelWorkers)
+		return nil, fmt.Errorf("maxModelWorkers must be positive, got %d", maxModelWorkers)
 	}
 	return &Manager{root: root, legacyRoot: legacyRoot, admissionRoot: admissionRoot, maxModelWorkers: maxModelWorkers}, nil
 }
@@ -182,16 +182,16 @@ type StartedRun struct {
 // whose request cannot be encoded never creates anything.
 func (m *Manager) validateStartOptions(opts StartOptions) error {
 	if m == nil {
-		return errors.New("background manager start: nil manager")
+		return errors.New("start: nil manager")
 	}
 	if m.root == "" || m.admissionRoot == "" || m.maxModelWorkers <= 0 {
-		return errors.New("background manager start: manager carries no roots or no positive worker limit")
+		return errors.New("start: manager carries no roots or no positive worker limit")
 	}
 	if opts.Workspace == "" {
-		return errors.New("background manager start: workspace is required")
+		return errors.New("start: workspace is required")
 	}
 	if opts.WorktreeName != "" && !worktree.ValidName(opts.WorktreeName) {
-		return fmt.Errorf("background manager start: invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", opts.WorktreeName)
+		return fmt.Errorf("start: invalid worktree name %q: use 1 to 64 characters of lowercase letters, digits and hyphens, starting and ending with a letter or digit", opts.WorktreeName)
 	}
 	return nil
 }
@@ -225,18 +225,18 @@ func (m *Manager) Status(runID string) (Snapshot, error) {
 	root := m.rootOf(runID)
 	store, err := NewStore(root)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("background manager status (%s): construct store: %w", runID, err)
+		return Snapshot{}, fmt.Errorf("status (%s): construct store: %w", runID, err)
 	}
 	snap, err := store.Load(runID)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("background manager status (%s): %w", runID, err)
+		return Snapshot{}, fmt.Errorf("status (%s): %w", runID, err)
 	}
 	if snap.Terminal || runlog.OwnerAlive(filepath.Join(root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 		return snap, nil
 	}
 	snap, err = store.Load(runID)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("background manager status (%s): %w", runID, err)
+		return Snapshot{}, fmt.Errorf("status (%s): %w", runID, err)
 	}
 	if snap.Terminal {
 		return snap, nil
@@ -269,15 +269,15 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		defer cancel()
 	}
 	if m == nil {
-		return Snapshot{}, fmt.Errorf("background manager wait (%s): nil manager", runID)
+		return Snapshot{}, fmt.Errorf("wait (%s): nil manager", runID)
 	}
 	root := m.rootOf(runID)
 	store, err := NewStore(root)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("background manager wait (%s): construct store: %w", runID, err)
+		return Snapshot{}, fmt.Errorf("wait (%s): construct store: %w", runID, err)
 	}
 	if _, err := runlog.ParseRunID(runID); err != nil {
-		return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, err)
+		return Snapshot{}, fmt.Errorf("wait (%s): %w", runID, err)
 	}
 
 	var latest Snapshot
@@ -294,7 +294,7 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 			// report, and the reason it cannot report one is the read, not the
 			// bound: handing back a zero Snapshot with the context error would
 			// print a run with no identity as a run that is merely still going.
-			return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)
+			return Snapshot{}, fmt.Errorf("wait (%s): %w", runID, loadErr)
 		}
 		if snap.Terminal {
 			return snap, nil
@@ -302,7 +302,7 @@ func (m *Manager) Wait(ctx context.Context, runID string, timeout time.Duration)
 		if !ownerAlive(filepath.Join(root, runID), snap.Supervisor.PID, snap.Supervisor.CreateTime) {
 			snap, loadErr = store.Load(runID)
 			if loadErr != nil {
-				return Snapshot{}, fmt.Errorf("background manager wait (%s): %w", runID, loadErr)
+				return Snapshot{}, fmt.Errorf("wait (%s): %w", runID, loadErr)
 			}
 			if snap.Terminal {
 				return snap, nil

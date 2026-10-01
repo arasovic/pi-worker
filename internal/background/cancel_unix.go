@@ -23,16 +23,16 @@ var supervisorSignal = func(pid int) error { return unix.Kill(pid, unix.SIGTERM)
 // run. A terminal snapshot is returned without consulting the process table.
 func (m *Manager) Cancel(runID string) (Snapshot, error) {
 	if m == nil {
-		return Snapshot{}, fmt.Errorf("background manager cancel (%s): nil manager", runID)
+		return Snapshot{}, fmt.Errorf("cancel (%s): nil manager", runID)
 	}
 	root := m.rootOf(runID)
 	store, err := NewStore(root)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("background manager cancel (%s): construct store: %w", runID, err)
+		return Snapshot{}, fmt.Errorf("cancel (%s): construct store: %w", runID, err)
 	}
 	snap, err := store.Load(runID)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("background manager cancel (%s): %w", runID, err)
+		return Snapshot{}, fmt.Errorf("cancel (%s): %w", runID, err)
 	}
 	if snap.Terminal {
 		return snap, nil
