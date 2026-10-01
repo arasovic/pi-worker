@@ -299,10 +299,12 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   directory, a flat `.jsonl` record — is one run, and deleting it
   removes all of them. A run directory is emptied entry by entry,
   never removed as a tree: only `record.jsonl`, `snapshot.json`,
-  `debug.log`, `owner.lock`, and leftover `.snapshot.json.tmp-*`
-  stages are removed, and a directory holding anything else is
-  refused whole. Its owner lock is taken before anything in it is
-  removed and held until it is gone; a lock someone else holds at that
+  `debug.log`, `owner.lock`, leftover `.snapshot.json.tmp-*`
+  stages, and `worker-<n>/` directories holding only `*.jsonl` files
+  (emptied file by file, a symlink is never followed) are removed, and
+  a directory holding anything else, at either level, is refused
+  whole. Its owner lock is taken before anything in it is removed
+  and held until it is gone; a lock someone else holds at that
   moment spares the run as running. A pruned run is gone: `runs
   status` and `runs wait` exit `2` for it as an unknown run, so
   collect a background run's result before pruning it. An `unknown`

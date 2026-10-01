@@ -172,6 +172,115 @@ func TestRunsPruneRefusesARunDirectoryWithAnUnexpectedEntry(t *testing.T) {
 	}
 }
 
+// writeWorkerTranscript writes one transcript file into
+// <runDir>/<worker>/, creating the worker directory.
+func writeWorkerTranscript(t *testing.T, runDir, worker, file string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(runDir, worker), 0o700); err != nil {
+		t.Fatalf("create %s: %v", worker, err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, worker, file), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write %s/%s: %v", worker, file, err)
+	}
+}
+
+// TestRunsPruneDeletesWorkerTranscriptDirectories requires that a run
+// directory holding a worker-<n>/ transcript directory per worker —
+// including an empty one, left by a worker that never got a message
+// written — is deleted whole.
+func TestRunsPruneDeletesWorkerTranscriptDirectories(t *testing.T) {
+	dir := t.TempDir()
+	withRunlogDir(t, dir)
+	const runID = "20260830T101500Z-1"
+	runDir := writeRunDir(t, dir, runID)
+	writeWorkerTranscript(t, runDir, "worker-1", "2026-08-30T10-15-01-000Z_a.jsonl")
+	writeWorkerTranscript(t, runDir, "worker-2", "2026-08-30T10-15-02-000Z_b.jsonl")
+	if err := os.Mkdir(filepath.Join(runDir, "worker-3"), 0o700); err != nil {
+		t.Fatalf("create worker-3: %v", err)
+	}
+
+	code, document, stderr := runPruneJSON(t, "0")
+	if code != 0 || stderr != "" || !slices.Equal(document.Deleted, []string{runID}) {
+		t.Fatalf("runs prune = (%d, %+v, %q), want exit 0 deleting %s", code, document, stderr, runID)
+	}
+	requireGone(t, runDir)
+}
+
+// TestRunsPruneRefusesAWorkerDirectoryItDoesNotRecognise requires that a
+// run directory whose worker directory is anything but a real
+// worker-<n> directory of *.jsonl files is refused whole: exit 9, the
+// refusal on stderr, and every file at both levels still there — a
+// symlinked worker directory's target included.
+func TestRunsPruneRefusesAWorkerDirectoryItDoesNotRecognise(t *testing.T) {
+	for name, add := range map[string]func(t *testing.T, runDir string) []string{
+		"worker-1/subdir": func(t *testing.T, runDir string) []string {
+			writeWorkerTranscript(t, runDir, "worker-1", "a.jsonl")
+			if err := os.Mkdir(filepath.Join(runDir, "worker-1", "subdir"), 0o700); err != nil {
+				t.Fatalf("create subdir: %v", err)
+			}
+			return []string{"worker-1/a.jsonl", "worker-1/subdir"}
+		},
+		"worker-1/notes.txt": func(t *testing.T, runDir string) []string {
+			writeWorkerTranscript(t, runDir, "worker-1", "a.jsonl")
+			writeWorkerTranscript(t, runDir, "worker-1", "notes.txt")
+			return []string{"worker-1/a.jsonl", "worker-1/notes.txt"}
+		},
+		"worker-1/symlink.jsonl": func(t *testing.T, runDir string) []string {
+			writeWorkerTranscript(t, runDir, "worker-1", "a.jsonl")
+			if err := os.Symlink("a.jsonl", filepath.Join(runDir, "worker-1", "link.jsonl")); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+			return []string{"worker-1/a.jsonl", "worker-1/link.jsonl"}
+		},
+		"worker-1 symlink to a directory": func(t *testing.T, runDir string) []string {
+			target := t.TempDir()
+			if err := os.WriteFile(filepath.Join(target, "a.jsonl"), []byte("{}\n"), 0o600); err != nil {
+				t.Fatalf("write target: %v", err)
+			}
+			if err := os.Symlink(target, filepath.Join(runDir, "worker-1")); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+			return []string{"worker-1", filepath.Join(target, "a.jsonl")}
+		},
+		"worker-0": func(t *testing.T, runDir string) []string {
+			writeWorkerTranscript(t, runDir, "worker-0", "a.jsonl")
+			return []string{"worker-0/a.jsonl"}
+		},
+		"worker-01": func(t *testing.T, runDir string) []string {
+			writeWorkerTranscript(t, runDir, "worker-01", "a.jsonl")
+			return []string{"worker-01/a.jsonl"}
+		},
+		"worker-x": func(t *testing.T, runDir string) []string {
+			writeWorkerTranscript(t, runDir, "worker-x", "a.jsonl")
+			return []string{"worker-x/a.jsonl"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			withRunlogDir(t, dir)
+			const runID = "20260830T101500Z-1"
+			runDir := writeRunDir(t, dir, runID)
+			if err := os.WriteFile(filepath.Join(runDir, "record.jsonl"), []byte("{}\n"), 0o600); err != nil {
+				t.Fatalf("write record.jsonl: %v", err)
+			}
+			// A valid worker directory beside the bad one must survive too.
+			writeWorkerTranscript(t, runDir, "worker-2", "b.jsonl")
+			kept := append([]string{"record.jsonl", "snapshot.json", runlog.OwnerLockName, "worker-2/b.jsonl"}, add(t, runDir)...)
+
+			code, document, stderr := runPruneJSON(t, "0")
+			if code != 9 || len(document.Deleted) != 0 || !strings.Contains(stderr, "unexpected entry") {
+				t.Fatalf("runs prune = (%d, %+v, %q), want exit 9, nothing deleted, the refusal on stderr", code, document, stderr)
+			}
+			for _, path := range kept {
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(runDir, path)
+				}
+				requirePresent(t, path)
+			}
+		})
+	}
+}
+
 // TestRunsPruneDeletesOrphanedSnapshotStageAndDebugLog requires that the
 // entries a supervisor leaves in its run directory — the record, the
 // debug log, a free owner lock, and a snapshot replacement stage a kill
