@@ -78,6 +78,16 @@ func withPidAlive(t *testing.T, alive func(int32) (bool, error)) {
 	t.Cleanup(func() { pidAlive = original })
 }
 
+// withInterruptedNow replaces the interrupted-run scan's clock for the
+// duration of one test. A test that calls it must not run in parallel:
+// the clock is a package variable shared by every scan in the process.
+func withInterruptedNow(t *testing.T, now time.Time) {
+	t.Helper()
+	original := interruptedNow
+	interruptedNow = func() time.Time { return now }
+	t.Cleanup(func() { interruptedNow = original })
+}
+
 // TestInterruptedReportsDeadUnfinishedRecordsOnce asserts the scan
 // reports exactly the records with no finish line whose process is
 // gone — never a finished one, never a still-running one — and that
@@ -505,5 +515,68 @@ func TestInterruptedWritesOnlyIntoGivenDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(realDir, markerFileName)); !os.IsNotExist(err) {
 		t.Fatalf("marker appeared in the real records directory %s: %v", realDir, err)
+	}
+}
+
+// TestInterruptedWatermarkStopsShortOfRecentRun asserts the watermark
+// never advances to a run id younger than the recent window, even when
+// that run is settled: the id is allocated before its directory exists,
+// so a directory for the older id below may still be about to appear,
+// and a watermark past it would skip that run for good. The older
+// settled run still moves the watermark.
+func TestInterruptedWatermarkStopsShortOfRecentRun(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	withInterruptedNow(t, now)
+	withPidAlive(t, func(int32) (bool, error) { return false, nil })
+	dir := t.TempDir()
+	oldID := RunID(now.Add(-2 * time.Hour))
+	recentID := RunID(now.Add(-10 * time.Minute))
+	writeRecord(t, dir, oldID, 4242, true)
+	writeRecord(t, dir, recentID, 4243, true)
+
+	paths, err := Interrupted(dir)
+	if err != nil {
+		t.Fatalf("Interrupted: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("interrupted = %v, want none: both records are settled", paths)
+	}
+	if m := readMarker(t, dir); m.Watermark != oldID {
+		t.Fatalf("watermark = %q, want %q: the watermark must stop short of the recent run", m.Watermark, oldID)
+	}
+}
+
+// TestInterruptedReportsLateDirectoryAfterRecentSettledScan asserts the
+// late-directory case: a settled run B is scanned while only B exists,
+// then a directory A with a smaller id appears and is interrupted. The
+// scan that saw only B must not have moved the watermark past A's id, so
+// the next scan still reports A. Without the recent-window rule, the
+// first scan advances the watermark to B and A is skipped for good.
+func TestInterruptedReportsLateDirectoryAfterRecentSettledScan(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	withInterruptedNow(t, now)
+	// The late run's owner is gone; the settled run's supervisor state is
+	// terminal and never consulted.
+	withPidAlive(t, func(pid int32) (bool, error) { return pid != 4242, nil })
+	dir := t.TempDir()
+	writeRunDir(t, dir, RunID(now.Add(-10*time.Minute)), true, 4243, true, false)
+
+	if _, err := Interrupted(dir); err != nil {
+		t.Fatalf("Interrupted (settled scan): %v", err)
+	}
+	if m := readMarker(t, dir); m.Watermark != "" {
+		t.Fatalf("watermark after settled scan = %q, want empty: the recent run must not move it", m.Watermark)
+	}
+
+	// A's directory appears after its id was allocated, older than B and
+	// interrupted: no finish line and no live owner.
+	lateDir := writeRunDir(t, dir, RunID(now.Add(-15*time.Minute)), true, 4242, false, false)
+
+	paths, err := Interrupted(dir)
+	if err != nil {
+		t.Fatalf("Interrupted (late scan): %v", err)
+	}
+	if want := []string{lateDir}; !slices.Equal(paths, want) {
+		t.Fatalf("interrupted = %v, want the late directory %v", paths, want)
 	}
 }

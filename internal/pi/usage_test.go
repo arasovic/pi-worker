@@ -754,3 +754,75 @@ func TestWorkerReportsCacheWarmUsageSeparately(t *testing.T) {
 		t.Fatalf("cacheWarmUsage = %#v, want the summed warm frames %#v", result.CacheWarmUsage, wantWarm)
 	}
 }
+
+func TestUsageAccumulatorEmptyUsageFrameKeepsValidFigure(t *testing.T) {
+	// A valid frame reports the message's figure, then an empty usage
+	// object arrives. The empty object carries no measurement — it does
+	// not carry the tracked counts — so it must be skipped exactly like a
+	// malformed frame: it may not replace the valid figure with zeros.
+	valid := `{"input":7,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":9,"cost":{"input":0.00007,"output":0.00002,"cacheRead":0,"cacheWrite":0,"total":0.00009}}`
+	a := &usageAccumulator{}
+	for _, ev := range []Event{
+		event("message_start"),
+		messageUpdate(valid, "text_delta"),
+		messageUpdate(`{}`, "text_end"),
+		event("message_end"),
+	} {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent = %v, want nil", err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 7, Output: 2, CacheRead: 0, CacheWrite: 0, TotalTokens: 9,
+		Cost: UsageCost{Input: 0.00007, Output: 0.00002, CacheRead: 0, CacheWrite: 0, Total: 0.00009},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want the valid frame's numbers %#v: an empty object must not replace them", got, want)
+	}
+}
+
+func TestUsageAccumulatorPartialUsageFrameKeepsPreviousFigure(t *testing.T) {
+	// The last frame lacks totalTokens, so it is not a measurement: the
+	// missing count must not become an invented zero that replaces the
+	// message's earlier, complete figure.
+	valid := `{"input":7,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":9,"cost":{"input":0.00007,"output":0.00002,"cacheRead":0,"cacheWrite":0,"total":0.00009}}`
+	partial := `{"input":999,"output":999,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+	a := &usageAccumulator{}
+	for _, ev := range []Event{
+		event("message_start"),
+		messageUpdate(valid, "text_delta"),
+		messageUpdate(partial, "text_end"),
+		event("message_end"),
+	} {
+		if err := a.OnEvent(ev); err != nil {
+			t.Fatalf("OnEvent = %v, want nil", err)
+		}
+	}
+	got := a.snapshot()
+	want := &Usage{
+		Input: 7, Output: 2, CacheRead: 0, CacheWrite: 0, TotalTokens: 9,
+		Cost: UsageCost{Input: 0.00007, Output: 0.00002, CacheRead: 0, CacheWrite: 0, Total: 0.00009},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot = %#v, want the earlier complete frame %#v: a frame without totalTokens is not a measurement", got, want)
+	}
+}
+
+func TestCacheWarmAccumulatorIgnoresUsageWithoutTrackedKeys(t *testing.T) {
+	// The cache-warm path takes the same rule: an empty usage object, and
+	// an object missing a tracked count, carries no measurement and is
+	// skipped rather than added with invented zeros.
+	for _, usage := range []string{
+		`{}`,
+		`{"input":5,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`,
+	} {
+		a := &cacheWarmAccumulator{}
+		if err := a.OnEvent(warmEntry(usage)); err != nil {
+			t.Fatalf("OnEvent(usage=%s) = %v, want nil", usage, err)
+		}
+		if got := a.snapshot(); got != nil {
+			t.Fatalf("snapshot(usage=%s) = %#v, want nil: no tracked counts means no measurement", usage, got)
+		}
+	}
+}

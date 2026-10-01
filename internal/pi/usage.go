@@ -65,10 +65,11 @@ type usageAccumulator struct {
 // message's latest reported usage is committed into the total and
 // forgotten, so a message whose end never arrives (a timed-out or
 // cancelled run) still contributes what it reported. A message_update
-// whose usage is missing, null, unparseable, or negative is skipped
-// silently — a malformed frame is a reported omission, never a failure —
-// and a frame with numbers replaces whatever this message reported
-// before: the last reported usage is the message's final figure.
+// whose usage is missing, null, unparseable, negative, or an object
+// without the tracked counts is skipped silently — a malformed frame is
+// a reported omission, never a failure — and a well-formed frame replaces
+// whatever this message reported before: the last reported usage is the
+// message's final figure.
 func (a *usageAccumulator) OnEvent(event Event) error {
 	switch event.Type {
 	case "message_start", "message_end":
@@ -80,7 +81,7 @@ func (a *usageAccumulator) OnEvent(event Event) error {
 		if err := json.Unmarshal(event.Raw, &frame); err != nil {
 			return nil
 		}
-		if len(frame.Usage) == 0 || isJSONNull(frame.Usage) {
+		if !usageWellFormed(frame.Usage) {
 			return nil
 		}
 		var usage Usage
@@ -105,6 +106,26 @@ func (a *usageAccumulator) commit() {
 	}
 	a.add(*a.pending)
 	a.pending = nil
+}
+
+// usageWellFormed reports whether the raw usage value is an object that
+// carries every tracked count. Pi always reports these keys; an object
+// without them — the empty object among them — carries no measurement,
+// so decoding it would silently turn the missing numbers into zeros and
+// either replace a valid figure or pad the total with invented ones. It
+// is therefore skipped exactly like an unparseable frame. A missing,
+// null, or non-object usage fails the check too.
+func usageWellFormed(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return false
+	}
+	for _, key := range [...]string{"input", "output", "totalTokens"} {
+		if _, ok := fields[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // usageNegative reports whether any field of a reported usage is a
@@ -193,9 +214,10 @@ type cacheWarmAccumulator struct {
 // OnEvent tracks one completed cache-warm request. It acts only on
 // entry_appended frames whose entry is a usage entry of kind cache_warm,
 // decodes the entry's usage, and adds it to the running warm total. Any
-// other frame, and a frame whose usage is missing, null, unparseable, or
-// negative, is skipped silently and never returned as an error: a
-// measurement problem must never fail a run that otherwise worked.
+// other frame, and a frame whose usage is missing, null, unparseable,
+// negative, or an object without the tracked counts, is skipped silently
+// and never returned as an error: a measurement problem must never fail
+// a run that otherwise worked.
 func (a *cacheWarmAccumulator) OnEvent(event Event) error {
 	if event.Type != "entry_appended" {
 		return nil
@@ -213,7 +235,7 @@ func (a *cacheWarmAccumulator) OnEvent(event Event) error {
 	if frame.Entry.Type != "usage" || frame.Entry.Kind != "cache_warm" {
 		return nil
 	}
-	if len(frame.Entry.Usage) == 0 || isJSONNull(frame.Entry.Usage) {
+	if !usageWellFormed(frame.Entry.Usage) {
 		return nil
 	}
 	var usage Usage
