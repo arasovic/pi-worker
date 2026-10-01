@@ -39,7 +39,9 @@ Flags:
                          not containment: pass nothing the worker should
                          not act on
   --timeout <duration>   execution budget per task, default 30m; time
-                         waiting in the queue (up to 15m) is not counted
+                         waiting in the queue (up to 15m) is not counted.
+                         A worker queues because the whole machine runs at
+                         most max-model-workers at once (pi-worker config)
   --verify <command>     one check run in the workspace after the workers
                          finish, with its own budget of the same size.
                          Split on spaces, no shell: | & ; < > $ ` + "`" + ` quotes

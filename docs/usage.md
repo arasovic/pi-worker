@@ -5,9 +5,9 @@ This documents Pi Worker's public behavior.
 ## Agent skill
 
 The canonical provider-neutral agent skill is
-[`skills/pi-worker`](../skills/pi-worker). Use it when delegating through Pi,
-selecting cheaper or separately metered models, or assigning one to three Pi
-workers. It resolves informal model names from the catalog, uses an exact
+[`skills/pi-worker`](../skills/pi-worker). Use it when delegating bounded coding
+work to Pi workers, such as on cheaper or separately metered models.
+It resolves informal model names from the catalog, uses an exact
 explicit selector without fallback, and otherwise lets the configured default
 apply. It keeps model and explicit reasoning effort separate, falls back to
 the nearest available level when a requested one is unsupported, uses
