@@ -131,6 +131,67 @@ function failedReceipt(version, targets = [], affectedTargets = []) {
   };
 }
 
+/**
+ * Build the guard receipt written just before the skills child runs. It must
+ * name every path the child may write so a hard kill cannot later leave an
+ * identity-carrying partial tree that a fresh install reclassifies as an
+ * external skill. The shapes mirror the installed receipt, but the link
+ * destination is not known until the child runs: when the link already exists
+ * its current destination digest is recorded, otherwise any valid digest is
+ * sufficient because receiptTracksPath only compares paths for symlinks.
+ */
+async function intendedReceiptTargets({ requiredTargets, canonical, initialStates, bundledTree, platform }) {
+  const records = [];
+  const seenTargets = new Set();
+  const symlinks = new Map();
+  const addCopy = (targetPath, kind) => {
+    const key = pathKey(targetPath, platform);
+    if (seenTargets.has(key)) return;
+    seenTargets.add(key);
+    records.push({ path: targetPath, kind, files: treeFiles(bundledTree) });
+  };
+  const addSymlink = async (targetPath) => {
+    const key = pathKey(targetPath, platform);
+    if (seenTargets.has(key)) return;
+    seenTargets.add(key);
+    let sha256 = IDENTITY_SHA256;
+    try {
+      const destination = await readlinkAsync(targetPath, { encoding: "buffer" });
+      sha256 = createHash("sha256").update(destination).digest("hex");
+    } catch {
+      // Any valid digest is enough for a failed guard: it is not ownership
+      // evidence, and receiptTracksPath joins the recorded link path only.
+    }
+    const parent = path.dirname(targetPath);
+    const files = symlinks.get(parent) ?? [];
+    files.push({ path: path.basename(targetPath), sha256 });
+    symlinks.set(parent, files);
+  };
+  const add = async (targetPath) => {
+    if (samePath(targetPath, canonical, platform)) {
+      addCopy(targetPath, "canonical");
+      return;
+    }
+    if (initialStates.get(targetPath)?.expectedKind === "symlink") {
+      await addSymlink(targetPath);
+      return;
+    }
+    addCopy(targetPath, "copy");
+  };
+  for (const targetPath of [canonical, ...requiredTargets]) {
+    await add(targetPath);
+  }
+  for (const [parent, files] of symlinks) {
+    records.push({
+      path: parent,
+      kind: "symlink",
+      files: files.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0),
+    });
+  }
+  records.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  return records;
+}
+
 async function persist(writer, receiptPath, document, options) {
   await writer(receiptPath, document, options);
 }
@@ -826,9 +887,23 @@ export async function installSkill(options = {}) {
   }
 
   // The prior receipt stays on disk until the first step that can mutate a
-  // target, so a kill before that leaves ownership intact.
+  // target, so a kill before that leaves ownership intact. The guard names
+  // every target the child may write so a kill after the child wrote files
+  // tracks those paths instead of reclassifying them as an external skill.
+  let guardTargets;
   try {
-    await persist(writer, receiptPath, temporaryReceipt(version), options.receiptWriteOptions);
+    guardTargets = await intendedReceiptTargets({
+      requiredTargets,
+      canonical,
+      initialStates,
+      bundledTree,
+      platform,
+    });
+  } catch {
+    return result("skipped", "Unable to prepare the skill installation receipt.");
+  }
+  try {
+    await persist(writer, receiptPath, failedReceipt(version, guardTargets), options.receiptWriteOptions);
   } catch {
     return result("skipped", "Unable to prepare the skill installation receipt.");
   }
