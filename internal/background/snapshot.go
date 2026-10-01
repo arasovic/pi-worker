@@ -289,7 +289,17 @@ func (s Snapshot) Validate() error {
 	// states — and declared paths must not overlap. A run where nobody
 	// declared stays legal; the CLI rejects a partial declaration before
 	// any snapshot exists, so this only defends a snapshot built without
-	// the CLI in front of it.
+	// the CLI in front of it. The declared count is bounded first: the
+	// pairwise overlap check is quadratic in it, and a hand-edited
+	// snapshot must not be able to make a reader do unbounded work.
+	declaredPaths := 0
+	for _, w := range s.Workers {
+		declaredPaths += len(w.Task.Writes)
+	}
+	overPathLimit := declaredPaths > run.MaxDeclaredWritePaths
+	if overPathLimit {
+		errs = append(errs, fmt.Sprintf("write declarations total %d paths; at most %d allowed", declaredPaths, run.MaxDeclaredWritePaths))
+	}
 	if len(s.Workers) > 1 {
 		workerPaths := make(map[int][]string)
 		anyDeclared := false
@@ -307,18 +317,39 @@ func (s Snapshot) Validate() error {
 				errs = append(errs, fmt.Sprintf("worker[%d]: declared no writes while another worker declared: the declaration is all-or-none", id))
 			}
 		}
-		for idA, pathsA := range workerPaths {
-			for idB, pathsB := range workerPaths {
-				if idB <= idA {
-					continue
-				}
-				for _, pA := range pathsA {
-					for _, pB := range pathsB {
-						if pathsOverlap(pA, pB) {
+		// Skip the quadratic overlap check when the run is over the path
+		// limit: one error above already reports the reason, and a large
+		// hand-edited declaration must not make this read unbounded.
+		if !overPathLimit {
+			// At most ten overlap entries are kept, plus one truncation
+			// marker, so the error text stays bounded however many pairs
+			// overlap.
+			const maxOverlapErrors = 10
+			overlaps := 0
+			truncated := false
+		pathLoop:
+			for idA, pathsA := range workerPaths {
+				for idB, pathsB := range workerPaths {
+					if idB <= idA {
+						continue
+					}
+					for _, pA := range pathsA {
+						for _, pB := range pathsB {
+							if !pathsOverlap(pA, pB) {
+								continue
+							}
+							if overlaps == maxOverlapErrors {
+								truncated = true
+								break pathLoop
+							}
 							errs = append(errs, fmt.Sprintf("worker[%d]/worker[%d]: paths %q and %q overlap", idA+1, idB+1, pA, pB))
+							overlaps++
 						}
 					}
 				}
+			}
+			if truncated {
+				errs = append(errs, "... and more overlaps")
 			}
 		}
 	}
