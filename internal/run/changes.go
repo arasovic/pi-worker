@@ -105,6 +105,15 @@ const (
 	reasonWorkTreeUnconfirmed = "work tree not confirmed"
 )
 
+// OmittedMeasurementFailed returns the change manifest in the omitted
+// form for a failed measurement. A run that ended without a controller
+// result reports exactly what a measured run reports when its
+// measurement failed; the reason string lives in one place so the two
+// can never drift apart.
+func OmittedMeasurementFailed() *Changes {
+	return &Changes{Omitted: reasonMeasurementFail}
+}
+
 // maxChangeFiles caps the manifest list. TotalFiles always carries the
 // true count and Truncated is true when the cap dropped entries, so a
 // run touching a thousand files never produces an unbounded document.
