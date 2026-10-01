@@ -1663,6 +1663,18 @@ func TestWorkerPartialExplanationUsesOneSharedUTF8ByteBudget(t *testing.T) {
 	}
 }
 
+// withTimeoutReserveFraction sets the worker's timeout reserve fraction for one
+// test and restores it in t.Cleanup. A fraction of 2 leaves a reserve that is
+// large compared to scheduler jitter under -race: the default 10 leaves only a
+// fraction of the parent context, so stopping the interrupted turn and sending
+// the wrap-up prompt can race the parent deadline on a slow, loaded runner.
+func withTimeoutReserveFraction(t *testing.T, fraction int) {
+	t.Helper()
+	original := timeoutReserveFraction
+	timeoutReserveFraction = fraction
+	t.Cleanup(func() { timeoutReserveFraction = original })
+}
+
 // TestWorkerSpendsReserveOnWrapUpReport covers the working deadline: the first
 // turn is accepted but never settles, the derived working context ends before
 // the parent deadline, and the worker stops the turn, sends exactly one
@@ -1695,7 +1707,9 @@ func TestWorkerSpendsReserveOnWrapUpReport(t *testing.T) {
 	}
 	logPath := setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -1773,7 +1787,9 @@ func TestWorkerPromptCrossingWorkDeadlineGetsWrapUp(t *testing.T) {
 
 	warmFakePi(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -1868,7 +1884,9 @@ func TestWorkerWrapUpSettlesWithoutReportText(t *testing.T) {
 	}
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -1919,7 +1937,9 @@ func TestWorkerWrapUpLowersThinkingForReport(t *testing.T) {
 	}
 	logPath := setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -1982,7 +2002,9 @@ func TestWorkerWrapUpKeepsThinkingWhenAlreadyLowest(t *testing.T) {
 	}
 	logPath := setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -2030,7 +2052,9 @@ func TestWorkerWrapUpKeepsThinkingWhenSwitchRejected(t *testing.T) {
 	}
 	logPath := setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -2076,7 +2100,9 @@ func TestWorkerWrapUpReportCutOffAtTimeLimit(t *testing.T) {
 	}
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -2126,7 +2152,9 @@ func TestWorkerWrapUpReportCutOffKeepsEarlierTextFlag(t *testing.T) {
 	}
 	setupFakePiEnv(t, scriptConfig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	withTimeoutReserveFraction(t, 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	result := New(fakePiBin).Run(ctx, WorkerRequest{
 		Model:     "acme/m-1",
@@ -2162,12 +2190,7 @@ func TestWorkerWrapUpPromptRejected(t *testing.T) {
 		{Event: json.RawMessage(`{"type":"agent_settled"}`)},
 		{Response: &script.Response{Success: true}},
 	}
-	// Give the worker a reserve large compared to scheduler jitter: half of
-	// the 4 s parent context makes the reserve 2 s and the working deadline
-	// about 2 s after start, without making the test wait out a small reserve.
-	originalFraction := timeoutReserveFraction
-	timeoutReserveFraction = 2
-	t.Cleanup(func() { timeoutReserveFraction = originalFraction })
+	withTimeoutReserveFraction(t, 2)
 
 	setupFakePiEnv(t, scriptConfig)
 
