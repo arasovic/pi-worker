@@ -18,7 +18,7 @@ import (
 // creation-time-verified descendant sweep. This is best-effort lifecycle
 // recovery, not containment: a process that deliberately reparents itself
 // before the snapshot can escape, and a descendant spawned during the sweep
-// may too; both are outside v0's guarantee.
+// may too; both are outside the guarantee.
 type childContainment struct {
 	root descendantTarget
 }

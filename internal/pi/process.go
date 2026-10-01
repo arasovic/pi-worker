@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// toolAllowlist is the approved shell/test-capable tool slice for the v0
+// toolAllowlist is the approved shell/test-capable tool slice for the
 // coding worker, per docs/pi-cli-surface.md.
 const toolAllowlist = "read,grep,find,ls,edit,write,bash"
 
@@ -40,7 +40,7 @@ var terminateProcess = func(cont *childContainment, proc *os.Process) error {
 // recovery, not a sandbox: descendants spawned after the pre-close snapshot
 // or deliberately reparented before it may escape, and a process spawned
 // during the cleanup sweep itself may too. If Pi exits and is reaped before
-// cleanup begins, v0 has no safe lineage snapshot and surviving descendants
+// cleanup begins, the worker has no safe lineage snapshot and surviving descendants
 // may also escape. Wait is always collected.
 type Process struct {
 	executable string

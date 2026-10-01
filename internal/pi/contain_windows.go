@@ -18,7 +18,7 @@ import (
 // are required before Start reports success. The child starts before
 // assignment because os/exec exposes no suspended-create/resume hook;
 // therefore a process created in that short window could escape the job.
-// Assignment failure kills and reaps the direct child, but v0 does not claim
+// Assignment failure kills and reaps the direct child, but the worker does not claim
 // a sandbox or a no-escape guarantee for that window.
 type childContainment struct {
 	job windows.Handle

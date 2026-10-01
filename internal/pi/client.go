@@ -156,7 +156,7 @@ func (c *Client) GetAvailableModels(ctx context.Context) ([]ModelProjection, err
 }
 
 // SetModel activates the exact catalog provider/id. Pi confirms a
-// successful set_model with data:Model, so v0 requires that confirmation to
+// successful set_model with data:Model, so Pi Worker requires that confirmation to
 // be a non-null object whose provider and id strings exactly equal the
 // requested catalog pair. A missing, null, mistyped, or mismatched
 // confirmation is a protocol violation, never a silent success.

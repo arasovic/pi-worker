@@ -7,7 +7,7 @@ covered changes incompatibly only in a new major version.
 ## Covered
 
 - **Commands and flags.** Command names, flag names, what each flag means,
-  and the argument forms documented in [detailed usage](./v0-usage.md) and
+  and the argument forms documented in [detailed usage](./usage.md) and
   `--help`.
 - **Exit codes.** Each code and the outcome it stands for. A new exit code
   or a new `outcome` value is a major change, because a caller that

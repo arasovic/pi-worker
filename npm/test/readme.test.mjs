@@ -7,12 +7,14 @@ import { test } from "node:test";
 
 const repository = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const readmePath = join(repository, "README.md");
-const usagePath = join(repository, "docs", "v0-usage.md");
+const usagePath = join(repository, "docs", "usage.md");
+const v0UsagePath = join(repository, "docs", "v0-usage.md");
 const contributingPath = join(repository, "CONTRIBUTING.md");
 const securityPath = join(repository, "SECURITY.md");
 const skillPath = join(repository, "skills", "pi-worker", "SKILL.md");
 const readme = readFileSync(readmePath, "utf8");
 const usage = readFileSync(usagePath, "utf8");
+const v0Usage = readFileSync(v0UsagePath, "utf8");
 const contributing = existsSync(contributingPath) ? readFileSync(contributingPath, "utf8") : "";
 const security = existsSync(securityPath) ? readFileSync(securityPath, "utf8") : "";
 const skill = readFileSync(skillPath, "utf8");
@@ -93,7 +95,7 @@ test("README is the concise public entry point with the approved contract", () =
   assert.deepEqual(packageManifest.bugs, { url: "https://github.com/arasovic/pi-worker/issues" });
   assert.equal(packageManifest.engines.node, ">=22.20.0", "README requirement matches package lower bound");
   assert.doesNotMatch(readme, /not published|not currently usable|intended\s+post-publication/i);
-  assert.match(readme, /source builds.*docs\/v0-usage\.md/is);
+  assert.match(readme, /source builds.*docs\/usage\.md/is);
   assert.match(readme, /Node\.js 22\.20\+/);
   assert.match(usage, /Node\.js 22\.20\.0 or newer/);
   assert.match(usage, /source build/i);
@@ -102,9 +104,9 @@ test("README is the concise public entry point with the approved contract", () =
   assert.match(usage, /unsupported npm platform[\s\S]*skip before[\s\S]*receipt/i);
   assert.ok(
     usage.includes("go install github.com/arasovic/pi-worker/cmd/pi-worker@latest"),
-    "docs/v0-usage.md installs the module at @latest",
+    "docs/usage.md installs the module at @latest",
   );
-  assert.doesNotMatch(usage, /cmd\/pi-worker@v\d/, "docs/v0-usage.md pins no release version");
+  assert.doesNotMatch(usage, /cmd\/pi-worker@v\d/, "docs/usage.md pins no release version");
   assert.doesNotMatch(readme, /branding\/publication gate/i);
 
   assert.doesNotMatch(readme, /<repository-url>|<owner>|<repo>|<package-name>/i);
@@ -184,6 +186,15 @@ test("installed skill states the worker authority boundary before delegation", (
   assert.ok(
     skill.split(/\s+/).filter(Boolean).length <= 450,
     "skill must stay small: detail belongs in `pi-worker <command> --help`",
+  );
+});
+
+test("docs/v0-usage.md is a stub that links to the renamed usage document", () => {
+  assert.match(v0Usage, /\[Usage\]\(\.\/usage\.md\)/, "docs/v0-usage.md links to ./usage.md");
+  assert.equal(
+    v0Usage,
+    "# Moved\n\nThis page is now [Usage](./usage.md).\n",
+    "docs/v0-usage.md contains only the redirect stub",
   );
 });
 

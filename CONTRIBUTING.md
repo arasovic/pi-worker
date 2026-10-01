@@ -89,7 +89,7 @@ on its own branch:
   the two constants, writes the measured
   `EXPECTED_AGENT_COUNT`, `EXPECTED_GLOBAL_TARGET_COUNT`, and
   `EXPECTED_NO_GLOBAL_TARGET_COUNT` in `npm/lib/skill-rules.mjs`, updates the
-  `skills@…` prose in `README.md` and `docs/v0-usage.md`, and regenerates the
+  `skills@…` prose in `README.md` and `docs/usage.md`, and regenerates the
   bundle with `node npm/scripts/extract-skills-rules.mjs --write
   npm/generated/skills-rules.json`. The counts are not to be guessed: the
   generator prints the measured values in its
@@ -97,7 +97,7 @@ on its own branch:
   what gets written. If the `engines.node` derivation assertion in
   `npm/test/hygiene.test.mjs` goes red, the package's Node floor has moved with
   the dependency: read the new floor from the installed `skills` package and
-  write the same number in `package.json`, `README.md`, `docs/v0-usage.md`,
+  write the same number in `package.json`, `README.md`, `docs/usage.md`,
   `docs/releasing.md`, and the literal in `npm/test/readme.test.mjs`.
 - Pi: the pin lives in `compat/pi/package.json`, which Dependabot watches
   weekly. The coupled artifacts are `internal/piversion/version.go` and the

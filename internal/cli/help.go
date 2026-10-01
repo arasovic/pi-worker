@@ -88,7 +88,7 @@ Outcome and exit code:
 Workers run bash with your permissions in this workspace; this is not a
 sandbox. Say in the task which git operations are allowed.
 
-Full contract: https://github.com/arasovic/pi-worker/blob/main/docs/v0-usage.md
+Full contract: https://github.com/arasovic/pi-worker/blob/main/docs/usage.md
 `,
 	"runs": `pi-worker runs - list, follow and clean up runs
 
