@@ -613,7 +613,10 @@ pi-worker worktrees remove <name> [--yes] [--json]
 
 - `worktrees remove <name>` accepts only a clean checkout whose exact
   branch is merged into the caller’s current `HEAD`. A dirty checkout or
-  an unmerged branch is refused. No force option exists.
+  an unmerged branch is refused. No force option exists. "Clean" follows
+  git status: files git ignores do not make a checkout dirty and are
+  deleted with it — build output, dependencies, or local environment
+  files. Copy out anything ignored you want to keep before removing.
 
 - Confirmation: human mode shows the selected row as a table on stderr
   and asks `remove worktree "<name>" on branch "<branch>" at

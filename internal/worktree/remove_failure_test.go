@@ -206,6 +206,9 @@ func TestRemoveListFailurePreventsCommands(t *testing.T) {
 		defer mu.Unlock()
 		cmd := strings.Join(args, " ")
 		calls = append(calls, cmd)
+		if cmd == "rev-parse --git-dir" {
+			return filepath.Join(t.TempDir(), ".git", "worktrees", "w"), nil
+		}
 		if cmd == "rev-parse --git-common-dir" {
 			return filepath.Join(t.TempDir(), ".git"), nil
 		}

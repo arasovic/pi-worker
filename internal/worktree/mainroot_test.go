@@ -165,3 +165,73 @@ func TestPrepareLinkedWorktreeOfSeparateGitDir(t *testing.T) {
 		t.Fatalf("checkout missing file.txt at %s: %v", got.Path, err)
 	}
 }
+
+// TestPrepareFromMainCheckoutOfSeparateGitDirNamedDotGit pins #453:
+// when the external metadata directory is literally named .git (git
+// init --separate-git-dir <tmp>/storage/app/.git) and the command runs
+// from the main checkout, the managed worktree must land under that
+// checkout's .pi-worker/worktrees/, not beside the metadata directory.
+// Before the fix the stripped common directory (/storage/app) was
+// mistaken for the repository root.
+func TestPrepareFromMainCheckoutOfSeparateGitDirNamedDotGit(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("HOME", t.TempDir())
+	base := t.TempDir()
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "HOME="+os.Getenv("HOME"))
+		o, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, o)
+		}
+		return strings.TrimSpace(string(o))
+	}
+
+	// The checkout and the metadata directory are siblings in layout,
+	// and the metadata directory is named .git exactly as in #453.
+	main := filepath.Join(base, "projects", "app")
+	meta := filepath.Join(base, "storage", "app", ".git")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(meta), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(main, "init", "-q", "--separate-git-dir="+meta)
+	git(main, "config", "user.email", "test@pi-worker")
+	git(main, "config", "user.name", "pi-worker test")
+	if err := os.WriteFile(filepath.Join(main, "file.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(main, "add", "file.txt")
+	git(main, "commit", "-q", "-m", "initial")
+
+	got, err := Prepare(context.Background(), main, "probe")
+	if err != nil {
+		t.Fatalf("Prepare from main checkout of separate-git-dir repo: %v", err)
+	}
+
+	resolvedMain, err := filepath.EvalSymlinks(main)
+	if err != nil {
+		t.Fatalf("eval symlinks main: %v", err)
+	}
+	wantPath := filepath.Join(resolvedMain, ".pi-worker", "worktrees", "probe")
+	if got.Path != wantPath {
+		t.Fatalf("Path = %q, want %q (main checkout root)", got.Path, wantPath)
+	}
+
+	// The metadata directory must not have gained a managed checkout.
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatalf("eval symlinks base: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(resolvedBase, "storage", "app", ".pi-worker")); err == nil {
+		t.Fatalf("nested .pi-worker created under the metadata directory %s", filepath.Join(resolvedBase, "storage", "app"))
+	}
+	if _, err := os.Stat(filepath.Join(got.Path, "file.txt")); err != nil {
+		t.Fatalf("checkout missing file.txt at %s: %v", got.Path, err)
+	}
+}

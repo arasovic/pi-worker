@@ -136,9 +136,10 @@ run/<name>; nothing else is managed.
 list    name, path, branch, dirty (it has uncommitted changes) and merged
         (its branch is in your current HEAD); changes nothing
 remove  deletes one clean, merged worktree, then its branch. There is no
-        force: merge or discard the work first. It asks first; --yes skips
-        only the question and is required with --json or without a
-        terminal
+        force: merge or discard the work first. Files git ignores — build
+        output, dependencies, local environment files — are deleted with
+        it. It asks first; --yes skips only the question and is required
+        with --json or without a terminal
 
 Exit: 0 done or declined; 2 bad arguments, not found, dirty or not merged;
 9 git failed, or the worktree changed after you confirmed: retry.

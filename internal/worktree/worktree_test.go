@@ -311,8 +311,12 @@ func TestPrepareResolvesHeadOnceAndPassesHash(t *testing.T) {
 		cmd := strings.Join(args, " ")
 		calls = append(calls, cmd)
 		switch {
+		case cmd == "rev-parse --git-dir":
+			return filepath.Join(root, ".git"), nil
 		case cmd == "rev-parse --git-common-dir":
 			return filepath.Join(root, ".git"), nil
+		case cmd == "rev-parse --show-toplevel":
+			return root, nil
 		case cmd == "rev-parse HEAD":
 			return fake, nil
 		case cmd == "rev-parse --verify --quiet refs/heads/run/inspect":
