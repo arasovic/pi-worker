@@ -301,6 +301,22 @@ the worker has reached the phase that produces them. Worker `state` is
 `queued`, `running`, `completed`, `failed`, `timed-out`, `cancelled`,
 `unavailable`, or `error`.
 
+`task` is each worker's read-only projection of the task it accepted:
+
+- `model`: the model selector the task asked for
+- `thinkingLevel`: the thinking level the task requested, as given; it may
+  be empty when none was requested. It is not the level the worker ran at;
+  that is `result.thinkingLevel`
+- `prompt`: the task prompt, cut to at most 4096 bytes on a UTF-8
+  character boundary; the worker always received the full prompt
+- `promptTruncated`: `true` when `prompt` was cut
+- `writesDeclared`: whether the task declared a write set at all. `false`
+  means no declaration; `true` with `writes` absent means the task
+  declared an empty set (read-only)
+- `writes`: the declared paths, present only when non-empty
+- `data`: one entry per data file composed into the prompt, with `path`,
+  `byteCount`, and `sha256`; never the content
+
 `activity` is present once a running worker has reported Pi activity. It is
 reported on every tool start and otherwise at most every 10 seconds, and it
 carries `lastEventAt` (the moment of the last observed Pi event), `toolCalls`
@@ -498,8 +514,10 @@ Carried material is additive and optional, so `schemaVersion` stays `1`.
 Per worker, `data` appears only when the task carried `--data` files, in
 the same order the files were declared:
 
-- `path`: always present; the path as composed into the prompt as the
-  section label
+- `path`: always present; the path exactly as the caller wrote it on
+  `--data`, used as the prompt's section label. It is not rebased: a
+  relative `--data` path stays relative to the directory the command ran
+  in
 - `byteCount`: always present; the length of the content actually read
   and composed
 - `sha256`: always present; the SHA-256 of the content as read, lowercase
@@ -550,7 +568,8 @@ separately.
 - `truncated`: present and `true` only when the capture exceeded the
   excerpt budget
 - `logFile`: present only when a truncated capture was also written in
-  full to a `pi-worker-verify-*.log` file in the system temp directory
+  full to a `pi-worker-verify-*.log` file in the system temp directory;
+  carries that file's absolute path
 
 The worktree result is additive and optional, so `schemaVersion` stays `1`.
 Root `worktree` is present only for a run started with `--worktree`; it is
@@ -614,7 +633,9 @@ both:
 
 Each entry in `files` carries:
 
-- `path`: always present; the workspace-relative path
+- `path`: always present; the path relative to the repository root (not
+  to the workspace: a run started in a subdirectory reports that
+  subdirectory's files with its prefix, e.g. `sub/file.txt`)
 - `status`: always present; exactly one of `added`, `modified`, `deleted`
 - `added` and `deleted`: always present; the line counts, both `0` for a
   binary file
@@ -626,7 +647,7 @@ Each entry in `files` carries:
   failed"` below). `added` and `deleted` carry no meaning on a
   directory entry and are both `0`; `binary` carries no meaning and is
   absent; `noFinalNewline` never accompanies the entry. `path` is the
-  canonical workspace-relative path, so the same path can never appear
+  canonical repository-root-relative path, so the same path can never appear
   twice under two spellings. The field is additive and optional, so
   `schemaVersion` stays 1.
 - `dirtyBefore`: present and `true` only when the path was already dirty
@@ -834,8 +855,8 @@ reason it could not run or the verdict, never both:
   undeclared carries `0` rather than omitting the field
 - `undeclared`: present only when at least one path was undeclared —
   either a final changed path no task declared or a task-owned output path
-  proven changed/added/erased after its owner settled; capped at 100
-  entries
+  proven changed/added/erased after its owner settled; each path is
+  relative to the repository root; capped at 100 entries
 - `truncated`: present and `true` only when the cap dropped entries
 
 Leftover-process reporting is additive and optional, so `schemaVersion` stays
