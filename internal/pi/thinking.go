@@ -83,8 +83,46 @@ func lowestThinkingLevel(levels []ThinkingLevel) (ThinkingLevel, bool) {
 	return "", false
 }
 
+// nearestThinkingLevel returns the level in levels closest to requested by
+// thinkingLevelOrder: the nearest level below the request when one exists,
+// otherwise the nearest level above it. It reports false when levels holds
+// none of the vocabulary. The order comes from thinkingLevelOrder, never
+// from the order Pi listed the levels.
+func nearestThinkingLevel(levels []ThinkingLevel, requested ThinkingLevel) (ThinkingLevel, bool) {
+	requestedIndex := slices.Index(thinkingLevelOrder, requested)
+	if requestedIndex < 0 {
+		return "", false
+	}
+	var nearestBelow ThinkingLevel
+	var hasBelow bool
+	var nearestAbove ThinkingLevel
+	var hasAbove bool
+	for index, level := range thinkingLevelOrder {
+		if !slices.Contains(levels, level) {
+			continue
+		}
+		switch {
+		case index < requestedIndex:
+			nearestBelow, hasBelow = level, true
+		case index > requestedIndex && !hasAbove:
+			nearestAbove, hasAbove = level, true
+		}
+	}
+	if hasBelow {
+		return nearestBelow, true
+	}
+	if hasAbove {
+		return nearestAbove, true
+	}
+	return "", false
+}
+
 func thinkingFallbackWarning(requested, effective ThinkingLevel, reason string) string {
 	return fmt.Sprintf("requested thinking=%s %s; continuing with Pi default thinking=%s", requested, reason, effective)
+}
+
+func thinkingNearestWarning(requested, effective ThinkingLevel) string {
+	return fmt.Sprintf("requested thinking=%s unavailable; continuing with nearest available thinking=%s", requested, effective)
 }
 
 func validateStateModel(state SessionState, provider, id string) error {

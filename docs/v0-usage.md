@@ -809,9 +809,15 @@ two runs from distinct configuration files do not share a gate.
 - With explicit `--thinking`, the worker queries
   `get_available_thinking_levels`, applies the exact level when supported, and
   confirms the effective value with a second `get_state`.
-- If the explicit level is unsupported or `set_thinking_level` returns a
-  well-formed rejection, the worker keeps the captured Pi default, emits a
-  warning, and continues. A successful task still exits `0`.
+- If the explicit level is unsupported, the worker picks the nearest available
+  level by Pi's reasoning order — the nearest level below the request, or the
+  nearest level above it only when nothing is below — applies it, and confirms
+  it with a second `get_state`. When the nearest level is the captured Pi
+  default, or the model lists none of the vocabulary, no switch is sent and
+  the default is kept. Either way the worker emits a warning and continues.
+- If `set_thinking_level` returns a well-formed rejection for a level, the
+  worker keeps the captured Pi default, emits a warning, and continues. A
+  successful task still exits `0`.
 - Malformed RPC data, transport failure, active-model mismatch, or a successful
   set that is not confirmed are hard failures; they never fall back.
 - Omitting the flag is not the same as `off`: `off` is an explicit choice.
@@ -1327,7 +1333,7 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
 Example:
 
 ```json
-{"schemaVersion":1,"status":"completed","outcome":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with Pi default thinking=high","status":"completed","explanation":"Worker one done"}]}
+{"schemaVersion":1,"status":"completed","outcome":"completed","workers":[{"model":"provider/model-id","requestedThinkingLevel":"max","thinkingLevel":"high","thinkingFallback":true,"warning":"requested thinking=max unavailable; continuing with nearest available thinking=high","status":"completed","explanation":"Worker one done"}]}
 ```
 
 ### Exit codes
