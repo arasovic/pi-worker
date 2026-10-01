@@ -82,8 +82,8 @@ license, homepage, and issue URL before any publication step.
 
 ## Subsequent releases
 
-1. Update `package.json` to the intended version and complete the local snapshot
-   gate.
+1. Choose the version by [the versioning policy](./versioning.md), update
+   `package.json` to it, and complete the local snapshot gate.
 2. Push the release commit to public `main`.
 3. Create and push the exact matching `vX.Y.Z` tag.
 4. Verify the `Release` workflow publishes through OIDC and attaches the four
