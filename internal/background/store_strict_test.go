@@ -139,8 +139,9 @@ func TestLoad_MissingRunDirectory_PreservesErrNotExist(t *testing.T) {
 	}
 }
 
-// Load on an existing run directory but missing snapshot.json preserves fs.ErrNotExist.
-func TestLoad_MissingSnapshot_PreservesErrNotExist(t *testing.T) {
+// Load on an existing run directory but missing snapshot.json reports the
+// broken run, not an unknown one: the error must not wrap fs.ErrNotExist.
+func TestLoad_MissingSnapshot_ReportsBrokenRunDirectory(t *testing.T) {
 	root := t.TempDir()
 	runID := makeRunID(fixtureTime)
 	runDir := filepath.Join(root, runID)
@@ -151,8 +152,11 @@ func TestLoad_MissingSnapshot_PreservesErrNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("wanted fs.ErrNotExist, got: %v", err)
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("wanted an error that does not match fs.ErrNotExist, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "holds no snapshot") {
+		t.Errorf("wanted the error to say the directory holds no snapshot, got: %v", err)
 	}
 }
 

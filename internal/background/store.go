@@ -173,6 +173,13 @@ func (s *Store) Load(runID string) (Snapshot, error) {
 	// and non-regular entries; no-follow open remains the race guard.
 	si, lerr := os.Lstat(path)
 	if lerr != nil {
+		// The run directory exists but holds no snapshot: the run is
+		// recorded, its state is broken. This is not a missing run, so
+		// the error must not match fs.ErrNotExist, which the CLI maps to
+		// an unknown run.
+		if errors.Is(lerr, fs.ErrNotExist) {
+			return Snapshot{}, fmt.Errorf("load snapshot (%s): run directory %s exists but holds no snapshot", runID, dir)
+		}
 		return Snapshot{}, fmt.Errorf("load snapshot (%s): inspect snapshot %s: %w", runID, path, lerr)
 	}
 	if si.Mode()&os.ModeSymlink != 0 {

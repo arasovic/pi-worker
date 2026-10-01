@@ -66,6 +66,12 @@ func runsStatusCommand(parent context.Context, opts runsOptions, stdout, stderr 
 		}
 		return code
 	}
+	// A non-zero code with no read error is the Manager failing to resolve
+	// the run's settings: the failure was already reported on stderr, and the
+	// zero snapshot would print a document for a run that was never read.
+	if code != 0 {
+		return code
+	}
 	if code := renderRunsSnapshot(stdout, stderr, opts.json, snap, ""); code != 0 {
 		return code
 	}
