@@ -1458,9 +1458,13 @@ not stay on disk.
   waiting command and leaves the run going, bounded by its `--timeout`
   (default `30m`), and `runs list` or the `pi-worker: run <runId>` line
   finds it.
-- A Ctrl-C before the run was accepted — during the version probe, the
-  checkout, or the acceptance handshake — cancels the start: exit `8`, no
-  document, no run left behind.
+- A Ctrl-C before the supervisor's acceptance reached the command — while
+  the version probe or the checkout runs, or while the acceptance
+  handshake is still in flight — cancels the start: exit `8`, no document,
+  no run left behind. A Ctrl-C that lands after a complete acceptance
+  reply reached the command is not a refused start: it cancels the
+  accepted run the way `runs cancel` does, which ends `cancelled` with exit
+  `8` and stays listed in `runs list`.
 - Inside the run, a cancellation and the timeout cancel the shared run
   context.
 - macOS/Linux: each child runs in its own process group, but cleanup avoids signalling that reusable numeric group; it kills Pi through Go's process handle and performs a best-effort, creation-time-verified descendant sweep.

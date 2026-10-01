@@ -645,6 +645,83 @@ func sortedKeys(m map[string]any) []string {
 	return out
 }
 
+// TestRunBackgroundCancelAfterAcceptanceCancelsTheRunAndExitsEight
+// requires that a cancel that lands after the supervisor accepted a
+// --background run is not a refused start: the command cancels the accepted
+// run the way `runs cancel` does, waits for it to finish, prints the
+// finished run's summary, and exits 8. The run stays listed, terminal and
+// cancelled — no interrupted run is left behind — and runs status answers
+// the same.
+func TestRunBackgroundCancelAfterAcceptanceCancelsTheRunAndExitsEight(t *testing.T) {
+	manager, _ := setupBackgroundRun(t, slowBackgroundScript("done", backgroundRunDelayStep))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Fire the cancellation at the one deterministic point after the
+	// supervisor's acceptance reached the command, before it can report
+	// the run as accepted and return.
+	original := backgroundRunAcceptedProbe
+	backgroundRunAcceptedProbe = cancel
+	t.Cleanup(func() { backgroundRunAcceptedProbe = original })
+
+	code, stdout, stderr := runCLIWithContext(t, ctx,
+		[]string{"run", "--background", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
+	if code != 8 {
+		t.Fatalf("run --background cancelled after acceptance = (%d, %q, %q), want exit 8", code, stdout, stderr)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(stdout), "outcome=cancelled") {
+		t.Fatalf("stdout = %q, want it to end with the cancelled outcome", stdout)
+	}
+
+	// Exactly one run exists and it is cancelled, not interrupted: the
+	// accepted supervisor finished it rather than being killed.
+	listCode, listStdout, listStderr := runCLI(t, []string{"runs", "list", "--json"}, "")
+	if listCode != 0 || listStderr != "" {
+		t.Fatalf("runs list = (%d, %q, %q), want exit 0", listCode, listStdout, listStderr)
+	}
+	var listDocument struct {
+		Runs []struct {
+			RunID   string `json:"runId"`
+			Outcome string `json:"outcome"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal([]byte(listStdout), &listDocument); err != nil {
+		t.Fatalf("decode runs list %q: %v", listStdout, err)
+	}
+	if len(listDocument.Runs) != 1 {
+		t.Fatalf("runs list carries %d runs, want exactly one: %q", len(listDocument.Runs), listStdout)
+	}
+	runID := listDocument.Runs[0].RunID
+	if listDocument.Runs[0].Outcome != string(contracts.OutcomeCancelled) {
+		t.Fatalf("listed run outcome = %q, want cancelled (no interrupted run left)", listDocument.Runs[0].Outcome)
+	}
+
+	// runs status of that run is the terminal cancelled run; like every
+	// runs command it reports the run's own exit code, 8 for cancelled.
+	statusCode, statusStdout, statusStderr := runCLI(t, []string{"runs", "status", runID, "--json"}, "")
+	if statusCode != 8 || statusStderr != "" {
+		t.Fatalf("runs status %s = (%d, %q, %q), want exit 8", runID, statusCode, statusStdout, statusStderr)
+	}
+	var statusDocument struct {
+		Terminal bool   `json:"terminal"`
+		Outcome  string `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(statusStdout), &statusDocument); err != nil {
+		t.Fatalf("decode runs status %q: %v", statusStdout, err)
+	}
+	if !statusDocument.Terminal || statusDocument.Outcome != string(contracts.OutcomeCancelled) {
+		t.Fatalf("runs status document terminal=%v outcome=%q, want terminal cancelled",
+			statusDocument.Terminal, statusDocument.Outcome)
+	}
+	snap, err := manager.Status(runID)
+	if err != nil {
+		t.Fatalf("Status %s: %v", runID, err)
+	}
+	if !snap.Terminal || snap.Outcome == nil || *snap.Outcome != contracts.OutcomeCancelled {
+		t.Fatalf("stored run terminal=%v outcome=%v, want terminal cancelled", snap.Terminal, snap.Outcome)
+	}
+}
+
 // TestRunsWaitOnAnUnreadableRunReportsTheReadFailureNotAnEmptyDocument
 // requires that a wait whose bound is already spent still reports a run it
 // cannot read as unreadable. The ran-out arm exists to report a live run's

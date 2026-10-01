@@ -82,6 +82,14 @@ func acceptSnapshot(s background.Snapshot) acceptedSnapshot {
 	return accepted
 }
 
+// backgroundRunAcceptedProbe is the private test seam invoked by
+// backgroundRunCommand once the run was accepted and immediately before it
+// checks whether the context was cancelled during the start. Production
+// leaves it nil; a test uses it to cancel the context at exactly that
+// point, deterministically landing a cancel after acceptance. It runs
+// synchronously on the command goroutine, so it races nothing.
+var backgroundRunAcceptedProbe func()
+
 // backgroundRunCommand starts one run in the background and returns as soon as
 // it is accepted, while the run keeps going in a process of its own. Every
 // option a waited run takes keeps its meaning here: --background changes who
@@ -98,6 +106,27 @@ func backgroundRunCommand(ctx context.Context, opts runOptions, tasks []run.Task
 	}
 	if opts.debug {
 		fmt.Fprintf(stderr, "pi-worker: debug log %s\n", manager.DebugLogPath(started.RunID))
+	}
+
+	if backgroundRunAcceptedProbe != nil {
+		backgroundRunAcceptedProbe()
+	}
+
+	// A cancel that lands after the supervisor accepted the run is not a
+	// refused start: the run exists and is going, so it is cancelled the
+	// way `runs cancel` cancels it, waited for, and reported exactly as the
+	// waiting `run` reports a finished run. Without this the caller would
+	// be told the start succeeded while the run it started was left going.
+	if ctx.Err() != nil {
+		// This command is the supervisor's parent and now waits for it, so
+		// reap it as the waiting `run` does; otherwise a supervisor that
+		// died without finishing would stay a zombie.
+		background.ReapSupervisor(started.Snapshot.Supervisor.PID)
+		snap, err := cancelAcceptedRun(manager, started.RunID, stderr)
+		if err != nil {
+			return reportRunWaitError(started.RunID, err, stderr)
+		}
+		return printFinishedRun(snap, opts.json, stdout, stderr)
 	}
 
 	if opts.json {

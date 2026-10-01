@@ -633,25 +633,47 @@ func runCommand(parent context.Context, opts runOptions, tasks []run.Task, stdou
 		// The caller asked to stop: the run is cancelled the way `runs
 		// cancel` cancels it, and its end is still waited for, so the
 		// result reports what the run did before it stopped.
-		if _, cancelErr := manager.Cancel(runID); cancelErr != nil {
-			fmt.Fprintf(stderr, "pi-worker: cancel run %s: %v\n", runID, cancelErr)
-		}
-		snap, err = manager.Wait(context.Background(), runID, 0)
+		snap, err = cancelAcceptedRun(manager, runID, stderr)
 	}
 	stopDebug()
 	if err != nil {
-		var unavailable *background.SupervisorUnavailableError
-		if errors.As(err, &unavailable) {
-			fmt.Fprintf(stderr, "pi-worker: run %s: supervisor is no longer there; the run was interrupted and will not finish\n", runID)
-		} else {
-			fmt.Fprintf(stderr, "pi-worker: read run %s: %v\n", runID, err)
-		}
-		return 9
+		return reportRunWaitError(runID, err, stderr)
 	}
 
+	return printFinishedRun(snap, opts.json, stdout, stderr)
+}
+
+// cancelAcceptedRun cancels an accepted run the way `runs cancel` cancels it
+// and waits for it to end, reporting a cancel request that could not be sent
+// and returning the terminal snapshot. The wait uses a fresh context on
+// purpose: the caller's context is already spent, so waiting on it would
+// report the cancellation instead of the run's own end.
+func cancelAcceptedRun(manager *background.Manager, runID string, stderr io.Writer) (background.Snapshot, error) {
+	if _, cancelErr := manager.Cancel(runID); cancelErr != nil {
+		fmt.Fprintf(stderr, "pi-worker: cancel run %s: %v\n", runID, cancelErr)
+	}
+	return manager.Wait(context.Background(), runID, 0)
+}
+
+// reportRunWaitError prints the reason an accepted run could not be read to
+// its end and returns the exit code for it.
+func reportRunWaitError(runID string, err error, stderr io.Writer) int {
+	var unavailable *background.SupervisorUnavailableError
+	if errors.As(err, &unavailable) {
+		fmt.Fprintf(stderr, "pi-worker: run %s: supervisor is no longer there; the run was interrupted and will not finish\n", runID)
+	} else {
+		fmt.Fprintf(stderr, "pi-worker: read run %s: %v\n", runID, err)
+	}
+	return 9
+}
+
+// printFinishedRun prints a finished run exactly as the waiting `run`
+// prints it — its error, if any, and its result document — and returns the
+// run's exit code.
+func printFinishedRun(snap background.Snapshot, jsonOutput bool, stdout, stderr io.Writer) int {
 	printRunError(snap, stderr)
 	if snap.Result != nil {
-		if err := printRunDocument(*snap.Result, opts.json, stdout, stderr); err != nil {
+		if err := printRunDocument(*snap.Result, jsonOutput, stdout, stderr); err != nil {
 			return contracts.ExitCode(contracts.RunFailed, &contracts.RunError{Kind: contracts.ErrorInternal, Message: err.Error()})
 		}
 	}

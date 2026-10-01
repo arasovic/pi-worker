@@ -53,9 +53,11 @@ type supervisorStartCancelPhase int
 const (
 	// supervisorStartCancelBeforeDecode fires after one complete reply
 	// frame has been received and immediately before strict decoding
-	// begins. A cancellation observed at this point still closes and
-	// reaps the child: the frame has not yet been decoded, bound, or
-	// accepted.
+	// begins. Acceptance is already inevitable at this point: the frame is
+	// in hand, so a cancellation observed here never closes the child or
+	// rolls the run back — the frame is decoded, bound, and the accepted
+	// supervisor is detached, and the caller cancels the accepted run
+	// through its normal cancel path.
 	supervisorStartCancelBeforeDecode supervisorStartCancelPhase = iota
 
 	// supervisorStartCancelAfterBind fires after the accepted reply has
@@ -82,6 +84,51 @@ var supervisorStartCancelProbe func(supervisorStartCancelPhase)
 // the handoff goroutine between Send and CloseRequest, so it races
 // neither, and production behavior never branches on it.
 var supervisorStartCloseRequestProbe func()
+
+// receiveOutcome is one return of the reply-read worker: the frame
+// Receive produced, or the error it failed with.
+type receiveOutcome struct {
+	frame []byte
+	err   error
+}
+
+// awaitSupervisorStartReply waits for the one reply the receive worker
+// delivers, honoring ctx. A complete frame outranks a cancellation that is
+// already ready or becomes ready: once the parent holds a complete reply
+// frame, acceptance wins, so the worker's outcome is preferred even after
+// ctx.Done closed. It returns the frame when the worker delivered one,
+// cancelled=true when the context ended with no reply frame, or the
+// receive error.
+//
+// ponytail: the ceiling of this fix is the window where the reply bytes are
+// on the wire but Receive has not yet returned when the kill fires: a
+// cancel in that window still reports a refused start. The upgrade is the
+// child waiting for an acknowledgement from the parent before it schedules
+// any work.
+func awaitSupervisorStartReply(ctx context.Context, done <-chan receiveOutcome) (frame []byte, cancelled bool, readErr error) {
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			return nil, false, outcome.err
+		}
+		return outcome.frame, false, nil
+	case <-ctx.Done():
+		// The select above may have chosen the cancellation while a
+		// complete reply frame was already waiting. Take one non-blocking
+		// look before treating this as a cancelled start: a frame that
+		// arrived without error continues to the decode path exactly as if
+		// the first case had won.
+		select {
+		case outcome := <-done:
+			if outcome.err != nil {
+				return nil, false, outcome.err
+			}
+			return outcome.frame, false, nil
+		default:
+			return nil, true, nil
+		}
+	}
+}
 
 // startSupervisorHandoffWithProcess runs the whole starter-side half of
 // the one-shot supervisor acceptance handshake. It encodes and validates
@@ -113,12 +160,13 @@ var supervisorStartCloseRequestProbe func()
 // returned, so it races nothing.
 //
 // The acceptance linearization for cancellation is: cancellation observed
-// before process creation, while a Send or Receive is in flight, or after
-// a complete reply frame arrives but before strict decoding begins always
-// closes and reaps the child and reports non-accepted. Once strict
-// decoding begins, the handshake is committed: a complete valid accepted
-// reply is decoded and bound, acceptance wins over any later
-// cancellation, and the child is detached. A complete rejection returns
+// before process creation or while a Send or Receive is in flight with no
+// complete reply frame yet in hand always closes and reaps the child and
+// reports non-accepted. Once a complete reply frame has arrived, the
+// handshake is committed: a complete valid accepted reply is decoded and
+// bound, acceptance wins over any later cancellation, and the child is
+// detached; the caller then cancels the accepted run through its normal
+// path. A complete rejection returns
 // accepted=false with a bounded rejection error and closes and reaps the
 // child. After a complete valid accepted reply, Detach is always called;
 // a detach diagnostic returns accepted=true with the accepted snapshot
@@ -201,47 +249,38 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 
 	// Phase 5 — read exactly one reply frame. The receive runs on a
 	// worker goroutine so a child that never replies cannot stall
-	// cancellation.
-	type receiveOutcome struct {
-		frame []byte
-		err   error
-	}
+	// cancellation. A cancellation and a complete reply frame can be
+	// ready at the same time; once the parent holds a complete frame,
+	// acceptance wins, and a cancellation that raced it is left to the
+	// caller as a cancel of the accepted run.
 	receiveDone := make(chan receiveOutcome, 1)
 	go func() {
 		frame, readErr := proc.Receive()
 		receiveDone <- receiveOutcome{frame: frame, err: readErr}
 	}()
-	var frame []byte
-	select {
-	case outcome := <-receiveDone:
-		if outcome.err != nil {
-			closeErr := proc.Close()
-			return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-				fmt.Errorf("start supervisor handoff: read reply frame: %w", outcome.err), closeErr, closeRequestDiag,
-				discardUnacceptedStartSnapshot(req))
-		}
-		frame = outcome.frame
-	case <-ctx.Done():
+	frame, cancelled, readErr := awaitSupervisorStartReply(ctx, receiveDone)
+	if cancelled {
 		closeErr := proc.Close()
 		<-receiveDone
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
 			fmt.Errorf("start supervisor handoff: %w", ctx.Err()), closeErr, closeRequestDiag,
 			discardUnacceptedStartSnapshot(req))
 	}
-
-	// Phase 6 — the cancellation linearization point: one complete reply
-	// frame is in hand but nothing has been decoded or bound. The probe
-	// runs before the final cancellation check so a probe-fired
-	// cancellation deterministically lands at this point, and a
-	// cancellation observed here still closes and reaps the child.
-	if supervisorStartCancelProbe != nil {
-		supervisorStartCancelProbe(supervisorStartCancelBeforeDecode)
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if readErr != nil {
 		closeErr := proc.Close()
 		return supervisorStartHandoffResult{}, joinSupervisorStartErrors(
-			fmt.Errorf("start supervisor handoff: %w", ctxErr), closeErr, closeRequestDiag,
+			fmt.Errorf("start supervisor handoff: read reply frame: %w", readErr), closeErr, closeRequestDiag,
 			discardUnacceptedStartSnapshot(req))
+	}
+
+	// Phase 6 — the cancellation linearization point: one complete reply
+	// frame is in hand, so acceptance wins from here on. The probe still
+	// fires at this point so a probe-fired cancellation deterministically
+	// lands after the frame arrived, but a cancellation observed here is
+	// not consulted: decoding and binding proceed and the accepted run is
+	// cancelled by the caller through its normal path.
+	if supervisorStartCancelProbe != nil {
+		supervisorStartCancelProbe(supervisorStartCancelBeforeDecode)
 	}
 
 	// Phase 7 — strict decode. Once decoding begins, cancellation can no
@@ -307,8 +346,8 @@ func startSupervisorHandoffWithProcess(ctx context.Context, executable string, r
 // discardUnacceptedStartSnapshot removes the durable snapshot the child
 // may have written for a request whose reply the starter never accepted.
 // The child writes the snapshot before its accepted reply, so a starter
-// that gives up after sending the request frame — cancellation, deadline,
-// read error, cancellation at the decode point, decode error, or bind
+// that gives up after sending the request frame — cancellation or deadline
+// before a complete reply frame arrives, read error, decode error, or bind
 // error — must roll the orphaned snapshot back itself; the admission
 // tickets need no such recovery because Gate.Reconcile reaps tickets whose
 // owner, the now-reaped child, is gone. A run directory that does not
