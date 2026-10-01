@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 	"unicode/utf8"
 )
 
@@ -29,6 +30,11 @@ const (
 	verifyHeadBytes = 2 * 1024
 	verifyTailBytes = 6 * 1024
 )
+
+// verifyWaitDelay bounds how long output from processes the check left
+// running is still collected after the check exits or its context ends;
+// tests override it.
+var verifyWaitDelay = 5 * time.Second
 
 // Verifier runs one command in a workspace directory and reports the
 // process outcome.
@@ -57,7 +63,9 @@ func NewDefaultVerifier() Verifier {
 // pi-worker-verify-*.log file in the system temp directory; pi-worker
 // leaves that file to the OS temp policy. A log-write failure such as
 // an unwritable temp directory leaves LogFile empty without failing the
-// verification.
+// verification. Output from processes the check leaves running is
+// collected for at most the verifyWaitDelay wait bound after the check
+// exits or its context ends.
 func (v *DefaultVerifier) Verify(ctx context.Context, dir string, argv []string) (Verification, error) {
 	if len(argv) == 0 {
 		return Verification{}, fmt.Errorf("verification command is empty")
@@ -67,11 +75,18 @@ func (v *DefaultVerifier) Verify(ctx context.Context, dir string, argv []string)
 	capture := newVerifyCapture()
 	cmd.Stdout = capture
 	cmd.Stderr = capture
+	cmd.WaitDelay = verifyWaitDelay
 	err := cmd.Run()
 	verification := Verification{Argv: argv}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		capture.discardLog()
 		return verification, fmt.Errorf("verification context: %w", ctxErr)
+	}
+	// ErrWaitDelay means the check exited 0 but left a process holding
+	// the output pipe; the check's answer is its own exit code, so this
+	// is a passing check.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
 	}
 	if err != nil {
 		var exitErr *exec.ExitError

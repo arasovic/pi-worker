@@ -387,6 +387,50 @@ func TestDefaultVerifierReportsContextExpiryAsError(t *testing.T) {
 	}
 }
 
+func TestDefaultVerifierBoundsContextExpiryWithChildHoldingPipe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("background shell jobs require a Unix shell")
+	}
+	previous := verifyWaitDelay
+	verifyWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { verifyWaitDelay = previous })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	verification, err := NewDefaultVerifier().Verify(ctx, t.TempDir(), []string{"sh", "-c", "sleep 10 & sleep 10"})
+	if elapsed := time.Since(start); elapsed >= 3*time.Second {
+		t.Fatalf("Verify took %s, want under 3s", elapsed)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expiry error = %v, want errors.Is(err, context.DeadlineExceeded)", err)
+	}
+	if verification.ExitCode != 0 {
+		t.Fatalf("expired command reported exit code %d, want 0", verification.ExitCode)
+	}
+}
+
+func TestDefaultVerifierPassesCheckThatLeavesChildHoldingPipe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("background shell jobs require a Unix shell")
+	}
+	previous := verifyWaitDelay
+	verifyWaitDelay = 200 * time.Millisecond
+	t.Cleanup(func() { verifyWaitDelay = previous })
+
+	start := time.Now()
+	verification, err := NewDefaultVerifier().Verify(context.Background(), t.TempDir(), []string{"sh", "-c", "sleep 10 & exit 0"})
+	if elapsed := time.Since(start); elapsed >= 3*time.Second {
+		t.Fatalf("Verify took %s, want under 3s", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if verification.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", verification.ExitCode)
+	}
+}
+
 func TestControllerRunsVerificationOnceWithWorkspaceAndArgv(t *testing.T) {
 	worker := newScriptedWorker()
 	verifier := &scriptedVerifier{result: Verification{Argv: []string{"go", "test", "./..."}, ExitCode: 0}}

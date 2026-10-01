@@ -867,6 +867,9 @@ two runs from distinct configuration files do not share a gate.
 - A context that expires while the check runs is not a verification
   failure: the run ran out of time and exits the way a timed-out run
   exits (`7`), with the timed-out document.
+- Output from processes the check leaves running is collected for at
+  most 5 seconds after the check exits or times out; those processes
+  are not stopped.
 - `completed` means the workers' turns ended normally and every configured
   check passed, not that the deliverable is done. A worker's final text can
   be a mid-work sentence, as when an upstream response was cut short but
