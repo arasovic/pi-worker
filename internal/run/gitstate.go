@@ -1,7 +1,6 @@
 package run
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -132,12 +131,15 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return stdout.String(), nil
 }
 
-// nonEmptyLines returns the non-empty lines of output in order.
+// nonEmptyLines returns the non-empty lines of output in order. It
+// splits on "\n" rather than scanning with a fixed token buffer, so a
+// single line longer than bufio.Scanner's 64 KiB default limit — a
+// stash subject, say — neither truncates the list nor stops the walk:
+// every following line is still returned.
 func nonEmptyLines(output string) []string {
 	lines := []string{}
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		if trimmed := strings.TrimSpace(scanner.Text()); trimmed != "" {
+	for _, line := range strings.Split(output, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
 			lines = append(lines, trimmed)
 		}
 	}

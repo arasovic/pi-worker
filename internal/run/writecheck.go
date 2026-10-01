@@ -151,7 +151,7 @@ func projectedTaskStamps(stamps map[string]fileStamp, task Task, root, workspace
 }
 
 func fileStampEqual(a, b fileStamp) bool {
-	if a.size != b.size || a.exec != b.exec || a.absent != b.absent || a.dir != b.dir || a.gitMarker != b.gitMarker || a.hashed != b.hashed {
+	if a.size != b.size || a.exec != b.exec || a.absent != b.absent || a.kind != b.kind || a.dir != b.dir || a.gitMarker != b.gitMarker || a.hashed != b.hashed {
 		return false
 	}
 	if !a.modTime.Equal(b.modTime) {

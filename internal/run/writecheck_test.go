@@ -1461,6 +1461,7 @@ func TestFileStampEqualDifferences(t *testing.T) {
 		{name: "executable bit", mut: func(s fileStamp) fileStamp { s.exec = true; return s }},
 		{name: "entry kind absent", mut: func(s fileStamp) fileStamp { s.absent = true; return s }},
 		{name: "entry kind dir", mut: func(s fileStamp) fileStamp { s.dir = true; return s }},
+		{name: "entry kind symlink", mut: func(s fileStamp) fileStamp { s.kind = os.ModeSymlink; return s }},
 		{name: "gitMarker", mut: func(s fileStamp) fileStamp { s.gitMarker = true; return s }},
 		{name: "descendants", mut: func(s fileStamp) fileStamp { s.descendants = []string{"y"}; return s }},
 		{name: "hashed flag", mut: func(s fileStamp) fileStamp { s.hashed = false; return s }},
