@@ -54,6 +54,11 @@ Flags:
                          outside the workspace. With --background they
                          go to a file in the run's state, named on
                          stderr; runs wait <id> --debug streams them
+  --no-transcript        keep no copy of each worker's Pi session. By
+                         default it stays in the run's directory as
+                         worker-<n>/, named by transcript, until runs
+                         prune: prompt, tool output and files read,
+                         secrets included. Never paste it into a report
 
 Every run is carried out by a supervisor process. Without --background,
 run starts it, prints "pi-worker: run <id>" on stderr once it is accepted,
@@ -63,9 +68,9 @@ runs list or that id finds it, and runs wait <id> follows it.
 
 Result (--json): read root outcome first. Report each worker's model,
 thinkingLevel, status, explanation (or partialExplanation when there is
-none), error and warning, and root changes, writes, verification and
-leftoverProcesses. A failed run's changes still lists what was written;
-nothing is rolled back.
+none), error, warning and transcript (its path only), and root changes,
+writes, verification and leftoverProcesses. A failed run's changes still
+lists what was written; nothing is rolled back.
 
 Outcome and exit code:
   0  completed            the only success; still read the deliverable

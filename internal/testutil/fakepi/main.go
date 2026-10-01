@@ -53,7 +53,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			time.Sleep(24 * time.Hour)
 		}
 	}
-	_ = sessionDir
 	_ = name
 	_ = noContextFiles
 	_ = noExtensions
@@ -153,6 +152,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			continue // the client under test never sends malformed requests
 		}
 		logRequest(logPath, req.ID, req.Type)
+		// Like Pi, the session file appears with the first prompt, in the
+		// session directory, and get_state names it.
+		sessionFile := ""
+		if *sessionDir != "" {
+			sessionFile = filepath.Join(*sessionDir, "fakepi-session.jsonl")
+		}
+		if req.Type == "prompt" && sessionFile != "" {
+			appendSessionEntry(sessionFile, req.Type)
+		}
 
 		steps := scriptConfig.Triggers[req.Type]
 		if sequences := scriptConfig.TriggerSequences[req.Type]; len(sequences) > 0 {
@@ -179,7 +187,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			case step.SleepMS > 0:
 				time.Sleep(time.Duration(step.SleepMS) * time.Millisecond)
 			case step.Response != nil:
-				writeResponse(out, req.ID, req.Type, step.Response)
+				resp := *step.Response
+				if req.Type == "get_state" && sessionFile != "" {
+					resp.Data = withSessionFile(resp.Data, sessionFile)
+				}
+				writeResponse(out, req.ID, req.Type, &resp)
 			case len(step.Event) > 0:
 				writeRaw(out, step.Event)
 			case step.WriteFile != "":
@@ -226,6 +238,31 @@ func writeResponse(out *bufio.Writer, reqID, reqType string, resp *script.Respon
 		frame["error"] = resp.Error
 	}
 	writeRaw(out, mustMarshal(frame))
+}
+
+// withSessionFile adds sessionFile to get_state data that is a JSON object
+// without one; any other data is returned unchanged, so scripts can still
+// send malformed state.
+func withSessionFile(data json.RawMessage, sessionFile string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return data
+	}
+	if _, ok := fields["sessionFile"]; ok {
+		return data
+	}
+	fields["sessionFile"] = mustMarshal(sessionFile)
+	return mustMarshal(fields)
+}
+
+// appendSessionEntry appends one JSONL entry to the session file.
+func appendSessionEntry(path, typ string) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	_, _ = file.Write(append(mustMarshal(map[string]string{"type": typ}), '\n'))
 }
 
 func writeRaw(out *bufio.Writer, payload []byte) {

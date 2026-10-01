@@ -29,6 +29,10 @@ type workerHostAdapter struct {
 	// empty debugLog means the run has debug off.
 	debugLog   string
 	debugStart time.Time
+	// runDir, when set, is the run's directory: each child host keeps its
+	// worker's Pi session in runDir/worker-<n>. Empty means the run keeps
+	// no transcript.
+	runDir string
 }
 
 // newWorkerHostAdapter returns the private worker-host pi.Worker adapter
@@ -103,11 +107,16 @@ func (a *workerHostAdapter) Run(ctx context.Context, req pi.WorkerRequest) (resu
 		return pi.WorkerResult{Model: req.Model, Status: pi.StatusTimedOut, Error: "timed out: execution deadline expired before the worker host started"}
 	}
 
+	workerID := workerHostWorkerID(req.WorkerID)
+	transcriptDir := ""
+	if a.runDir != "" {
+		transcriptDir = workerTranscriptDir(a.runDir, workerID)
+	}
 	wireReq := workerHostRequest{
 		// The wire carries the positive identity the debug-label mapping
 		// would assign: the zero value of a direct caller defaults to
 		// worker 1, matching the worker's own workerID normalization.
-		workerID:         workerHostWorkerID(req.WorkerID),
+		workerID:         workerID,
 		workspace:        req.Workspace,
 		model:            req.Model,
 		thinkingLevel:    req.ThinkingLevel,
@@ -116,6 +125,7 @@ func (a *workerHostAdapter) Run(ctx context.Context, req pi.WorkerRequest) (resu
 		executionTimeout: executionTimeout,
 		debugLog:         a.debugLog,
 		debugStart:       a.debugStart,
+		transcriptDir:    transcriptDir,
 	}
 	payload, err := encodeWorkerHostRequest(wireReq)
 	if err != nil {

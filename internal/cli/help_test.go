@@ -162,18 +162,19 @@ func TestRunHelpCoversEveryRunFlag(t *testing.T) {
 		got[flag] = true
 	}
 	want := map[string]bool{
-		"--background": true,
-		"--data":       true,
-		"--debug":      true,
-		"--json":       true,
-		"--model":      true,
-		"--task":       true,
-		"--task-file":  true,
-		"--thinking":   true,
-		"--timeout":    true,
-		"--verify":     true,
-		"--worktree":   true,
-		"--writes":     true,
+		"--background":    true,
+		"--data":          true,
+		"--debug":         true,
+		"--json":          true,
+		"--model":         true,
+		"--no-transcript": true,
+		"--task":          true,
+		"--task-file":     true,
+		"--thinking":      true,
+		"--timeout":       true,
+		"--verify":        true,
+		"--worktree":      true,
+		"--writes":        true,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("run flags in main.go = %v, want %v", got, want)
@@ -233,7 +234,7 @@ func TestCommandHelpCoversEveryFlag(t *testing.T) {
 // The search is scoped to each paragraph so a field mentioned elsewhere does
 // not mask its removal from the list.
 func TestRunResultFieldsMatchSkill(t *testing.T) {
-	fields := []string{"model", "thinkingLevel", "status", "explanation", "partialExplanation", "error", "warning", "changes", "writes", "verification", "leftoverProcesses"}
+	fields := []string{"model", "thinkingLevel", "status", "explanation", "partialExplanation", "error", "warning", "transcript", "changes", "writes", "verification", "leftoverProcesses"}
 
 	help := commandHelp["run"]
 	start := strings.Index(help, "Result (--json):")

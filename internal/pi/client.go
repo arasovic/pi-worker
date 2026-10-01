@@ -262,7 +262,9 @@ func (c *Client) SetThinkingLevel(ctx context.Context, level ThinkingLevel) erro
 }
 
 // GetState returns the exact active model and effective thinking level needed
-// for post-activation confirmation. Every required projection is strict.
+// for post-activation confirmation, and the session file Pi writes when it
+// reports one. Every required projection is strict; sessionFile is optional,
+// but when present it must be a string.
 func (c *Client) GetState(ctx context.Context) (SessionState, error) {
 	req, err := newRequest(requestGetState)
 	if err != nil {
@@ -281,9 +283,16 @@ func (c *Client) GetState(ctx context.Context) (SessionState, error) {
 	var container struct {
 		Model         json.RawMessage `json:"model"`
 		ThinkingLevel json.RawMessage `json:"thinkingLevel"`
+		SessionFile   json.RawMessage `json:"sessionFile"`
 	}
 	if err := json.Unmarshal(resp.Data, &container); err != nil {
 		return SessionState{}, newProtocolError("malformed get_state data: %v", err)
+	}
+	var sessionFile string
+	if len(container.SessionFile) > 0 {
+		if err := json.Unmarshal(container.SessionFile, &sessionFile); err != nil {
+			return SessionState{}, newProtocolError("malformed get_state sessionFile: %v", err)
+		}
 	}
 	if len(container.Model) == 0 || isJSONNull(container.Model) {
 		return SessionState{}, newProtocolError("get_state data missing model object")
@@ -306,7 +315,7 @@ func (c *Client) GetState(ctx context.Context) (SessionState, error) {
 	if !ok {
 		return SessionState{}, newProtocolError("get_state thinkingLevel is unknown")
 	}
-	return SessionState{Model: model, ThinkingLevel: level}, nil
+	return SessionState{Model: model, ThinkingLevel: level, SessionFile: sessionFile}, nil
 }
 
 // Prompt submits one prompt message. A successful response only means Pi

@@ -496,3 +496,31 @@ func TestProcessStdoutSurvivesDelayedReadAfterExit(t *testing.T) {
 		t.Fatalf("read after the response = %v, want clean io.EOF", err)
 	}
 }
+
+// TestTranscriptProcessKeepsItsDirectory requires that a transcript process
+// hands Pi the caller's directory as its session directory, names the
+// session after the run and worker, and leaves the directory on Close.
+func TestTranscriptProcessKeepsItsDirectory(t *testing.T) {
+	metaPath := filepath.Join(t.TempDir(), "meta.json")
+	t.Setenv("FAKEPI_META", metaPath)
+	dir := filepath.Join(t.TempDir(), "20261001T101500Z-4242", "worker-2")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create transcript directory: %v", err)
+	}
+	proc := NewTranscriptProcess(fakePiBin, t.TempDir(), dir)
+	if err := proc.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	argv := readMeta(t, metaPath).Argv
+	for _, pair := range [][2]string{{"--session-dir", dir}, {"--name", "pi-worker-20261001T101500Z-4242-worker-2"}} {
+		if i := slices.Index(argv, pair[0]); i < 0 || i+1 >= len(argv) || argv[i+1] != pair[1] {
+			t.Fatalf("argv = %v, want %s %s", argv, pair[0], pair[1])
+		}
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("transcript directory after Close: %v", err)
+	}
+}

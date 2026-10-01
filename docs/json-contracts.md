@@ -24,7 +24,8 @@ contract for agents and other machine consumers.
   older file lacks it. The run document persists — as `result` in
   the run's `snapshot.json` and as `result` on the finish line of its
   run record, both in the run's own directory `<state>/runs/<runId>/`
-  beside its `debug.log` and `owner.lock` (a run an older version
+  beside its `debug.log`, `owner.lock` and `worker-<n>/` transcript
+  directories (a run an older version
   started keeps its snapshot in `<state>/background/<runId>/` and its
   record in `<state>/runs/<runId>.jsonl`) — and its readers ignore unknown
   fields (the snapshot reader also refuses an unsupported
@@ -405,7 +406,10 @@ Worker fields are conditionally present:
   switch, otherwise the working level; `thinkingLevel` still names the working
   level. A worker of a `run --background --debug` run whose debug file could
   not be opened runs without its debug lines and appends `debug log
-  unavailable: <reason>`, joined to an earlier warning with `; `.
+  unavailable: <reason>`, joined to an earlier warning with `; `. A worker
+  whose transcript directory could not be created keeps its Pi session in a
+  temporary directory, reports no `transcript`, and appends `transcript
+  unavailable: <reason>` the same way.
 - `explanation`: present when final assistant text exists
 - `partialExplanation`: present when the run ended without a final
   assistant text but retained assistant text exists; carries the most
@@ -453,6 +457,15 @@ Worker fields are conditionally present:
   cache-warm request with a non-zero figure; the same fields as `usage`;
   Pi's figures for the requests Pi sent on its own to keep the
   provider's prompt cache alive while a tool ran; not part of `usage`
+- `transcript`: the absolute path of the worker's Pi session file,
+  `<state>/runs/<runId>/worker-<n>/<file>.jsonl`, whose name Pi chooses.
+  Absent when the run was started with `--no-transcript`, when Pi reported
+  no session file or one outside that directory, and when Pi never wrote it
+  (Pi creates it with the first message). The file holds the whole
+  session — the prompt, tool arguments and output, file contents the
+  worker read, thinking — unredacted; report the path, never the content.
+  pi-worker never deletes it on its own; `runs prune` removes it with its
+  run.
 - `acceptedAt`, `startedAt`, `finishedAt`: the run layer's own timeline
   record, stamped from what the controller accepted and executed rather
   than reported by the worker, RFC 3339 in UTC. `acceptedAt` is present
@@ -504,6 +517,10 @@ non-zero figure, and absent otherwise — including when the provider
 reported nothing but zeros: a completed run cannot genuinely consume
 zero tokens, so an all-zero report is no measurement. `cacheWrite1h`
 and `reasoning` are present only when some message reported them.
+
+Transcript reporting is additive and optional, so `schemaVersion` stays
+`1`: worker `transcript` may be absent, and a snapshot an older binary
+reads keeps working because its reader ignores the unknown field.
 
 Cache-warm reporting is additive and optional, so `schemaVersion` stays
 `1`. Whether Pi warms at all is Pi's own global setting, which pi-worker

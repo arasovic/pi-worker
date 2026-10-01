@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -836,9 +837,42 @@ func TestClientGetStateAcceptsExactModelAndThinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get state: %v", err)
 	}
-	want := SessionState{Model: ModelProjection{Provider: "acme", ID: "m-1"}, ThinkingLevel: ThinkingHigh}
+	want := SessionState{Model: ModelProjection{Provider: "acme", ID: "m-1"}, ThinkingLevel: ThinkingHigh, SessionFile: filepath.Join(proc.SessionDir(), "fakepi-session.jsonl")}
 	if state != want {
 		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+// TestClientGetStateSessionFileIsOptional requires that state without a
+// sessionFile is accepted and reports none.
+func TestClientGetStateSessionFileIsOptional(t *testing.T) {
+	client, reader, writer, _ := newControlledPeer(t, nil)
+	type outcome struct {
+		state SessionState
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		state, err := client.GetState(context.Background())
+		done <- outcome{state, err}
+	}()
+	frame, err := reader.ReadFrame()
+	if err != nil {
+		t.Fatalf("read get_state request: %v", err)
+	}
+	var req request
+	if err := json.Unmarshal(frame, &req); err != nil {
+		t.Fatalf("decode get_state request: %v", err)
+	}
+	if err := writer.WriteFrame(map[string]any{
+		"type": "response", "id": req.ID, "command": "get_state", "success": true,
+		"data": map[string]any{"model": map[string]string{"provider": "acme", "id": "m-1"}, "thinkingLevel": "high"},
+	}); err != nil {
+		t.Fatalf("write get_state response: %v", err)
+	}
+	got := <-done
+	if got.err != nil || got.state.SessionFile != "" {
+		t.Fatalf("GetState = (%#v, %v), want no session file and no error", got.state, got.err)
 	}
 }
 
@@ -859,6 +893,7 @@ func TestClientGetStateRejectsInvalidSuccessData(t *testing.T) {
 		{name: "null thinking", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":null}`},
 		{name: "unknown thinking", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"ultra"}`},
 		{name: "thinking is number", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":7}`},
+		{name: "sessionFile is number", data: `{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"high","sessionFile":7}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -171,6 +171,7 @@ test("installed skill states the worker authority boundary before delegation", (
     "explanation",
     "error",
     "warning",
+    "transcript",
     "changes",
     "writes",
     "verification",

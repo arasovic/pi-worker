@@ -6,11 +6,10 @@ description: Use when an agent delegates work through Pi, needs cheaper or separ
 # Pi Worker
 
 Delegate bounded execution only. Keep product, architecture, scope, and
-integration decisions in the parent agent. Never ask a worker to delegate.
+integration decisions in the parent. Never ask a worker to delegate.
 
-Every command explains itself: `pi-worker <command> --help` carries its flag
-rules, result fields, and exit codes. Read `pi-worker run --help` before the
-first run.
+`pi-worker <command> --help` carries each command's flags, result fields, and
+exit codes; read `pi-worker run --help` before the first run.
 
 ## Boundaries
 
@@ -22,7 +21,8 @@ first run.
 - Parallel writes must be disjoint. Runs sharing a workspace are not locked
   against each other: serialize them or give each its own worktree.
 - Parent-started side jobs must self-terminate.
-- Do not repeat prompts, credentials, or raw debug output in reports.
+- Do not repeat prompts, credentials, raw debug output, or transcript contents
+  in reports; a `transcript` is the whole Pi session, secrets included.
 
 ## Model
 
@@ -47,21 +47,21 @@ pi-worker run --model <provider/model> --thinking <level> \
 Do not pipe stdout: when no document comes back, the exit code is the signal.
 When the host may cut the call off, add `--background` and wait in slices with
 `pi-worker runs wait <id> --timeout <slice> --json`; a wait that runs out
-leaves the run going, as does a cut-off `run`, until `--timeout` (default
-30m); `runs list` or its `run <id>` line finds it. Give each wait `--debug`
-to replay debug lines. Exit 9 with "supervisor is no longer there" means
-the run was interrupted; waiting again will not help. In that document
-the result sits under `result`.
+leaves the run going, as does a cut-off `run`, until `--timeout`; `runs list`
+or its `run <id>` line finds it. Give each wait `--debug` to replay debug
+lines. Exit 9 with "supervisor is no longer there" means the run was
+interrupted; waiting again will not help. In that document the result sits
+under `result`.
 
 ## Result
 
-Read root `outcome`. `completed` (exit 0) is the only success; the exit code
-mirrors the outcome, and `pi-worker run --help` gives each one its next move.
+Read root `outcome`. `completed` (exit 0) is the only success;
+`pi-worker run --help` gives each outcome its exit code and next move.
 Whatever the outcome, read and report each worker's `model`, `thinkingLevel`,
 `status`, `explanation` (or `partialExplanation` when there is none), `error`,
-and `warning`, plus `changes`, `writes`, `verification`, and
-`leftoverProcesses`. A failed run's `changes` still lists what the workers
-wrote; nothing is rolled back.
+`warning`, and `transcript`, plus `changes`, `writes`, `verification`, and
+`leftoverProcesses`. A failed run's `changes` still lists what workers wrote;
+nothing is rolled back.
 
 `completed` does not prove the deliverable: read it yourself, or pass a
 `--verify` command that inspects it.

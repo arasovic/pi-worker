@@ -60,6 +60,12 @@ func debugLogPath(root, runID string) string {
 	return filepath.Join(root, runID, debugLogName)
 }
 
+// workerTranscriptDir returns <runDir>/worker-<n>, the directory worker n's
+// Pi session is kept in.
+func workerTranscriptDir(runDir string, workerID int) string {
+	return filepath.Join(runDir, fmt.Sprintf("worker-%d", workerID))
+}
+
 // Store provides snapshot read and write access through a per-run directory
 // layout: <root>/<runId>/snapshot.json.
 type Store struct {
