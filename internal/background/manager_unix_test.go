@@ -405,6 +405,46 @@ func TestManagerWaitDeadSupervisorReturnsAtOnce(t *testing.T) {
 	}
 }
 
+// TestManagerWaitRereadsSnapshotWhenSupervisorExitsAfterWritingIt requires
+// that Wait re-reads the snapshot once the liveness check says the supervisor
+// is gone: a supervisor that wrote its terminal snapshot and exited between
+// the first load and that check must be reported as the finished run it is,
+// not as a run whose supervisor vanished.
+func TestManagerWaitRereadsSnapshotWhenSupervisorExitsAfterWritingIt(t *testing.T) {
+	root, runID, want := deadSupervisorSnapshotFixture(t)
+	manager, err := NewManager(root, "", t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// The write happens inside the liveness check, after Wait's first load,
+	// so removing the re-read makes Wait report the non-terminal snapshot
+	// with a SupervisorUnavailableError instead.
+	original := ownerAlive
+	ownerAlive = func(string, int, int64) bool {
+		if err := store.Replace(completedSnapshot(t, want)); err != nil {
+			t.Fatalf("store terminal snapshot: %v", err)
+		}
+		return false
+	}
+	t.Cleanup(func() { ownerAlive = original })
+
+	snap, err := manager.Wait(context.Background(), runID, 10*time.Second)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if !snap.Terminal {
+		t.Fatalf("Wait snapshot terminal = false, want the terminal snapshot written during the liveness check: %+v", snap)
+	}
+	if snap.RunID != runID {
+		t.Fatalf("Wait snapshot run id = %q, want %q", snap.RunID, runID)
+	}
+}
+
 // freeLockLivePidFixture stores a non-terminal snapshot whose recorded
 // supervisor is this live test process but whose owner lock is free: the
 // lock says the owner is gone, the pid alone would say it is alive.

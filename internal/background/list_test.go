@@ -25,6 +25,28 @@ func createUnlockedSnapshot(store *Store, snap Snapshot) error {
 	return os.Remove(filepath.Join(store.root, snap.RunID, runlog.OwnerLockName))
 }
 
+// completedSnapshot turns an accepted-state snapshot into the valid terminal
+// completed form tests store, so a test that already holds a snapshot can
+// persist the same run as finished through the store.
+func completedSnapshot(t *testing.T, snap Snapshot) Snapshot {
+	t.Helper()
+	finishedAt := snap.AcceptedAt.Add(time.Second)
+	snap.State = RunCompleted
+	snap.Terminal = true
+	snap.UpdatedAt = finishedAt
+	snap.Status = ptrRunStatus(contracts.RunCompleted)
+	outcome := contracts.OutcomeCompleted
+	snap.Outcome = &outcome
+	for i := range snap.Workers {
+		snap.Workers[i].State = WorkerCompleted
+		snap.Workers[i].FinishedAt = &finishedAt
+	}
+	if err := snap.Validate(); err != nil {
+		t.Fatalf("validate terminal snapshot: %v", err)
+	}
+	return snap
+}
+
 // createTerminalSnapshot builds and stores one completed background run
 // under root, carrying one worker per model in models, and returns the
 // run directory it wrote. The expected listing values are built as
@@ -39,20 +61,7 @@ func createTerminalSnapshot(t *testing.T, root, runID string, acceptedAt time.Ti
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
-	finishedAt := acceptedAt.Add(time.Second)
-	snap.State = RunCompleted
-	snap.Terminal = true
-	snap.UpdatedAt = finishedAt
-	snap.Status = ptrRunStatus(contracts.RunCompleted)
-	outcome := contracts.OutcomeCompleted
-	snap.Outcome = &outcome
-	for i := range snap.Workers {
-		snap.Workers[i].State = WorkerCompleted
-		snap.Workers[i].FinishedAt = &finishedAt
-	}
-	if err := snap.Validate(); err != nil {
-		t.Fatalf("validate terminal snapshot: %v", err)
-	}
+	snap = completedSnapshot(t, snap)
 	store, err := NewStore(root)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
