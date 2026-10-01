@@ -96,9 +96,8 @@ export function runNative(binary, args, options = {}) {
     child.once("close", (code, childSignal) => {
       cleanup();
 
-      const exitSignal = childSignal ?? signal;
-      if (exitSignal) {
-        process.kill(process.pid, exitSignal);
+      if (childSignal) {
+        process.kill(process.pid, childSignal);
         return;
       }
 
@@ -182,9 +181,8 @@ export function runNativeCaptured(binary, args, options = {}) {
         reject(captureError);
         return;
       }
-      const exitSignal = childSignal ?? signal;
-      if (exitSignal) {
-        process.kill(process.pid, exitSignal);
+      if (childSignal) {
+        process.kill(process.pid, childSignal);
         return;
       }
       resolve({

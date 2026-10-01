@@ -37,6 +37,26 @@ const exitFixture = fixture("exit.mjs");
 const signalFixture = fixture("signal.mjs");
 const optionFixture = fixture("option fixture.mjs");
 const harnessFixture = fixture("harness.mjs");
+const cancelFixture = fixture("cancel.mjs");
+const idleFixture = fixture("idle.mjs");
+
+function waitForFile(path, timeoutMs = 4_000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      if (existsSync(path)) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`timed out waiting for ${path}`));
+        return;
+      }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+}
 
 function launcherFixture(name, { status = false } = {}) {
   const packageRoot = fixture(name);
@@ -119,6 +139,31 @@ writeExecutable(
     "    setTimeout(() => clearInterval(idle), 100);\n" +
     "  });\n" +
     "}\n" +
+    "process.stdout.write('ready\\n');"
+);
+
+// Handles SIGTERM by writing `cancelled` and exiting with the documented
+// cancellation code 8. The optional argument is a ready file used by the
+// in-process captured-helper test to know the handler is installed before the
+// test signals itself.
+writeExecutable(
+  cancelFixture,
+  'import { writeFileSync } from "node:fs";\n' +
+    "const idle = setInterval(() => {}, 1_000_000);\n" +
+    "process.on('SIGTERM', () => {\n" +
+    "  process.stdout.write('cancelled\\n');\n" +
+    "  process.exitCode = 8;\n" +
+    "  clearInterval(idle);\n" +
+    "});\n" +
+    "if (process.argv[2]) writeFileSync(process.argv[2], 'ready');\n" +
+    "process.stdout.write('ready\\n');"
+);
+
+// Does not handle any signal: a forwarded SIGTERM reaches the default
+// disposition and kills the child by signal.
+writeExecutable(
+  idleFixture,
+  "setInterval(() => {}, 1_000_000);\n" +
     "process.stdout.write('ready\\n');"
 );
 
@@ -509,11 +554,109 @@ describe("launcher process behavior", () => {
       assert.equal(child.kill(signal), true);
       const close = await closePromise;
 
-      assert.equal(close.code, null);
-      assert.equal(close.signal, signal);
+      assert.equal(close.code, 0);
+      assert.equal(close.signal, null);
       assert.equal(stdout, `ready\n${signal}:1\n`);
     });
   }
+
+  test("resolves the child exit code after forwarding a handled signal", { timeout: 5_000 }, async (t) => {
+    const child = spawn(bin, [harnessFixture, cancelFixture], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PI_WORKER_PRINT_EXIT: "1" },
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    t.after(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    });
+
+    await new Promise((resolve) => {
+      child.stdout.on("data", () => {
+        if (stdout.includes("ready\n")) {
+          resolve();
+        }
+      });
+    });
+
+    const closePromise = new Promise((resolve) => {
+      child.on("close", (code, childSignal) => resolve({ code, signal: childSignal }));
+    });
+    assert.equal(child.kill("SIGTERM"), true);
+    const close = await closePromise;
+
+    assert.equal(close.code, 8);
+    assert.equal(close.signal, null);
+    assert.match(stdout, /ready\n/);
+    assert.match(stdout, /cancelled\n/);
+    assert.match(stdout, /exit:8\n/);
+  });
+
+  test("re-raises the signal when the child does not handle it", { timeout: 5_000 }, async (t) => {
+    const child = spawn(bin, [harnessFixture, idleFixture], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    t.after(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    });
+
+    await new Promise((resolve) => {
+      child.stdout.on("data", () => {
+        if (stdout.includes("ready\n")) {
+          resolve();
+        }
+      });
+    });
+
+    const closePromise = new Promise((resolve) => {
+      child.on("close", (code, childSignal) => resolve({ code, signal: childSignal }));
+    });
+    assert.equal(child.kill("SIGTERM"), true);
+    const close = await closePromise;
+
+    assert.equal(close.code, null);
+    assert.equal(close.signal, "SIGTERM");
+  });
+
+  test("captured helper resolves the child exit code after forwarding a handled signal", { timeout: 5_000 }, async (t) => {
+    const ready = fixture(`captured-cancel-ready-${process.pid}`);
+    rmSync(ready, { force: true });
+    // A regression that re-raises the forwarded signal would otherwise kill
+    // this test process before the assertion below can run.
+    const guard = () => {};
+    process.on("SIGTERM", guard);
+    t.after(() => {
+      process.off("SIGTERM", guard);
+      rmSync(ready, { force: true });
+    });
+
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), 2_000);
+    });
+    const resultPromise = runNativeCaptured(cancelFixture, [ready], { maxOutputBytes: 1024 });
+    await waitForFile(ready);
+    assert.equal(process.kill(process.pid, "SIGTERM"), true);
+    const result = await Promise.race([resultPromise, timeout]);
+    clearTimeout(timer);
+
+    assert.ok(result, "runNativeCaptured did not resolve after the child exited with a code");
+    assert.equal(result.code, 8);
+    assert.equal(result.signal, null);
+    assert.match(result.stdout, /cancelled/);
+  });
 
   const unixTest = process.platform === "win32" ? test.skip : test;
 
@@ -547,8 +690,8 @@ describe("launcher process behavior", () => {
     process.kill(-child.pid, "SIGINT");
     const close = await closePromise;
 
-    assert.equal(close.code, null);
-    assert.equal(close.signal, "SIGINT");
+    assert.equal(close.code, 0);
+    assert.equal(close.signal, null);
     assert.equal(stdout, "ready\nSIGINT:1\n");
   });
 
