@@ -173,8 +173,12 @@ func TestListRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
 		root := t.TempDir()
 		withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
 			switch strings.Join(args, " ") {
+			case "rev-parse --git-dir":
+				return filepath.Join(root, ".git"), nil
 			case "rev-parse --git-common-dir":
 				return filepath.Join(root, ".git"), nil
+			case "rev-parse --show-toplevel":
+				return root, nil
 			case "rev-parse HEAD":
 				return "abc123", nil
 			case "worktree list --porcelain":
@@ -201,8 +205,12 @@ func TestListRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
 		root := t.TempDir()
 		withRunGitFunc(t, func(ctx context.Context, dir string, args ...string) (string, error) {
 			switch strings.Join(args, " ") {
+			case "rev-parse --git-dir":
+				return filepath.Join(root, ".git"), nil
 			case "rev-parse --git-common-dir":
 				return filepath.Join(root, ".git"), nil
+			case "rev-parse --show-toplevel":
+				return root, nil
 			case "rev-parse HEAD":
 				return "abc123", nil
 			case "worktree list --porcelain":
@@ -287,8 +295,12 @@ func TestListCheckoutStatusFailureSurfacesPath(t *testing.T) {
 			return "", fmt.Errorf("mock status failure for %q", dir)
 		}
 		switch cmd {
+		case "rev-parse --git-dir":
+			return filepath.Join(root, ".git"), nil
 		case "rev-parse --git-common-dir":
 			return filepath.Join(root, ".git"), nil
+		case "rev-parse --show-toplevel":
+			return root, nil
 		case "rev-parse HEAD":
 			return "abc123", nil
 		case "worktree list --porcelain":

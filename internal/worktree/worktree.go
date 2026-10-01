@@ -96,30 +96,69 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 // git rev-parse --show-toplevel returns the *current* worktree's top
 // level when run inside a linked worktree, which once nested new
 // managed worktrees under the caller's checkout and made the outer
-// worktree's own branch appear to have no checkout. Instead this uses
-// git rev-parse --git-common-dir, which from any checkout names the
-// shared .git directory that always lives in the main worktree; the
-// root is that path with its trailing .git component removed. One
-// shell-out per resolution.
+// worktree's own branch appear to have no checkout.
 //
-// Inside a git submodule the common directory does not end in .git:
+// When dir is the main checkout its private git directory and the
+// common directory name the same place (git rev-parse --git-dir equals
+// --git-common-dir), so the main root is simply this checkout's
+// --show-toplevel. That branch is what keeps a repository whose
+// metadata lives outside the checkout (git init --separate-git-dir)
+// resolving to the checkout instead of to the metadata directory; the
+// linked-worktree logic below cannot see the checkout at all.
+//
+// In a linked worktree the two directories differ: --git-dir names the
+// worktree's private directory under the common one, which names the
+// main worktree's .git; the root is that path with its trailing .git
+// component removed. Two shell-outs per resolution, plus
+// --show-toplevel when dir is the main checkout.
+//
+// Inside a git submodule the two directories are also equal, so the
+// main-checkout branch above returns the submodule's own top level.
+// Were it not caught there, the fallback below would still be correct:
 // git rev-parse --git-common-dir returns something like
-// <superproject>/.git/modules/sub while --show-toplevel returns the
-// submodule's own top level. Stripping a trailing .git there would
-// leave the superproject's internal git storage as the "root", so the
-// stripped value is only used when the common directory actually ends
-// in a .git component; otherwise the submodule's own top level (the
-// pre-common-dir behavior) is correct.
+// <superproject>/.git/modules/sub, which does not end in a .git
+// component, so stripping would leave the superproject's internal git
+// storage as the "root"; the fallback returns --show-toplevel instead.
 func resolveMainRoot(ctx context.Context, dir string) (string, error) {
+	gitDir, err := runGitFunc(ctx, dir, "rev-parse", "--git-dir")
+	if err != nil {
+		return "", err
+	}
 	commonDir, err := runGitFunc(ctx, dir, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
+	// git reports paths relative to the directory it ran in; make both
+	// absolute the same way before comparing them.
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(dir, gitDir)
+	}
+	gitDir = filepath.Clean(gitDir)
 	if !filepath.IsAbs(commonDir) {
-		// git reports a relative path against the directory it ran in.
 		commonDir = filepath.Join(dir, commonDir)
 	}
 	commonDir = filepath.Clean(commonDir)
+	if gitDir == commonDir {
+		// dir is the main checkout: its git directory is not a linked
+		// worktree's private directory, so the main root is its top level.
+		top, err := runGitFunc(ctx, dir, "rev-parse", "--show-toplevel")
+		if err != nil {
+			return "", err
+		}
+		// A repository reached through a symlink has two spellings of its
+		// top level; keep the caller's when the common directory is this
+		// checkout's own .git so the recorded path matches how the user
+		// reached it. When the metadata lives outside the checkout
+		// (--separate-git-dir) the stripped common directory is storage,
+		// not the checkout, so --show-toplevel is the only answer.
+		if strings.HasSuffix(commonDir, string(os.PathSeparator)+".git") {
+			stripped := strings.TrimSuffix(commonDir, string(os.PathSeparator)+".git")
+			if sameDir(stripped, statIfExists(top)) {
+				return stripped, nil
+			}
+		}
+		return top, nil
+	}
 	sep := string(os.PathSeparator)
 	if strings.HasSuffix(commonDir, sep+".git") {
 		return strings.TrimSuffix(commonDir, sep+".git"), nil

@@ -385,6 +385,9 @@ func TestWorktreesRemoveYesHuman(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
 	}
+	if strings.Contains(stderr, "files git ignores") {
+		t.Fatalf("stderr = %q, want no ignored-files notice with --yes", stderr)
+	}
 	want := "removed worktree \"probe\" on branch \"" + branch + "\"\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
@@ -623,6 +626,13 @@ func TestWorktreesRemoveInteractiveAnswerSuccess(t *testing.T) {
 			wantQ := fmt.Sprintf("remove worktree %q on branch %q at %q? [y/N] ", "probe", branch, wtPath)
 			if !strings.Contains(stderr, wantQ) {
 				t.Fatalf("stderr = %q, want question %q", stderr, wantQ)
+			}
+			wantNotice := "files git ignores in this checkout (for example build output, dependencies or local environment files) are deleted with it\n"
+			if !strings.Contains(stderr, wantNotice) {
+				t.Fatalf("stderr = %q, want ignored-files notice %q", stderr, wantNotice)
+			}
+			if strings.Index(stderr, wantNotice) > strings.Index(stderr, wantQ) {
+				t.Fatalf("stderr = %q, want ignored-files notice before the question", stderr)
 			}
 			if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 				t.Fatalf("checkout %q still exists: %v", wtPath, err)

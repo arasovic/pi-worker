@@ -84,6 +84,7 @@ func worktreesRemoveCommand(parent context.Context, opts worktreesOptions, stdin
 	}
 	if !opts.yes {
 		renderWorktreeTable(stderr, []worktree.Entry{*selected})
+		fmt.Fprintln(stderr, "files git ignores in this checkout (for example build output, dependencies or local environment files) are deleted with it")
 		fmt.Fprintf(stderr, "remove worktree %q on branch %q at %q? [y/N] ", selected.Name, selected.Branch, selected.Path)
 		answerCh := make(chan string, 1)
 		go func() {
