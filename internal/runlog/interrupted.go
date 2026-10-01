@@ -27,6 +27,23 @@ const markerSchemaVersion = 1
 // reported.json can never collide with one.
 const markerFileName = "reported.json"
 
+// interruptedRecentWindow is how recently a run id must have been
+// allocated for the watermark to stop short of it. A run id is allocated
+// before its directory exists — worktree preparation and the start
+// handshake happen in between — so a run this new may still have its
+// directory about to appear; advancing the watermark to it would skip
+// that directory for good once it does.
+//
+// ponytail: the ceiling is a run whose directory appears more than an
+// hour after its id was allocated. The upgrade is creating the run
+// directory when the id is allocated, which removes the window entirely.
+const interruptedRecentWindow = time.Hour
+
+// interruptedNow is the clock the interrupted-run scan measures a run
+// id's age against. It is a package variable so tests pin the window;
+// production reads the real clock.
+var interruptedNow = time.Now
+
 // pidAlive is the private dependency-injection seam for process
 // liveness. Tests replace it with a scripted answer so the records they
 // write can carry pids the test itself chose; the production value
@@ -108,6 +125,7 @@ func Interrupted(dir string) ([]string, error) {
 		}
 		return nil, err
 	}
+	now := interruptedNow()
 	// A missing, unreadable, or version-mismatched marker counts as
 	// absent: the scan starts from the beginning.
 	m, _ := loadMarker(dir)
@@ -159,7 +177,7 @@ func Interrupted(dir string) ([]string, error) {
 			advancing = false
 			continue
 		case runSettled:
-			if advancing {
+			if advancing && !runIDWithinWindow(runID, now) {
 				watermark = runID
 			}
 			continue
@@ -171,7 +189,7 @@ func Interrupted(dir string) ([]string, error) {
 			continue
 		}
 		interrupted = append(interrupted, path)
-		if advancing {
+		if advancing && !runIDWithinWindow(runID, now) {
 			watermark = runID
 		} else {
 			reported[runID] = true
@@ -199,6 +217,20 @@ func Interrupted(dir string) ([]string, error) {
 		return interrupted, fmt.Errorf("write %s: %w", markerFileName, err)
 	}
 	return interrupted, nil
+}
+
+// runIDWithinWindow reports whether runID's embedded start time is
+// within interruptedRecentWindow of now. A run id is allocated before its
+// directory exists, so a run this new may still have its directory about
+// to appear; the watermark must not pass it, or the directory would be
+// skipped for good. An unparseable id is not a run id — the caller has
+// already filtered those out — and is treated as outside the window.
+func runIDWithinWindow(runID string, now time.Time) bool {
+	started, err := ParseRunID(runID)
+	if err != nil {
+		return false
+	}
+	return now.Sub(started) < interruptedRecentWindow
 }
 
 // runState is what the interrupted-run scan concludes about one run.
