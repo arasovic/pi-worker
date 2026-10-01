@@ -41,6 +41,20 @@ const rules = {
   }],
 };
 
+const guardRules = {
+  schemaVersion: 3,
+  skillsVersion: PINNED_SKILLS_VERSION,
+  agentCount: 1,
+  globalTargetCount: 1,
+  noGlobalTargetCount: 0,
+  agents: [{
+    id: "detected",
+    usesUniversalTarget: false,
+    rule: { kind: "home-relative", path: ".detected/skills" },
+    detector: { kind: "any-existing", paths: [{ kind: "home-relative", path: ".detected" }] },
+  }],
+};
+
 const windowsSymlinkSkip = process.platform === "win32" ? "symlink permissions vary on windows" : undefined;
 const windowsProcessGroupSkip = process.platform === "win32" ? "process-group signals are not portable on windows" : undefined;
 
@@ -882,8 +896,120 @@ test("keeps the prior receipt on disk until the skills CLI spawns", async (t) =>
   for (const seen of [...hashReceipts, ...classifyReceipts]) {
     assert.deepEqual(seen, installedReceipt);
   }
-  assert.equal(spawnReceipt.outcome, "skipped");
-  assert.deepEqual(spawnReceipt.targets, []);
+  assert.equal(spawnReceipt.outcome, "failed");
+  assert.deepEqual(spawnReceipt.targets.map(({ path, kind }) => ({ path, kind })), [
+    { path: canonical, kind: "canonical" },
+  ]);
+  assert.deepEqual(spawnReceipt.affectedTargets, []);
+});
+
+// Simulate the hard-kill window: run the installer far enough to write the
+// guard receipt immediately before it spawns the skills child, persist that
+// document, then abort. The caller builds the post-kill target state (absent,
+// partial, or full) and retries installation.
+async function leaveGuardReceipt(f) {
+  mkdirSync(join(f.home, ".detected"), { recursive: true });
+  let guard = null;
+  const aborted = await installSkill(options(f, childFor(), {
+    loadRules: () => guardRules,
+    resolveAllTargets: () => [join(f.home, ".detected", "skills")],
+    writeReceipt: async (receiptPath, document, receiptOptions) => {
+      const written = await writeReceipt(receiptPath, document, receiptOptions);
+      if (guard === null) {
+        guard = document;
+        throw new Error("simulated hard kill after the guard");
+      }
+      return written;
+    },
+  }));
+  assert.equal(aborted.outcome, "skipped");
+  assert.ok(guard, "the installer did not write a guard receipt");
+  return JSON.parse(readFileSync(f.receipt, "utf8"));
+}
+
+function guardInstallOptions(f, child) {
+  return options(f, child, {
+    loadRules: () => guardRules,
+    resolveAllTargets: () => [join(f.home, ".detected", "skills")],
+  });
+}
+
+test("reinstalls normally after a kill left the guard and no target files", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const copy = join(f.home, ".detected", "skills", "pi-worker");
+  const guard = await leaveGuardReceipt(f);
+  assert.equal(guard.outcome, "failed");
+  assert.deepEqual(guard.targets.map(({ path, kind }) => ({ path, kind })), [
+    { path: canonical, kind: "canonical" },
+    { path: copy, kind: "copy" },
+  ]);
+
+  const child = childFor(() => {
+    mkdirSync(join(canonical, ".."), { recursive: true });
+    cpSync(f.skill, canonical, { recursive: true });
+    mkdirSync(join(copy, ".."), { recursive: true });
+    cpSync(f.skill, copy, { recursive: true });
+  });
+  const result = await installSkill(guardInstallOptions(f, child));
+
+  assert.equal(result.outcome, "installed", JSON.stringify(result));
+  assert.equal(child.calls.length, 1);
+  assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "installed");
+});
+
+test("blocks after a kill left a partial identity tree instead of calling it external", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const copy = join(f.home, ".detected", "skills", "pi-worker");
+  const guard = await leaveGuardReceipt(f);
+  assert.equal(guard.outcome, "failed");
+  assert.deepEqual(guard.targets.map(({ path, kind }) => ({ path, kind })), [
+    { path: canonical, kind: "canonical" },
+    { path: copy, kind: "copy" },
+  ]);
+
+  mkdirSync(copy, { recursive: true });
+  writeFileSync(join(copy, "PI_WORKER_IDENTITY"), "pi-worker-skill/v1\n");
+  writeFileSync(join(copy, "SKILL.md"), "---\nname: pi-worker\n---\n");
+
+  const child = childFor();
+  const result = await installSkill(guardInstallOptions(f, child));
+
+  assert.notEqual(result.outcome, "skipped", JSON.stringify(result));
+  assert.equal(result.outcome, "blocked", JSON.stringify(result));
+  assert.equal(child.calls.length, 0);
+  assert.ok(result.affectedTargets.some(({ path, state }) => path === copy && state === "unmanaged"));
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.outcome, "blocked");
+  assert.ok(receipt.recovery.includes(SAFE_RETRY));
+});
+
+test("blocks after a kill left the full bundled tree instead of calling it external", async (t) => {
+  const f = fixture(t);
+  const canonical = join(f.home, ".agents", "skills", "pi-worker");
+  const copy = join(f.home, ".detected", "skills", "pi-worker");
+  const guard = await leaveGuardReceipt(f);
+  assert.equal(guard.outcome, "failed");
+  assert.deepEqual(guard.targets.map(({ path, kind }) => ({ path, kind })), [
+    { path: canonical, kind: "canonical" },
+    { path: copy, kind: "copy" },
+  ]);
+
+  mkdirSync(join(copy, ".."), { recursive: true });
+  cpSync(f.skill, copy, { recursive: true });
+
+  const child = childFor();
+  const result = await installSkill(guardInstallOptions(f, child));
+
+  assert.notEqual(result.outcome, "skipped", JSON.stringify(result));
+  assert.equal(result.outcome, "blocked", JSON.stringify(result));
+  assert.equal(child.calls.length, 0);
+  assert.ok(result.affectedTargets.some(({ path, state }) => path === copy && state === "unmanaged"));
+  const receipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(receipt.outcome, "blocked");
+  assert.ok(receipt.recovery.includes(`npx --yes skills@${PINNED_SKILLS_VERSION} remove pi-worker -g -y`));
+  assert.ok(receipt.recovery.includes(SAFE_RETRY));
 });
 
 test("does not restore an installed receipt or hide targets after an initial classifier fault", async (t) => {
@@ -1400,6 +1526,15 @@ await installSkill({
   assert.equal(runner.signalCode, "SIGKILL", `expected harness hard-killed; output=${output}`);
   await waitForChildExit(childPid, 2000);
   assert.throws(() => process.kill(childPid, 0), (e) => e.code === "ESRCH");
+
+  // The guard survives the hard kill: it must be a failed receipt that names
+  // the paths the child may have written, never an empty skipped receipt.
+  const survivingReceipt = JSON.parse(readFileSync(f.receipt, "utf8"));
+  assert.equal(survivingReceipt.outcome, "failed", JSON.stringify(survivingReceipt));
+  assert.deepEqual(survivingReceipt.targets.map(({ path, kind }) => ({ path, kind })), [
+    { path: canonical, kind: "canonical" },
+  ]);
+  assert.deepEqual(survivingReceipt.affectedTargets, []);
 });
 
 for (const streamName of ["stdout", "stderr"]) {
