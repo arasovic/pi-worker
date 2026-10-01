@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/arasovic/pi-worker/internal/pi"
+	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
 // workerHostSchemaVersion is the only wire schema version accepted and
@@ -39,6 +40,10 @@ type workerHostRequest struct {
 	// elapsed stamps. Both are set or neither is.
 	debugLog   string
 	debugStart time.Time
+	// transcriptDir, when set, is <runDir>/worker-<workerID>: the host
+	// creates it and Pi keeps this worker's session there. Empty means the
+	// run keeps no transcript.
+	transcriptDir string
 }
 
 // workerHostRequestJSON is the wire shape of an execution request.
@@ -53,6 +58,7 @@ type workerHostRequestJSON struct {
 	ExecutionTimeout string    `json:"executionTimeout"`
 	DebugLog         string    `json:"debugLog,omitempty"`
 	DebugStart       time.Time `json:"debugStart,omitzero"`
+	TranscriptDir    string    `json:"transcriptDir,omitempty"`
 }
 
 // encodeWorkerHostRequest validates req and returns its wire JSON.
@@ -71,6 +77,7 @@ func encodeWorkerHostRequest(req workerHostRequest) ([]byte, error) {
 		ExecutionTimeout: req.executionTimeout.String(),
 		DebugLog:         req.debugLog,
 		DebugStart:       req.debugStart,
+		TranscriptDir:    req.transcriptDir,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode worker host request: %w", err)
@@ -110,6 +117,7 @@ func decodeWorkerHostRequest(data []byte) (workerHostRequest, error) {
 		piExecutable:  wire.PiExecutable,
 		debugLog:      wire.DebugLog,
 		debugStart:    wire.DebugStart,
+		transcriptDir: wire.TranscriptDir,
 	}
 	d, err := time.ParseDuration(wire.ExecutionTimeout)
 	if err != nil {
@@ -167,6 +175,17 @@ func validateWorkerHostRequest(req workerHostRequest) error {
 	if req.debugLog != "" {
 		if !filepath.IsAbs(req.debugLog) || filepath.Clean(req.debugLog) != req.debugLog || filepath.Base(req.debugLog) != debugLogName {
 			return fmt.Errorf("debugLog must be a clean absolute path to a %s file", debugLogName)
+		}
+	}
+	if req.transcriptDir != "" {
+		// The run directory is named by its run id, and it is the one
+		// directory the debug log sits in too.
+		runDir := filepath.Dir(req.transcriptDir)
+		_, runIDErr := runlog.ParseRunID(filepath.Base(runDir))
+		if !filepath.IsAbs(req.transcriptDir) || filepath.Clean(req.transcriptDir) != req.transcriptDir ||
+			req.transcriptDir != workerTranscriptDir(runDir, req.workerID) || runIDErr != nil ||
+			(req.debugLog != "" && filepath.Dir(req.debugLog) != runDir) {
+			return fmt.Errorf("transcriptDir must be a clean absolute path to the run directory's worker-%d directory", req.workerID)
 		}
 	}
 	return nil

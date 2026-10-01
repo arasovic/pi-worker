@@ -151,6 +151,7 @@ func startSupervisedRun(ctx context.Context, opts runOptions, tasks []run.Task, 
 		WorktreeName:     opts.worktree,
 		RoleExecutable:   backgroundRoleExecutable,
 		Debug:            opts.debug,
+		NoTranscript:     opts.noTranscript,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "pi-worker: %v\n", err)

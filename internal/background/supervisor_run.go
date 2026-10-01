@@ -237,6 +237,9 @@ func runAcceptedRun(ctx context.Context, executable string, result supervisorSta
 		adapter.debugLog = debugLogPath(result.request.backgroundRoot, result.request.runID)
 		adapter.debugStart = result.request.acceptedAt
 	}
+	if !result.request.noTranscript {
+		adapter.runDir = filepath.Join(result.request.backgroundRoot, result.request.runID)
+	}
 	return runAcceptedRunWith(ctx, adapter, result)
 }
 

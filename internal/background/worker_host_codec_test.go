@@ -95,6 +95,37 @@ func TestWorkerHostRequestRoundTripCarriesTheDebugFile(t *testing.T) {
 	}
 }
 
+// TestWorkerHostRequestRoundTripCarriesTheTranscriptDir verifies that the
+// worker's transcript directory reaches the child host intact, beside the
+// run's debug file, and that a request without one carries no key.
+func TestWorkerHostRequestRoundTripCarriesTheTranscriptDir(t *testing.T) {
+	req := validWorkerHostRequest()
+	req.workerID = 2
+	req.transcriptDir = "/state/background/20260930T120000Z-1/worker-2"
+	req.debugLog = "/state/background/20260930T120000Z-1/debug.log"
+	req.debugStart = time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	data, err := encodeWorkerHostRequest(req)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := decodeWorkerHostRequest(data)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.transcriptDir != req.transcriptDir {
+		t.Fatalf("transcriptDir round trip = %q, want %q", got.transcriptDir, req.transcriptDir)
+	}
+
+	plain, err := encodeWorkerHostRequest(validWorkerHostRequest())
+	if err != nil {
+		t.Fatalf("encode without transcript: %v", err)
+	}
+	if strings.Contains(string(plain), "transcript") {
+		t.Fatalf("request without transcript = %s, want no transcript key", plain)
+	}
+}
+
 // TestWorkerHostRequestValidationFailures drives every validation rule
 // through encode, which must reject before any payload exists.
 func TestWorkerHostRequestValidationFailures(t *testing.T) {
@@ -128,6 +159,25 @@ func TestWorkerHostRequestValidationFailures(t *testing.T) {
 		{"debug log with another name", func(r *workerHostRequest) {
 			r.debugLog, r.debugStart = "/state/run/snapshot.json", time.Unix(1, 0).UTC()
 		}, "debugLog must be a clean absolute path"},
+		{"relative transcript dir", func(r *workerHostRequest) {
+			r.transcriptDir = "20260930T120000Z-1/worker-1"
+		}, "transcriptDir must be a clean absolute path"},
+		{"unclean transcript dir", func(r *workerHostRequest) {
+			r.transcriptDir = "/state/20260930T120000Z-1/x/../worker-1"
+		}, "transcriptDir must be a clean absolute path"},
+		{"transcript dir of another worker", func(r *workerHostRequest) {
+			r.transcriptDir = "/state/20260930T120000Z-1/worker-2"
+		}, "transcriptDir must be a clean absolute path"},
+		{"transcript dir with another name", func(r *workerHostRequest) {
+			r.transcriptDir = "/state/20260930T120000Z-1/session"
+		}, "transcriptDir must be a clean absolute path"},
+		{"transcript dir outside a run directory", func(r *workerHostRequest) {
+			r.transcriptDir = "/tmp/worker-1"
+		}, "transcriptDir must be a clean absolute path"},
+		{"transcript dir outside the debug log's run directory", func(r *workerHostRequest) {
+			r.transcriptDir = "/state/20260930T120000Z-1/worker-1"
+			r.debugLog, r.debugStart = "/state/20260930T120000Z-2/debug.log", time.Unix(1, 0).UTC()
+		}, "transcriptDir must be a clean absolute path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

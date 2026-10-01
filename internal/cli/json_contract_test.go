@@ -184,7 +184,8 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 	t.Run("run", func(t *testing.T) {
 		newGitWorkspace(t)
 		// The fake Pi offers no max thinking level, so the worker falls back
-		// to Pi's default and warns: every optional worker key is present.
+		// to Pi's default and warns, and it writes a session file: every
+		// optional worker key is present.
 		fakePi := backgroundHappyScript("done")
 		fakePi.Triggers["get_available_thinking_levels"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"levels":["off","medium","high"]}`)}}}
 		useFakePi(t, fakePi)
@@ -198,7 +199,7 @@ func TestPublicJSONDocumentShapes(t *testing.T) {
 			t.Fatalf("outcome = %v, want completed", document["outcome"])
 		}
 		workers := requireJSONArray(t, document["workers"], "workers")
-		assertExactJSONKeys(t, workers[0].(map[string]any), "model", "requestedThinkingLevel", "thinkingLevel", "thinkingFallback", "warning", "explanation", "status", "acceptedAt", "startedAt", "finishedAt", "executionTimeout")
+		assertExactJSONKeys(t, workers[0].(map[string]any), "model", "requestedThinkingLevel", "thinkingLevel", "thinkingFallback", "warning", "explanation", "status", "acceptedAt", "startedAt", "finishedAt", "executionTimeout", "transcript")
 	})
 
 	t.Run("worktrees list", func(t *testing.T) {

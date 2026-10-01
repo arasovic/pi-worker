@@ -46,8 +46,11 @@ type Process struct {
 	executable string
 	workspace  string
 	sessionDir string
-	name       string
-	tools      string
+	// keepSessionDir marks sessionDir as a transcript directory the caller
+	// owns: Close leaves it and the session Pi wrote there in place.
+	keepSessionDir bool
+	name           string
+	tools          string
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -81,6 +84,22 @@ func processName(sessionDir string) string {
 // executable is resolved at Start time.
 func NewProcess(executable, workspace string) (*Process, error) {
 	return newProcess(executable, workspace, toolAllowlist)
+}
+
+// NewTranscriptProcess prepares a worker process whose Pi session is kept
+// in transcriptDir, an existing private directory the caller created and
+// owns. Close never removes it. The --name comes from the directory's
+// parent and base, <runId>-worker-<n> in a run directory, which is unique
+// per worker and carries no secrets.
+func NewTranscriptProcess(executable, workspace, transcriptDir string) *Process {
+	return &Process{
+		executable:     executable,
+		workspace:      workspace,
+		sessionDir:     transcriptDir,
+		keepSessionDir: true,
+		name:           "pi-worker-" + filepath.Base(filepath.Dir(transcriptDir)) + "-" + filepath.Base(transcriptDir),
+		tools:          toolAllowlist,
+	}
 }
 
 // newCatalogProcess prepares a fresh private session directory for a
@@ -353,10 +372,10 @@ func (p *Process) killTree() {
 // (EOF is fully delivered only once every writer of that pipe, including
 // descendants that inherited the fd, has closed it), cleans up residual
 // descendants captured while the root is still live, releases containment,
-// and removes the session directory. A root already reaped before Close has
-// no safe lineage identity to snapshot. Close is idempotent and safe to call
-// after a failed Start: a process that never started has no containment to
-// release.
+// and removes a temporary session directory; a transcript directory stays.
+// A root already reaped before Close has no safe lineage identity to
+// snapshot. Close is idempotent and safe to call after a failed Start: a
+// process that never started has no containment to release.
 func (p *Process) Close() error {
 	p.mu.Lock()
 	if p.closed {
@@ -395,7 +414,7 @@ func (p *Process) Close() error {
 			if cont != nil {
 				_ = cont.close()
 			}
-			return os.RemoveAll(p.sessionDir)
+			return p.removeSessionDir()
 		}
 		select {
 		case <-waitCh:
@@ -419,6 +438,15 @@ func (p *Process) Close() error {
 			cont.terminateDescendants(residualDescendants)
 			_ = cont.close()
 		}
+	}
+	return p.removeSessionDir()
+}
+
+// removeSessionDir removes a temporary session directory; a kept transcript
+// directory stays.
+func (p *Process) removeSessionDir() error {
+	if p.keepSessionDir {
+		return nil
 	}
 	return os.RemoveAll(p.sessionDir)
 }

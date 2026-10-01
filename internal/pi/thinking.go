@@ -33,10 +33,12 @@ func ParseThinkingLevel(value string) (ThinkingLevel, bool) {
 }
 
 // SessionState is the narrow Pi state projection required to confirm the
-// active exact model and effective thinking level.
+// active exact model and effective thinking level, plus the session file Pi
+// reported, empty when it reported none.
 type SessionState struct {
 	Model         ModelProjection
 	ThinkingLevel ThinkingLevel
+	SessionFile   string
 }
 
 // ThinkingLevelRejectedError reports a well-formed Pi rejection of an exact

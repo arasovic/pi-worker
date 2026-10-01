@@ -2329,3 +2329,100 @@ func TestWorkerRejectsInvalidInputWithoutLaunchingPi(t *testing.T) {
 		})
 	}
 }
+
+// newTranscriptDir creates <tmp>/<runId>/worker-1, the directory a worker
+// host hands the worker, and returns it.
+func newTranscriptDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "20261001T101500Z-4242", "worker-1")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create transcript directory: %v", err)
+	}
+	return dir
+}
+
+// TestWorkerReportsTheTranscriptItKept requires that a worker with a
+// transcript directory runs Pi with that session directory, leaves the
+// session file there, and reports it; and that without one it reports
+// nothing, even though Pi named a session file in its temporary directory.
+func TestWorkerReportsTheTranscriptItKept(t *testing.T) {
+	setupFakePiEnv(t, happyPathScript("done"))
+	dir := newTranscriptDir(t)
+	result := New(fakePiBin).Run(context.Background(), WorkerRequest{
+		Model:         "acme/m-1",
+		Prompt:        "go",
+		Workspace:     t.TempDir(),
+		TranscriptDir: dir,
+	})
+	want := filepath.Join(dir, "fakepi-session.jsonl")
+	if result.Status != StatusCompleted || result.Transcript != want {
+		t.Fatalf("result = (%q, transcript %q), want completed with transcript %q; error = %q", result.Status, result.Transcript, want, result.Error)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("transcript after the worker closed: %v", err)
+	}
+
+	result = New(fakePiBin).Run(context.Background(), WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir()})
+	if result.Status != StatusCompleted || result.Transcript != "" {
+		t.Fatalf("result = (%q, transcript %q), want completed with no transcript", result.Status, result.Transcript)
+	}
+}
+
+// TestWorkerReportsNoTranscriptOutsideItsDirectory requires that a session
+// file Pi names anywhere but directly in the transcript directory is never
+// echoed, and neither is one Pi never wrote.
+func TestWorkerReportsNoTranscriptOutsideItsDirectory(t *testing.T) {
+	dir := newTranscriptDir(t)
+	elsewhere := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(elsewhere, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write session file elsewhere: %v", err)
+	}
+	for name, sessionFile := range map[string]string{
+		"elsewhere":   elsewhere,
+		"nested":      filepath.Join(dir, "sub", "session.jsonl"),
+		"unclean":     dir + "/../worker-1/fakepi-session.jsonl",
+		"not written": filepath.Join(dir, "never.jsonl"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := happyPathScript("done")
+			data, _ := json.Marshal(sessionFile)
+			s.Triggers["get_state"] = []script.Step{{Response: &script.Response{Success: true, Data: json.RawMessage(`{"model":{"provider":"acme","id":"m-1"},"thinkingLevel":"medium","sessionFile":` + string(data) + `}`)}}}
+			setupFakePiEnv(t, s)
+			result := New(fakePiBin).Run(context.Background(), WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir(), TranscriptDir: dir})
+			if result.Status != StatusCompleted || result.Transcript != "" {
+				t.Fatalf("result = (%q, transcript %q), want completed with no transcript", result.Status, result.Transcript)
+			}
+		})
+	}
+}
+
+// TestWorkerCancellationKeepsThePartialTranscript requires that a worker
+// cancelled mid-turn leaves its transcript directory and the session file
+// written so far, and still reports it.
+func TestWorkerCancellationKeepsThePartialTranscript(t *testing.T) {
+	setupFakePiEnv(t, &script.Script{Triggers: map[string][]script.Step{
+		"get_available_models": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"models":[{"provider":"acme","id":"m-1"}]}`)}},
+		},
+		"set_model": {
+			{Response: &script.Response{Success: true, Data: json.RawMessage(`{"provider":"acme","id":"m-1"}`)}},
+		},
+		"prompt": {
+			{Response: &script.Response{Success: true}},
+			{SleepMS: 10000},
+		},
+	}})
+	dir := newTranscriptDir(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(150*time.Millisecond, cancel)
+	defer timer.Stop()
+	result := New(fakePiBin).Run(ctx, WorkerRequest{Model: "acme/m-1", Prompt: "go", Workspace: t.TempDir(), TranscriptDir: dir})
+
+	want := filepath.Join(dir, "fakepi-session.jsonl")
+	if result.Status != StatusCancelled || result.Transcript != want {
+		t.Fatalf("result = (%q, transcript %q), want cancelled with transcript %q", result.Status, result.Transcript, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("partial transcript after cancellation: %v", err)
+	}
+}

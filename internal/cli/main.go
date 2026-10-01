@@ -486,7 +486,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "       pi-worker runs cancel <id> [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees list [--json]")
 	fmt.Fprintln(w, "       pi-worker worktrees remove <name> [--yes] [--json]")
-	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug]")
+	fmt.Fprintln(w, "       pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug] [--no-transcript]")
 	fmt.Fprintln(w, "Details for one command: pi-worker <command> --help")
 }
 
@@ -556,6 +556,8 @@ type runOptions struct {
 	worktree  string
 	json      bool
 	debug     bool
+	// noTranscript keeps no Pi session transcript in the run's directory.
+	noTranscript bool
 	// background starts the run in a process of its own and returns as
 	// soon as it is accepted, instead of waiting for it here.
 	background bool
@@ -1323,7 +1325,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 			}
 			declaration.Declared = true
 			opts.data[index] = declaration
-		case "--json", "--debug", "--background":
+		case "--json", "--debug", "--background", "--no-transcript":
 			if hasValue {
 				return opts, fmt.Errorf("flag %s does not take a value", name)
 			}
@@ -1336,6 +1338,8 @@ func parseRunArgs(args []string) (runOptions, error) {
 				opts.json = true
 			case "--debug":
 				opts.debug = true
+			case "--no-transcript":
+				opts.noTranscript = true
 			default:
 				opts.background = true
 			}

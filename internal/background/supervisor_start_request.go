@@ -35,6 +35,10 @@ type supervisorStartRequest struct {
 	worktree         *worktree.Prepared
 	piExecutable     string
 	debug            bool
+	// noTranscript turns off the per-worker Pi session transcript kept in
+	// the run's directory: the zero value, and a starter that predates the
+	// field, keep it.
+	noTranscript bool
 }
 
 // supervisorStartRequestJSON is the wire shape of a start request. Data
@@ -53,6 +57,7 @@ type supervisorStartRequestJSON struct {
 	Worktree         *worktreeJSON `json:"worktree,omitempty"`
 	PiExecutable     string        `json:"piExecutable"`
 	Debug            bool          `json:"debug"`
+	NoTranscript     bool          `json:"noTranscript,omitempty"`
 	// RunlogDir is still accepted from an older starter, which named the
 	// records directory here, and ignored: the run's record now lives in
 	// its own directory under BackgroundRoot. The decoder refuses unknown
@@ -229,6 +234,7 @@ func (req supervisorStartRequest) toJSON() supervisorStartRequestJSON {
 		MaxModelWorkers:  req.maxModelWorkers,
 		PiExecutable:     req.piExecutable,
 		Debug:            req.debug,
+		NoTranscript:     req.noTranscript,
 	}
 	if len(req.tasks) > 0 {
 		wire.Tasks = make([]taskJSON, len(req.tasks))
@@ -278,6 +284,7 @@ func (wire supervisorStartRequestJSON) fromJSON() (supervisorStartRequest, error
 		maxModelWorkers:  wire.MaxModelWorkers,
 		piExecutable:     wire.PiExecutable,
 		debug:            wire.Debug,
+		noTranscript:     wire.NoTranscript,
 	}
 	if len(wire.Tasks) > 0 {
 		req.tasks = make([]run.Task, len(wire.Tasks))

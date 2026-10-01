@@ -251,9 +251,10 @@ pi --mode rpc --offline --no-session --no-context-files --no-extensions --no-ski
 ```
 
 Use this writable worker launch with the current working directory as the
-workspace. Pi-worker creates a fresh private session directory per worker in a
-new OS temporary directory (`os.MkdirTemp("", "pi-worker-v0-*")`) before
-launch, and currently runs every worker with `--no-approve` and this tool allowlist:
+workspace. Pi-worker creates a fresh private session directory per worker
+before launch — the run's `worker-<n>/` transcript directory, or with
+`--no-transcript` a new OS temporary directory
+(`os.MkdirTemp("", "pi-worker-v0-*")`) — and currently runs every worker with `--no-approve` and this tool allowlist:
 
 ```sh
 pi --mode rpc --session-dir <session-dir> --name <worker-id> --no-context-files --no-extensions --no-skills --no-prompt-templates --no-themes --no-approve --tools read,grep,find,ls,edit,write,bash

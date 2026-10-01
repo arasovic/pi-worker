@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -89,6 +91,10 @@ type WorkerRequest struct {
 	WorkerID int
 	// Debug is the lifecycle sink; nil disables all debug logging.
 	Debug *DebugSink
+	// TranscriptDir, when set, is an existing private directory the caller
+	// owns: Pi keeps its session there instead of in a temporary directory,
+	// and the worker never removes it.
+	TranscriptDir string
 	// OnProcessStart, when non-nil, is called once per worker with the
 	// identity of the process it launched, immediately after the process
 	// starts. It is separate from Debug: the record must be written on
@@ -197,6 +203,11 @@ type WorkerResult struct {
 	// added together. It is nil when Pi reported no warm request with a
 	// non-zero figure.
 	CacheWarmUsage *Usage `json:"cacheWarmUsage,omitempty"`
+	// Transcript is the absolute path of the session file Pi wrote into the
+	// request's TranscriptDir. It is absent when the request kept no
+	// transcript, Pi reported no session file, the file is not directly in
+	// that directory, or Pi never wrote it.
+	Transcript string `json:"transcript,omitempty"`
 }
 
 // Worker runs one foreground worker through Pi JSONL RPC.
@@ -251,7 +262,11 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	// observer and one activity timeline. It is best effort and never
 	// fails the run.
 	activity := &activityAccumulator{workerID: req.WorkerID, observe: req.OnActivity, now: time.Now}
+	// sessionFile is the session file Pi reported on the successful startup
+	// attempt; withThinking reports it as the transcript on every return.
+	var sessionFile string
 	withThinking := func(result WorkerResult) WorkerResult {
+		result.Transcript = keptTranscript(req.TranscriptDir, sessionFile)
 		result.Usage = usage.snapshot()
 		result.CacheWarmUsage = cacheWarm.snapshot()
 		if result.Explanation == "" {
@@ -305,7 +320,13 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		debug.Log(debugStarting, "provider="+provider, "model="+id, "thinking-requested="+requestedDebug)
 		attemptThinking := thinkingOutcome{requested: req.ThinkingLevel}
 
-		proc, err := NewProcess(w.executable, req.Workspace)
+		var proc *Process
+		var err error
+		if req.TranscriptDir != "" {
+			proc = NewTranscriptProcess(w.executable, req.Workspace, req.TranscriptDir)
+		} else {
+			proc, err = NewProcess(w.executable, req.Workspace)
+		}
 		if err != nil {
 			if attempt < 3 {
 				lastRetryableFailureClass = StatusUnavailable
@@ -349,10 +370,11 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 		}
 
 		client = NewClient(proc.Stdin(), proc.Stdout(), eventHandlers{usage, transcript, cacheWarm, activity}, debug)
-		attemptThinking, failure, retryable, ok := w.prePromptAttempt(ctx, req, provider, id, client)
+		attemptThinking, attemptSessionFile, failure, retryable, ok := w.prePromptAttempt(ctx, req, provider, id, client)
 		if ok {
 			successProc = proc
 			successThinking = attemptThinking
+			sessionFile = attemptSessionFile
 			if attempt > 1 {
 				startupWarning = startupRetryWarning(attempt, lastRetryableFailureClass)
 			}
@@ -603,14 +625,15 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 }
 
 // prePromptAttempt drives the entire startup handshake before the prompt is
-// submitted. It returns a filled thinking projection on success and a typed
-// failure plus retryability on transient pre-prompt problems.
-func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest, provider, id string, client *Client) (thinking thinkingOutcome, failure WorkerResult, retryable, ok bool) {
+// submitted. It returns a filled thinking projection and the session file Pi
+// reported on success, and a typed failure plus retryability on transient
+// pre-prompt problems.
+func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest, provider, id string, client *Client) (thinking thinkingOutcome, sessionFile string, failure WorkerResult, retryable, ok bool) {
 	thinking = thinkingOutcome{requested: req.ThinkingLevel}
 
 	models, err := client.GetAvailableModels(ctx)
 	if err != nil {
-		return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+		return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 	}
 	found := false
 	for _, model := range models {
@@ -620,24 +643,24 @@ func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest,
 		}
 	}
 	if !found {
-		return thinking, WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("model %q is not in the available catalog; no fallback attempted", req.Model)}, false, false
+		return thinking, "", WorkerResult{Model: req.Model, Status: StatusUnavailable, Error: fmt.Sprintf("model %q is not in the available catalog; no fallback attempted", req.Model)}, false, false
 	}
 	if err := client.SetModel(ctx, provider, id); err != nil {
-		return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+		return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 	}
 	baseline, err := client.GetState(ctx)
 	if err != nil {
-		return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+		return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 	}
 	if err := validateStateModel(baseline, provider, id); err != nil {
-		return thinking, w.classify(req.Model, ctx, err), false, false
+		return thinking, "", w.classify(req.Model, ctx, err), false, false
 	}
 	thinking.effective = baseline.ThinkingLevel
 
 	if req.ThinkingLevel != "" {
 		levels, err := client.GetAvailableThinkingLevels(ctx)
 		if err != nil {
-			return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+			return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 		}
 		if !thinkingLevelsContain(levels, req.ThinkingLevel) {
 			thinking.fallback = true
@@ -649,34 +672,49 @@ func (w *DefaultWorker) prePromptAttempt(ctx context.Context, req WorkerRequest,
 			case err == nil:
 				confirmed, stateErr := client.GetState(ctx)
 				if stateErr != nil {
-					return thinking, w.classify(req.Model, ctx, stateErr), retryableStartupFailure(stateErr), false
+					return thinking, "", w.classify(req.Model, ctx, stateErr), retryableStartupFailure(stateErr), false
 				}
 				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
-					return thinking, w.classify(req.Model, ctx, stateErr), false, false
+					return thinking, "", w.classify(req.Model, ctx, stateErr), false, false
 				}
 				if confirmed.ThinkingLevel != req.ThinkingLevel {
-					return thinking, w.classify(req.Model, ctx, newProtocolError("get_state did not confirm requested thinking level")), false, false
+					return thinking, "", w.classify(req.Model, ctx, newProtocolError("get_state did not confirm requested thinking level")), false, false
 				}
 				thinking.effective = confirmed.ThinkingLevel
 			case errors.As(err, &rejected):
 				confirmed, stateErr := client.GetState(ctx)
 				if stateErr != nil {
-					return thinking, w.classify(req.Model, ctx, stateErr), retryableStartupFailure(stateErr), false
+					return thinking, "", w.classify(req.Model, ctx, stateErr), retryableStartupFailure(stateErr), false
 				}
 				if stateErr := validateStateModel(confirmed, provider, id); stateErr != nil {
-					return thinking, w.classify(req.Model, ctx, stateErr), false, false
+					return thinking, "", w.classify(req.Model, ctx, stateErr), false, false
 				}
 				if confirmed.ThinkingLevel != baseline.ThinkingLevel {
-					return thinking, w.classify(req.Model, ctx, newProtocolError("rejected thinking change did not preserve Pi default")), false, false
+					return thinking, "", w.classify(req.Model, ctx, newProtocolError("rejected thinking change did not preserve Pi default")), false, false
 				}
 				thinking.fallback = true
 				thinking.warning = thinkingFallbackWarning(req.ThinkingLevel, baseline.ThinkingLevel, "rejected")
 			default:
-				return thinking, w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
+				return thinking, "", w.classify(req.Model, ctx, err), retryableStartupFailure(err), false
 			}
 		}
 	}
-	return thinking, WorkerResult{}, false, true
+	return thinking, baseline.SessionFile, WorkerResult{}, false, true
+}
+
+// keptTranscript returns the session file Pi reported when it lies directly
+// in the transcript directory and exists there as a regular file, and ""
+// otherwise: a path Pi reports anywhere else is never echoed. Pi creates the
+// file lazily, with the first message, so a worker that ended before its
+// prompt has none.
+func keptTranscript(dir, sessionFile string) string {
+	if dir == "" || sessionFile == "" || filepath.Clean(sessionFile) != sessionFile || filepath.Dir(sessionFile) != dir {
+		return ""
+	}
+	if info, err := os.Lstat(sessionFile); err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return sessionFile
 }
 
 // closeProcessThenClient is the single teardown for a started host process

@@ -258,8 +258,11 @@ pi-worker runs prune --keep <n> [--yes] [--json]
   `pi-worker/runs`, the location `runlog.Dir()` resolves). It holds
   `snapshot.json` (the run's state, which `runs status` and `runs wait`
   read), `record.jsonl` (the run record), `owner.lock` (held by the
-  run's supervisor for as long as it lives), and `debug.log` for a
-  `--debug` run. The run record has one line per event: the start line
+  run's supervisor for as long as it lives), `debug.log` for a
+  `--debug` run, and one `worker-<n>/` directory per worker holding its
+  Pi session transcript unless the run was started with
+  `--no-transcript` (see `### Worker transcripts`). The run record has
+  one line per event: the start line
   written before any worker starts, one line per started worker, one
   line per descendant process of a worker found while the run is alive,
   and the finish line when the run completes. Older versions wrote the
@@ -649,7 +652,7 @@ pi-worker worktrees remove <name> [--yes] [--json]
 ## Exact run command
 
 ```text
-pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug]
+pi-worker run [--task <prompt> | --task-file <path>]... [--model <provider/model>] [--thinking <level>] [--data <paths>] [--writes <paths>] [--timeout <duration>] [--verify <command>] [--worktree <name>] [--background] [--json] [--debug] [--no-transcript]
 ```
 
 ## Personal default model
@@ -1034,7 +1037,7 @@ two runs from distinct configuration files do not share a gate.
 ### Workspace and worker sharing
 
 - The current working directory is the writable workspace.
-- Each worker gets a fresh temporary session directory created with `os.MkdirTemp("", "pi-worker-v0-*")`.
+- Each worker's Pi session directory is its transcript directory `worker-<n>/` in the run's directory (see `### Worker transcripts`); with `--no-transcript` it is a fresh temporary directory created with `os.MkdirTemp("", "pi-worker-v0-*")` and removed when the worker ends.
 - For more than one worker, all workers share that workspace and a warning is printed:
 
 ```text
@@ -1306,6 +1309,11 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
     exactly two string fields, `path` (the checkout path assigned to the
     run) and `branch` (the branch created for the checkout); absent
     otherwise
+  - each worker's `transcript`: the absolute path of its Pi session file in
+    the run's `worker-<n>/` directory; absent with `--no-transcript`, when
+    Pi reported no session file inside that directory, or when Pi never
+    wrote one. Report the path, never the content; see
+    `### Worker transcripts`
   Once the supervisor has accepted the run — the `pi-worker: run <runId>`
   line — every terminal status emits a document, timed-out and cancelled
   included, and so does a timeout or cancellation landing while the
@@ -1394,6 +1402,35 @@ It does **not** print:
 - raw frames
 - environment values or credentials
 - child stderr
+
+### Worker transcripts
+
+Pi writes a JSONL session for every worker, and pi-worker keeps it:
+
+- Each worker's Pi session directory is `worker-<n>/` in the run's
+  directory, created with mode `0700` by the worker's host just before Pi
+  starts; anything already at that path is refused, and the worker then
+  runs with a temporary session directory and says so in its warning:
+  `transcript unavailable: <reason>`. Pi chooses the file name inside it,
+  and the worker's `transcript` field names the file.
+- `--no-transcript` turns it off for one run: each worker then gets a
+  temporary session directory that is removed when it ends, and the result
+  carries no `transcript`. There is no configuration key.
+- A run that is cut off, cancelled or killed keeps the partial transcript in
+  its run directory. A message still streaming when Pi dies is missing,
+  because Pi writes an entry when a message ends; a failed turn does leave
+  an assistant entry with `errorMessage`.
+- `runs prune` removes it; pi-worker never deletes a transcript on its own.
+  There is no age sweep and no separate transcript command.
+- There is no per-token timing in it. pi-worker builds no viewer;
+  `pi --export <file>` renders one as HTML.
+
+The transcript holds everything the `--debug` stream is careful never to
+print: the full prompt including `--data` material, tool arguments and
+results, the contents of files the worker read (`.env` included), shell
+output and thinking. It is not redacted. Do not paste a transcript into a
+report; report its path. Use `--no-transcript` for a run whose session must
+not stay on disk.
 
 ### Ctrl-C / timeout cleanup and lifecycle boundary
 

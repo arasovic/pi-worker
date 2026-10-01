@@ -50,11 +50,13 @@ func validStartRequest() supervisorStartRequest {
 		worktree:         &worktree.Prepared{Name: "issue-204", Path: "/wt/issue-204", Branch: "run/issue-204", Head: "cafe1234"},
 		piExecutable:     "/usr/bin/pi",
 		debug:            true,
+		noTranscript:     true,
 	}
 }
 
 // minimalStartRequest strips a valid request down to the smallest shape
-// that still encodes: no verify, no worktree, no writes, no data, debug off.
+// that still encodes: no verify, no worktree, no writes, no data, debug off,
+// transcript kept.
 func minimalStartRequest() supervisorStartRequest {
 	req := validStartRequest()
 	req.tasks = []run.Task{{Prompt: "p", Model: "anthropic/claude-4"}}
@@ -62,6 +64,7 @@ func minimalStartRequest() supervisorStartRequest {
 	req.executionTimeout = time.Hour
 	req.worktree = nil
 	req.debug = false
+	req.noTranscript = false
 	return req
 }
 
@@ -143,7 +146,7 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 	if back.backgroundRoot != req.backgroundRoot || back.admissionRoot != req.admissionRoot {
 		t.Fatalf("roots mismatch: %q %q", back.backgroundRoot, back.admissionRoot)
 	}
-	if back.maxModelWorkers != req.maxModelWorkers || back.piExecutable != req.piExecutable || back.debug != req.debug {
+	if back.maxModelWorkers != req.maxModelWorkers || back.piExecutable != req.piExecutable || back.debug != req.debug || back.noTranscript != req.noTranscript {
 		t.Fatalf("scalars mismatch: %+v", back)
 	}
 	if !slices.Equal(back.verify, []string{"go", "test", "./..."}) {

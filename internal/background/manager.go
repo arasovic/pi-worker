@@ -136,6 +136,8 @@ type StartOptions struct {
 	// Unset or non-positive means the default bound.
 	QueueWait time.Duration
 	Debug     bool
+	// NoTranscript keeps no Pi session transcript in the run's directory.
+	NoTranscript bool
 
 	// removeWorktree is the private seam the unaccepted-start cleanup uses
 	// instead of worktree.RemoveUntouched, so a test can observe exactly

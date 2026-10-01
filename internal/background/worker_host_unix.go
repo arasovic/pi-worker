@@ -222,9 +222,11 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 
 	debug, closeDebug, debugErr := openWorkerHostDebug(req)
 	defer closeDebug()
+	transcriptDir, transcriptErr := makeWorkerHostTranscriptDir(req)
 
 	workerResult := pi.New(req.piExecutable).Run(runCtx, pi.WorkerRequest{
 		Debug:          debug,
+		TranscriptDir:  transcriptDir,
 		Model:          req.model,
 		ThinkingLevel:  req.thinkingLevel,
 		Prompt:         req.prompt,
@@ -233,15 +235,21 @@ func receiveWorkerHost(pipes *childRolePipes) (exchange workerHostExchange, err 
 		OnProcessStart: func(workerID, pid int) { notify(workerID, pid) },
 		OnActivity:     func(workerID int, activity pi.Activity) { notifyActivity(workerID, activity) },
 	})
+	warn := func(warning string) {
+		if workerResult.Warning != "" {
+			workerResult.Warning = workerResult.Warning + "; " + warning
+		} else {
+			workerResult.Warning = warning
+		}
+	}
 	if debugErr != nil {
 		// The run went on without its debug lines; the result says so
 		// instead of leaving an empty debug file to explain itself.
-		debugWarning := "debug log unavailable: " + debugErr.Error()
-		if workerResult.Warning != "" {
-			workerResult.Warning = workerResult.Warning + "; " + debugWarning
-		} else {
-			workerResult.Warning = debugWarning
-		}
+		warn("debug log unavailable: " + debugErr.Error())
+	}
+	if transcriptErr != nil {
+		// Pi kept its session in a temporary directory instead.
+		warn("transcript unavailable: " + transcriptErr.Error())
 	}
 
 	// If every notification reached the wire intact, exactly one
@@ -303,6 +311,23 @@ func openWorkerHostDebug(req workerHostRequest) (*pi.DebugSink, func(), error) {
 		return nil, func() {}, err
 	}
 	return pi.NewDebugSinkAt(f, req.debugStart), func() { _ = f.Close() }, nil
+}
+
+// makeWorkerHostTranscriptDir creates the request's transcript directory,
+// mode 0700, and returns it. Anything already at that path — a directory, a
+// file or a symbolic link — is refused, so Pi never writes a session into
+// something this host did not create. No request directory yields "" and no
+// error. A failure yields "" and the reason: like the debug file, the
+// transcript never fails a run, so the worker keeps its session in a
+// temporary directory and the caller reports the reason as a warning.
+func makeWorkerHostTranscriptDir(req workerHostRequest) (string, error) {
+	if req.transcriptDir == "" {
+		return "", nil
+	}
+	if err := os.Mkdir(req.transcriptDir, 0o700); err != nil {
+		return "", err
+	}
+	return req.transcriptDir, nil
 }
 
 // watchWorkerHostOwnership watches the child ownership descriptor (fd 5)
