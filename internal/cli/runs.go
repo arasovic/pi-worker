@@ -879,6 +879,54 @@ func pruneRunDirEntry(name string) bool {
 	return strings.HasPrefix(name, ".snapshot.json.tmp-")
 }
 
+// pruneWorkerDirName reports whether name is a worker's transcript
+// directory: worker-<n>, n a worker id exactly as the supervisor
+// numbers them from 1, with no sign and no leading zero.
+func pruneWorkerDirName(name string) bool {
+	digits, ok := strings.CutPrefix(name, "worker-")
+	if !ok {
+		return false
+	}
+	id, err := strconv.Atoi(digits)
+	return err == nil && id > 0 && strconv.Itoa(id) == digits
+}
+
+// openPruneWorkerDir opens one worker transcript directory of a run as
+// its own root, checks it is the real directory the Lstat saw, and
+// returns its transcripts' names. Anything in it but a regular *.jsonl
+// file refuses it. The caller closes the root.
+func openPruneWorkerDir(runRoot *os.Root, name string) (*os.Root, []string, error) {
+	info, err := runRoot.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("unexpected entry %q", name)
+	}
+	root, err := runRoot.OpenRoot(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if now, err := root.Stat("."); err != nil || !os.SameFile(now, info) {
+		root.Close()
+		return nil, nil, fmt.Errorf("%q is no longer the directory that was read", name)
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		root.Close()
+		return nil, nil, err
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			root.Close()
+			return nil, nil, fmt.Errorf("unexpected entry %q", name+"/"+entry.Name())
+		}
+		files = append(files, entry.Name())
+	}
+	return root, files, nil
+}
+
 // removeRunDir deletes one run directory through its parent's root,
 // after the same re-validation removeRunRecord does for a flat record,
 // plus two questions only a directory raises. It never removes a tree
@@ -902,9 +950,14 @@ func pruneRunDirEntry(name string) bool {
 //     modification time as at selection. Size is not compared; a
 //     directory's size says nothing about its content.
 //   - Every entry must be a name the supervisor writes, or a snapshot
-//     replacement stage, and a regular file or a symlink. Anything
-//     else — a notes file, a subdirectory — refuses the whole
-//     directory before a single entry is removed.
+//     replacement stage, and a regular file or a symlink — or a
+//     worker's transcript directory worker-<n>, a real directory, not
+//     a symlink, opened as its own root and checked like the run
+//     directory, holding only regular *.jsonl files. Its files are
+//     deleted by name and then the empty directory. Anything else — a
+//     notes file, another subdirectory, a symlink or a non-transcript
+//     inside a worker directory — refuses the whole run directory
+//     before a single entry, at either level, is removed.
 //
 // One ceiling is accepted by design: an entry can still appear between
 // the scan and the final removal of the directory. Nothing then
@@ -964,7 +1017,25 @@ func removeRunDir(parent *os.Root, run runlog.Run, listed os.FileInfo) (spared s
 	if err != nil {
 		return "", fmt.Errorf("refusing to delete %q: cannot be read: %v", run.Path, err)
 	}
+	type workerDir struct {
+		root  *os.Root
+		files []string
+	}
+	workers := make(map[string]workerDir)
+	defer func() {
+		for _, worker := range workers {
+			worker.root.Close()
+		}
+	}()
 	for _, entry := range entries {
+		if entry.IsDir() && pruneWorkerDirName(entry.Name()) {
+			root, files, err := openPruneWorkerDir(runRoot, entry.Name())
+			if err != nil {
+				return "", fmt.Errorf("refusing to delete %q: %v", run.Path, err)
+			}
+			workers[entry.Name()] = workerDir{root, files}
+			continue
+		}
 		if !pruneRunDirEntry(entry.Name()) || (!entry.Type().IsRegular() && entry.Type()&fs.ModeSymlink == 0) {
 			return "", fmt.Errorf("refusing to delete %q: unexpected entry %q", run.Path, entry.Name())
 		}
@@ -972,6 +1043,13 @@ func removeRunDir(parent *os.Root, run runlog.Run, listed os.FileInfo) (spared s
 	for _, entry := range entries {
 		if entry.Name() == runlog.OwnerLockName {
 			continue
+		}
+		if worker, ok := workers[entry.Name()]; ok {
+			for _, file := range worker.files {
+				if err := worker.root.Remove(file); err != nil {
+					return "", err
+				}
+			}
 		}
 		if err := runRoot.Remove(entry.Name()); err != nil {
 			return "", err
