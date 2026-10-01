@@ -688,3 +688,69 @@ func TestRunsWaitOnAnUnreadableRunReportsTheReadFailureNotAnEmptyDocument(t *tes
 		})
 	}
 }
+
+// TestRunsStatusWithUnparseableConfigFailsWithoutADocument requires that a
+// config file that cannot be parsed makes `runs status` exit non-zero with
+// nothing on stdout: the Manager was never built, so there is no run state to
+// render, and the zero snapshot must not be printed as if it were one.
+func TestRunsStatusWithUnparseableConfigFailsWithoutADocument(t *testing.T) {
+	// This test never reaches a platform process; it pins the config failure
+	// path, so the platform refusal is not what is under test here.
+	original := backgroundSupportsRuns
+	backgroundSupportsRuns = func() bool { return true }
+	t.Cleanup(func() { backgroundSupportsRuns = original })
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte("{bad"), 0o600); err != nil {
+		t.Fatalf("write malformed config: %v", err)
+	}
+	installConfigPath(t, path)
+
+	const runID = "20260830T101500Z-4242"
+	code, stdout, stderr := runCLI(t, []string{"runs", "status", runID, "--json"}, "")
+	if code != 9 {
+		t.Fatalf("runs status = (%d, %q, %q), want the code runsManager returns (9)", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("runs status printed %q, want nothing on stdout when the Manager could not be built", stdout)
+	}
+	if !strings.Contains(stderr, "load config") {
+		t.Fatalf("stderr = %q, want the config error", stderr)
+	}
+}
+
+// TestRunsStatusOfARunDirectoryWithoutSnapshotIsBrokenNotUnknown requires that
+// a run directory that exists but holds no snapshot is reported as a broken
+// run with exit 9, naming the run, not as an unknown run with exit 2.
+func TestRunsStatusOfARunDirectoryWithoutSnapshotIsBrokenNotUnknown(t *testing.T) {
+	_, root := setupBackgroundRun(t, backgroundHappyScript("never started"))
+	const runID = "20260830T101500Z-7777"
+	if err := os.Mkdir(filepath.Join(root, runID), 0o700); err != nil {
+		t.Fatalf("create empty run directory: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"runs", "status", runID},
+		{"runs", "status", runID, "--json"},
+		{"runs", "wait", runID, "--timeout", "1ns"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, stdout, stderr := runCLI(t, args, "")
+			if code != 9 {
+				t.Fatalf("%v = (%d, %q, %q), want exit 9 for a broken run directory", args, code, stdout, stderr)
+			}
+			if stdout != "" {
+				t.Fatalf("%v printed %q, want nothing on stdout for a run whose state cannot be read", args, stdout)
+			}
+			if strings.Contains(stderr, "unknown run") {
+				t.Fatalf("%v stderr = %q, want a broken-run report rather than an unknown-run refusal", args, stderr)
+			}
+			if !strings.Contains(stderr, runID) {
+				t.Fatalf("%v stderr = %q, want the broken run named", args, stderr)
+			}
+			if !strings.Contains(stderr, "holds no snapshot") {
+				t.Fatalf("%v stderr = %q, want the reason the state is unreadable", args, stderr)
+			}
+		})
+	}
+}
