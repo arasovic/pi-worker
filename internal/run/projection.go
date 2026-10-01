@@ -1,5 +1,5 @@
 // Package run coordinates bounded parallel worker slices: up to three
-// foreground workers execute accepted tasks concurrently in one shared
+// workers execute accepted tasks concurrently in one shared
 // workspace, and the controller aggregates their outcomes into one run
 // result.
 package run

@@ -51,7 +51,7 @@ func prepareOne(gate *admission.Gate, req admission.Request) (*admission.QueueTi
 	return tickets[0], nil
 }
 
-func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.T) {
+func TestControllerPreparedAdmissionStartsExecutionClockAfterLease(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	gate, err := admission.Open(t.TempDir(), 1)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 	}
 	t.Cleanup(func() { blockerLease.Release() })
 
-	// Step 3: one-task controller with foreground admission.
+	// Step 3: one-task controller with prepared admission.
 	worker := newScriptedWorker()
 	executionTimeout := 5 * time.Minute
 	acceptedAt := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
@@ -100,7 +100,7 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 	// Step 7: receive the queue deadline and assert exact equality.
 	select {
 	case got := <-queueDeadlineCh:
-		want := acceptedAt.Add(foregroundQueueTimeout)
+		want := acceptedAt.Add(queueTimeout)
 		if got != want {
 			t.Fatalf("queue deadline = %v, want %v", got, want)
 		}
@@ -167,11 +167,11 @@ func TestControllerForegroundAdmissionStartsExecutionClockAfterLease(t *testing.
 	}
 }
 
-// TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks verifies that
+// TestControllerPreparedAdmissionKeepsLaterRunBehindAllTasks verifies that
 // a later enqueued outsider ticket cannot obtain a lease until all of a
 // controller's admitted tasks have completed and released their leases.
 // With maxLive=1 the sequence is: blocker → task-1 → task-2 → outsider.
-func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) {
+func TestControllerPreparedAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	type outsiderResult struct {
 		lease *admission.Lease
@@ -393,7 +393,7 @@ func TestControllerForegroundAdmissionKeepsLaterRunBehindAllTasks(t *testing.T) 
 	}
 }
 
-func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
+func TestControllerPreparedAdmissionQueueTimeoutAggregation(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	boundedProbe := func(t *testing.T, gate *admission.Gate) {
 		t.Helper()
@@ -502,13 +502,13 @@ func TestControllerForegroundAdmissionQueueTimeoutAggregation(t *testing.T) {
 	})
 }
 
-// TestControllerForegroundAdmissionParentCancelCleansQueuedTickets verifies
+// TestControllerPreparedAdmissionParentCancelCleansQueuedTickets verifies
 // that cancelling the parent context while controller tasks are still queued
 // behind a held blocker lease cancels every queued ticket out of the gate:
 // the controller returns RunCancelled with cancelled worker results, the
 // worker is never called, and a bounded probe afterwards proves both queued
 // tickets were removed.
-func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing.T) {
+func TestControllerPreparedAdmissionParentCancelCleansQueuedTickets(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 
@@ -633,7 +633,7 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 	}
 }
 
-// TestControllerForegroundAdmissionSurfacesReleaseFailure verifies that a
+// TestControllerPreparedAdmissionSurfacesReleaseFailure verifies that a
 // failure releasing a task's lease after its worker has already completed
 // is surfaced honestly: the result still reports the worker's completed
 // outcome, proving the worker ran before the release failed, while the
@@ -642,7 +642,7 @@ func TestControllerForegroundAdmissionParentCancelCleansQueuedTickets(t *testing
 // execution, so the deferred lease Release — which reloads the gate state
 // — fails after the worker has settled. The root is test-scoped, so the
 // intentionally corrupt ticket state is removed by t.TempDir cleanup.
-func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
+func TestControllerPreparedAdmissionSurfacesReleaseFailure(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	// A real gate rooted at a test-scoped temp dir, with capacity one.
 	root := t.TempDir()
@@ -688,7 +688,7 @@ func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
 	}
 }
 
-// TestControllerForegroundAdmissionStartsFreshVerificationClock verifies
+// TestControllerPreparedAdmissionStartsFreshVerificationClock verifies
 // that an admitted controller gives verification its own fresh
 // execution-timeout context instead of reusing the context it handed the
 // worker. With one admitted task the executionContext factory must be
@@ -700,7 +700,7 @@ func TestControllerForegroundAdmissionSurfacesReleaseFailure(t *testing.T) {
 // worker's execution context: reusing the worker context or skipping a
 // fresh verification budget collapses the factory to one call or hands
 // the verifier the wrong context.
-func TestControllerForegroundAdmissionStartsFreshVerificationClock(t *testing.T) {
+func TestControllerPreparedAdmissionStartsFreshVerificationClock(t *testing.T) {
 	t.Setenv(RunMarkerEnv, "")
 	// Real gate with capacity one, one scripted worker and verifier, and
 	// a controller admitted with a distinctive execution timeout.
