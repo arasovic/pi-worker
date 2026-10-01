@@ -319,7 +319,7 @@ test("package Node floor and Go receipt pin are inherited from the pinned skills
     packageManifest.engines.node,
     installedSkills.engines.node,
     "package.json engines.node is inherited from the exact pinned skills dependency, not chosen independently; " +
-      "when skills' Node floor moves, write the same number in package.json, README.md, docs/v0-usage.md, " +
+      "when skills' Node floor moves, write the same number in package.json, README.md, docs/usage.md, " +
       "docs/releasing.md, and the literal in npm/test/readme.test.mjs",
   );
 });

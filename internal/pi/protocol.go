@@ -1,4 +1,4 @@
-// Package pi implements the pi-worker v0 foreground worker: it launches the
+// Package pi implements the pi-worker foreground worker: it launches the
 // host Pi executable in RPC mode and drives it through a closed set of
 // documented outbound JSONL request types.
 package pi
@@ -133,7 +133,7 @@ func newRequest(kind string) (request, error) {
 	return request{Type: kind}, nil
 }
 
-// ModelProjection is the v0 projection of one available-model catalog entry.
+// ModelProjection is the projection of one available-model catalog entry.
 // Every other catalog field is ignored and never re-serialized.
 type ModelProjection struct {
 	Provider string `json:"provider"`
@@ -147,7 +147,7 @@ type Event struct {
 	Raw  json.RawMessage
 }
 
-// wireResponse is the v0 projection of a response frame.
+// wireResponse is the projection of a response frame.
 type wireResponse struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`

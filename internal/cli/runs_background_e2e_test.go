@@ -520,12 +520,12 @@ func TestRunsStatusAndWaitDefaultTimeoutIsDocumented(t *testing.T) {
 	}
 	// The number the docs promise is the number the parser carries: the
 	// usage document states the bound a wait takes when it was given none.
-	usage, err := os.ReadFile(filepath.Join("..", "..", "docs", "v0-usage.md"))
+	usage, err := os.ReadFile(filepath.Join("..", "..", "docs", "usage.md"))
 	if err != nil {
 		t.Fatalf("read the usage document: %v", err)
 	}
 	if !strings.Contains(string(usage), "bound is `"+strings.TrimSuffix(defaultRunsWaitTimeout.String(), "0s")+"`") {
-		t.Fatalf("docs/v0-usage.md does not state the default wait bound %v", defaultRunsWaitTimeout)
+		t.Fatalf("docs/usage.md does not state the default wait bound %v", defaultRunsWaitTimeout)
 	}
 	if _, err := parseRunsArgs([]string{"status", "20260830T101500Z-4242", "--timeout", "1m"}); err == nil {
 		t.Fatal("runs status takes a --timeout; a status waits for nothing")

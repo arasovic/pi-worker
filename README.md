@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="./docs/v0-usage.md">Detailed usage</a> ·
+  <a href="./docs/usage.md">Detailed usage</a> ·
   <a href="./ARCHITECTURE.md">Architecture</a>
 </p>
 
@@ -60,13 +60,13 @@ Requirements: Node.js 22.20+, a [Pi](https://pi.dev/) CLI with provider authenti
    Use pi-worker with provider/model at high effort to complete this task.
    ```
 
-The requested model never silently changes. Repeat `--task` for up to three independent tasks that touch disjoint files. Thinking levels, `pi-worker skill status`, source builds and other platforms are in [detailed usage](./docs/v0-usage.md).
+The requested model never silently changes. Repeat `--task` for up to three independent tasks that touch disjoint files. Thinking levels, `pi-worker skill status`, source builds and other platforms are in [detailed usage](./docs/usage.md).
 
 > **Safety:** Pi Worker is not a sandbox. Workers can edit the current workspace and run `bash` with the current user's permissions. Parallel tasks must touch disjoint files.
 
 ## Documentation
 
-- [Detailed usage](./docs/v0-usage.md) — every command, flag, exit code and edge case.
+- [Detailed usage](./docs/usage.md) — every command, flag, exit code and edge case.
 - [JSON contracts](./docs/json-contracts.md) — the versioned `--json` output shapes.
 - [Architecture](./ARCHITECTURE.md) — how a run is admitted, supervised and measured.
 
