@@ -1407,7 +1407,7 @@ func TestWorkerStopsAfterOneContinuationWhenAnEmptySettledTurnRepeats(t *testing
 	if result.ContinuationAttempts != 1 {
 		t.Fatalf("continuationAttempts = %d, want exactly 1", result.ContinuationAttempts)
 	}
-	if want := continuationNoProgressWarning(1); result.Warning != want {
+	if want := "continuation attempt 1/2 after a turn that ended without a final answer; the run still ended without a final answer"; result.Warning != want {
 		t.Fatalf("warning = %q, want %q", result.Warning, want)
 	}
 	types := waitRequestLog(t, logPath, 6)
@@ -1457,8 +1457,9 @@ func TestWorkerStopsAfterOneContinuationWhenNoNewAssistantMessageArrives(t *test
 	if result.ContinuationAttempts != 1 {
 		t.Fatalf("continuationAttempts = %d, want exactly 1", result.ContinuationAttempts)
 	}
-	// The warning carries the count and that the retries produced no progress.
-	if want := continuationNoProgressWarning(1); result.Warning != want {
+	// The warning carries the count and that the run still ended without a
+	// final answer.
+	if want := "continuation attempt 1/2 after a turn that ended without a final answer; the run still ended without a final answer"; result.Warning != want {
 		t.Fatalf("warning = %q, want %q", result.Warning, want)
 	}
 	types := waitRequestLog(t, logPath, 6)
@@ -1511,7 +1512,7 @@ func TestWorkerStopsAfterTwoContinuationAttempts(t *testing.T) {
 	if result.ContinuationAttempts != maxContinuationAttempts {
 		t.Fatalf("continuationAttempts = %d, want %d", result.ContinuationAttempts, maxContinuationAttempts)
 	}
-	if want := continuationNoProgressWarning(maxContinuationAttempts); result.Warning != want {
+	if want := "continuation attempt 2/2 after a turn that ended without a final answer; the run still ended without a final answer"; result.Warning != want {
 		t.Fatalf("warning = %q, want %q", result.Warning, want)
 	}
 	types := waitRequestLog(t, logPath, 8)

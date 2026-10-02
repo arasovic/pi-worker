@@ -420,7 +420,7 @@ func (w *DefaultWorker) Run(ctx context.Context, req WorkerRequest) (result Work
 	finalize := func(result WorkerResult) WorkerResult {
 		result.ContinuationAttempts = continuationAttempts
 		if continuationAttempts > 0 {
-			warning := continuationNoProgressWarning(continuationAttempts)
+			warning := continuationFailedWarning(continuationAttempts)
 			if result.Status == StatusCompleted {
 				warning = continuationSucceededWarning(continuationAttempts)
 			}
@@ -764,13 +764,12 @@ func continuationSucceededWarning(attempt int) string {
 	return fmt.Sprintf("continuation succeeded on attempt %d/%d after a turn that ended without a final answer", attempt, maxContinuationAttempts)
 }
 
-// continuationNoProgressWarning is the one warning a run that retried after a
+// continuationFailedWarning is the one warning a run that retried after a
 // turn ended without a final answer carries when it ended without a completed
-// continuation. It names the attempts made and that the retries produced no
-// progress; the result's error text stays the fixed wording for the stop that
-// ended the run.
-func continuationNoProgressWarning(attempt int) string {
-	return fmt.Sprintf("continuation attempt %d/%d after a turn that ended without a final answer; the retries produced no progress", attempt, maxContinuationAttempts)
+// continuation. It names the attempts made; the result's error text stays the
+// fixed wording for the stop that ended the run.
+func continuationFailedWarning(attempt int) string {
+	return fmt.Sprintf("continuation attempt %d/%d after a turn that ended without a final answer; the run still ended without a final answer", attempt, maxContinuationAttempts)
 }
 
 // wrapUpPromptFailedWarning is the one wrap-up warning when Pi did not accept
