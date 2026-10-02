@@ -4,7 +4,7 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `0.99.1`.
+Observed version: `1.0.0`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
@@ -221,9 +221,55 @@ dogfood task on local Pi 0.99.1 using
 `opencodex/command-code/deepseek-deepseek-v4-flash`, thinking `high`. No Pi
 Worker production adaptation was needed.
 
+The surface was re-probed on 2026-10-02 against 1.0.0; 0.99.2 (2026-09-30) and
+1.0.0 (2026-10-01) are covered together, and 0.99.2 was never pinned. Both
+local global installations (`/opt/homebrew/bin/pi` and the NVM `pi` path)
+report exactly 1.0.0. `pi --help` differs from 0.99.1 only in two descriptions:
+`--provider` now reads "Provider to search for --model (requires --model)"
+(1.0.0 fails `--provider` without `--model` instead of ignoring it), and
+`--tui-mode` now defaults to `fullscreen`. Pi Worker passes neither flag. Every
+launch flag Pi Worker passes is retained. Built-in tool names are unchanged.
+Package exports are identical. `dist/modes/rpc/` is byte-identical between
+0.99.1 and 1.0.0, and so is the bundled
+`@earendil-works/pi-ai/dist/types.d.ts`. Dependencies changed only from
+`^0.99.1` to `^1.0.0`. The bundled `RETRYABLE_PROVIDER_ERROR_PATTERN` list is
+byte-identical to 0.99.1, so the issue #439 reading still holds on 1.0.0.
+`pi-worker models --json` returned the identical selector set on 0.99.1 and
+1.0.0 on the same day (99 selectors each). The drop from the 134 recorded for
+0.99.1 comes from the provider catalog, not from Pi. A promptless/no-inference
+direct RPC session with Pi Worker's launch flags confirmed success for
+`get_state`, `set_model` (exact provider/id, switching from
+`opencodex/opencode-go/deepseek-v4.1-flash` to
+`opencodex/opencode-go/muse-spark-1.2-contributor`, confirmed by `get_state`),
+`get_available_thinking_levels` (`low`, `medium`, `high`, `xhigh` for that
+model), `set_thinking_level high` followed by `get_state` confirmation, and
+`get_last_assistant_text` returning `data:{}` for empty history. Idle `steer`
+accepted `pi-worker-1.0.0-probe`, answered `data:{disposition:"queued"}` and
+emitted `queue_update`; `clear_queue` returned that exact steering text and
+emptied the queue; `abort` returned success; the RPC process exited 0. The same
+probe on 0.99.1 the same day gave identical responses. MCP isolation was
+re-measured with a temporary `PI_CODING_AGENT_DIR` whose `mcp.json` defines a
+stdio server that creates a marker file. Since 0.99.2 servers without `direct`
+exposure connect in the background instead of before the first prompt, so the
+server used `"exposure": "direct"`. An RPC session without `--no-extensions`
+started the server (marker created), and a session with Pi Worker's exact
+launch flags did not (marker absent). `pi-worker doctor` on 1.0.0 before the
+pin moved reported the version as an unverified warning with `ready: yes`. The
+remaining 0.99.2 and 1.0.0 changes do not reach Pi Worker: fullscreen TUI,
+codemode prompt and error changes, codemode image generation, Radius and
+Anthropic login methods, MCP OAuth changes, MCP lazy connection and tool
+renaming, and `quietStartup` are interactive, codemode, or MCP surfaces, and Pi
+Worker runs `--no-extensions`. 0.99.2 also changed provider retries after an
+unparseable `Retry-After` date from immediate to exponential backoff.
+`@earendil-works/pi-durable`, published alongside 1.0.0, is not a dependency of
+`@earendil-works/pi-coding-agent` and does not change `--mode rpc`. This pin
+change was made by a Pi Worker dogfood task on local Pi 1.0.0 using
+`opencodex/opencode-go/deepseek-v4.1-flash`, thinking `high`. No Pi Worker
+production adaptation was needed.
+
 ## Compatibility gate
 
-**Gate result: pass for Pi 0.99.1.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 1.0.0.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.
@@ -376,7 +422,7 @@ The `get_available_models` success container is exactly
 data:{models: Model[]}}`. The `set_model` success container is exactly
 `{type:"response", command:"set_model", success:true, data:Model}`. The
 full version-pinned upstream `Model` declaration is in
-`@earendil-works/pi-coding-agent@0.99.1/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
+`@earendil-works/pi-coding-agent@1.0.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
 it is not duplicated here because v0 must not validate or reconstruct it.
 
 V0 decodes each catalog entry as this projection only:
@@ -398,7 +444,7 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 0.99.1 observes the `get_available_thinking_levels` success container as
+Pi 1.0.0 observes the `get_available_thinking_levels` success container as
 `data:{levels: ThinkingLevel[]}`, where the levels are the active model's
 supported subset of the recognized seven levels (`off`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, `max`), not always all seven. V0 requires a non-null
@@ -407,13 +453,13 @@ levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
 malformed responses remain failures.
 
-Pi 0.99.1 observes the `get_state` success container exactly as
+Pi 1.0.0 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
 V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
 required after model activation; the model must equal the selected catalog
 entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
-`@earendil-works/pi-coding-agent@0.99.1/dist/modes/rpc/rpc-types.d.ts`; V0
+`@earendil-works/pi-coding-agent@1.0.0/dist/modes/rpc/rpc-types.d.ts`; V0
 does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
@@ -435,7 +481,7 @@ response correlation, it emits only these request shapes:
 | `get_last_assistant_text` | `type` |
 
 Pi-worker must reject every other RPC type. In particular,
-it must reject direct RPC `bash`: Pi 0.99.1 dispatches that command directly,
+it must reject direct RPC `bash`: Pi 1.0.0 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
 ### Debug observability
@@ -521,7 +567,7 @@ into the fixed continuation prompt, the warning, or the debug stream.
 
 ## Tool semantics
 
-Built-in tool names reported by `pi --help` as of Pi 0.99.1 are `read`,
+Built-in tool names reported by `pi --help` as of Pi 1.0.0 are `read`,
 `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell`. Pi-worker
 intentionally continues enabling only its established seven
 (`read,grep,find,ls,edit,write,bash`) and does not enable `powershell` in
