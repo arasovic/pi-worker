@@ -11,6 +11,3 @@
 /.worktrees/
 /.pi-worker/
 .DS_Store
-
-# Types the Claude Code engine lays into a loaded mod
-/.claude/skills/*/.claude-plugin/types/

@@ -1,1 +1,0 @@
-{ "name": "ci-watch", "version": "0.1.0", "author": { "name": "arasovic" }, "description": "Watch this repo's GitHub Actions runs after Claude pushes a branch, opens a PR or pushes a release tag", "types": "./types/index.d.ts" }
