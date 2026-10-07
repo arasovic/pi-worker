@@ -10,18 +10,17 @@ import { inspectSkillIdentity } from "./skill-tree.mjs";
 const SKILL_NAME = "pi-worker";
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 
-function pathKey(value, platform) {
-  const normalized = path.normalize(value);
-  return platform === "win32" ? normalized.toLowerCase() : normalized;
+function pathKey(value) {
+  return path.normalize(value);
 }
 
-function targetPaths(roots, home, cwd, platform) {
+function targetPaths(roots, home, cwd) {
   const seen = new Set();
   const targets = [];
   for (const root of [...roots, path.join(home, ".agents", "skills")]) {
     if (typeof root !== "string") continue;
     const target = path.resolve(cwd, root, SKILL_NAME);
-    const key = pathKey(target, platform);
+    const key = pathKey(target);
     if (seen.has(key)) continue;
     seen.add(key);
     targets.push(target);
@@ -36,7 +35,7 @@ export async function inspectExternalTargets(options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const inspect = options.inspectIdentity ?? inspectSkillIdentity;
   const resolveTargets = options.resolveTargets ?? resolveAllTargets;
-  const excluded = new Set((options.excludePaths ?? []).map((value) => pathKey(value, platform)));
+  const excluded = new Set((options.excludePaths ?? []).map((value) => pathKey(value)));
 
   try {
     const rules = options.rules ?? loadRules(
@@ -50,8 +49,8 @@ export async function inspectExternalTargets(options = {}) {
       exists: (candidate) => existsSync(candidate),
     }) ?? [];
     const targets = [];
-    for (const target of targetPaths(roots, home, cwd, platform)) {
-      if (excluded.has(pathKey(target, platform))) continue;
+    for (const target of targetPaths(roots, home, cwd)) {
+      if (excluded.has(pathKey(target))) continue;
       const identity = await inspect(target);
       if (identity === "absent") continue;
       if (!["current", "legacy", "unknown", "none"].includes(identity)) {

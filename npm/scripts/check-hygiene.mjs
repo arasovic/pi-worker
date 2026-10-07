@@ -81,7 +81,6 @@ function verifiedRepositoryRoot(root, env) {
     encoding: "utf8",
     env,
     maxBuffer: GIT_OUTPUT_LIMIT,
-    windowsHide: true,
   });
   if (result.error || result.status !== 0 || result.signal || result.stderr !== "") fail("inventory", "H011");
   let reportedRoot;
@@ -102,7 +101,6 @@ function trackedPaths(root) {
     encoding: "buffer",
     env,
     maxBuffer: MAX_INVENTORY_BYTES,
-    windowsHide: true,
   });
   if (result.error || result.status !== 0 || result.signal) fail("inventory", "H011");
   if (!Buffer.isBuffer(result.stdout) || result.stdout.length > MAX_INVENTORY_BYTES) fail("inventory", "H010");

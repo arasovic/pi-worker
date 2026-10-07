@@ -55,9 +55,6 @@ const guardRules = {
   }],
 };
 
-const windowsSymlinkSkip = process.platform === "win32" ? "symlink permissions vary on windows" : undefined;
-const windowsProcessGroupSkip = process.platform === "win32" ? "process-group signals are not portable on windows" : undefined;
-
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "pi-worker-install-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -132,7 +129,7 @@ test("installs an absent skill with the exact package-local CLI invocation", asy
   ]);
   assert.equal(child.calls[0].options.shell, false);
   assert.equal(child.calls[0].binary, process.execPath);
-  if (process.platform !== "win32") assert.equal(child.calls[0].options.detached, true);
+  assert.equal(child.calls[0].options.detached, true);
   assert.deepEqual(child.calls[0].options.env, {
     HOME: f.home,
     KEEP_ME: "present",
@@ -1134,7 +1131,7 @@ test("retries a one-shot blocked receipt failure as a failed receipt", async (t)
   assert.equal(JSON.parse(readFileSync(f.receipt, "utf8")).outcome, "failed");
 });
 
-test("a symlinked prior receipt never confers ownership on a recognized external skill", { skip: windowsSymlinkSkip }, async (t) => {
+test("a symlinked prior receipt never confers ownership on a recognized external skill", async (t) => {
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");
   const copy = join(f.home, ".test", "skills", "pi-worker");
@@ -1186,7 +1183,7 @@ test("malformed and oversized prior receipts never confer ownership on recognize
 
 test("foreign agent copy and symlink targets block without mutation", async (t) => {
   for (const topology of ["copy", "symlink"]) {
-    await t.test(topology, { skip: topology === "symlink" ? windowsSymlinkSkip : undefined }, async (t) => {
+    await t.test(topology, async (t) => {
       const f = fixture(t);
       const agentTarget = join(f.home, ".test", "skills", "pi-worker");
       mkdirSync(join(agentTarget, ".."), { recursive: true });
@@ -1231,33 +1228,8 @@ test("deduplicates conservative targets before preflight and receipt constructio
   assert.equal(targets.filter(({ path }) => path === canonical).length, 1);
 });
 
-test("does not add process signal listeners for a non-detached Windows-mode installer", async (t) => {
-  const f = fixture(t);
-  const before = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, process.listenerCount(signal)]));
-  let releaseSpawn;
-  const spawned = new Promise((resolve) => { releaseSpawn = resolve; });
-  const spawn = () => {
-    const child = new EventEmitter();
-    child.stdout = new PassThrough();
-    child.stderr = new PassThrough();
-    releaseSpawn(child);
-    return child;
-  };
-
-  const installation = installSkill(options(f, { spawn }, { platform: "win32" }));
-  const child = await spawned;
-  assert.equal(process.listenerCount("SIGINT"), before.get("SIGINT"));
-  assert.equal(process.listenerCount("SIGTERM"), before.get("SIGTERM"));
-  child.emit("close", 0, null);
-
-  const result = await installation;
-  assert.equal(result.outcome, "failed");
-  assert.equal(process.listenerCount("SIGINT"), before.get("SIGINT"));
-  assert.equal(process.listenerCount("SIGTERM"), before.get("SIGTERM"));
-});
-
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  test(`forwards ${signal} to the detached installer and keeps partial ownership recoverable`, { timeout: 10_000, skip: windowsProcessGroupSkip }, async (t) => {
+  test(`forwards ${signal} to the detached installer and keeps partial ownership recoverable`, { timeout: 10_000 }, async (t) => {
 
     const f = fixture(t);
     const canonical = join(f.home, ".agents", "skills", "pi-worker");
@@ -1403,7 +1375,7 @@ process.stdout.write("RESULT:" + result.outcome + "\\n");
   });
 }
 
-test("detached installer terminates shortly after owner is hard-killed", { timeout: 10_000, skip: windowsProcessGroupSkip }, async (t) => {
+test("detached installer terminates shortly after owner is hard-killed", { timeout: 10_000 }, async (t) => {
 
   const f = fixture(t);
   const canonical = join(f.home, ".agents", "skills", "pi-worker");

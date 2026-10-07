@@ -6,7 +6,7 @@ import {
   readSync,
   readFileSync,
 } from "node:fs";
-import { posix, win32 } from "node:path";
+import { posix } from "node:path";
 
 export const PINNED_SKILLS_VERSION = "1.7.0";
 export const RULE_SCHEMA_VERSION = 3;
@@ -257,8 +257,8 @@ function validateDocument(document, enforcePinned = true) {
   return document;
 }
 
-function runtimePath(runtime) {
-  return runtime?.platform === "win32" ? win32 : posix;
+function runtimePath() {
+  return posix;
 }
 
 function runtimeCwd(runtime) {
@@ -275,7 +275,7 @@ function environmentValue(environment, variable) {
 
 function resolveDetectorPath(expression, runtime) {
   validatePathExpression(expression);
-  const path = runtimePath(runtime);
+  const path = runtimePath();
   const home = runtimeHome(runtime);
   const cwd = runtimeCwd(runtime);
   const environment = runtime?.env && typeof runtime.env === "object" ? runtime.env : {};
@@ -380,8 +380,8 @@ function relativePath(rule, property) {
   return value;
 }
 
-export function resolveRule(rule, { env = {}, home, platform, exists } = {}) {
-  const path = platform === "win32" ? win32 : posix;
+export function resolveRule(rule, { env = {}, home, exists } = {}) {
+  const path = posix;
   const baseHome = runtimeHome({ home });
   const environment = env && typeof env === "object" ? env : {};
 
@@ -430,7 +430,7 @@ export function resolveAgentTarget(agent, runtime) {
     throw new TypeError("skills target resolution requires universal target behavior");
   }
   if (agent.usesUniversalTarget) {
-    const path = runtimePath(runtime);
+    const path = runtimePath();
     return path.join(runtimeHome(runtime), ".agents", "skills");
   }
   return resolveRule(agent.rule, runtime);
@@ -446,7 +446,7 @@ export function resolveAllTargets(document, runtime) {
       throw new TypeError("skills target document contains an invalid agent");
     }
     const target = resolveAgentTarget(agent, runtime);
-    const key = runtime?.platform === "win32" && target !== null ? target.toLowerCase() : target;
+    const key = target;
     if (target === null || resolved.has(key)) continue;
     resolved.add(key);
     targets.push(target);

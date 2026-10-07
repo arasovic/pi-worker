@@ -73,7 +73,6 @@ describe("receiptPathFromNative", () => {
       options: {
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,
-        windowsHide: true,
       },
     }]);
   });

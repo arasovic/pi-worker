@@ -4,7 +4,7 @@ import process from "node:process";
 
 export class UnsupportedPlatformError extends Error {
   constructor(platform, arch) {
-    super(`Unsupported platform/architecture: ${platform}/${arch}`);
+    super(`Unsupported platform/architecture: ${platform}/${arch}; Pi Worker supports macOS and Linux on arm64 and x64`);
     this.name = "UnsupportedPlatformError";
   }
 }
@@ -54,10 +54,9 @@ export function runNative(binary, args, options = {}) {
     try {
       child = spawn(binary, args, {
         ...options,
-        detached: process.platform !== "win32",
+        detached: true,
         shell: false,
         stdio: "inherit",
-        windowsHide: true,
       });
     } catch {
       reject(new NativeProcessError());
@@ -116,10 +115,9 @@ export function runNativeCaptured(binary, args, options = {}) {
     let child;
     try {
       child = spawn(binary, args, {
-        detached: process.platform !== "win32",
+        detached: true,
         shell: false,
         stdio: ["inherit", "pipe", "pipe"],
-        windowsHide: true,
       });
     } catch {
       reject(new NativeProcessError());
