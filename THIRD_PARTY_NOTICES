@@ -8,7 +8,7 @@ appendix, is part of the upstream file and is intentionally left unchanged.
 This file is generated. Run `go run ./tools/notices --write THIRD_PARTY_NOTICES`
 instead of editing it by hand.
 
-## github.com/shirou/gopsutil/v4 v4.26.8
+## github.com/shirou/gopsutil/v4 v4.26.9
 Targets: darwin, linux
 
 ### LICENSE
@@ -133,7 +133,7 @@ infringement, or inducement of patent infringement, then any patent
 rights granted to you under this License for this implementation of Go
 shall terminate as of the date such litigation is filed.
 
-## github.com/tklauser/go-sysconf v0.3.16
+## github.com/tklauser/go-sysconf v0.4.0
 Targets: darwin, linux
 
 ### LICENSE
@@ -168,7 +168,7 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## github.com/ebitengine/purego v0.10.2
+## github.com/ebitengine/purego v0.11.1
 Targets: darwin
 
 ### LICENSE
@@ -375,7 +375,7 @@ Targets: darwin
    See the License for the specific language governing permissions and
    limitations under the License.
 
-## github.com/tklauser/numcpus v0.11.0
+## github.com/tklauser/numcpus v0.12.0
 Targets: linux
 
 ### LICENSE
