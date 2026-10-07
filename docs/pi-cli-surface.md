@@ -349,6 +349,20 @@ guaranteed stable by this document.
 | `--no-approve` | Yes; ignores project-local files for the run. |
 | `--tools <tools>` | Yes; comma-separated allowlist across built-in, extension, and custom tools. |
 
+**Bundle check.** Every pin repeats this check, because the gate relies on
+`pi --version` identifying the Pi code that Pi Worker runs. Install the
+candidate release into an empty scratch directory with `npm i --ignore-scripts
+@earendil-works/pi-coding-agent@<version>`. Delete every package in that
+directory's `node_modules` except `@earendil-works/pi-coding-agent`. Confirm
+that no parent directory has a `node_modules` directory and that `NODE_PATH`
+is unset. Put a `pi` link to that copy's `dist/bundle/cli.js` first on
+`PATH`. Then run the promptless RPC probe and `npm run check:livepiprobe`.
+The probe output must match the unmodified installation, and the live
+probe must pass. If either fails, Pi loads its installed dependencies at
+run time. Then `pi --version` no longer identifies the running code, and
+the pin must not move until Pi Worker also verifies those dependency
+versions.
+
 ## Process invocations
 
 Use this harmless probe launch for an isolated, read-only process. It
