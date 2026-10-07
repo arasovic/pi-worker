@@ -72,17 +72,6 @@ jobs:
           go-version-file: go.mod
       - name: Cross-build Windows amd64
         run: GOOS=windows GOARCH=amd64 go build ./...
-      - name: Compile Windows test packages
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/windows-test-binaries"
-          index=0
-          while IFS= read -r package; do
-            index=$((index + 1))
-            GOOS=windows GOARCH=amd64 go test -c \
-              -o "$RUNNER_TEMP/windows-test-binaries/$index.test.exe" \
-              "$package"
-          done < <(GOOS=windows GOARCH=amd64 go list ./...)
 
   go-crossbuild:
     runs-on: ubuntu-latest

@@ -33,8 +33,8 @@ var terminateProcess = func(cont *childContainment, proc *os.Process) error {
 // fresh private per-worker session directory and the exact disabling flags
 // from docs/pi-cli-surface.md. The child inherits the host environment
 // verbatim; credentials never appear in argv. The child runs inside a
-// platform lifecycle boundary (creation-time-verified lineage on Unix, job
-// object on Windows) so cancellation, timeout, and forced Close terminate the
+// platform lifecycle boundary (creation-time-verified lineage on macOS and
+// Linux) so cancellation, timeout, and forced Close terminate the
 // direct child and attributable descendants, including ordinary Unix
 // descendants that moved to another process group. This is best-effort lifecycle
 // recovery, not a sandbox: descendants spawned after the pre-close snapshot
@@ -176,7 +176,7 @@ func (p *Process) argv() []string {
 // Start launches the child with the workspace as working directory and the
 // inherited host environment, inside the platform lifecycle boundary.
 // Cancellation or timeout terminates the direct child and attributable
-// descendants through a creation-time-verified Unix lineage or Windows job.
+// descendants through a creation-time-verified Unix lineage.
 // An already-cancelled or expired context fails Start
 // before any child spawns. Every failure after containment creation
 // releases the containment and any created pipes exactly once: ownership
@@ -206,8 +206,8 @@ func (p *Process) Start(ctx context.Context) error {
 	// stdin owns the caller end of the child stdin pipe created below;
 	// stdout is the caller read end of the manual stdout pipe, and stdoutW is
 	// its child write end. release is the single cleanup path for every
-	// failure after containment creation: it returns the containment (the
-	// Windows job handle) and any created pipes to the OS exactly once, and
+	// failure after containment creation: it returns the containment and
+	// any created pipes to the OS exactly once, and
 	// Close never releases again because ownership transfers only on
 	// success. Both stdout ends must be releasable here: the write end is
 	// closed explicitly only after a successful Start, so the pre-Start
@@ -278,8 +278,7 @@ func (p *Process) Start(ctx context.Context) error {
 	stdoutW = nil
 	if err := cont.assign(cmd.Process); err != nil {
 		// Assignment is required before Start may report success. Kill and
-		// reap the direct child immediately; the Windows implementation
-		// documents its unavoidable post-create assignment window.
+		// reap the direct child immediately.
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return fmt.Errorf("process containment assignment: %w", err)

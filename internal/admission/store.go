@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // statePath returns root/state.json for the given root directory.
@@ -143,10 +142,8 @@ func saveState(root string, s state) error {
 		return fmt.Errorf("save admission state %s: create directory: %w", path, err)
 	}
 	// Tighten the root directory to owner-only where supported.
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(dir, 0o700); err != nil {
-			return fmt.Errorf("save admission state %s: set directory permissions: %w", path, err)
-		}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("save admission state %s: set directory permissions: %w", path, err)
 	}
 
 	data, err := json.Marshal(s)
@@ -165,11 +162,9 @@ func saveState(root string, s state) error {
 		tmp.Close()
 		os.Remove(tmpName)
 	}
-	if runtime.GOOS != "windows" {
-		if err := tmp.Chmod(0o600); err != nil {
-			remove()
-			return fmt.Errorf("save admission state %s: set permissions: %w", path, err)
-		}
+	if err := tmp.Chmod(0o600); err != nil {
+		remove()
+		return fmt.Errorf("save admission state %s: set permissions: %w", path, err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		remove()
@@ -187,10 +182,8 @@ func saveState(root string, s state) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("save admission state %s: replace: %w", path, err)
 	}
-	if runtime.GOOS != "windows" {
-		if err := syncParentDirectory(dir); err != nil {
-			return fmt.Errorf("save admission state %s: sync parent directory: %w", path, err)
-		}
+	if err := syncParentDirectory(dir); err != nil {
+		return fmt.Errorf("save admission state %s: sync parent directory: %w", path, err)
 	}
 	return nil
 }

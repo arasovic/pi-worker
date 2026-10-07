@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/arasovic/pi-worker/internal/config"
 	"github.com/arasovic/pi-worker/internal/runlog"
@@ -294,11 +293,9 @@ func (s *Store) Create(snapshot Snapshot) (*os.File, error) {
 		return nil, fmt.Errorf("create snapshot (%s): root %s exists but is not a directory", runID, root)
 	}
 
-	// Harden root permissions (off Windows).
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(root, 0700); err != nil {
-			return nil, fmt.Errorf("create snapshot (%s): chmod root %s: %w", runID, root, err)
-		}
+	// Harden root permissions.
+	if err := os.Chmod(root, 0700); err != nil {
+		return nil, fmt.Errorf("create snapshot (%s): chmod root %s: %w", runID, root, err)
 	}
 
 	// Create the per-run directory exclusively.
@@ -311,12 +308,10 @@ func (s *Store) Create(snapshot Snapshot) (*os.File, error) {
 	// Mark that we created the run directory for bounded cleanup.
 	runDirCreated := true
 
-	// Harden run directory permissions (off Windows).
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(runDir, 0700); err != nil {
-			cErr := doCleanup(snapPath, runDir, root, runDirCreated, nil, nil)
-			return nil, errors.Join(fmt.Errorf("create snapshot (%s): chmod run dir %s: %w", runID, runDir, err), cErr)
-		}
+	// Harden run directory permissions.
+	if err := os.Chmod(runDir, 0700); err != nil {
+		cErr := doCleanup(snapPath, runDir, root, runDirCreated, nil, nil)
+		return nil, errors.Join(fmt.Errorf("create snapshot (%s): chmod run dir %s: %w", runID, runDir, err), cErr)
 	}
 
 	// Take the owner lock before the snapshot exists: a snapshot is never
@@ -493,16 +488,14 @@ func (s *Store) Replace(snapshot Snapshot) error {
 	}
 	tmpName := f.Name()
 
-	// Harden temp file permissions (off Windows).
-	if runtime.GOOS != "windows" {
-		if err := f.Chmod(0o600); err != nil {
-			closeErr := f.Close()
-			removeErr := removeSnapshotForCleanup(tmpName)
-			if errors.Is(removeErr, fs.ErrNotExist) {
-				removeErr = nil
-			}
-			return fmt.Errorf("replace snapshot (%s): chmod temp file %s: %w", runID, tmpName, errors.Join(closeErr, removeErr, err))
+	// Harden temp file permissions.
+	if err := f.Chmod(0o600); err != nil {
+		closeErr := f.Close()
+		removeErr := removeSnapshotForCleanup(tmpName)
+		if errors.Is(removeErr, fs.ErrNotExist) {
+			removeErr = nil
 		}
+		return fmt.Errorf("replace snapshot (%s): chmod temp file %s: %w", runID, tmpName, errors.Join(closeErr, removeErr, err))
 	}
 
 	n, writeErr := f.Write(encoded)

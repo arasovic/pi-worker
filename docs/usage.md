@@ -22,16 +22,14 @@ final JSON result without debug or raw protocol output.
 - Provider authentication is configured in Pi itself. Do not pass credentials/secrets via `pi-worker` argv.
   - Open Pi interactively and use Pi's own authentication flow.
 
-The npm package supports macOS and Linux on arm64 and x64: those are the
+Pi Worker supports macOS and Linux on arm64 and x64 only; those are the
 distributed runtime targets. Windows, FreeBSD, OpenBSD, NetBSD, Solaris, and
-Plan 9 are compile gates only — CI cross-compiles the Windows binary and its
-test packages and compile-checks the other targets' binaries, but none is
-runtime-tested in the current release gates or a released platform. Windows
-requires a source build. Every run is carried out by a supervisor process
-that only macOS and Linux can host, so on every other target `pi-worker run`
-exits `9` with `pi-worker: run is not supported on this platform`, and
-`pi-worker run --background` exits `9` with a start error on stderr. Native
-archives for those runtime targets are
+Plan 9 are not supported: CI only checks that the binary still compiles for
+them, and none is runtime-tested or released. Every run is carried out by a
+supervisor process that only macOS and Linux can host, so on every other
+target `pi-worker run` exits `9` with `pi-worker: run is not supported on this
+platform`, and `pi-worker run --background` exits `9` with a start error on
+stderr. Native archives for those runtime targets are
 published on [GitHub Releases](https://github.com/arasovic/pi-worker/releases).
 
 Install the public package normally, or keep installer diagnostics visible:
@@ -1491,8 +1489,7 @@ not stay on disk.
 - Inside the run, a cancellation and the timeout cancel the shared run
   context.
 - macOS/Linux: each child runs in its own process group, but cleanup avoids signalling that reusable numeric group; it kills Pi through Go's process handle and performs a best-effort, creation-time-verified descendant sweep.
-- Windows: children are placed in a Job Object with kill-on-close.
-- This is recovery, not a sandbox. Deliberately daemonized/reparented processes, processes spawned during the post-snapshot window, and the short Windows pre-assignment window can escape. A run reports those of them that still carry its marker in root `leftoverProcesses`; see the run JSON contract for what it cannot see.
+- This is recovery, not a sandbox. Deliberately daemonized/reparented processes and processes spawned during the post-snapshot window can escape. A run reports those of them that still carry its marker in root `leftoverProcesses`; see the run JSON contract for what it cannot see.
 - A `trap 'kill 0'` kept in a worker's own shell is at most a secondary layer: it does not run on `SIGKILL`, which a harness timeout can deliver, so it cannot substitute for the bounded command.
 - If Pi exits and is reaped before cleanup can snapshot its lineage, surviving descendants may also escape; Pi Worker does not continuously track descendants.
 
