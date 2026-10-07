@@ -228,7 +228,7 @@ describe("native target selection", () => {
       () => nativeTarget("win32", "x64"),
       (error) => {
         assert.equal(error.name, "UnsupportedPlatformError");
-        assert.equal(error.message, "Unsupported platform/architecture: win32/x64");
+        assert.equal(error.message, "Unsupported platform/architecture: win32/x64; Pi Worker supports macOS and Linux on arm64 and x64");
         return true;
       },
       "expected windows platform to be rejected"
@@ -240,7 +240,7 @@ describe("native target selection", () => {
       () => nativeTarget("freebsd", "x64"),
       (error) => {
         assert.equal(error.name, "UnsupportedPlatformError");
-        assert.equal(error.message, "Unsupported platform/architecture: freebsd/x64");
+        assert.equal(error.message, "Unsupported platform/architecture: freebsd/x64; Pi Worker supports macOS and Linux on arm64 and x64");
         return true;
       },
       "expected freebsd platform to be rejected"
@@ -252,7 +252,7 @@ describe("native target selection", () => {
       () => nativeTarget("linux", "ia32"),
       (error) => {
         assert.equal(error.name, "UnsupportedPlatformError");
-        assert.equal(error.message, "Unsupported platform/architecture: linux/ia32");
+        assert.equal(error.message, "Unsupported platform/architecture: linux/ia32; Pi Worker supports macOS and Linux on arm64 and x64");
         return true;
       },
       "expected unsupported architecture to be rejected"
@@ -264,7 +264,7 @@ describe("native target selection", () => {
       () => nativeTarget("plan9", "x64"),
       (error) => {
         assert.equal(error.name, "UnsupportedPlatformError");
-        assert.equal(error.message, "Unsupported platform/architecture: plan9/x64");
+        assert.equal(error.message, "Unsupported platform/architecture: plan9/x64; Pi Worker supports macOS and Linux on arm64 and x64");
         return true;
       },
       "expected unknown platform to be rejected"
@@ -658,9 +658,7 @@ describe("launcher process behavior", () => {
     assert.match(result.stdout, /cancelled/);
   });
 
-  const unixTest = process.platform === "win32" ? test.skip : test;
-
-  unixTest("forwards a terminal process-group SIGINT exactly once", { timeout: 5_000 }, async (t) => {
+  test("forwards a terminal process-group SIGINT exactly once", { timeout: 5_000 }, async (t) => {
     const child = spawn(bin, [harnessFixture, signalFixture], {
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
@@ -716,7 +714,7 @@ describe("launcher process behavior", () => {
       () => nativeTarget("freebsd", "x64"),
       {
         name: "UnsupportedPlatformError",
-        message: "Unsupported platform/architecture: freebsd/x64",
+        message: "Unsupported platform/architecture: freebsd/x64; Pi Worker supports macOS and Linux on arm64 and x64",
       },
       "expected stable unsupported-platform diagnostic"
     );

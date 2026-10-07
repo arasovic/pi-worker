@@ -67,26 +67,25 @@ function sortPaths(paths) {
   return [...paths].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
 }
 
-function pathKey(value, platform) {
-  const normalized = path.normalize(value);
-  return platform === "win32" ? normalized.toLowerCase() : normalized;
+function pathKey(value) {
+  return path.normalize(value);
 }
 
-function samePath(left, right, platform) {
-  return pathKey(left, platform) === pathKey(right, platform);
+function samePath(left, right) {
+  return pathKey(left) === pathKey(right);
 }
 
-function receiptTracksPath(receipt, targetPath, platform) {
+function receiptTracksPath(receipt, targetPath) {
   if (!receipt) return false;
   if (receipt.targets.some((target) => {
     if (target.kind === "symlink") {
-      return target.files.some((file) => samePath(path.join(target.path, file.path), targetPath, platform));
+      return target.files.some((file) => samePath(path.join(target.path, file.path), targetPath));
     }
-    return samePath(target.path, targetPath, platform);
+    return samePath(target.path, targetPath);
   })) return true;
   // A failed postcondition is still an installer observation. Do not let a
   // later identity scan reinterpret that observed partial tree as external.
-  return receipt.affectedTargets.some((target) => samePath(target.path, targetPath, platform));
+  return receipt.affectedTargets.some((target) => samePath(target.path, targetPath));
 }
 
 function treeFiles(tree) {
@@ -140,18 +139,18 @@ function failedReceipt(version, targets = [], affectedTargets = []) {
  * its current destination digest is recorded, otherwise any valid digest is
  * sufficient because receiptTracksPath only compares paths for symlinks.
  */
-async function intendedReceiptTargets({ requiredTargets, canonical, initialStates, bundledTree, platform }) {
+async function intendedReceiptTargets({ requiredTargets, canonical, initialStates, bundledTree }) {
   const records = [];
   const seenTargets = new Set();
   const symlinks = new Map();
   const addCopy = (targetPath, kind) => {
-    const key = pathKey(targetPath, platform);
+    const key = pathKey(targetPath);
     if (seenTargets.has(key)) return;
     seenTargets.add(key);
     records.push({ path: targetPath, kind, files: treeFiles(bundledTree) });
   };
   const addSymlink = async (targetPath) => {
-    const key = pathKey(targetPath, platform);
+    const key = pathKey(targetPath);
     if (seenTargets.has(key)) return;
     seenTargets.add(key);
     let sha256 = IDENTITY_SHA256;
@@ -168,7 +167,7 @@ async function intendedReceiptTargets({ requiredTargets, canonical, initialState
     symlinks.set(parent, files);
   };
   const add = async (targetPath) => {
-    if (samePath(targetPath, canonical, platform)) {
+    if (samePath(targetPath, canonical)) {
       addCopy(targetPath, "canonical");
       return;
     }
@@ -275,13 +274,13 @@ function blockedReceipt(version, prior, affected) {
   };
 }
 
-function targetsFromResolved(resolved, cwd, platform) {
+function targetsFromResolved(resolved, cwd) {
   const candidates = resolved.filter((target) => typeof target === "string")
     .map((target) => path.resolve(cwd, target, SKILL_NAME));
   const seen = new Set();
   const targets = [];
   for (const target of candidates) {
-    const key = pathKey(target, platform);
+    const key = pathKey(target);
     if (!seen.has(key)) {
       seen.add(key);
       targets.push(target);
@@ -290,19 +289,19 @@ function targetsFromResolved(resolved, cwd, platform) {
   return sortPaths(targets);
 }
 
-function targetList({ home, cwd, rules, runtime, resolveTargets, platform }) {
+function targetList({ home, cwd, rules, runtime, resolveTargets }) {
   const resolved = resolveTargets(rules, runtime) ?? [];
-  return targetsFromResolved([...resolved, path.join(home, ".agents", "skills")], cwd, platform);
+  return targetsFromResolved([...resolved, path.join(home, ".agents", "skills")], cwd);
 }
 
-function requiredTargetList({ rules, agentIds, runtime, cwd, platform }) {
+function requiredTargetList({ rules, agentIds, runtime, cwd }) {
   const agentsById = new Map(rules.agents.map((agent) => [agent.id, agent]));
   const resolved = agentIds.map((id) => {
     const agent = agentsById.get(id);
     if (!agent) throw new Error("detected agent is missing from the rules");
     return resolveAgentTarget(agent, runtime);
   });
-  return targetsFromResolved(resolved, cwd, platform);
+  return targetsFromResolved(resolved, cwd);
 }
 
 function captureChild(spawn, binary, args, options, timeoutMs) {
@@ -339,10 +338,11 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
     };
     const signalChild = (signal) => {
       try {
-        // A detached Unix child is preferably treated as a process group, but
-        // retain child.kill for portable implementations and test doubles.
+        // The child is always detached, so its process group is signalled
+        // first, but retain child.kill for portable implementations and test
+        // doubles.
         let groupSignalled = false;
-        if (options.detached === true && process.platform !== "win32" && Number.isInteger(child?.pid) && child.pid > 0) {
+        if (Number.isInteger(child?.pid) && child.pid > 0) {
           try {
             process.kill(-child.pid, signal);
             groupSignalled = true;
@@ -407,12 +407,10 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
       return;
     }
 
-    if (options.detached === true) {
-      const onProcessSignal = (signal) => beginStop(`process interrupted by ${signal}`, signal);
-      for (const signal of ["SIGINT", "SIGTERM"]) {
-        process.on(signal, onProcessSignal);
-        processSignalListeners.push({ signal, listener: onProcessSignal });
-      }
+    const onProcessSignal = (signal) => beginStop(`process interrupted by ${signal}`, signal);
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      process.on(signal, onProcessSignal);
+      processSignalListeners.push({ signal, listener: onProcessSignal });
     }
 
     const onError = () => finish({ ok: false, reason: "process could not be started" });
@@ -440,19 +438,18 @@ async function inspectInstalledTargets(
   requiredTargets,
   canonical,
   bundledTree,
-  platform,
   hashTree,
   priorReceipt,
   initialStates,
 ) {
   const records = [];
   const symlinkRecords = new Map();
-  const requiredKeys = new Set(requiredTargets.map((target) => pathKey(target, platform)));
+  const requiredKeys = new Set(requiredTargets.map((target) => pathKey(target)));
   const missingRequired = [];
   const affectedTargets = [];
   const affectedKeys = new Set();
   const markAffected = (targetPath) => {
-    const key = pathKey(targetPath, platform);
+    const key = pathKey(targetPath);
     if (affectedKeys.has(key)) return;
     affectedKeys.add(key);
     affectedTargets.push({
@@ -487,15 +484,15 @@ async function inspectInstalledTargets(
   }
 
   const priorCopy = (target) => priorReceipt?.targets.find((candidate) =>
-    candidate.kind === "copy" && samePath(candidate.path, target, platform));
+    candidate.kind === "copy" && samePath(candidate.path, target));
   for (const target of targets) {
     let info;
     try {
       info = await lstatAsync(target);
     } catch (error) {
       if (error?.code === "ENOENT") {
-        if (requiredKeys.has(pathKey(target, platform))) missingRequired.push(target);
-        if (requiredKeys.has(pathKey(target, platform)) || initialStates.get(target)?.state === "owned") {
+        if (requiredKeys.has(pathKey(target))) missingRequired.push(target);
+        if (requiredKeys.has(pathKey(target)) || initialStates.get(target)?.state === "owned") {
           postconditionFailed = true;
         }
         continue;
@@ -505,7 +502,7 @@ async function inspectInstalledTargets(
       continue;
     }
 
-    if (samePath(target, canonical, platform)) continue;
+    if (samePath(target, canonical)) continue;
     if (info.isSymbolicLink()) {
       let destination;
       let resolved;
@@ -513,7 +510,7 @@ async function inspectInstalledTargets(
         if (!canonicalVerified) throw new Error("canonical target is unavailable");
         destination = await readlinkAsync(target, { encoding: "buffer" });
         resolved = await realpathAsync(target);
-        if (!samePath(resolved, canonicalReal, platform)) throw new Error("symlink does not resolve to canonical");
+        if (!samePath(resolved, canonicalReal)) throw new Error("symlink does not resolve to canonical");
         if (!treesEqual(await hashTree(resolved), bundledTree)) throw new Error("symlink destination drifted");
       } catch {
         postconditionFailed = true;
@@ -562,8 +559,8 @@ async function inspectInstalledTargets(
   return { records, missingRequired, postconditionFailed, affectedTargets };
 }
 
-async function expectedTargetKind(target, canonical, platform) {
-  if (samePath(target, canonical, platform)) return "canonical";
+async function expectedTargetKind(target, canonical) {
+  if (samePath(target, canonical)) return "canonical";
   try {
     const info = await lstatAsync(target);
     if (info.isSymbolicLink()) return "symlink";
@@ -707,7 +704,6 @@ export async function installSkill(options = {}) {
   const runtime = {
     env,
     home,
-    platform,
     exists: (candidate) => existsSync(candidate),
   };
   // Rules loading says nothing about installed target state: no target
@@ -720,7 +716,7 @@ export async function installSkill(options = {}) {
   // Target resolution is likewise package/rules work performed before target
   // classification; it cannot report a target conflict of its own.
   try {
-    targets = targetList({ home, cwd, rules, runtime, resolveTargets, platform });
+    targets = targetList({ home, cwd, rules, runtime, resolveTargets });
   } catch {
     return restorePriorReceiptAfterPackageOnlyFailure("Unable to resolve skill targets.");
   }
@@ -737,13 +733,13 @@ export async function installSkill(options = {}) {
   const initialStates = new Map();
   try {
     for (const target of targets) {
-      const expectedKind = await expectedTargetKind(target, canonical, platform);
+      const expectedKind = await expectedTargetKind(target, canonical);
       let state = await classify({
         target: { path: target, expectedKind },
         bundledTree,
         receipt: priorReceipt,
       });
-      if (state !== "owned" && !receiptTracksPath(priorReceipt, target, platform)) {
+      if (state !== "owned" && !receiptTracksPath(priorReceipt, target)) {
         try {
           const identity = await inspectIdentity(target);
           if (identity === "current" || identity === "legacy") {
@@ -863,7 +859,6 @@ export async function installSkill(options = {}) {
       env,
       home,
       cwd,
-      platform,
       exists: (candidate) => existsSync(candidate),
     });
     const agentsById = new Map(rules.agents.map((agent) => [agent.id, agent]));
@@ -873,10 +868,9 @@ export async function installSkill(options = {}) {
       agentIds: detectedGlobalAgentIds,
       runtime,
       cwd,
-      platform,
     });
-    const preflightKeys = new Set(targets.map((target) => pathKey(target, platform)));
-    if (requiredTargets.some((target) => !preflightKeys.has(pathKey(target, platform)))) {
+    const preflightKeys = new Set(targets.map((target) => pathKey(target)));
+    if (requiredTargets.some((target) => !preflightKeys.has(pathKey(target)))) {
       throw new Error("detected target is outside the conservative inventory");
     }
     agentIds = detectedGlobalAgentIds.length === 0 ? ["universal"] : detectedGlobalAgentIds;
@@ -897,7 +891,6 @@ export async function installSkill(options = {}) {
       canonical,
       initialStates,
       bundledTree,
-      platform,
     });
   } catch {
     return result("skipped", "Unable to prepare the skill installation receipt.");
@@ -915,9 +908,8 @@ export async function installSkill(options = {}) {
     {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
       cwd,
-      ...(platform !== "win32" ? { detached: true } : {}),
+      detached: true,
       env: { ...env, DO_NOT_TRACK: "1" },
     },
     options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -930,7 +922,6 @@ export async function installSkill(options = {}) {
       requiredTargets,
       canonical,
       bundledTree,
-      platform,
       hash,
       priorReceipt,
       initialStates,

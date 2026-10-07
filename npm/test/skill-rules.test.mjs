@@ -195,7 +195,6 @@ describe("runtime target resolution", () => {
   const runtime = {
     env: {},
     home,
-    platform: "linux",
     exists: () => false,
   };
 
@@ -423,7 +422,7 @@ describe("runtime target resolution", () => {
         candidates: [".openclaw", ".clawdbot", ".moltbot"],
         fallback: ".openclaw",
         suffix: "skills",
-      }, { env: {}, home, platform: "linux" }),
+      }, { env: {}, home }),
       /exists/i
     );
   });
@@ -463,28 +462,5 @@ describe("runtime target resolution", () => {
     assert.equal(targets[0], `${home}/.shared/skills`);
     assert.equal(targets.filter((target) => target === `${home}/.shared/skills`).length, 1);
     assert.deepEqual(calls, []);
-  });
-
-  test("deduplicates case-insensitively after Windows resolution", () => {
-    const document = validDocument([
-      { kind: "home-relative", path: ".Shared/skills" },
-      {
-        kind: "environment-or-home",
-        variable: "CODEX_HOME",
-        fallback: ".unused",
-        suffix: "skills",
-      },
-    ]);
-    const targets = resolveAllTargets(document, {
-      env: { CODEX_HOME: "c:\\users\\u\\.shared" },
-      home: "C:\\Users\\U",
-      platform: "win32",
-      exists: () => false,
-    });
-
-    assert.equal(
-      targets.filter((target) => target.toLowerCase() === "c:\\users\\u\\.shared\\skills").length,
-      1
-    );
   });
 });

@@ -357,7 +357,6 @@ export async function receiptPathFromNative({
       child = spawn(binary, args, {
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,
-        windowsHide: true,
       });
     } catch {
       reject(nativeReceiptError("native process could not be started"));
