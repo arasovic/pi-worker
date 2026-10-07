@@ -4,7 +4,7 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `1.0.0`.
+Observed version: `1.0.4`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
@@ -267,9 +267,71 @@ change was made by a Pi Worker dogfood task on local Pi 1.0.0 using
 `opencodex/opencode-go/deepseek-v4.1-flash`, thinking `high`. No Pi Worker
 production adaptation was needed.
 
+The surface was re-probed on 2026-10-07 against 1.0.4; 1.0.1 (2026-10-03),
+1.0.2 (2026-10-04), 1.0.3 (2026-10-05), and 1.0.4 (2026-10-05) are covered
+together, and 1.0.1 through 1.0.3 were never pinned. Both local global
+installations (`/opt/homebrew/bin/pi` and the NVM `pi` path) report exactly
+1.0.4. They were installed with `npm i -g
+@earendil-works/pi-coding-agent@1.0.4`, not `pi update`, which since 1.0.1
+recommends the pi.dev managed installation for global npm installations. Since
+1.0.1 the published package ships no `npm-shrinkwrap.json`, so npm resolves the
+`^1.0.4` `@earendil-works/*` dependencies at install time. Both installations
+resolved `chord`, `pi-agent-core`, `pi-ai`, `pi-codemode`, `pi-mcp`,
+`pi-telemetry`, and `pi-tui` to 1.0.4. The `pi` executable is
+`dist/bundle/cli.js`, which carries its own copy of the `pi-agent-core` and
+`pi-ai` code; the installed `@earendil-works/*` dependency copies load only for
+extensions, which Pi Worker disables with `--no-extensions`. On 2026-10-08 a
+copy of the 1.0.4 installation with every dependency removed gave the same
+promptless RPC probe output and passed `npm run check:livepiprobe` 2/2, so
+`pi --version` identifies the Pi code that Pi Worker runs. This depends on how
+Pi packages its build, so the removal check is repeated at each pin.
+`pi --help` differs from 1.0.0 only in `--tools` and
+`--exclude-tools`, which now accept `*` patterns, and a new `--no-mcp`. The
+`--tools` description now reads "Keeps MCP tools unless an entry starts with
+mcp__". Every launch flag Pi Worker passes is retained, and built-in tool names
+are unchanged. A `--tools` entry without `*` still matches by exact name
+(`createToolNameMatcher` in `dist/core/mcp-servers.js`). Pi Worker's allowlists
+contain no `*`, no `mcp__` entry, and no `tool_search`, so 1.0.4 would not
+declare an unmatched MCP tool to the model even if MCP loaded. Package exports
+and `bin` are identical, `dist/modes/rpc/` is byte-identical to 1.0.0, and the
+installed `@earendil-works/pi-agent-core` `dist/` is identical apart from
+source maps. These file comparisons read the installed, unbundled copies; the
+probes below run the bundle. The installed
+`@earendil-works/pi-ai/dist/types.d.ts` changed only in the
+`KnownProvider` rename of `azure-openai-responses` to `azure`, a
+`SamplingParams` alias, a new optional `samplingParamsByThinkingLevel`, and one
+doc comment; the `Model` `provider` and `id` fields Pi Worker projects are
+unchanged. The new dependency `@earendil-works/pi-telemetry` has no `fetch`
+call or `https://` URL in its `dist/`. The
+`RETRYABLE_PROVIDER_ERROR_PATTERN` list, present in both the installed `pi-ai`
+and the `pi` bundle, gained `model is at capacity` and
+`pending stream has been canceled`. `isRetryableAssistantError` still returns
+false for `Upstream incomplete: missing_terminal_event` and `upstream stream
+ended early (missing_terminal_event)` on both 1.0.0 and 1.0.4, so the issue
+#439 reading still holds. `pi-worker models --json` returned the identical
+selector set on 1.0.0 and 1.0.4 on the same day (100 selectors each). The
+promptless/no-inference RPC probe described for 1.0.0, now switching to
+`opencodex/opencode-go/muse-spark-1.3-contributor` and steering
+`pi-worker-1.0.4-probe`, gave responses identical to the same probe on 1.0.0
+the same day, and the RPC process exited 0. MCP isolation was re-measured with
+the 1.0.0 recipe on both installations: the server started without
+`--no-extensions` and did not start with Pi Worker's exact launch flags. MCP is
+the built-in extension `builtin:mcp`; built-in extensions come from settings
+resolution, and `--no-extensions` keeps only CLI extension paths. `pi-worker
+doctor` on 1.0.4 before the pin moved reported the version as an unverified
+warning with `ready: yes`. The remaining 1.0.1 through 1.0.4 changes do not
+reach Pi Worker: MCP project overrides, MCP OAuth and client registration, tool
+renderers, Cloudflare classifiers, the Nix flake, codemode image handling, the
+Azure provider rename and Foundry deployments, `samplingParamsByThinkingLevel`,
+owner-only output-file permissions, and editor key changes are interactive,
+codemode, MCP, or provider-configuration surfaces. This pin change was made by
+a Pi Worker dogfood task on local Pi 1.0.4 using
+`opencodex/opencode-go/deepseek-v4.1-flash`, thinking `high`. No Pi Worker
+production adaptation was needed.
+
 ## Compatibility gate
 
-**Gate result: pass for Pi 1.0.0.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 1.0.4.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.
@@ -286,6 +348,20 @@ guaranteed stable by this document.
 | `--no-themes` | Yes. |
 | `--no-approve` | Yes; ignores project-local files for the run. |
 | `--tools <tools>` | Yes; comma-separated allowlist across built-in, extension, and custom tools. |
+
+**Bundle check.** Every pin repeats this check, because the gate relies on
+`pi --version` identifying the Pi code that Pi Worker runs. Install the
+candidate release into an empty scratch directory with `npm i --ignore-scripts
+@earendil-works/pi-coding-agent@<version>`. Delete every package in that
+directory's `node_modules` except `@earendil-works/pi-coding-agent`. Confirm
+that no parent directory has a `node_modules` directory and that `NODE_PATH`
+is unset. Put a `pi` link to that copy's `dist/bundle/cli.js` first on
+`PATH`. Then run the promptless RPC probe and `npm run check:livepiprobe`.
+The probe output must match the unmodified installation, and the live
+probe must pass. If either fails, Pi loads its installed dependencies at
+run time. Then `pi --version` no longer identifies the running code, and
+the pin must not move until Pi Worker also verifies those dependency
+versions.
 
 ## Process invocations
 
@@ -422,7 +498,7 @@ The `get_available_models` success container is exactly
 data:{models: Model[]}}`. The `set_model` success container is exactly
 `{type:"response", command:"set_model", success:true, data:Model}`. The
 full version-pinned upstream `Model` declaration is in
-`@earendil-works/pi-coding-agent@1.0.0/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
+`@earendil-works/pi-coding-agent@1.0.4/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
 it is not duplicated here because v0 must not validate or reconstruct it.
 
 V0 decodes each catalog entry as this projection only:
@@ -444,7 +520,7 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 1.0.0 observes the `get_available_thinking_levels` success container as
+Pi 1.0.4 observes the `get_available_thinking_levels` success container as
 `data:{levels: ThinkingLevel[]}`, where the levels are the active model's
 supported subset of the recognized seven levels (`off`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, `max`), not always all seven. V0 requires a non-null
@@ -453,13 +529,13 @@ levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
 malformed responses remain failures.
 
-Pi 1.0.0 observes the `get_state` success container exactly as
+Pi 1.0.4 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
 V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
 required after model activation; the model must equal the selected catalog
 entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
-`@earendil-works/pi-coding-agent@1.0.0/dist/modes/rpc/rpc-types.d.ts`; V0
+`@earendil-works/pi-coding-agent@1.0.4/dist/modes/rpc/rpc-types.d.ts`; V0
 does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
@@ -481,7 +557,7 @@ response correlation, it emits only these request shapes:
 | `get_last_assistant_text` | `type` |
 
 Pi-worker must reject every other RPC type. In particular,
-it must reject direct RPC `bash`: Pi 1.0.0 dispatches that command directly,
+it must reject direct RPC `bash`: Pi 1.0.4 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
 ### Debug observability
@@ -567,7 +643,7 @@ into the fixed continuation prompt, the warning, or the debug stream.
 
 ## Tool semantics
 
-Built-in tool names reported by `pi --help` as of Pi 1.0.0 are `read`,
+Built-in tool names reported by `pi --help` as of Pi 1.0.4 are `read`,
 `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell`. Pi-worker
 intentionally continues enabling only its established seven
 (`read,grep,find,ls,edit,write,bash`) and does not enable `powershell` in
