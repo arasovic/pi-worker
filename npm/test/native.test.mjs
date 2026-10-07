@@ -39,6 +39,7 @@ const optionFixture = fixture("option fixture.mjs");
 const harnessFixture = fixture("harness.mjs");
 const cancelFixture = fixture("cancel.mjs");
 const idleFixture = fixture("idle.mjs");
+const pipeFixture = fixture("pipe.sh");
 
 function waitForFile(path, timeoutMs = 4_000) {
   return new Promise((resolve, reject) => {
@@ -166,6 +167,10 @@ writeExecutable(
   "setInterval(() => {}, 1_000_000);\n" +
     "process.stdout.write('ready\\n');"
 );
+
+// Node ignores SIGPIPE, so a shell script is the only way to make a child die
+// by it.
+writeFileSync(pipeFixture, "#!/bin/sh\nkill -PIPE $$\n", { mode: 0o755 });
 
 writeExecutable(optionFixture, "process.stdout.write('native\\n');");
 
@@ -628,6 +633,23 @@ describe("launcher process behavior", () => {
 
     assert.equal(close.code, null);
     assert.equal(close.signal, "SIGTERM");
+  });
+
+  test("settles with the SIGPIPE status when the child dies by it", { timeout: 5_000 }, () => {
+    const child = spawnSync(bin, [harnessFixture, pipeFixture], {
+      encoding: "utf8",
+      env: { ...process.env, PI_WORKER_PRINT_EXIT: "1" },
+    });
+
+    assert.equal(child.status, 141);
+    assert.equal(child.signal, null);
+    assert.equal(child.stderr, "");
+  });
+
+  test("captured helper settles with the SIGPIPE status when the child dies by it", { timeout: 5_000 }, async () => {
+    const result = await runNativeCaptured(pipeFixture, [], { maxOutputBytes: 1024 });
+
+    assert.equal(result.code, 141);
   });
 
   test("captured helper resolves the child exit code after forwarding a handled signal", { timeout: 5_000 }, async (t) => {
