@@ -704,7 +704,6 @@ export async function installSkill(options = {}) {
   const runtime = {
     env,
     home,
-    platform,
     exists: (candidate) => existsSync(candidate),
   };
   // Rules loading says nothing about installed target state: no target
@@ -860,7 +859,6 @@ export async function installSkill(options = {}) {
       env,
       home,
       cwd,
-      platform,
       exists: (candidate) => existsSync(candidate),
     });
     const agentsById = new Map(rules.agents.map((agent) => [agent.id, agent]));

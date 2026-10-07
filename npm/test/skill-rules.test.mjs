@@ -195,7 +195,6 @@ describe("runtime target resolution", () => {
   const runtime = {
     env: {},
     home,
-    platform: "linux",
     exists: () => false,
   };
 
@@ -423,7 +422,7 @@ describe("runtime target resolution", () => {
         candidates: [".openclaw", ".clawdbot", ".moltbot"],
         fallback: ".openclaw",
         suffix: "skills",
-      }, { env: {}, home, platform: "linux" }),
+      }, { env: {}, home }),
       /exists/i
     );
   });

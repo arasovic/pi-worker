@@ -29,7 +29,6 @@ function targetPaths(roots, home, cwd) {
 }
 
 export async function inspectExternalTargets(options = {}) {
-  const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const home = options.home ?? env.HOME ?? env.USERPROFILE ?? homedir();
   const cwd = options.cwd ?? process.cwd();
@@ -45,7 +44,6 @@ export async function inspectExternalTargets(options = {}) {
       env,
       home,
       cwd,
-      platform,
       exists: (candidate) => existsSync(candidate),
     }) ?? [];
     const targets = [];
