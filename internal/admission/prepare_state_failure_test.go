@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -129,10 +128,6 @@ func TestPrepareCorruptStateAfterGateOpen(t *testing.T) {
 // the link stays intact and its target bytes are unchanged.
 // Skipped only if os.Symlink itself is demonstrably unsupported.
 func TestPrepareSymlinkStateAfterGateOpen(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
-
 	root := t.TempDir()
 	g, _ := openGateForTest(t, root, 5)
 	installSequentialTicketIDs(t, "SS-")

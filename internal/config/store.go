@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 var chmodConfigDirectory = os.Chmod
@@ -211,12 +210,10 @@ func Save(path string, cfg Config) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("save config %s: create directory: %w", path, err)
 	}
-	if runtime.GOOS != "windows" {
-		userPath, err := UserPath()
-		if err == nil && filepath.Clean(path) == filepath.Clean(userPath) {
-			if err := chmodConfigDirectory(dir, 0o700); err != nil {
-				return fmt.Errorf("save config %s: set directory permissions: %w", path, err)
-			}
+	userPath, err := UserPath()
+	if err == nil && filepath.Clean(path) == filepath.Clean(userPath) {
+		if err := chmodConfigDirectory(dir, 0o700); err != nil {
+			return fmt.Errorf("save config %s: set directory permissions: %w", path, err)
 		}
 	}
 	data, err := json.Marshal(cfg)
@@ -235,13 +232,10 @@ func Save(path string, cfg Config) error {
 		tmp.Close()
 		os.Remove(tmpName)
 	}
-	if runtime.GOOS != "windows" {
-		// Windows does not support Unix permission bits; everywhere else
-		// the temporary file must be owner-only.
-		if err := tmp.Chmod(0o600); err != nil {
-			remove()
-			return fmt.Errorf("save config %s: set permissions: %w", path, err)
-		}
+	// The temporary file must be owner-only.
+	if err := tmp.Chmod(0o600); err != nil {
+		remove()
+		return fmt.Errorf("save config %s: set permissions: %w", path, err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		remove()
@@ -259,10 +253,8 @@ func Save(path string, cfg Config) error {
 		os.Remove(tmpName)
 		return fmt.Errorf("save config %s: replace: %w", path, err)
 	}
-	if runtime.GOOS != "windows" {
-		if err := syncParentDirectory(dir); err != nil {
-			return fmt.Errorf("save config %s: sync parent directory: %w", path, err)
-		}
+	if err := syncParentDirectory(dir); err != nil {
+		return fmt.Errorf("save config %s: sync parent directory: %w", path, err)
 	}
 	return nil
 }

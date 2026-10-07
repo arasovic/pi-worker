@@ -388,9 +388,6 @@ func TestDefaultVerifierReportsContextExpiryAsError(t *testing.T) {
 }
 
 func TestDefaultVerifierBoundsContextExpiryWithChildHoldingPipe(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("background shell jobs require a Unix shell")
-	}
 	previous := verifyWaitDelay
 	verifyWaitDelay = 200 * time.Millisecond
 	t.Cleanup(func() { verifyWaitDelay = previous })
@@ -411,9 +408,6 @@ func TestDefaultVerifierBoundsContextExpiryWithChildHoldingPipe(t *testing.T) {
 }
 
 func TestDefaultVerifierPassesCheckThatLeavesChildHoldingPipe(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("background shell jobs require a Unix shell")
-	}
 	previous := verifyWaitDelay
 	verifyWaitDelay = 200 * time.Millisecond
 	t.Cleanup(func() { verifyWaitDelay = previous })

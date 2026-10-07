@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -328,9 +327,6 @@ func expiredDoctorContext(t *testing.T, kind error) context.Context {
 }
 
 func TestDoctorDanglingConfigLinkReadsAsFailedNotMissing(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// Doctor's config check must not read a dangling final-component link
 	// as a missing configuration: the command exits 3 (readiness failure),
 	// never 0 with the ready-warning shape of a missing file, and the link

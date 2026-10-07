@@ -19,9 +19,6 @@ import (
 // symlink and succeed, and this test would fail fast with a real
 // assertion failure, not a hang.
 func TestParseRecordRefusesSymlinkToRecord(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Symlink requires privileges on Windows")
-	}
 	dir := t.TempDir()
 	target := writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 1, false, "", "")
 	if _, err := parseRecord(target); err != nil {
@@ -44,9 +41,6 @@ func TestParseRecordRefusesSymlinkToRecord(t *testing.T) {
 // parseRecord. A plain directory would never get that far, so a test
 // with one would stay green with the guard deleted and prove nothing.
 func TestParseRecordRefusesSymlinkToDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("os.Symlink requires privileges on Windows")
-	}
 	dir := t.TempDir()
 	link := filepath.Join(dir, "20260830T101500Z-9.jsonl")
 	if err := os.Symlink(dir, link); err != nil {

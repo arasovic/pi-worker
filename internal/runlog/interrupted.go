@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -401,13 +400,10 @@ func writeMarker(dir string, m marker) error {
 		tmp.Close()
 		os.Remove(tmpName)
 	}
-	if runtime.GOOS != "windows" {
-		// Windows has no Unix permission bits; everywhere else the
-		// temporary file must be owner-only, like the config file.
-		if err := tmp.Chmod(0o600); err != nil {
-			remove()
-			return err
-		}
+	// The temporary file must be owner-only, like the config file.
+	if err := tmp.Chmod(0o600); err != nil {
+		remove()
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		remove()

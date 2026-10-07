@@ -251,9 +251,6 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestLoadRefusesDanglingSymlinkedConfigPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// The path is a final-component symlink whose target does not exist.
 	// Reading it must fail with the dangling-link error — never with the
 	// plain not-exist error, which the callers read as a valid empty
@@ -456,9 +453,6 @@ func TestSaveReturnsWrappedInspectPathErrorBeforeMutation(t *testing.T) {
 }
 
 func TestSaveRefusesSymlinkedDestinationWithExistingTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// The dotfiles arrangement from the report: config.json is a link into
 	// another directory that holds the real document.
 	linkDir := t.TempDir()
@@ -510,9 +504,6 @@ func TestSaveRefusesSymlinkedDestinationWithExistingTarget(t *testing.T) {
 }
 
 func TestSaveRefusesDanglingSymlinkedDestination(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	dir := t.TempDir()
 	missingTarget := filepath.Join(t.TempDir(), "not", "there", "pi-worker.json")
 	path := filepath.Join(dir, "config.json")
@@ -545,9 +536,6 @@ func TestSaveRefusesDanglingSymlinkedDestination(t *testing.T) {
 }
 
 func TestSaveRefusalLeavesLinkAndTargetUntouched(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// Link and target share one directory, the tightest arrangement for a
 	// write-through or link-replacing implementation to disturb.
 	dir := t.TempDir()
@@ -603,9 +591,6 @@ func TestSaveRefusalLeavesLinkAndTargetUntouched(t *testing.T) {
 }
 
 func TestSaveThroughSymlinkedParentDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	realDir := t.TempDir()
 	// The link names only the directory; the config.json inside it is a plain
 	// regular file that Save creates and atomically replaces as usual.
@@ -649,9 +634,6 @@ func TestSaveThroughSymlinkedParentDirectory(t *testing.T) {
 }
 
 func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on Windows")
-	}
 	dir := filepath.Join(t.TempDir(), "pi-worker")
 	path := filepath.Join(dir, "config.json")
 	if err := Save(path, Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}); err != nil {
@@ -683,8 +665,6 @@ func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
 func isolatedUserConfigPath(t *testing.T) string {
 	t.Helper()
 	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("AppData", filepath.Join(t.TempDir(), "AppData"))
 	case "darwin":
 		t.Setenv("HOME", t.TempDir())
 	default:
@@ -698,9 +678,6 @@ func isolatedUserConfigPath(t *testing.T) string {
 }
 
 func TestSaveTightensExistingPiWorkerDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on Windows")
-	}
 	path := isolatedUserConfigPath(t)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
@@ -722,9 +699,6 @@ func TestSaveTightensExistingPiWorkerDirectory(t *testing.T) {
 }
 
 func TestSaveDoesNotTightenUnrelatedPiWorkerDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on Windows")
-	}
 	_ = isolatedUserConfigPath(t)
 	dir := filepath.Join(t.TempDir(), "pi-worker")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -748,9 +722,6 @@ func TestSaveDoesNotTightenUnrelatedPiWorkerDirectory(t *testing.T) {
 }
 
 func TestSaveAbortsBeforeReplacingConfigWhenDirectoryChmodFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not support Unix permission bits")
-	}
 	path := isolatedUserConfigPath(t)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
@@ -791,9 +762,6 @@ func (f *fakeDirectorySyncHandle) Sync() error  { return f.syncErr }
 func (f *fakeDirectorySyncHandle) Close() error { return f.closeErr }
 
 func TestSaveReturnsDirectorySyncIOErrors(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not sync parent directories")
-	}
 	for _, test := range []struct {
 		name     string
 		openErr  error
@@ -830,9 +798,6 @@ func TestSaveReturnsDirectorySyncIOErrors(t *testing.T) {
 }
 
 func TestSaveToleratesOnlyUnsupportedDirectorySync(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not sync parent directories")
-	}
 	original := openDirectoryForSync
 	openDirectoryForSync = func(string) (directorySyncHandle, error) {
 		return &fakeDirectorySyncHandle{syncErr: syscall.EINVAL}, nil
@@ -845,9 +810,6 @@ func TestSaveToleratesOnlyUnsupportedDirectorySync(t *testing.T) {
 }
 
 func TestSaveReturnsUnsupportedCodesOutsideDirectorySync(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows does not sync parent directories")
-	}
 	for _, test := range []struct {
 		name     string
 		openErr  error
@@ -880,8 +842,6 @@ func TestSaveReturnsUnsupportedCodesOutsideDirectorySync(t *testing.T) {
 
 func TestUserPath(t *testing.T) {
 	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("AppData", filepath.Join(t.TempDir(), "AppData"))
 	case "darwin":
 		t.Setenv("HOME", t.TempDir())
 	default:

@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -535,9 +534,6 @@ func TestSaveCreatesMissingParents(t *testing.T) {
 }
 
 func TestSaveRefusesSymlinkedStatePath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	dir := t.TempDir()
 	target := filepath.Join(t.TempDir(), "real-state.json")
 	if err := os.WriteFile(target, []byte(`{"schemaVersion":1,"nextSequence":1,"tickets":[]}`), 0o600); err != nil {
@@ -569,9 +565,6 @@ func TestSaveRefusesSymlinkedStatePath(t *testing.T) {
 }
 
 func TestSaveRefusesDanglingSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	dir := t.TempDir()
 	missingTarget := filepath.Join(t.TempDir(), "not", "there", "state.json")
 	sp := filepath.Join(dir, "state.json")
@@ -597,9 +590,6 @@ func TestSaveRefusesDanglingSymlink(t *testing.T) {
 }
 
 func TestLoadRefusesSymlinkToPresentTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	dir := t.TempDir()
 	// Write a valid state to a separate file.
 	target := filepath.Join(t.TempDir(), "real-state.json")
@@ -633,9 +623,6 @@ func TestLoadRefusesSymlinkToPresentTarget(t *testing.T) {
 }
 
 func TestLoadRefusesDanglingSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	dir := t.TempDir()
 	missingTarget := filepath.Join(t.TempDir(), "not", "there", "state.json")
 	sp := filepath.Join(dir, "state.json")
@@ -677,9 +664,6 @@ func TestLoadTreatsAbsentPathAsEmpty(t *testing.T) {
 }
 
 func TestSaveSetsOwnerOnlyPermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on Windows")
-	}
 	dir := t.TempDir()
 	sp := filepath.Join(dir, "state.json")
 	if err := saveState(dir, emptyState()); err != nil {
@@ -716,9 +700,6 @@ func TestSaveNoLeftoverTempFiles(t *testing.T) {
 }
 
 func TestSaveFailureLeavesPreviousIntact(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not meaningful on Windows")
-	}
 	dir := t.TempDir()
 	// Create initial state.
 	good := validState(validTicket())

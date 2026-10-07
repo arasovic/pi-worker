@@ -549,7 +549,8 @@ func TestRunsStatusAndWaitDefaultTimeoutIsDocumented(t *testing.T) {
 // goes through the seam the commands ask the platform question through, so it
 // runs everywhere — including on the platforms that can host a run, which is
 // where the refusal would otherwise never be reached — and the refusal it
-// pins is the one the Windows build takes by its own build tag.
+// pins is the one every build other than macOS and Linux takes by its own
+// build tag.
 func TestRunsStatusAndWaitRefusedWhereNoBackgroundRunCanExist(t *testing.T) {
 	original := backgroundSupportsRuns
 	backgroundSupportsRuns = func() bool { return false }

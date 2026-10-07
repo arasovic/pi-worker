@@ -89,11 +89,7 @@ func TestUserPathRelativeToUserDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir all: %v", err)
 	}
-	if runtime.GOOS == "windows" {
-		t.Setenv("AppData", dir)
-	} else {
-		t.Setenv("HOME", dir)
-	}
+	t.Setenv("HOME", dir)
 	userDir, err := UserDir()
 	if err != nil {
 		t.Fatalf("UserDir(): %v", err)
