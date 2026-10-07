@@ -338,10 +338,11 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
     };
     const signalChild = (signal) => {
       try {
-        // A detached Unix child is preferably treated as a process group, but
-        // retain child.kill for portable implementations and test doubles.
+        // The child is always detached, so its process group is signalled
+        // first, but retain child.kill for portable implementations and test
+        // doubles.
         let groupSignalled = false;
-        if (options.detached === true && Number.isInteger(child?.pid) && child.pid > 0) {
+        if (Number.isInteger(child?.pid) && child.pid > 0) {
           try {
             process.kill(-child.pid, signal);
             groupSignalled = true;
@@ -406,12 +407,10 @@ function captureChild(spawn, binary, args, options, timeoutMs) {
       return;
     }
 
-    if (options.detached === true) {
-      const onProcessSignal = (signal) => beginStop(`process interrupted by ${signal}`, signal);
-      for (const signal of ["SIGINT", "SIGTERM"]) {
-        process.on(signal, onProcessSignal);
-        processSignalListeners.push({ signal, listener: onProcessSignal });
-      }
+    const onProcessSignal = (signal) => beginStop(`process interrupted by ${signal}`, signal);
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      process.on(signal, onProcessSignal);
+      processSignalListeners.push({ signal, listener: onProcessSignal });
     }
 
     const onError = () => finish({ ok: false, reason: "process could not be started" });
