@@ -342,9 +342,6 @@ func finishedRun(status contracts.RunStatus, workers ...pi.WorkerResult) run.Res
 
 func installProcessVersionProbe(t *testing.T, output, childStderr string, exitCode int) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("requires a POSIX shell")
-	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "version.log")
 	command := filepath.Join(dir, "pi")

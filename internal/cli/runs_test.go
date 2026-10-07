@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -313,9 +312,6 @@ func TestRunsListResolverAndReadFailuresExit9(t *testing.T) {
 	})
 
 	t.Run("unreadable records directory", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("permission bits are not enforced on Windows")
-		}
 		dir := t.TempDir()
 		if err := os.Chmod(dir, 0o000); err != nil {
 			t.Fatalf("chmod: %v", err)
@@ -1599,9 +1595,6 @@ func TestRunsPruneResolverAndReadFailuresExit9(t *testing.T) {
 	})
 
 	t.Run("unreadable records directory", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("permission bits are not enforced on Windows")
-		}
 		dir := t.TempDir()
 		writeListRecord(t, dir, "20260830T101500Z-1", deadPID, "2026-08-30T10:15:00Z", "/ws-a", 1, true, "completed", "")
 		if err := os.Chmod(dir, 0o000); err != nil {

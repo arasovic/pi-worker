@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -42,9 +41,6 @@ func TestRunDataUnreadableFileExitsTwoBeforeAnyWorkerStarts(t *testing.T) {
 	// An unreadable file is the same usage error as a missing one: the
 	// read happens up front, so the permission failure exits 2 before the
 	// controller runs.
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not enforced the same way on Windows")
-	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission bits do not block reads")
 	}

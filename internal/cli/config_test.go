@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -123,9 +122,6 @@ func TestConfigShowReportsMissingMalformedAndDanglingLinkConfig(t *testing.T) {
 		}
 	})
 	t.Run("dangling link", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("creating symlinks is not reliably available on Windows")
-		}
 		// A dangling final-component link is not a missing configuration: the
 		// path holds a broken link a person must repair, and reading through
 		// it must fail clearly instead of reporting an empty default. The
@@ -157,9 +153,6 @@ func TestConfigShowReportsMissingMalformedAndDanglingLinkConfig(t *testing.T) {
 }
 
 func TestConfigShowReadsThroughSymlinkedConfigPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// Reads keep resolving the link: show reports the target's document even
 	// though config set refuses to write through the same path.
 	target := filepath.Join(t.TempDir(), "pi-worker.json")
@@ -179,9 +172,6 @@ func TestConfigShowReadsThroughSymlinkedConfigPath(t *testing.T) {
 }
 
 func TestConfigSetRefusesSymlinkedConfigPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// The dotfiles arrangement from the report: config.json links to a file
 	// elsewhere that holds the current value. The catalog offers the model, so
 	// the refusal is the write guard's, not the catalog's.
@@ -420,9 +410,6 @@ func TestRunModelUsesSavedDefaultWhenOmitted(t *testing.T) {
 }
 
 func TestRunModelDanglingConfigLinkFailsClearlyWithoutLaunchingOrTouchingLink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// A run needing the configured default reads through a dangling final
 	// link: it must fail clearly — exit 9 like an invalid config, never the
 	// missing-model usage error (2) meant for a genuinely absent file — and

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +30,6 @@ func TestSystemVersionRejectsOversizedStdout(t *testing.T) {
 }
 
 func TestSystemVersionDoesNotHangWhenDescendantKeepsStdoutOpen(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("requires a POSIX shell")
-	}
 
 	pidPath := filepath.Join(t.TempDir(), "descendant.pid")
 	command := writeVersionLifecycleCommand(t, pidPath)

@@ -186,7 +186,6 @@ test("CI keeps read-only reproducible source and snapshot gates", () => {
   assert.match(ciWorkflow, /push:/);
   assert.match(ciWorkflow, /go test -race -count=1 \.\/\.\.\./);
   assert.match(ciWorkflow, /GOOS=windows GOARCH=amd64 go build \.\/\.\.\./);
-  assert.match(ciWorkflow, /GOOS=windows GOARCH=amd64 go test -c/);
   assert.doesNotMatch(ciWorkflow, /windows-readiness/i);
   for (const goos of ["freebsd", "openbsd", "netbsd", "solaris", "plan9"]) {
     assert.match(ciWorkflow, new RegExp(`goos: \\[[^\\n]*\\b${goos}\\b`), `go-crossbuild matrix includes ${goos}`);

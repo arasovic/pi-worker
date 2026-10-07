@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -199,7 +198,7 @@ func TestLifecycle_Remove(t *testing.T) {
 // --- File layout and permissions ------------------------------------------------
 
 // Create writes exactly one compact JSON document followed by a single newline
-// at <root>/<runId>/snapshot.json, with strict permissions (off-Windows).
+// at <root>/<runId>/snapshot.json, with strict permissions.
 func TestCreate_ProducesExactlyOneJSONDocumentWithPermissions(t *testing.T) {
 	root := t.TempDir()
 	snap, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws",
@@ -241,22 +240,20 @@ func TestCreate_ProducesExactlyOneJSONDocumentWithPermissions(t *testing.T) {
 		t.Fatal("more than one JSON document found")
 	}
 
-	// Permissions (off-Windows only).
-	if runtime.GOOS != "windows" {
-		dirInfo, err := os.Stat(filepath.Join(root, snap.RunID))
-		if err != nil {
-			t.Fatalf("stat run dir: %v", err)
-		}
-		if got := dirInfo.Mode().Perm(); got != 0o700 {
-			t.Errorf("run dir perm = 0o%o; want 0o700", got)
-		}
-		fileInfo, err := os.Stat(snapPath)
-		if err != nil {
-			t.Fatalf("stat snapshot: %v", err)
-		}
-		if got := fileInfo.Mode().Perm(); got != 0o600 {
-			t.Errorf("snapshot file perm = 0o%o; want 0o600", got)
-		}
+	// Permissions.
+	dirInfo, err := os.Stat(filepath.Join(root, snap.RunID))
+	if err != nil {
+		t.Fatalf("stat run dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Errorf("run dir perm = 0o%o; want 0o700", got)
+	}
+	fileInfo, err := os.Stat(snapPath)
+	if err != nil {
+		t.Fatalf("stat snapshot: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("snapshot file perm = 0o%o; want 0o600", got)
 	}
 }
 

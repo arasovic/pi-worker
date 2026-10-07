@@ -12,17 +12,13 @@ import (
 
 func TestUserReceiptPath(t *testing.T) {
 	root := t.TempDir()
-	if runtime.GOOS == "windows" {
-		t.Setenv("AppData", filepath.Join(root, "AppData"))
-	} else {
-		home := filepath.Join(root, "home")
-		if err := os.MkdirAll(home, 0o700); err != nil {
-			t.Fatalf("MkdirAll(%q): %v", home, err)
-		}
-		t.Setenv("HOME", home)
-		if runtime.GOOS == "linux" {
-			t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
-		}
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", home, err)
+	}
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "linux" {
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
 	}
 
 	got, err := UserReceiptPath()

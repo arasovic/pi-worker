@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -907,9 +906,6 @@ func TestSnapshotStampEntryKindDistinguishesSymlinkFromRegularFile(t *testing.T)
 	// content hash as the original. The entry kind recorded at snapshot
 	// time is the only field that separates them; without it stampMatches
 	// reports the replacement untouched and hides the write.
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks are not reliably creatable on Windows")
-	}
 	dir := newGitRepo(t)
 	link := filepath.Join(dir, "link")
 	if err := os.Symlink("payload", link); err != nil {

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -536,9 +535,6 @@ func TestParseRecordCarriesTheFinishInstant(t *testing.T) {
 // that exists but cannot be read returns the error and no runs, so the
 // CLI exits 9.
 func TestListUnreadableRecordsDirReturnsError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not enforced on Windows")
-	}
 	dir := t.TempDir()
 	writeListRecord(t, dir, "20260830T101500Z-1", 4242, "2026-08-30T10:15:00Z", "/workspace", 0, false, "", "")
 	if err := os.Chmod(dir, 0o000); err != nil {

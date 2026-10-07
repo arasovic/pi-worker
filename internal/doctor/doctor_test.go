@@ -133,9 +133,6 @@ func TestRunReportsMissingConfigAsWarning(t *testing.T) {
 }
 
 func TestRunReportsDanglingConfigLinkAsFailed(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("creating symlinks is not reliably available on Windows")
-	}
 	// The real user configuration document is a dangling final-component
 	// link: doctor must report the config check failed — never the missing-
 	// configuration warning meant for a genuinely absent file — and leave
@@ -433,8 +430,6 @@ func assertRedacted(t *testing.T, result Result) {
 func installUserConfigPath(t *testing.T) string {
 	t.Helper()
 	switch runtime.GOOS {
-	case "windows":
-		t.Setenv("AppData", filepath.Join(t.TempDir(), "AppData"))
 	case "darwin":
 		t.Setenv("HOME", t.TempDir())
 	default:

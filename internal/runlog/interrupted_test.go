@@ -223,7 +223,7 @@ func TestInterruptedIgnoresMissingOrInvalidMarker(t *testing.T) {
 		// The well-formed variant is unreadable rather than invalid: a
 		// marker that cannot be read must behave exactly like one that
 		// never existed, no matter what it holds.
-		{name: "unreadable", stale: `{"schemaVersion":1,"watermark":"20260830T103000Z-2"}`, unreadable: runtime.GOOS != "windows"},
+		{name: "unreadable", stale: `{"schemaVersion":1,"watermark":"20260830T103000Z-2"}`, unreadable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -448,9 +448,6 @@ func TestInterruptedMissingRecordsDirIsSilent(t *testing.T) {
 // directory that exists but cannot be read returns the error and no
 // paths, so the CLI warns once and continues.
 func TestInterruptedUnreadableRecordsDirReturnsError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not enforced on Windows")
-	}
 	dir := t.TempDir()
 	writeRecord(t, dir, "20260830T101500Z-1", 4242, false)
 	if err := os.Chmod(dir, 0o000); err != nil {
@@ -468,9 +465,6 @@ func TestInterruptedUnreadableRecordsDirReturnsError(t *testing.T) {
 // yields the interrupted records, with the error alongside, so the CLI
 // warns about the marker and prints the runs anyway.
 func TestInterruptedMarkerWriteFailureReturnsPathsAndError(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits are not enforced on Windows")
-	}
 	withPidAlive(t, func(pid int32) (bool, error) { return false, nil })
 	dir := t.TempDir()
 	path := writeRecord(t, dir, "20260830T101500Z-1", 4242, false)

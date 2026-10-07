@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -484,9 +483,6 @@ func TestInspectExactManifestRejectsExtraFilesAndEmptyDirectories(t *testing.T) 
 }
 
 func TestInspectExactManifestRejectsSymlinkedIntermediateDirectory(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skip symlink test on windows")
-	}
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
 	realDir := filepath.Join(root, "real")
@@ -601,9 +597,6 @@ func TestInspectFailedAndSkippedExposeOnlyExactSafeRecovery(t *testing.T) {
 }
 
 func TestInspectSymlinkDestinationDrift(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skip symlink test on windows")
-	}
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
 	writeFile(t, filepath.Join(target, "first.txt"), "one")
@@ -643,9 +636,6 @@ func TestInspectSymlinkDestinationDrift(t *testing.T) {
 }
 
 func TestInspectRejectsSymlinkedTargetRoots(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skip symlink test on windows")
-	}
 
 	root := t.TempDir()
 	for _, kind := range []string{targetKindCanonical, targetKindCopy} {
@@ -680,9 +670,6 @@ func TestInspectRejectsSymlinkedTargetRoots(t *testing.T) {
 }
 
 func TestInspectRejectsSymlinkedManagedFilesWithIdenticalBytes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skip symlink test on windows")
-	}
 
 	root := t.TempDir()
 	for _, kind := range []string{targetKindCanonical, targetKindCopy} {
@@ -748,9 +735,6 @@ func TestInspectRejectsDirectoryAndFIFOManagedFiles(t *testing.T) {
 		})
 
 		t.Run(kind+" FIFO", func(t *testing.T) {
-			if runtime.GOOS == "windows" {
-				t.Skip("FIFO is not supported on windows")
-			}
 			if _, err := exec.LookPath("mkfifo"); err != nil {
 				t.Skip("mkfifo is unavailable")
 			}
@@ -953,19 +937,17 @@ func TestIdentityMarkerAndGitAttributesFile(t *testing.T) {
 }
 
 func TestLoadRejectsSymlinkSpecialAndOversizedReceipts(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Run("symlink", func(t *testing.T) {
-			root := t.TempDir()
-			realPath := writeReceiptFromReceipt(t, root, validReceipt(filepath.Join(root, "target"), OutcomeInstalled))
-			linkPath := filepath.Join(root, "receipt-link")
-			if err := os.Symlink(realPath, linkPath); err != nil {
-				t.Fatalf("symlink: %v", err)
-			}
-			if _, err := Load(linkPath); err == nil {
-				t.Fatal("Load(symlink) = nil, want error")
-			}
-		})
-	}
+	t.Run("symlink", func(t *testing.T) {
+		root := t.TempDir()
+		realPath := writeReceiptFromReceipt(t, root, validReceipt(filepath.Join(root, "target"), OutcomeInstalled))
+		linkPath := filepath.Join(root, "receipt-link")
+		if err := os.Symlink(realPath, linkPath); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if _, err := Load(linkPath); err == nil {
+			t.Fatal("Load(symlink) = nil, want error")
+		}
+	})
 
 	t.Run("directory", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "receipt-dir")
@@ -977,27 +959,25 @@ func TestLoadRejectsSymlinkSpecialAndOversizedReceipts(t *testing.T) {
 		}
 	})
 
-	if runtime.GOOS != "windows" {
-		t.Run("FIFO does not block", func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "receipt-fifo")
-			if err := exec.Command("mkfifo", path).Run(); err != nil {
-				t.Fatalf("mkfifo: %v", err)
+	t.Run("FIFO does not block", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipt-fifo")
+		if err := exec.Command("mkfifo", path).Run(); err != nil {
+			t.Fatalf("mkfifo: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := Load(path)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("Load(FIFO) = nil, want error")
 			}
-			done := make(chan error, 1)
-			go func() {
-				_, err := Load(path)
-				done <- err
-			}()
-			select {
-			case err := <-done:
-				if err == nil {
-					t.Fatal("Load(FIFO) = nil, want error")
-				}
-			case <-time.After(time.Second):
-				t.Fatal("Load(FIFO) blocked")
-			}
-		})
-	}
+		case <-time.After(time.Second):
+			t.Fatal("Load(FIFO) blocked")
+		}
+	})
 
 	t.Run("oversized", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "oversized")
@@ -1114,9 +1094,6 @@ func TestInspectSuppressesUnsafeOrArbitraryRecovery(t *testing.T) {
 }
 
 func TestInspectRequiresIdentityAndSkillFilesForUnmanagedRecovery(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks are not consistently available on windows")
-	}
 	for _, tc := range []struct {
 		name      string
 		identity  bool
