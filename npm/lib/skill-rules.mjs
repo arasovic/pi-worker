@@ -257,10 +257,6 @@ function validateDocument(document, enforcePinned = true) {
   return document;
 }
 
-function runtimePath() {
-  return posix;
-}
-
 function runtimeCwd(runtime) {
   if (runtime?.cwd === undefined) return process.cwd();
   if (typeof runtime.cwd !== "string" || runtime.cwd.length === 0) {
@@ -275,7 +271,7 @@ function environmentValue(environment, variable) {
 
 function resolveDetectorPath(expression, runtime) {
   validatePathExpression(expression);
-  const path = runtimePath();
+  const path = posix;
   const home = runtimeHome(runtime);
   const cwd = runtimeCwd(runtime);
   const environment = runtime?.env && typeof runtime.env === "object" ? runtime.env : {};
@@ -430,7 +426,7 @@ export function resolveAgentTarget(agent, runtime) {
     throw new TypeError("skills target resolution requires universal target behavior");
   }
   if (agent.usesUniversalTarget) {
-    const path = runtimePath();
+    const path = posix;
     return path.join(runtimeHome(runtime), ".agents", "skills");
   }
   return resolveRule(agent.rule, runtime);
@@ -446,9 +442,8 @@ export function resolveAllTargets(document, runtime) {
       throw new TypeError("skills target document contains an invalid agent");
     }
     const target = resolveAgentTarget(agent, runtime);
-    const key = target;
-    if (target === null || resolved.has(key)) continue;
-    resolved.add(key);
+    if (target === null || resolved.has(target)) continue;
+    resolved.add(target);
     targets.push(target);
   }
   return targets;
