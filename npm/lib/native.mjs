@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { constants } from "node:os";
 import process from "node:process";
 
 export class UnsupportedPlatformError extends Error {
@@ -18,6 +19,14 @@ export class NativeProcessError extends Error {
 
 function nativeProcessError(error, spawned) {
   return spawned ? error : new NativeProcessError();
+}
+
+// A signal that ends the launcher makes the return value unused; a signal Node
+// ignores (SIGPIPE) leaves the launcher alive, so the caller settles with the
+// status a shell reports for that signal.
+function reRaiseSignal(signal) {
+  process.kill(process.pid, signal);
+  return 128 + constants.signals[signal];
 }
 
 export function nativeTarget(platform = process.platform, arch = process.arch) {
@@ -96,7 +105,7 @@ export function runNative(binary, args, options = {}) {
       cleanup();
 
       if (childSignal) {
-        process.kill(process.pid, childSignal);
+        resolve(reRaiseSignal(childSignal));
         return;
       }
 
@@ -180,8 +189,7 @@ export function runNativeCaptured(binary, args, options = {}) {
         return;
       }
       if (childSignal) {
-        process.kill(process.pid, childSignal);
-        return;
+        code = reRaiseSignal(childSignal);
       }
       resolve({
         code,
