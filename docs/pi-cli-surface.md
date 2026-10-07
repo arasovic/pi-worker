@@ -277,8 +277,15 @@ recommends the pi.dev managed installation for global npm installations. Since
 1.0.1 the published package ships no `npm-shrinkwrap.json`, so npm resolves the
 `^1.0.4` `@earendil-works/*` dependencies at install time. Both installations
 resolved `chord`, `pi-agent-core`, `pi-ai`, `pi-codemode`, `pi-mcp`,
-`pi-telemetry`, and `pi-tui` to 1.0.4; `pi --version` alone no longer implies
-those versions. `pi --help` differs from 1.0.0 only in `--tools` and
+`pi-telemetry`, and `pi-tui` to 1.0.4. The `pi` executable is
+`dist/bundle/cli.js`, which carries its own copy of the `pi-agent-core` and
+`pi-ai` code; the installed `@earendil-works/*` dependency copies load only for
+extensions, which Pi Worker disables with `--no-extensions`. On 2026-10-08 a
+copy of the 1.0.4 installation with every dependency removed gave the same
+promptless RPC probe output and passed `npm run check:livepiprobe` 2/2, so
+`pi --version` identifies the Pi code that Pi Worker runs. This depends on how
+Pi packages its build, so the removal check is repeated at each pin.
+`pi --help` differs from 1.0.0 only in `--tools` and
 `--exclude-tools`, which now accept `*` patterns, and a new `--no-mcp`. The
 `--tools` description now reads "Keeps MCP tools unless an entry starts with
 mcp__". Every launch flag Pi Worker passes is retained, and built-in tool names
@@ -287,14 +294,17 @@ are unchanged. A `--tools` entry without `*` still matches by exact name
 contain no `*`, no `mcp__` entry, and no `tool_search`, so 1.0.4 would not
 declare an unmatched MCP tool to the model even if MCP loaded. Package exports
 and `bin` are identical, `dist/modes/rpc/` is byte-identical to 1.0.0, and the
-bundled `@earendil-works/pi-agent-core` `dist/` is identical apart from source
-maps. The bundled `@earendil-works/pi-ai/dist/types.d.ts` changed only in the
+installed `@earendil-works/pi-agent-core` `dist/` is identical apart from
+source maps. These file comparisons read the installed, unbundled copies; the
+probes below run the bundle. The installed
+`@earendil-works/pi-ai/dist/types.d.ts` changed only in the
 `KnownProvider` rename of `azure-openai-responses` to `azure`, a
 `SamplingParams` alias, a new optional `samplingParamsByThinkingLevel`, and one
 doc comment; the `Model` `provider` and `id` fields Pi Worker projects are
 unchanged. The new dependency `@earendil-works/pi-telemetry` has no `fetch`
-call or `https://` URL in its `dist/`. The bundled
-`RETRYABLE_PROVIDER_ERROR_PATTERN` list gained `model is at capacity` and
+call or `https://` URL in its `dist/`. The
+`RETRYABLE_PROVIDER_ERROR_PATTERN` list, present in both the installed `pi-ai`
+and the `pi` bundle, gained `model is at capacity` and
 `pending stream has been canceled`. `isRetryableAssistantError` still returns
 false for `Upstream incomplete: missing_terminal_event` and `upstream stream
 ended early (missing_terminal_event)` on both 1.0.0 and 1.0.4, so the issue
