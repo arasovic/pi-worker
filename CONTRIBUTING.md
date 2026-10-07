@@ -4,7 +4,7 @@
 
 - Go using the language and toolchain versions declared in `go.mod` (Go 1.26 and toolchain Go 1.26.1).
 - Node.js >=22.20.0 and npm.
-- Pi 1.0.0 only when relevant to integration or dogfood testing.
+- Pi 1.0.4 only when relevant to integration or dogfood testing.
 
 ## Workflow
 
