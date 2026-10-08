@@ -438,11 +438,7 @@ describe("launcher process behavior", () => {
       env: { HOME: home, PATH: process.env.PATH },
     });
     child.stderr.destroy();
-    let stdout = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
+    child.stdout.resume();
 
     const close = await new Promise((resolve) => {
       child.on("close", (code, signal) => resolve({ code, signal }));
