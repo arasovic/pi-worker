@@ -387,6 +387,71 @@ describe("launcher process behavior", () => {
     });
   });
 
+  for (const [name, args] of [
+    ["human", ["skill", "status"]],
+    ["JSON", ["skill", "status", "--json"]],
+  ]) {
+    test(`ends quietly when its own stdout write hits a closed pipe for ${name}`, { skip: unsupportedNativeSkip, timeout: 10_000 }, async () => {
+      const fixture = launcherFixture(`closed-stdout-${name}`, { status: true });
+      const home = join(fixture.packageRoot, "home");
+      mkdirSync(home, { recursive: true });
+      mkdirSync(join(fixture.binary, ".."), { recursive: true });
+      writeExecutable(
+        fixture.binary,
+        `process.stdout.write(${JSON.stringify(`${JSON.stringify(nativeStatusDocument())}\n`)});`,
+      );
+
+      const child = spawn(bin, [fixture.launcher, ...args], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { HOME: home, PATH: process.env.PATH },
+      });
+      child.stdout.destroy();
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+
+      const close = await new Promise((resolve) => {
+        child.on("close", (code, signal) => resolve({ code, signal }));
+      });
+
+      assert.equal(close.code, 141, stderr);
+      assert.equal(close.signal, null);
+      assert.equal(stderr, "");
+    });
+  }
+
+  test("ends quietly when its own stderr write hits a closed pipe", { skip: unsupportedNativeSkip, timeout: 10_000 }, async () => {
+    const fixture = launcherFixture("closed-stderr", { status: true });
+    const home = join(fixture.packageRoot, "home");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(fixture.binary, ".."), { recursive: true });
+    writeExecutable(
+      fixture.binary,
+      `process.stdout.write(${JSON.stringify(`${JSON.stringify(nativeStatusDocument())}\n`)});\n` +
+        `process.stderr.write("native diagnostic\\n");`,
+    );
+
+    const child = spawn(bin, [fixture.launcher, "skill", "status", "--json"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { HOME: home, PATH: process.env.PATH },
+    });
+    child.stderr.destroy();
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+
+    const close = await new Promise((resolve) => {
+      child.on("close", (code, signal) => resolve({ code, signal }));
+    });
+
+    assert.equal(close.code, 141);
+    assert.equal(close.signal, null);
+  });
+
   test("oversized native status document has the documented failure shape", { skip: unsupportedNativeSkip }, () => {
     const fixture = launcherFixture("oversized-status-document", { status: true });
     mkdirSync(join(fixture.binary, ".."), { recursive: true });
