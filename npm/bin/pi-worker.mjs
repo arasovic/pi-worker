@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
+import { constants } from "node:os";
 import process from "node:process";
 
 import {
@@ -18,6 +19,18 @@ function unsupportedPlatformDiagnostic(error) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200) || "Unsupported platform/architecture";
+}
+
+// Node ignores SIGPIPE, so a write to a pipe with no reader fails with EPIPE
+// instead of ending the process. End with the status the native binary gets in
+// the same pipeline.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (error) => {
+    if (error?.code === "EPIPE") {
+      process.exit(128 + constants.signals.SIGPIPE);
+    }
+    throw error;
+  });
 }
 
 try {
