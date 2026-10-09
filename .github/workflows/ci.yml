@@ -33,7 +33,8 @@ jobs:
           while IFS= read -r -d '' file; do
             files+=("$file")
           done < <(git ls-files -z -- '*.go')
-          test -z "$(gofmt -l "${files[@]}")"
+          out="$(gofmt -l "${files[@]}")"
+          test -z "$out"
       - name: Verify modules
         run: go mod verify
       - name: Vet

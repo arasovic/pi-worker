@@ -464,7 +464,7 @@ test("manifest exposes one non-duplicated local verification pipeline", () => {
   assert.equal(manifest.scripts["check:notices"], "go run ./tools/notices --check THIRD_PARTY_NOTICES");
   assert.equal(manifest.scripts["check:piversion"], "go run ./tools/piversion --check");
   assert.equal(manifest.scripts["check:hygiene"], "node npm/scripts/check-hygiene.mjs");
-  assert.equal(manifest.scripts["check:gofmt"], "! gofmt -l $(git ls-files '*.go') | grep .");
+  assert.equal(manifest.scripts["check:gofmt"], "node npm/scripts/check-gofmt.mjs");
   assert.equal(manifest.scripts["check:govet"], "go vet ./...");
   assert.equal(manifest.scripts["check:govet-livepi"], "go vet -tags livepi ./...");
   assert.equal(manifest.scripts["check:livepiprobe"], "PI_WORKER_LIVE_REQUIRED=1 go test -tags livepi -count=1 -v ./internal/livepiprobe/...");

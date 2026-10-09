@@ -49,7 +49,7 @@
     "check:notices": "go run ./tools/notices --check THIRD_PARTY_NOTICES",
     "check:piversion": "go run ./tools/piversion --check",
     "check:hygiene": "node npm/scripts/check-hygiene.mjs",
-    "check:gofmt": "! gofmt -l $(git ls-files '*.go') | grep .",
+    "check:gofmt": "node npm/scripts/check-gofmt.mjs",
     "check:govet": "go vet ./...",
     "check:govet-livepi": "go vet -tags livepi ./...",
     "check:gotest": "go test -race -count=1 ./...",
