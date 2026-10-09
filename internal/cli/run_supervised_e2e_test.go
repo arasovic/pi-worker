@@ -483,6 +483,64 @@ func TestLargeValidResultsEndReadable(t *testing.T) {
 		}
 	})
 
+	t.Run("an earlier failure keeps its outcome", func(t *testing.T) {
+		newGitWorkspace(t)
+		useFakePi(t, backgroundHappyScript(answer))
+		verify := strings.Join(cliVerifyHelperArgs(t, "3", "2"), " ")
+
+		code, stdout, stderr := runCLI(t, []string{
+			"run", "--json", "--model", "acme/m-1",
+			"--task", "a", "--task", "b", "--task", "c",
+			"--verify", verify,
+		}, "")
+		runID := runIDFromRunLine(t, stderr)
+
+		if code != 6 {
+			t.Fatalf("exit = %d, want 6 (verification-failed, not result-too-large 10); stderr = %q", code, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		if got := document["outcome"]; got != string(contracts.OutcomeVerificationFailed) {
+			t.Fatalf("document outcome = %v, want %s; stdout = %q", got, contracts.OutcomeVerificationFailed, stdout)
+		}
+		workers := requireJSONArray(t, document["workers"], "workers")
+		if len(workers) != 3 {
+			t.Fatalf("workers = %d, want 3", len(workers))
+		}
+		for i, raw := range workers {
+			worker, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("worker %d = %#v, want an object", i+1, raw)
+			}
+			if _, present := worker["explanation"]; present {
+				t.Fatalf("worker %d carries an explanation, want it dropped", i+1)
+			}
+		}
+		if !strings.Contains(stderr, "result too large to store") {
+			t.Fatalf("stderr = %q, want the size reason", stderr)
+		}
+
+		root, err := runlogDir()
+		if err != nil {
+			t.Fatalf("runlogDir: %v", err)
+		}
+		snapPath := filepath.Join(root, runID, "snapshot.json")
+		info, err := os.Stat(snapPath)
+		if err != nil {
+			t.Fatalf("stat snapshot: %v", err)
+		}
+		if info.Size() > 32<<20 {
+			t.Fatalf("snapshot is %d bytes, want at most 32 MiB", info.Size())
+		}
+
+		statusCode, statusStdout, statusStderr := runCLI(t, []string{"runs", "status", runID, "--json"}, "")
+		if statusCode != 6 {
+			t.Fatalf("runs status exit = %d, want 6; stderr = %q", statusCode, statusStderr)
+		}
+		if outcome := decodeJSONObject(t, statusStdout)["outcome"]; outcome != string(contracts.OutcomeVerificationFailed) {
+			t.Fatalf("stored outcome = %v, want %s", outcome, contracts.OutcomeVerificationFailed)
+		}
+	})
+
 	t.Run("one worker under the ceiling keeps its answer", func(t *testing.T) {
 		newGitWorkspace(t)
 		useFakePi(t, backgroundHappyScript(answer))

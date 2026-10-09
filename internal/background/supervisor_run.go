@@ -507,13 +507,17 @@ func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *sup
 
 // reduceTerminalSnapshotForSize returns a copy of terminal whose worker
 // answer texts are dropped so the document fits under the store's write
-// ceiling. The run is recorded failed with the result-too-large outcome;
-// every other field, including each worker's status, changes, writes,
-// verification, git state and leftover processes, is kept. The dropped texts
-// are named in Error, joined to whatever error the run already carried,
-// because the stored snapshot is the only place that says why the answers are
-// missing. The controller's result is never mutated: both views of each
-// worker's answer are copied before they are cleared.
+// ceiling. Every other field, including each worker's status, changes,
+// writes, verification, git state and leftover processes, is kept. The
+// dropped texts are named in Error, joined to whatever error the run already
+// carried, because the stored snapshot is the only place that says why the
+// answers are missing. When the terminal snapshot's outcome is completed,
+// the run is recorded failed with the result-too-large outcome; for any other
+// outcome an earlier problem (a failed verification, an undeclared write, a
+// failed or partial task, a timeout, a cancellation or an internal error)
+// keeps its status, state and outcome, so a caller that stops at the outcome
+// word still sees it. The controller's result is never mutated: both views of
+// each worker's answer are copied before they are cleared.
 func reduceTerminalSnapshotForSize(terminal Snapshot, size *SnapshotTooLargeError) Snapshot {
 	reduced := terminal
 	message := fmt.Sprintf("result too large to store (%d bytes exceeds %d bytes); worker answer texts were dropped", size.Size, maxSnapshotBytes)
@@ -521,11 +525,14 @@ func reduceTerminalSnapshotForSize(terminal Snapshot, size *SnapshotTooLargeErro
 		message = terminal.Error + "; " + message
 	}
 	reduced.Error = message
-	failed := contracts.RunFailed
-	outcome := contracts.OutcomeResultTooLarge
-	reduced.Status = &failed
-	reduced.Outcome = &outcome
-	reduced.State = RunFailed
+	completed := terminal.Outcome != nil && *terminal.Outcome == contracts.OutcomeCompleted
+	if completed {
+		failed := contracts.RunFailed
+		outcome := contracts.OutcomeResultTooLarge
+		reduced.Status = &failed
+		reduced.Outcome = &outcome
+		reduced.State = RunFailed
+	}
 
 	if terminal.Result != nil {
 		result := *terminal.Result
@@ -536,8 +543,10 @@ func reduceTerminalSnapshotForSize(terminal Snapshot, size *SnapshotTooLargeErro
 			workers[i].PartialExplanation = ""
 		}
 		result.Workers = workers
-		result.Status = contracts.RunFailed
-		result.Outcome = contracts.OutcomeResultTooLarge
+		if completed {
+			result.Status = contracts.RunFailed
+			result.Outcome = contracts.OutcomeResultTooLarge
+		}
 		reduced.Result = &result
 	}
 
