@@ -157,6 +157,11 @@ func enqueueAndWait(ctx context.Context, g *Gate, req Request) (*Lease, error) {
 
 func readStateForTest(t *testing.T, root string) state {
 	t.Helper()
+	unlock, err := lockState(root)
+	if err != nil {
+		t.Fatalf("readStateForTest: lockState: %v", err)
+	}
+	defer unlock()
 	st, err := loadState(root)
 	if err != nil {
 		t.Fatalf("readStateForTest: loadState: %v", err)
@@ -2332,4 +2337,53 @@ func TestFailedPostGrantReleaseRetryableThroughCancel(t *testing.T) {
 	st := readStateForTest(t, root)
 	assertNoTickets(t, root)
 	assertNextSequence(t, st, 2)
+}
+
+// TestReadStateForTestToleratesConcurrentReplace asserts that the
+// test helper readStateForTest takes the queue lock while a concurrent
+// writer replaces state.json. The helper must never observe the store's
+// "state changed before reading" refusal: a reader that loads without
+// the lock races saveState's rename and fails the test. The single
+// writer holds the lock for each replace; the reader holds it for each
+// read, exactly as the product does.
+func TestReadStateForTestToleratesConcurrentReplace(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Open(root, 1); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	deadline := time.Now().Add(300 * time.Millisecond)
+	writerDone := make(chan error, 1)
+	go func() {
+		for time.Now().Before(deadline) {
+			unlock, err := lockState(root)
+			if err != nil {
+				writerDone <- err
+				return
+			}
+			st, err := loadState(root)
+			if err != nil {
+				unlock()
+				writerDone <- err
+				return
+			}
+			if err := saveState(root, st); err != nil {
+				unlock()
+				writerDone <- err
+				return
+			}
+			unlock()
+		}
+		writerDone <- nil
+	}()
+
+	// The reader takes no sleeps: it must win the race often enough
+	// that an unlocked loadState would be caught during the window.
+	for time.Now().Before(deadline) {
+		readStateForTest(t, root)
+	}
+
+	if err := <-writerDone; err != nil {
+		t.Fatalf("concurrent writer: %v", err)
+	}
 }
