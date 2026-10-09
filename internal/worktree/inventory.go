@@ -51,7 +51,7 @@ func List(ctx context.Context, cwd string) ([]Entry, error) {
 		return nil, err
 	}
 
-	branchOutput, err := runGitFunc(ctx, root, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	branchOutput, err := runGitFunc(ctx, root, "for-each-ref", "--format=%(refname)", "refs/heads")
 	if err != nil {
 		return nil, fmt.Errorf("list run branches: %w", err)
 	}
@@ -72,7 +72,7 @@ func List(ctx context.Context, cwd string) ([]Entry, error) {
 		}
 	}
 
-	mergedOutput, err := runGitFunc(ctx, root, "for-each-ref", "--merged="+head, "--format=%(refname:short)", "refs/heads")
+	mergedOutput, err := runGitFunc(ctx, root, "for-each-ref", "--merged="+head, "--format=%(refname)", "refs/heads")
 	if err != nil {
 		return nil, fmt.Errorf("list merged run branches: %w", err)
 	}
@@ -217,8 +217,9 @@ func parseManagedWorktreeList(root, output string) (map[string]entryRef, error) 
 	return entries, nil
 }
 
-// parseManagedBranchNames parses for-each-ref output and returns the
-// set of managed run/<name> branch names.
+// parseManagedBranchNames parses full git refs (one per line, as
+// printed by for-each-ref --format=%(refname)) and returns the set of
+// managed run/<name> branch names.
 func parseManagedBranchNames(output string) (map[string]struct{}, error) {
 	const maxEntries = 4096
 	const maxLine = 64 * 1024
@@ -236,10 +237,10 @@ func parseManagedBranchNames(output string) (map[string]struct{}, error) {
 		if count > maxEntries {
 			return nil, fmt.Errorf("malformed git ref output: too many entries")
 		}
-		if !strings.HasPrefix(line, "run/") {
+		if !strings.HasPrefix(line, "refs/heads/run/") {
 			continue
 		}
-		name := strings.TrimPrefix(line, "run/")
+		name := strings.TrimPrefix(line, "refs/heads/run/")
 		if !ValidName(name) {
 			return nil, fmt.Errorf("managed branch %q has invalid name %q", line, name)
 		}

@@ -222,42 +222,57 @@ func TestParseManagedBranchNames(t *testing.T) {
 		},
 		{
 			name:   "one managed branch",
-			output: "run/alpha\n",
+			output: "refs/heads/run/alpha\n",
 			want:   map[string]struct{}{"alpha": {}},
 		},
 		{
 			name:   "multiple managed branches",
-			output: "run/alpha\nrun/bravo\nrun/charlie\n",
+			output: "refs/heads/run/alpha\nrefs/heads/run/bravo\nrefs/heads/run/charlie\n",
 			want:   map[string]struct{}{"alpha": {}, "bravo": {}, "charlie": {}},
 		},
 		{
 			name:   "unrelated branches ignored",
-			output: "feature\nrun/alpha\nother\n",
+			output: "refs/heads/feature\nrefs/heads/run/alpha\nrefs/heads/other\n",
 			want:   map[string]struct{}{"alpha": {}},
 		},
 		{
+			name:   "tag ref ignored",
+			output: "refs/tags/run/alpha\n",
+			want:   map[string]struct{}{},
+		},
+		{
+			name:   "short name ignored",
+			output: "run/alpha\n",
+			want:   map[string]struct{}{},
+		},
+		{
+			name:   "run not directly after refs/heads ignored",
+			output: "refs/heads/feature/run/alpha\n",
+			want:   map[string]struct{}{},
+		},
+		{
 			name:   "blank lines skipped",
-			output: "run/alpha\n\n\nrun/bravo\n",
+			output: "refs/heads/run/alpha\n\n\nrefs/heads/run/bravo\n",
 			want:   map[string]struct{}{"alpha": {}, "bravo": {}},
 		},
 		{
 			name:    "invalid managed name",
-			output:  "run/Bad\n",
+			output:  "refs/heads/run/Bad\n",
 			wantErr: "invalid name",
 		},
 		{
 			name:    "duplicate managed branch",
-			output:  "run/alpha\nrun/alpha\n",
+			output:  "refs/heads/run/alpha\nrefs/heads/run/alpha\n",
 			wantErr: "duplicate managed branch",
 		},
 		{
 			name:    "too many entries",
-			output:  strings.Repeat("feature\n", 4096) + "run/alpha\n",
+			output:  strings.Repeat("refs/heads/feature\n", 4096) + "refs/heads/run/alpha\n",
 			wantErr: "too many entries",
 		},
 		{
 			name:    "overlong line rejected",
-			output:  "run/" + strings.Repeat("x", 128*1024) + "\n",
+			output:  "refs/heads/run/" + strings.Repeat("x", 128*1024) + "\n",
 			wantErr: "token too long",
 		},
 	}
