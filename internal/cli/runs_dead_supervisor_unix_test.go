@@ -20,12 +20,15 @@ import (
 	"github.com/arasovic/pi-worker/internal/runlog"
 )
 
+// deadSupervisorHold keeps the worker holding its answer until after the test kills the supervisor.
+const deadSupervisorHold = 2 * time.Minute
+
 // TestRunBackgroundReportsAKilledSupervisorAsAnInterruptedRun requires that a
 // background run whose supervisor was killed without warning is reported by
 // the next start as an interrupted earlier run, naming its run directory: its
 // snapshot is not terminal and its owner lock is free.
 func TestRunBackgroundReportsAKilledSupervisorAsAnInterruptedRun(t *testing.T) {
-	manager, recordsDir := setupBackgroundRun(t, slowBackgroundScript("never finished", backgroundRunDelayStep))
+	manager, recordsDir := setupBackgroundRun(t, slowBackgroundScript("never finished", deadSupervisorHold))
 
 	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
 	if code != 0 {
@@ -40,6 +43,10 @@ func TestRunBackgroundReportsAKilledSupervisorAsAnInterruptedRun(t *testing.T) {
 	// starts run in this one process: the second start must fall in a later
 	// second or it would name the first run.
 	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
+
+	// Only the killed run needed the long hold; the second run is drained, so
+	// it must answer well inside the drain and gets the ordinary script.
+	setupFakePiScript(t, backgroundHappyScript("second run"))
 
 	code, stdout, stderr = runCLI(t, []string{"run", "--background", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
 	if code != 0 {
@@ -135,7 +142,7 @@ func ownerLockHolders(t *testing.T, path string) (pids []int, ok bool) {
 // lock is free at once, runs list reports the run interrupted, runs wait
 // exits 9 saying the supervisor is gone, and the worker is cleaned up.
 func TestRunDirectoryOwnerLockEndToEnd(t *testing.T) {
-	manager, root := setupBackgroundRun(t, slowBackgroundScript("never finished", backgroundRunDelayStep))
+	manager, root := setupBackgroundRun(t, slowBackgroundScript("never finished", deadSupervisorHold))
 	legacyRoot := filepath.Join(t.TempDir(), "background")
 	withBackgroundRoot(t, legacyRoot)
 
@@ -230,7 +237,7 @@ func TestRunDirectoryOwnerLockEndToEnd(t *testing.T) {
 // non-terminal state, say the supervisor is gone, and exit 9 — with the wait
 // returning at once instead of running out its bound.
 func TestRunsDeadSupervisorStatusAndWaitReportInterrupted(t *testing.T) {
-	manager, _ := setupBackgroundRun(t, slowBackgroundScript("never finished", backgroundRunDelayStep))
+	manager, _ := setupBackgroundRun(t, slowBackgroundScript("never finished", deadSupervisorHold))
 	code, stdout, stderr := runCLI(t, []string{"run", "--background", "--json", "--model", "acme/m-1", "--task", "go", "--timeout", "5m"}, "")
 	if code != 0 {
 		t.Fatalf("run --background = (%d, %q, %q), want 0", code, stdout, stderr)
