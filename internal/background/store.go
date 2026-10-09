@@ -689,12 +689,29 @@ func (s *Store) Remove(runID string) error {
 	return nil
 }
 
+// SnapshotTooLargeError reports that a snapshot's encoded form would exceed
+// the store's write ceiling. Size is the number of encoded bytes the store
+// measured, the trailing newline included.
+type SnapshotTooLargeError struct {
+	Size int64
+}
+
+func (e *SnapshotTooLargeError) Error() string {
+	return fmt.Sprintf("snapshot is too large to store (%d bytes exceeds %d bytes)", e.Size, maxSnapshotBytes)
+}
+
 // encodeSnapshot marshals s as compact JSON followed by exactly one newline.
+// A snapshot whose encoded form exceeds maxSnapshotBytes is refused before
+// any caller writes it: the same ceiling Load enforces when it reads is the
+// one enforced when it is written.
 func encodeSnapshot(s Snapshot) ([]byte, error) {
 	data, err := json.Marshal(s)
 	if err != nil {
 		return nil, err
 	}
 	data = append(data, '\n')
+	if int64(len(data)) > maxSnapshotBytes {
+		return nil, &SnapshotTooLargeError{Size: int64(len(data))}
+	}
 	return data, nil
 }

@@ -162,6 +162,85 @@ func TestLifecycle_Replace(t *testing.T) {
 	}
 }
 
+// TestReplace_RefusesSnapshotAboveCeiling requires that a snapshot whose
+// encoded form exceeds the store's ceiling is refused with a
+// *SnapshotTooLargeError naming the real encoded size, and that the previous
+// file is left byte-identical: the ceiling is measured on the encoded bytes,
+// not guessed before them.
+func TestReplace_RefusesSnapshotAboveCeiling(t *testing.T) {
+	root := t.TempDir()
+	base, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws",
+		ProcessIdentity{PID: 1, CreateTime: 100},
+		[]run.Task{fixtureTask()}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.Create(base); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	snapPath := filepath.Join(root, base.RunID, "snapshot.json")
+	before, err := os.ReadFile(snapPath)
+	if err != nil {
+		t.Fatalf("read snapshot before: %v", err)
+	}
+
+	overSize := base
+	overSize.Workspace = strings.Repeat("x", int(maxSnapshotBytes)+1)
+	err = store.Replace(overSize)
+	var sizeErr *SnapshotTooLargeError
+	if !errors.As(err, &sizeErr) {
+		t.Fatalf("Replace error = %v, want *SnapshotTooLargeError", err)
+	}
+	if sizeErr.Size <= maxSnapshotBytes {
+		t.Fatalf("SnapshotTooLargeError.Size = %d, want > %d", sizeErr.Size, maxSnapshotBytes)
+	}
+	after, err := os.ReadFile(snapPath)
+	if err != nil {
+		t.Fatalf("read snapshot after: %v", err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("Replace left the snapshot changed after refusing it")
+	}
+}
+
+// TestCreate_RefusesSnapshotAboveCeiling requires that Create refuses an
+// oversized snapshot before any filesystem operation, so neither the run
+// directory nor its snapshot file is created.
+func TestCreate_RefusesSnapshotAboveCeiling(t *testing.T) {
+	root := t.TempDir()
+	base, err := NewSnapshot(makeRunID(fixtureTime), fixtureTime, "/ws",
+		ProcessIdentity{PID: 1, CreateTime: 100},
+		[]run.Task{fixtureTask()}, time.Minute, nil)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	overSize := base
+	overSize.Workspace = strings.Repeat("x", int(maxSnapshotBytes)+1)
+	lock, err := store.Create(overSize)
+	if lock != nil {
+		t.Fatal("Create returned a lock for a refused snapshot")
+	}
+	var sizeErr *SnapshotTooLargeError
+	if !errors.As(err, &sizeErr) {
+		t.Fatalf("Create error = %v, want *SnapshotTooLargeError", err)
+	}
+	if sizeErr.Size <= maxSnapshotBytes {
+		t.Fatalf("SnapshotTooLargeError.Size = %d, want > %d", sizeErr.Size, maxSnapshotBytes)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, base.RunID)); !os.IsNotExist(statErr) {
+		t.Fatalf("run directory exists after a refused Create (%v)", statErr)
+	}
+}
+
 // Remove deletes the run directory; follow-up Load preserves fs.ErrNotExist.
 func TestLifecycle_Remove(t *testing.T) {
 	root := t.TempDir()

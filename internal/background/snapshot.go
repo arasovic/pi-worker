@@ -65,7 +65,7 @@ func outcomeSet(o contracts.Outcome) bool {
 		contracts.OutcomeTaskFailed, contracts.OutcomePartial,
 		contracts.OutcomeVerificationFailed, contracts.OutcomeTimeout,
 		contracts.OutcomeCancelled, contracts.OutcomeInternalError,
-		contracts.OutcomeCompleted:
+		contracts.OutcomeResultTooLarge, contracts.OutcomeCompleted:
 		return true
 	}
 	return false

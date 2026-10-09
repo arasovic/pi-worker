@@ -410,3 +410,101 @@ func TestRunGivesTheSupervisorTheResolvedAdmission(t *testing.T) {
 		}
 	})
 }
+
+// TestLargeValidResultsEndReadable is the regression for issue #510: three
+// workers each answering 6 MiB of text encode a snapshot above the 32 MiB
+// read ceiling. Instead of leaving an oversized snapshot the reader cannot
+// load, the run ends result-too-large with exit 10, and the stored snapshot
+// stays readable with only the worker answer texts dropped. A one-worker
+// control with the same answer stays under the ceiling and keeps its answer.
+func TestLargeValidResultsEndReadable(t *testing.T) {
+	const answerBytes = 6 << 20
+	answer := strings.Repeat("x", answerBytes)
+
+	t.Run("three workers exceed the ceiling", func(t *testing.T) {
+		newGitWorkspace(t)
+		useFakePi(t, backgroundHappyScript(answer))
+
+		code, stdout, stderr := runCLI(t, []string{
+			"run", "--json", "--model", "acme/m-1",
+			"--task", "a", "--task", "b", "--task", "c",
+		}, "")
+		runID := runIDFromRunLine(t, stderr)
+
+		if code != 10 {
+			t.Fatalf("exit = %d, want 10; stderr = %q", code, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		if got := document["outcome"]; got != "result-too-large" {
+			t.Fatalf("document outcome = %v, want %s; stdout = %q", got, "result-too-large", stdout)
+		}
+		if got := document["status"]; got != string(contracts.RunFailed) {
+			t.Fatalf("document status = %v, want %s", got, contracts.RunFailed)
+		}
+		workers := requireJSONArray(t, document["workers"], "workers")
+		if len(workers) != 3 {
+			t.Fatalf("workers = %d, want 3", len(workers))
+		}
+		for i, raw := range workers {
+			worker, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("worker %d = %#v, want an object", i+1, raw)
+			}
+			if worker["status"] != "completed" {
+				t.Fatalf("worker %d status = %v, want completed", i+1, worker["status"])
+			}
+			if _, present := worker["explanation"]; present {
+				t.Fatalf("worker %d carries an explanation, want it dropped", i+1)
+			}
+		}
+		if !strings.Contains(stderr, "result too large to store") {
+			t.Fatalf("stderr = %q, want the size reason", stderr)
+		}
+
+		root, err := runlogDir()
+		if err != nil {
+			t.Fatalf("runlogDir: %v", err)
+		}
+		snapPath := filepath.Join(root, runID, "snapshot.json")
+		info, err := os.Stat(snapPath)
+		if err != nil {
+			t.Fatalf("stat snapshot: %v", err)
+		}
+		if info.Size() > 32<<20 {
+			t.Fatalf("snapshot is %d bytes, want at most 32 MiB", info.Size())
+		}
+
+		statusCode, statusStdout, statusStderr := runCLI(t, []string{"runs", "status", runID, "--json"}, "")
+		if statusCode != 10 {
+			t.Fatalf("runs status exit = %d, want 10; stderr = %q", statusCode, statusStderr)
+		}
+		if outcome := decodeJSONObject(t, statusStdout)["outcome"]; outcome != "result-too-large" {
+			t.Fatalf("stored outcome = %v, want %s", outcome, "result-too-large")
+		}
+	})
+
+	t.Run("one worker under the ceiling keeps its answer", func(t *testing.T) {
+		newGitWorkspace(t)
+		useFakePi(t, backgroundHappyScript(answer))
+
+		code, stdout, stderr := runCLI(t, []string{
+			"run", "--json", "--model", "acme/m-1", "--task", "a",
+		}, "")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+		}
+		document := decodeJSONObject(t, stdout)
+		workers := requireJSONArray(t, document["workers"], "workers")
+		if len(workers) != 1 {
+			t.Fatalf("workers = %d, want 1", len(workers))
+		}
+		worker, ok := workers[0].(map[string]any)
+		if !ok {
+			t.Fatalf("worker = %#v, want an object", workers[0])
+		}
+		explanation, ok := worker["explanation"].(string)
+		if !ok || len(explanation) != answerBytes {
+			t.Fatalf("explanation length = %d, want %d", len(explanation), answerBytes)
+		}
+	})
+}
