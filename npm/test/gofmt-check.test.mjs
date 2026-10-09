@@ -88,3 +88,16 @@ test("accepts a repository with no go files", (t) => {
   const result = run(root);
   assert.equal(result.status, 0, result.stderr);
 });
+
+test("fails when not inside a git repository", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pi-worker-gofmt-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  cpSync(checker, join(root, "check-gofmt.mjs"));
+  const result = spawnSync(process.execPath, [join(root, "check-gofmt.mjs")], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(root) },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not a git repository/i);
+});
