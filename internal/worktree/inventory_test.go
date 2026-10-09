@@ -79,6 +79,28 @@ func TestListOneExactCleanMergedPair(t *testing.T) {
 	}
 }
 
+// TestListTagDoesNotShadowManagedBranch verifies that an unrelated tag
+// with the same short name as a managed branch does not hide the real
+// branch from the inventory.
+func TestListTagDoesNotShadowManagedBranch(t *testing.T) {
+	root := newTempRepo(t)
+	if _, err := Prepare(context.Background(), root, "probe"); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	gitRun(t, root, "tag", "run/probe")
+	got, err := List(context.Background(), root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %#v, want one entry", got)
+	}
+	wantPath := filepath.Join(root, ".pi-worker", "worktrees", "probe")
+	if got[0] != (Entry{Name: "probe", Path: wantPath, Branch: "run/probe", Dirty: false, Merged: true}) {
+		t.Fatalf("entry = %#v", got[0])
+	}
+}
+
 func TestListDirtyAndUnmergedReportingSorted(t *testing.T) {
 	root := newTempRepo(t)
 	bravoPrep, err := Prepare(context.Background(), root, "bravo")
@@ -183,10 +205,10 @@ func TestListRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
 				return "abc123", nil
 			case "worktree list --porcelain":
 				return "worktree " + filepath.Join(root, ".pi-worker", "worktrees", "alpha") + "\n", nil
-			case "for-each-ref --format=%(refname:short) refs/heads":
-				return "run/alpha\n", nil
-			case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
-				return "run/alpha\n", nil
+			case "for-each-ref --format=%(refname) refs/heads":
+				return "refs/heads/run/alpha\n", nil
+			case "for-each-ref --merged=abc123 --format=%(refname) refs/heads":
+				return "refs/heads/run/alpha\n", nil
 			default:
 				t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
 				return "", nil
@@ -215,10 +237,10 @@ func TestListRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
 				return "abc123", nil
 			case "worktree list --porcelain":
 				return "worktree " + filepath.Join(root, ".pi-worker", "worktrees", "alpha") + "\nbranch refs/heads/run/beta\n", nil
-			case "for-each-ref --format=%(refname:short) refs/heads":
-				return "run/beta\n", nil
-			case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
-				return "run/beta\n", nil
+			case "for-each-ref --format=%(refname) refs/heads":
+				return "refs/heads/run/beta\n", nil
+			case "for-each-ref --merged=abc123 --format=%(refname) refs/heads":
+				return "refs/heads/run/beta\n", nil
 			default:
 				t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
 				return "", nil
@@ -306,10 +328,10 @@ func TestListCheckoutStatusFailureSurfacesPath(t *testing.T) {
 		case "worktree list --porcelain":
 			return "worktree " + root + "\nHEAD abc123\nbranch refs/heads/main\n\n" +
 				"worktree " + managedPath + "\nHEAD abc123\nbranch refs/heads/run/alpha\n", nil
-		case "for-each-ref --format=%(refname:short) refs/heads":
-			return "main\nrun/alpha\n", nil
-		case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
-			return "main\nrun/alpha\n", nil
+		case "for-each-ref --format=%(refname) refs/heads":
+			return "refs/heads/main\nrefs/heads/run/alpha\n", nil
+		case "for-each-ref --merged=abc123 --format=%(refname) refs/heads":
+			return "refs/heads/main\nrefs/heads/run/alpha\n", nil
 		default:
 			t.Fatalf("unexpected git call: %q in %q", cmd, dir)
 			return "", nil

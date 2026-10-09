@@ -51,6 +51,30 @@ func TestRemoveExactCleanMergedPair(t *testing.T) {
 	}
 }
 
+// TestRemoveTagDoesNotShadowManagedBranch verifies that an unrelated tag
+// with the same short name as a managed branch does not block removal of
+// the managed pair, and that the tag itself survives.
+func TestRemoveTagDoesNotShadowManagedBranch(t *testing.T) {
+	root := newTempRepo(t)
+	ent := prepareCleanMerged(t, root, "probe")
+	gitRun(t, root, "tag", "run/probe")
+
+	if err := Remove(context.Background(), root, ent); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(ent.Path); err == nil {
+		t.Fatalf("checkout still exists at %s", ent.Path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat checkout: unexpected error %v", err)
+	}
+	if gitRefExists(t, root, "refs/heads/run/probe") {
+		t.Fatal("branch refs/heads/run/probe still exists")
+	}
+	if !gitRefExists(t, root, "refs/tags/run/probe") {
+		t.Fatal("tag refs/tags/run/probe was removed")
+	}
+}
+
 // TestRemoveInvalidNameRefuses verifies validateRemoveEligibility
 // rejects an invalid name before any git call.
 func TestRemoveInvalidNameRefuses(t *testing.T) {
