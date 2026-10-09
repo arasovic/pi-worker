@@ -1173,7 +1173,10 @@ pi-worker: warning: N workers share the writable current workspace; tasks must u
   outputs: the monitor compares two identities per task — the identities
   of that task's declared dirty outputs immediately after that worker
   returns and again after all workers settle — it is not continuous
-  tracing. If the final identity differs from the settled identity,
+  tracing. "Dirty" is measured against the commit the run started from,
+  not the current HEAD, so committing an output during the run does not
+  by itself change its identity. If the final identity differs from the
+  settled identity,
   pi-worker reports those paths through the existing
   `writes.undeclared` / `undeclaredCount` fields and the run exits `4`
   with outcome `undeclared-writes`, even though the path was declared by

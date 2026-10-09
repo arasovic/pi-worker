@@ -350,7 +350,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 				measureWorkspace = filepath.Join(root, strings.TrimSuffix(prefixOut, "\n"))
 				metadata, beforeErr = snapshotGitMetadata(preCtx, root)
 				if beforeErr == nil && before.Dirty {
-					dirtyStamps, beforeErr = snapshotDirtyStamps(preCtx, req.Workspace)
+					dirtyStamps, beforeErr = snapshotDirtyStamps(preCtx, req.Workspace, before.Head)
 				}
 			}
 		}
@@ -409,7 +409,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 		if monitoringEnabled {
 			// Use the manifest budget: same dirty-stamp work as measureChanges.
 			snapCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
-			stamps, snapErr := snapshotDirtyStamps(snapCtx, req.Workspace)
+			stamps, snapErr := snapshotDirtyStamps(snapCtx, req.Workspace, before.Head)
 			cancel()
 			var captured bool
 			settlementMu.Lock()
@@ -516,7 +516,7 @@ func (c *Controller) Run(ctx context.Context, req Request) (Result, error) {
 	if monitoringEnabled {
 		// Use the manifest budget: same dirty-stamp work as measureChanges.
 		finalCtx, cancel := context.WithTimeout(context.Background(), changesTimeout)
-		finalStamps, finalErr := snapshotDirtyStamps(finalCtx, req.Workspace)
+		finalStamps, finalErr := snapshotDirtyStamps(finalCtx, req.Workspace, before.Head)
 		cancel()
 		if finalErr != nil {
 			return Result{}, fmt.Errorf("controller: final snapshot: %w", finalErr)

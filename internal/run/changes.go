@@ -1135,11 +1135,17 @@ func snapshotGitMetadataAt(ctx context.Context, root string, before *gitMetadata
 // workspace before the run starts and stamps each one, keyed by path,
 // so the manifest can subtract the ones the run never moved.
 // Enumerating with exactly the two commands the after pass already uses
-// — git diff --name-only --ignore-submodules=all -z HEAD -- and git
+// — git diff --name-only --ignore-submodules=all -z base -- and git
 // ls-files --others --exclude-standard -z — keeps both passes over the
 // same universe; the diff ignores submodules so a dirty submodule is
 // never stamped and never becomes a changed path, matching the
-// measurement pass.
+// measurement pass. The diff is pinned to base, the head the run
+// started from, rather than the repository's current HEAD: a commit
+// made during the run moves HEAD, and diffing against it would drop a
+// path that was dirty when the run started but is now clean against
+// the new head. Pinning the base keeps the candidate set identical
+// between the settlement and final snapshots, so committing a settled
+// output does not by itself change its identity.
 // Registered submodules are ignored. Paths Git lists file-by-file are
 // stamped individually; tracked paths that resolve to directories and
 // defensive non-repository directory entries use directory stamps.
@@ -1152,12 +1158,12 @@ func snapshotGitMetadataAt(ctx context.Context, root string, before *gitMetadata
 // paths must name files the same way or the subtraction silently keys
 // against nothing. Every command here is read-only with respect to
 // the repository.
-func snapshotDirtyStamps(ctx context.Context, dir string) (map[string]fileStamp, error) {
+func snapshotDirtyStamps(ctx context.Context, dir, base string) (map[string]fileStamp, error) {
 	root, err := repoRoot(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
-	trackedOut, err := gitOutput(ctx, root, "diff", "--name-only", "--no-renames", "--ignore-submodules=all", "-z", "HEAD", "--")
+	trackedOut, err := gitOutput(ctx, root, "diff", "--name-only", "--no-renames", "--ignore-submodules=all", "-z", base, "--")
 	if err != nil {
 		return nil, fmt.Errorf("git diff --name-only: %w", err)
 	}

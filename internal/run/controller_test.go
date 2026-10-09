@@ -1278,3 +1278,115 @@ func TestControllerReportsWorkerTimeline(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewCommitDoesNotChangeSettledOutput pins issue #509: committing a
+// settled output is a Git-state change, not a write violation. Task A
+// declares and writes the target; task B, which declares the empty set,
+// waits until A's settled snapshot is captured (the afterWorkerSettled hook
+// for index 0) and then acts. Committing the unchanged file must not move
+// its identity, so the settled-output monitor must stay silent; rewriting
+// the file before committing must still be reported.
+func TestReviewCommitDoesNotChangeSettledOutput(t *testing.T) {
+	cases := []struct {
+		name           string
+		target         string
+		tamper         bool
+		commit         bool
+		wantUndeclared []string
+		wantCount      int
+		checkStamp     bool
+	}{
+		{name: "none", target: "file.txt", checkStamp: true},
+		{name: "commit", target: "file.txt", commit: true, checkStamp: true},
+		{name: "edit-commit", target: "file.txt", tamper: true, commit: true, wantUndeclared: []string{"file.txt"}, wantCount: 1},
+		{name: "untracked-commit", target: "new.txt", commit: true, checkStamp: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newGitRepo(t)
+			afterA := make(chan struct{})
+			var (
+				settledStamp fileStamp
+				settledErr   error
+			)
+			worker := &funcWorker{
+				fn: func(ctx context.Context, req pi.WorkerRequest) pi.WorkerResult {
+					switch {
+					case strings.HasPrefix(req.Prompt, "task-a"):
+						if err := os.WriteFile(filepath.Join(dir, tc.target), []byte("edited\n"), 0o644); err != nil {
+							return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+						}
+						return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "a done"}
+					case strings.HasPrefix(req.Prompt, "task-b"):
+						<-afterA
+						if tc.tamper {
+							if err := os.WriteFile(filepath.Join(dir, tc.target), []byte("tampered\n"), 0o644); err != nil {
+								return pi.WorkerResult{Status: pi.StatusError, Error: err.Error()}
+							}
+						}
+						if tc.commit {
+							runGit(t, dir, "add", tc.target)
+							runGit(t, dir, "commit", "-qm", "save")
+						}
+						return pi.WorkerResult{Status: pi.StatusCompleted, Explanation: "b done"}
+					default:
+						return pi.WorkerResult{Status: pi.StatusError, Error: "unknown prompt"}
+					}
+				},
+			}
+			controller := New(worker, WithGitInspector(NewDefaultGitInspector()))
+			controller.afterWorkerSettled = func(index int) {
+				if index != 0 {
+					return
+				}
+				if tc.checkStamp {
+					settledStamp, settledErr = snapshotStamp(dir, tc.target, true)
+				}
+				close(afterA)
+			}
+			req := Request{
+				Tasks: []Task{
+					{Prompt: "task-a", Model: "acme/m-1", Writes: declaredPaths(tc.target)},
+					{Prompt: "task-b", Model: "acme/m-1", Writes: declaredPaths()},
+				},
+				Workspace: dir,
+			}
+			result, err := controller.Run(context.Background(), req)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if result.Status != contracts.RunCompleted {
+				t.Fatalf("status = %q, want completed (workers=%+v)", result.Status, result.Workers)
+			}
+			for i, wr := range result.Workers {
+				if wr.Status != pi.StatusCompleted {
+					t.Fatalf("worker %d status = %q, error = %q", i+1, wr.Status, wr.Error)
+				}
+			}
+			if result.Writes == nil {
+				t.Fatalf("writes is nil, want a verdict")
+			}
+			if result.Writes.Skipped != "" {
+				t.Fatalf("writes skipped = %q, want empty", result.Writes.Skipped)
+			}
+			if result.Writes.UndeclaredCount != tc.wantCount {
+				t.Fatalf("undeclaredCount = %d, want %d (undeclared=%v)", result.Writes.UndeclaredCount, tc.wantCount, result.Writes.Undeclared)
+			}
+			if !equalStrings(result.Writes.Undeclared, tc.wantUndeclared) {
+				t.Fatalf("undeclared = %v, want %v", result.Writes.Undeclared, tc.wantUndeclared)
+			}
+			if tc.checkStamp {
+				if settledErr != nil {
+					t.Fatalf("settled snapshot: %v", settledErr)
+				}
+				finalStamp, err := snapshotStamp(dir, tc.target, true)
+				if err != nil {
+					t.Fatalf("final snapshot: %v", err)
+				}
+				if !fileStampEqual(settledStamp, finalStamp) {
+					t.Fatalf("target %s identity moved: settled=%+v final=%+v", tc.target, settledStamp, finalStamp)
+				}
+			}
+		})
+	}
+}
