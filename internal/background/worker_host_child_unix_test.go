@@ -384,11 +384,12 @@ func TestWorkerHostChildOwnershipLostBeforeRequestAnswers(t *testing.T) {
 // response transport only after the run is established, then closes
 // ownership: the handler must cancel the run, clean Pi up, and return
 // the transport error instead of pinning cleanup on the broken channel.
-// The barrier is deterministic — the process-start notification is read
-// on the intact transport, the recorded pid file matches the notified
-// identity, and the process is alive while ownership is still open, so
-// nothing can kill Pi before the transport is broken. No assertion ever
-// races a Pi that may die before it records its own pid.
+// The barrier is deterministic — the process-start and the run's one
+// activity notification are read on the intact transport, the recorded
+// pid file matches the notified identity, and the process is alive while
+// ownership is still open, so nothing can kill Pi and no further frame
+// can be pending before the transport is broken. No assertion ever races
+// a Pi that may die before it records its own pid.
 func TestWorkerHostChildBrokenResponseTransportDoesNotPinCleanup(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "fakepi.pid")
 	setupFakePiEnv(t, stuckPathScript())
@@ -418,11 +419,23 @@ func TestWorkerHostChildBrokenResponseTransportDoesNotPinCleanup(t *testing.T) {
 		t.Fatalf("fakepi %d is not alive while the run is in flight", piPID)
 	}
 
+	// Widen the barrier to the run's one activity frame. stuckPathScript
+	// emits exactly one Pi event (agent_start) after the prompt response,
+	// and the accumulator reports on the event path, never on a timer, so
+	// it writes exactly one activity frame and then only the terminal
+	// frame after cancellation. Reading it here leaves no other pending
+	// response write to race the broken transport.
+	activity := readWorkerHostFrame(t, fx)
+	if activity.kind != workerHostFrameActivity || activity.workerID != req.workerID {
+		t.Fatalf("second frame = %+v, want the agent_start activity for worker %d", activity, req.workerID)
+	}
+
 	// Break the response transport, then close ownership. The run is
-	// stuck in flight, so the handler's next response write can only be
-	// the terminal frame after the ownership EOF cancels the run and Pi
-	// is cleaned up; the closed read end makes that write fail with the
-	// transport error instead of pinning the handler.
+	// stuck in flight and its only activity frame is already read, so the
+	// handler's next response write can only be the terminal frame after
+	// the ownership EOF cancels the run and Pi is cleaned up; the closed
+	// read end makes that write fail with the transport error instead of
+	// pinning the handler.
 	if err := fx.responseReader.Close(); err != nil {
 		t.Fatalf("close response reader: %v", err)
 	}
