@@ -365,13 +365,32 @@ func runAcceptedRunWith(ctx context.Context, worker pi.Worker, result supervisor
 		_ = recorder.Finish(time.Now(), nil, cause)
 		return joinSupervisorStartErrors(errs...)
 	}
+	stored := terminal
 	if err := store.Replace(terminal); err != nil {
-		errs = append(errs, fmt.Errorf("run accepted run (%s): replace terminal snapshot: %w", req.runID, err))
+		var tooLarge *SnapshotTooLargeError
+		if !errors.As(err, &tooLarge) {
+			errs = append(errs, fmt.Errorf("run accepted run (%s): replace terminal snapshot: %w", req.runID, err))
+		} else {
+			// The terminal snapshot cannot be stored at its full size. The run
+			// stays readable: the reduced snapshot drops only the worker answer
+			// texts and records why.
+			reduced := reduceTerminalSnapshotForSize(terminal, tooLarge)
+			if reducedErr := store.Replace(reduced); reducedErr != nil {
+				errs = append(errs, fmt.Errorf("run accepted run (%s): replace terminal snapshot: %w", req.runID, reducedErr))
+				cause := error(tooLarge)
+				if writeErr := writeFailedTerminalSnapshot(observer, cause); writeErr != nil {
+					errs = append(errs, writeErr)
+				}
+				_ = recorder.Finish(time.Now(), nil, cause)
+				return joinSupervisorStartErrors(errs...)
+			}
+			stored = reduced
+		}
 	}
 	// The finish line follows the terminal snapshot and carries the same
 	// result document, so the record never reports a run settled before
 	// its snapshot does.
-	_ = recorder.Finish(time.Now(), terminal.Result, nil)
+	_ = recorder.Finish(time.Now(), stored.Result, nil)
 	return joinSupervisorStartErrors(errs...)
 }
 
@@ -484,6 +503,71 @@ func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *sup
 		worker.FinishedAt = &now
 	}
 	return terminal, nil
+}
+
+// reduceTerminalSnapshotForSize returns a copy of terminal whose worker
+// answer texts are dropped so the document fits under the store's write
+// ceiling. Every other field, including each worker's status, changes,
+// writes, verification, git state and leftover processes, is kept. The
+// dropped texts are named in Error, joined to whatever error the run already
+// carried, because the stored snapshot is the only place that says why the
+// answers are missing. When the terminal snapshot's outcome is completed,
+// the run is recorded failed with the result-too-large outcome; for any other
+// outcome an earlier problem (a failed verification, an undeclared write, a
+// failed or partial task, a timeout, a cancellation or an internal error)
+// keeps its status, state and outcome, so a caller that stops at the outcome
+// word still sees it. The controller's result is never mutated: both views of
+// each worker's answer are copied before they are cleared.
+func reduceTerminalSnapshotForSize(terminal Snapshot, size *SnapshotTooLargeError) Snapshot {
+	reduced := terminal
+	message := fmt.Sprintf("result too large to store (%d bytes exceeds %d bytes); worker answer texts were dropped", size.Size, maxSnapshotBytes)
+	if terminal.Error != "" {
+		message = terminal.Error + "; " + message
+	}
+	reduced.Error = message
+	completed := terminal.Outcome != nil && *terminal.Outcome == contracts.OutcomeCompleted
+	if completed {
+		failed := contracts.RunFailed
+		outcome := contracts.OutcomeResultTooLarge
+		reduced.Status = &failed
+		reduced.Outcome = &outcome
+		reduced.State = RunFailed
+	}
+
+	if terminal.Result != nil {
+		result := *terminal.Result
+		workers := make([]pi.WorkerResult, len(terminal.Result.Workers))
+		copy(workers, terminal.Result.Workers)
+		for i := range workers {
+			workers[i].Explanation = ""
+			workers[i].PartialExplanation = ""
+		}
+		result.Workers = workers
+		if completed {
+			result.Status = contracts.RunFailed
+			result.Outcome = contracts.OutcomeResultTooLarge
+		}
+		reduced.Result = &result
+	}
+
+	// A WorkerSnapshot may share its result pointee with the controller's
+	// result, so each is replaced by a copy before its answer texts are
+	// cleared: clearing in place would mutate the controller's result.
+	if len(terminal.Workers) > 0 {
+		workers := make([]WorkerSnapshot, len(terminal.Workers))
+		copy(workers, terminal.Workers)
+		for i := range workers {
+			if workers[i].Result == nil {
+				continue
+			}
+			workerResult := *workers[i].Result
+			workerResult.Explanation = ""
+			workerResult.PartialExplanation = ""
+			workers[i].Result = &workerResult
+		}
+		reduced.Workers = workers
+	}
+	return reduced
 }
 
 // writeFailedTerminalSnapshot persists a terminal Snapshot for a run whose

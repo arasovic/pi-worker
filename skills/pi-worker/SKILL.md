@@ -9,7 +9,7 @@ Delegate bounded execution only. Keep product, architecture, scope, and
 integration decisions in the parent. Never ask a worker to delegate.
 
 `pi-worker <command> --help` carries each command's flags, result fields, and
-exit codes; read `pi-worker run --help` before the first run.
+exit codes; read `pi-worker run --help` first.
 
 ## Boundaries
 
@@ -18,11 +18,11 @@ exit codes; read `pi-worker run --help` before the first run.
   gives a run a separate working directory, not containment.
 - Use trusted workspaces. pi-worker does not restrict git: state in each
   task file which git operations are allowed.
-- Parallel writes must be disjoint. Runs sharing a workspace are not locked
-  against each other: serialize them or give each its own worktree.
+- Parallel writes must be disjoint. Runs sharing a workspace are not locked:
+  serialize them or give each its own worktree.
 - Parent-started side jobs must self-terminate.
 - Do not repeat prompts, credentials, raw debug output, or transcript contents
-  in reports; a `transcript` is the whole Pi session, secrets included.
+  in reports; a `transcript` is the whole session, secrets included.
 
 ## Model
 
@@ -63,7 +63,7 @@ Whatever the outcome, read and report each worker's `model`, `thinkingLevel`,
 `status`, `explanation` (else `partialExplanation`), `error`, `warning`,
 `transcript`, plus `changes`, `writes`, `verification`, `git`,
 `leftoverProcesses`, and `worktree`. A failed run's `changes` still lists
-its writes; nothing is rolled back.
+its writes; nothing is rolled back. No answer? The run's `error` says why.
 
 `completed` does not prove the deliverable: read it yourself or check it
 with `--verify`. Merge or remove a `--worktree` checkout afterwards
