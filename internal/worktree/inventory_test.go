@@ -205,10 +205,10 @@ func TestListRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
 				return "abc123", nil
 			case "worktree list --porcelain":
 				return "worktree " + filepath.Join(root, ".pi-worker", "worktrees", "alpha") + "\n", nil
-			case "for-each-ref --format=%(refname:short) refs/heads":
-				return "run/alpha\n", nil
-			case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
-				return "run/alpha\n", nil
+			case "for-each-ref --format=%(refname) refs/heads":
+				return "refs/heads/run/alpha\n", nil
+			case "for-each-ref --merged=abc123 --format=%(refname) refs/heads":
+				return "refs/heads/run/alpha\n", nil
 			default:
 				t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
 				return "", nil
@@ -237,10 +237,10 @@ func TestListRejectsMissingCheckoutAndMismatchedBranch(t *testing.T) {
 				return "abc123", nil
 			case "worktree list --porcelain":
 				return "worktree " + filepath.Join(root, ".pi-worker", "worktrees", "alpha") + "\nbranch refs/heads/run/beta\n", nil
-			case "for-each-ref --format=%(refname:short) refs/heads":
-				return "run/beta\n", nil
-			case "for-each-ref --merged=abc123 --format=%(refname:short) refs/heads":
-				return "run/beta\n", nil
+			case "for-each-ref --format=%(refname) refs/heads":
+				return "refs/heads/run/beta\n", nil
+			case "for-each-ref --merged=abc123 --format=%(refname) refs/heads":
+				return "refs/heads/run/beta\n", nil
 			default:
 				t.Fatalf("unexpected git call: %q in %q", strings.Join(args, " "), dir)
 				return "", nil
