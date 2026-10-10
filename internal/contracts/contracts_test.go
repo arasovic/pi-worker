@@ -23,7 +23,6 @@ func TestExitCodeMapping(t *testing.T) {
 		{name: "cancellation error", status: RunFailed, runError: &RunError{Kind: ErrorCancellation}, want: 8, wantOutcome: OutcomeCancelled},
 		{name: "cancelled with cancellation kind", status: RunCancelled, runError: &RunError{Kind: ErrorCancellation}, want: 8, wantOutcome: OutcomeCancelled},
 		{name: "internal error", status: RunFailed, runError: &RunError{Kind: ErrorInternal}, want: 9, wantOutcome: OutcomeInternalError},
-		{name: "result too large error", status: RunFailed, runError: &RunError{Kind: ErrorResultTooLarge}, want: 10, wantOutcome: OutcomeResultTooLarge},
 		{name: "usage error overrides completed", status: RunCompleted, runError: &RunError{Kind: ErrorUsage}, want: 2, wantOutcome: OutcomeUsage},
 		{name: "internal error overrides completed", status: RunCompleted, runError: &RunError{Kind: ErrorInternal}, want: 9, wantOutcome: OutcomeInternalError},
 		{name: "completed", status: RunCompleted, want: 0, wantOutcome: OutcomeCompleted},
@@ -54,7 +53,7 @@ func TestExitCodeMapping(t *testing.T) {
 func TestOutcomeExitCodeInvertsRunOutcome(t *testing.T) {
 	statuses := []RunStatus{RunCompleted, RunPartial, RunFailed, RunTimedOut, RunCancelled}
 	runErrors := []*RunError{nil}
-	for _, kind := range []ErrorKind{ErrorUsage, ErrorReadiness, ErrorPolicy, ErrorTask, ErrorVerification, ErrorTimeout, ErrorCancellation, ErrorInternal, ErrorResultTooLarge} {
+	for _, kind := range []ErrorKind{ErrorUsage, ErrorReadiness, ErrorPolicy, ErrorTask, ErrorVerification, ErrorTimeout, ErrorCancellation, ErrorInternal} {
 		runErrors = append(runErrors, &RunError{Kind: kind})
 	}
 	for _, status := range statuses {

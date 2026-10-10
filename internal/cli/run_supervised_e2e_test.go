@@ -414,7 +414,7 @@ func TestRunGivesTheSupervisorTheResolvedAdmission(t *testing.T) {
 // TestLargeValidResultsEndReadable is the regression for issue #510: three
 // workers each answering 6 MiB of text encode a snapshot above the 32 MiB
 // read ceiling. Instead of leaving an oversized snapshot the reader cannot
-// load, the run ends result-too-large with exit 10, and the stored snapshot
+// load, the run ends internal-error with exit 9, and the stored snapshot
 // stays readable with only the worker answer texts dropped. A one-worker
 // control with the same answer stays under the ceiling and keeps its answer.
 func TestLargeValidResultsEndReadable(t *testing.T) {
@@ -431,12 +431,12 @@ func TestLargeValidResultsEndReadable(t *testing.T) {
 		}, "")
 		runID := runIDFromRunLine(t, stderr)
 
-		if code != 10 {
-			t.Fatalf("exit = %d, want 10; stderr = %q", code, stderr)
+		if code != 9 {
+			t.Fatalf("exit = %d, want 9; stderr = %q", code, stderr)
 		}
 		document := decodeJSONObject(t, stdout)
-		if got := document["outcome"]; got != "result-too-large" {
-			t.Fatalf("document outcome = %v, want %s; stdout = %q", got, "result-too-large", stdout)
+		if got := document["outcome"]; got != string(contracts.OutcomeInternalError) {
+			t.Fatalf("document outcome = %v, want %s; stdout = %q", got, contracts.OutcomeInternalError, stdout)
 		}
 		if got := document["status"]; got != string(contracts.RunFailed) {
 			t.Fatalf("document status = %v, want %s", got, contracts.RunFailed)
@@ -475,11 +475,11 @@ func TestLargeValidResultsEndReadable(t *testing.T) {
 		}
 
 		statusCode, statusStdout, statusStderr := runCLI(t, []string{"runs", "status", runID, "--json"}, "")
-		if statusCode != 10 {
-			t.Fatalf("runs status exit = %d, want 10; stderr = %q", statusCode, statusStderr)
+		if statusCode != 9 {
+			t.Fatalf("runs status exit = %d, want 9; stderr = %q", statusCode, statusStderr)
 		}
-		if outcome := decodeJSONObject(t, statusStdout)["outcome"]; outcome != "result-too-large" {
-			t.Fatalf("stored outcome = %v, want %s", outcome, "result-too-large")
+		if outcome := decodeJSONObject(t, statusStdout)["outcome"]; outcome != string(contracts.OutcomeInternalError) {
+			t.Fatalf("stored outcome = %v, want %s", outcome, contracts.OutcomeInternalError)
 		}
 	})
 
@@ -496,7 +496,7 @@ func TestLargeValidResultsEndReadable(t *testing.T) {
 		runID := runIDFromRunLine(t, stderr)
 
 		if code != 6 {
-			t.Fatalf("exit = %d, want 6 (verification-failed, not result-too-large 10); stderr = %q", code, stderr)
+			t.Fatalf("exit = %d, want 6 (verification-failed, not internal-error 9); stderr = %q", code, stderr)
 		}
 		document := decodeJSONObject(t, stdout)
 		if got := document["outcome"]; got != string(contracts.OutcomeVerificationFailed) {

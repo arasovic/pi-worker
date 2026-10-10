@@ -3,15 +3,14 @@ package contracts
 type ErrorKind string
 
 const (
-	ErrorUsage          ErrorKind = "usage"
-	ErrorReadiness      ErrorKind = "readiness"
-	ErrorPolicy         ErrorKind = "policy"
-	ErrorTask           ErrorKind = "task"
-	ErrorVerification   ErrorKind = "verification"
-	ErrorTimeout        ErrorKind = "timeout"
-	ErrorCancellation   ErrorKind = "cancellation"
-	ErrorInternal       ErrorKind = "internal"
-	ErrorResultTooLarge ErrorKind = "result-too-large"
+	ErrorUsage        ErrorKind = "usage"
+	ErrorReadiness    ErrorKind = "readiness"
+	ErrorPolicy       ErrorKind = "policy"
+	ErrorTask         ErrorKind = "task"
+	ErrorVerification ErrorKind = "verification"
+	ErrorTimeout      ErrorKind = "timeout"
+	ErrorCancellation ErrorKind = "cancellation"
+	ErrorInternal     ErrorKind = "internal"
 )
 
 type RunError struct {
@@ -38,8 +37,6 @@ func ExitCode(status RunStatus, runError *RunError) int {
 			return 8
 		case ErrorInternal:
 			return 9
-		case ErrorResultTooLarge:
-			return 10
 		default:
 			return 9
 		}
@@ -75,7 +72,6 @@ const (
 	OutcomeTimeout            Outcome = "timeout"
 	OutcomeCancelled          Outcome = "cancelled"
 	OutcomeInternalError      Outcome = "internal-error"
-	OutcomeResultTooLarge     Outcome = "result-too-large"
 	OutcomeCompleted          Outcome = "completed"
 )
 
@@ -104,8 +100,6 @@ func RunOutcome(status RunStatus, runError *RunError) Outcome {
 			return OutcomeCancelled
 		case ErrorInternal:
 			return OutcomeInternalError
-		case ErrorResultTooLarge:
-			return OutcomeResultTooLarge
 		default:
 			return OutcomeInternalError
 		}
@@ -149,8 +143,6 @@ func OutcomeExitCode(outcome Outcome) int {
 		return 7
 	case OutcomeCancelled:
 		return 8
-	case OutcomeResultTooLarge:
-		return 10
 	default:
 		return 9
 	}

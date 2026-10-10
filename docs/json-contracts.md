@@ -365,10 +365,10 @@ stores a reduced document instead: each worker's `explanation` and
 pi-worker reports — the `pi-worker:` line on stderr, or `error` in a `runs`
 snapshot — says the result was too large to store. A run that would
 otherwise have been `completed` is stored `failed` with `outcome`
-`result-too-large` and exit code `10`; a run that already had another outcome
-keeps that outcome, status, and exit code, and the error still says why the
-answers are missing. If the reduced snapshot is still too large to store, the
-run ends `internal-error` (exit `9`) as before.
+`internal-error` and exit code `9`, its answers dropped; a run that already
+had another outcome keeps that outcome, status, and exit code, and the error
+still says why the answers are missing. If the reduced snapshot is still too
+large to store, the run ends `internal-error` (exit `9`) as before.
 
 Queue timeout introduces no new JSON field. Each timed-out ticket uses the
 existing per-worker `timed-out` status. Root `outcome` is `partial` when at
@@ -400,7 +400,6 @@ from one place in the code:
 | `timeout` | `7` |
 | `cancelled` | `8` |
 | `internal-error` | `9` |
-| `result-too-large` | `10` |
 
 Exit `5` joins two words: `task-failed` for a run whose status is
 `failed`, and `partial` for one whose status is `partial`. The `usage`
