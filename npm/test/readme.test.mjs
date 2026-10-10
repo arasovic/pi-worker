@@ -183,6 +183,7 @@ test("installed skill states the worker authority boundary before delegation", (
     assert.match(normalizedSkill, new RegExp("`" + field + "`"), `skill names ${field}`);
   }
   assert.doesNotMatch(normalizedSkill, /worker's `failure`/i);
+  assert.doesNotMatch(normalizedSkill, /the run's `error`/i);
   assert.ok(
     skill.split(/\s+/).filter(Boolean).length <= 450,
     "skill must stay small: detail belongs in `pi-worker <command> --help`",
