@@ -57,13 +57,13 @@ with "supervisor is no longer there": the run was interrupted; stop waiting.
 
 ## Result
 
-Read root `outcome`. `completed` (exit 0) is the only success;
-`pi-worker run --help` gives each outcome its exit code and next move.
+Read root `outcome`. `completed` (exit 0) is the only success.
 Whatever the outcome, read and report each worker's `model`, `thinkingLevel`,
 `status`, `explanation` (else `partialExplanation`), `error`, `warning`,
 `transcript`, plus `changes`, `writes`, `verification`, `git`,
 `leftoverProcesses`, and `worktree`. A failed run's `changes` still lists
-its writes; nothing is rolled back. No answer? The run's `error` says why.
+its writes; nothing is rolled back. No answer? See the worker's `error`;
+otherwise the `pi-worker:` stderr line or the `runs` document's `error`.
 
 `completed` does not prove the deliverable: read it yourself or check it
 with `--verify`. Merge or remove a `--worktree` checkout afterwards
