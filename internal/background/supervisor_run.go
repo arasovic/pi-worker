@@ -512,7 +512,7 @@ func buildTerminalRunSnapshot(base Snapshot, runResult run.Result, launches *sup
 // dropped texts are named in Error, joined to whatever error the run already
 // carried, because the stored snapshot is the only place that says why the
 // answers are missing. When the terminal snapshot's outcome is completed,
-// the run is recorded failed with the result-too-large outcome; for any other
+// the run is recorded failed with the internal-error outcome; for any other
 // outcome an earlier problem (a failed verification, an undeclared write, a
 // failed or partial task, a timeout, a cancellation or an internal error)
 // keeps its status, state and outcome, so a caller that stops at the outcome
@@ -528,7 +528,7 @@ func reduceTerminalSnapshotForSize(terminal Snapshot, size *SnapshotTooLargeErro
 	completed := terminal.Outcome != nil && *terminal.Outcome == contracts.OutcomeCompleted
 	if completed {
 		failed := contracts.RunFailed
-		outcome := contracts.OutcomeResultTooLarge
+		outcome := contracts.OutcomeInternalError
 		reduced.Status = &failed
 		reduced.Outcome = &outcome
 		reduced.State = RunFailed
@@ -545,7 +545,7 @@ func reduceTerminalSnapshotForSize(terminal Snapshot, size *SnapshotTooLargeErro
 		result.Workers = workers
 		if completed {
 			result.Status = contracts.RunFailed
-			result.Outcome = contracts.OutcomeResultTooLarge
+			result.Outcome = contracts.OutcomeInternalError
 		}
 		reduced.Result = &result
 	}

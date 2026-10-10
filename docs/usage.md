@@ -1387,13 +1387,12 @@ Example:
 - `9` protocol/internal; for runs, no worker succeeded and any worker reported an
   internal error (`outcome=internal-error`), or a worker's process identity
   could not be recorded even though its task completed; its changes are
-  still listed
-- `10` result too large to store (`outcome=result-too-large`): the workers'
-  answers were dropped because the stored document would exceed the 32 MiB
-  ceiling, while each worker's `status`, `changes`, `writes`, `verification`,
-  `git`, `leftoverProcesses` and `worktree` are kept and the run-level error
-  says why. Ask the workers for shorter final reports, or run fewer tasks per
-  run
+  still listed. Otherwise, when the workers' answers had to be dropped
+  because the stored document would exceed the 32 MiB ceiling, the run ends
+  `failed` with `outcome=internal-error` while each worker's `status`,
+  `changes`, `writes`, `verification`, `git`, `leftoverProcesses` and
+  `worktree` are kept and the run-level error says why. Ask the workers for
+  shorter final reports, or run fewer tasks per run
 
 A caller parsing `--json` should read root `outcome` rather than
 reconstruct it from `status` plus the check objects.

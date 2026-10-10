@@ -77,19 +77,18 @@ branch, present only with --worktree). A failed run's changes still lists
 what was written; nothing is rolled back.
 
 Outcome and exit code:
-   0  completed            the only success; still read the deliverable
-   2  (refused)            fix the arguments and run again
-   3  workers-unavailable  Pi or the model was not ready: a setup problem
-   4  undeclared-writes    a write outside its task's --writes was found
-   5  task-failed, partial a worker failed; a provider refusal such as 403
-                           in its error is an access problem, not the task
-   6  verification-failed  --verify failed; read verification
-   7  timeout              read partialExplanation, warning and changes;
-                           with no document, report the interruption
-   8  cancelled            and stop
-   9  internal-error
-  10  result-too-large     otherwise completed, but the answers were too big
-                           to store and were dropped; the rest is kept
+  0  completed            the only success; still read the deliverable
+  2  (refused)            fix the arguments and run again
+  3  workers-unavailable  Pi or the model was not ready: a setup problem
+  4  undeclared-writes    a write outside its task's --writes was found
+  5  task-failed, partial a worker failed; a provider refusal such as 403
+                          in its error is an access problem, not the task
+  6  verification-failed  --verify failed; read verification
+  7  timeout              read partialExplanation, warning and changes;
+                          with no document, report the interruption
+  8  cancelled            and stop
+  9  internal-error       an internal failure, or the answers were too big
+                          to store and were dropped
 
 Workers run bash with your permissions in this workspace; this is not a
 sandbox. Say in the task which git operations are allowed.

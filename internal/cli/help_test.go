@@ -277,11 +277,11 @@ func TestRunResultFieldsMatchSkill(t *testing.T) {
 		}
 	}
 
-	rowStart := strings.Index(help, "\n   7  ")
+	rowStart := strings.Index(help, "\n  7  ")
 	if rowStart < 0 {
 		t.Fatalf("commandHelp[run] has no exit 7 row")
 	}
-	rowEnd := strings.Index(help[rowStart+1:], "\n   8  ")
+	rowEnd := strings.Index(help[rowStart+1:], "\n  8  ")
 	if rowEnd < 0 {
 		t.Fatalf("commandHelp[run] exit 7 row has no following exit 8 row")
 	}
