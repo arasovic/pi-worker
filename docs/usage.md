@@ -1389,9 +1389,10 @@ Example:
   could not be recorded even though its task completed; its changes are
   still listed. Otherwise, when the workers' answers had to be dropped
   because the stored document would exceed the 32 MiB ceiling, the run ends
-  `failed` with `outcome=internal-error` while each worker's `status`,
-  `changes`, `writes`, `verification`, `git`, `leftoverProcesses` and
-  `worktree` are kept and the run-level error says why. Ask the workers for
+  `failed` with `outcome=internal-error` while every other field is kept,
+  including each worker's `status` and the run's `changes`, `writes`,
+  `verification`, `git`, `leftoverProcesses` and `worktree`, and the
+  run-level error says why. Ask the workers for
   shorter final reports, or run fewer tasks per run
 
 A caller parsing `--json` should read root `outcome` rather than

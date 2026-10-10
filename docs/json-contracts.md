@@ -35,7 +35,7 @@ contract for agents and other machine consumers.
   unknown fields on `skill status` but reads the document from a
   binary shipped in the same package, so the two are always in step.
   Config and skill receipts persist and their readers reject unknown
-  fields, so a new required field needs a new version there.
+  fields, so any new field there, optional or not, needs a new version.
 - Usage and early setup failures may write no JSON. Diagnostics and `--debug`
   output go to stderr and never become a second stdout document; that holds
   for `run --background --debug`, whose debug lines go to the run's
@@ -78,8 +78,10 @@ makes `ready` false.
 A completed inspection emits the document even when readiness exit code 3 is
 returned. A timed-out, cancelled, or internally aborted inspection emits no
 partial document: stdout/JSON stays empty, including on the unexpected
-internal-failure path (exit code `9`) where stderr carries the fixed wording
-that names the failed area and the next command for the detailed error.
+internal-failure path (exit code `9`), where stderr carries one fixed line
+and never the underlying error: when the model catalog failed, it names that
+and `pi-worker models` as the command for the detailed error; otherwise it
+says doctor could not complete its inspection.
 
 ## `config show --json`
 
@@ -187,11 +189,12 @@ its run directory, because the snapshot is the state `runs status` and
   run directory, its worker count
 - `models`: the models the run's tasks named, in task order and without
   repeats, or `[]` when there are none or the start fields are unreadable
-- `outcome`: the recorded outcome, `error`, `running`, `interrupted`, or
-  `unknown`; a finished run directory reports its own outcome, `running`
-  while its owner lock is held (for an older run without one, while its
-  supervisor is alive), `interrupted` when the owner is gone before it
-  finished, and `unknown` when its state cannot be read
+- `outcome`: the run's own root `outcome` (one of the words in the
+  `run --json` outcome table) once it finished, otherwise `error`, `running`,
+  `interrupted`, or `unknown`; a finished run directory reports its own
+  outcome, `running` while its owner lock is held (for an older run without
+  one, while its supervisor is alive), `interrupted` when the owner is gone
+  before it finished, and `unknown` when its state cannot be read
 - `path`: the run directory; for an older `.jsonl` record, that file
 
 No root or entry field is omitted. Missing or unreadable display fields use
@@ -360,8 +363,9 @@ and stderr carry those.
 An oversized result does not leave the run unreadable. When a finished run's
 snapshot would exceed the 32 MiB ceiling the store reads with, pi-worker
 stores a reduced document instead: each worker's `explanation` and
-`partialExplanation` are dropped, while worker `status`, `changes`, `writes`,
-`verification`, `git`, `leftoverProcesses`, and `worktree` stay. The error
+`partialExplanation` are dropped and every other field stays, including
+each worker's `status` and the run's `changes`, `writes`, `verification`,
+`git`, `leftoverProcesses`, and `worktree`. The error
 pi-worker reports — the `pi-worker:` line on stderr, or `error` in a `runs`
 snapshot — says the result was too large to store. A run that would
 otherwise have been `completed` is stored `failed` with `outcome`
@@ -480,8 +484,8 @@ Worker fields are conditionally present:
   only in `error`; the fixed continuation prompt never carries it.
 - `continuationAttempts`: present when the worker sent at least one
   continuation prompt after a turn that ended without a final answer; the
-  number of those prompts, zero or more and never more than the fixed bound of
-  two. A run whose first turn produced a final answer omits it. When present,
+  number of those prompts: one or two, never more than the fixed bound. A
+  run whose first turn produced a final answer omits it. When present,
   the worker `warning` names the count and whether the retries produced the
   final answer.
 - `data`: present only when the task carried `--data` files; one entry
