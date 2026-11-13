@@ -40,7 +40,8 @@ const CREDENTIAL_NAME = /(?:^|[/.])(?:.*\.env(?:\..*)?|credentials?(?:\..*)?|id_
 const ARCHIVE_NAME = /\.(?:tgz|tar|tar\.gz|zip|gz|bz2|xz|7z|rar)$/i;
 const EXECUTABLE_NAME = /\.(?:exe|dll|so|dylib|bin|appimage)$/i;
 const GIT_OUTPUT_LIMIT = 4096;
-// shortcut: matches only `provider/…/name-<number>` selectors; widen the shape when a selector without a hyphen-number slips through.
+// shortcut: ordinary paths and names ending in a hyphen-number can resemble selectors; this measured false positive is accepted.
+// Rephrase it or add its first segment to SELECTOR_PREFIX_ALLOWLIST, which exempts only two-segment tokens.
 const MODEL_SELECTOR = /(?<![\w./@:-])([a-z][a-z0-9-]*)(?:\/[a-z0-9][a-z0-9.-]*)*\/[a-z](?=[a-z0-9.-]*-v?\d)[a-z0-9.-]*(?![\w/@.-])/gi;
 // `acme` is the test fixture provider; `run/<name>` is Pi Worker's own worktree branch.
 const SELECTOR_PREFIX_ALLOWLIST = new Set(["acme", "run"]);
@@ -186,7 +187,10 @@ function hasModelSelector(bytes) {
   for (const match of bytes.toString("latin1").matchAll(MODEL_SELECTOR)) {
     // Checked here, not in MODEL_SELECTOR: a lookbehind for the extension backtracks quadratically on long tokens.
     if (/\.[a-z]+$/i.test(match[0])) continue;
-    if (!SELECTOR_PREFIX_ALLOWLIST.has(match[1].toLowerCase())) return true;
+    if (
+      !SELECTOR_PREFIX_ALLOWLIST.has(match[1].toLowerCase()) ||
+      (match[0].match(/\//g) ?? []).length !== 1
+    ) return true;
   }
   return false;
 }
