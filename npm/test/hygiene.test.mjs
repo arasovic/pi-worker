@@ -123,6 +123,7 @@ test("rejects model selectors in tracked content", (t) => {
     joinParts("gateway", "/plan/model-v4.1-fast"),
     joinParts("vendor", "/model-4o-mini"),
     joinParts("Use vendor", "/model-1.2."),
+    joinParts("vendor", "/Model-7B"),
   ];
   for (const selector of selectors) {
     assertRejected({ "notes.md": `${selector}\n` }, "notes.md", "H012", t);
@@ -135,14 +136,28 @@ test("accepts fixture selectors, run branches, package names, URLs, and versione
       "acme/m-1",
       "acme/m-1-mini",
       "run/issue-204",
+      "Run/Issue-204",
       "@scope/name-1.2.3",
       "https://example.invalid/a/b-1",
       "dist/pi-worker-0.1.0.tgz",
       "dir/case-1.json",
+      "Dir/Case-1.JSON",
       "provider/model-id",
     ].join("\n") + "\n",
   });
   const result = run(root);
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("checks a long path-shaped token without quadratic backtracking", (t) => {
+  const token = joinParts("vendor", "/m-1", "a".repeat(300_000), ".x");
+  const root = fixture(t, { "notes.md": `${token}\n` });
+  const result = spawnSync(process.execPath, [join(root, "check-hygiene.mjs")], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  assert.equal(result.error, undefined, "checker did not finish within 15 seconds");
   assert.equal(result.status, 0, result.stderr);
 });
 
