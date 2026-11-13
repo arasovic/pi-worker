@@ -10,6 +10,10 @@ version: 2
 # branch, so one branch carrying the whole week costs one regeneration instead
 # of one per dependency. Security updates are not grouped and still arrive on
 # their own branch, which is the point of them.
+#
+# The limit is 2, not 1. Superseding a pull request with a newer version opens
+# the new pull request before the old one closes; with a limit of 1 that never
+# happened, and an entry with one open pull request stayed silent (#542).
 updates:
   # `skills` is the only runtime npm dependency, and the generated target rules
   # record the version they came from.
@@ -20,7 +24,7 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 2
     groups:
       npm:
         patterns: ["*"]
@@ -32,7 +36,7 @@ updates:
       day: "monday"
       time: "06:15"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 2
     groups:
       go-modules:
         patterns: ["*"]
@@ -44,7 +48,7 @@ updates:
       day: "monday"
       time: "06:30"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 2
     groups:
       github-actions:
         patterns: ["*"]
@@ -59,4 +63,4 @@ updates:
       day: "monday"
       time: "06:45"
       timezone: "Europe/Istanbul"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 2
