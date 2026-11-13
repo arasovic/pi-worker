@@ -116,7 +116,7 @@ direct RPC session confirmed success for `get_state`,
 `abort` returned success; RPC process exited 0. Pi Worker candidate built
 with VerifiedVersion 0.85.1 reports `doctor ready:true` and
 `Pi version 0.85.1 is supported`; model catalog succeeds. A real Pi Worker
-task on local Pi 0.85.1, thinking off, edited five files, passed declared
+task on local Pi 0.85.1, thinking off, edited its pin files, passed declared
 writes and post-run piversion verification, and completed normally. No Pi
 Worker production adaptation was needed; GPT-6 Astra appearing in the catalog
 does not add a Pi Worker special case.
