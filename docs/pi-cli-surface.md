@@ -51,12 +51,12 @@ RPC session confirmed success shapes for `get_state`,
 `get_available_models`, `get_available_thinking_levels`, `set_model`,
 `set_thinking_level`, and `get_last_assistant_text` (empty final text
 remained `data:{}`) with exact model and medium thinking confirmation for
-`opencodex/command-code/meta-muse-spark-1.2-contributor`; `pi-worker models --json --debug --timeout 30s` succeeded; one real pi-worker Muse medium
+one catalog model; `pi-worker models --json --debug --timeout 30s` succeeded; one real pi-worker medium-thinking
 implementation task created an isolated worktree, read and edited Go files,
 ran tests, returned `outcome:completed` with exact model/thinking
 confirmation, usage, declared-writes success, verification success, and
-worktree metadata; and one bounded read-only direct RPC prompt using Muse
-medium called `read` and replied `OK`, then emitted `agent_settled` with
+worktree metadata; and one bounded read-only direct RPC prompt at medium
+thinking called `read` and replied `OK`, then emitted `agent_settled` with
 `get_last_assistant_text` returning `data:{text:"OK"}`. The installed
 `rpc-types.d.ts` and `rpc-mode.js` retain the response containers, command
 names, `agent_settled`, `message_update`, `assistantMessageEvent`, and
@@ -68,7 +68,7 @@ compatibility entry point, and RPC abort fix — and require no pi-worker
 production adaptation beyond updating compatibility evidence and locking the
 repeated-usage-frame observation.
 The usage frame vocabulary was re-measured on 2026-09-04 against 0.85.0
-with a direct read-only RPC prompt using Muse medium; the
+with a direct read-only RPC prompt at medium thinking; the
 `assistantMessageEvent.type` subtypes directly observed on that prompt were
 `toolcall_start`, `toolcall_delta`, `toolcall_end`, `text_start`,
 `text_delta`, and `text_end`, with no `done` or `error` subtype forwarded by
@@ -108,7 +108,7 @@ built-in names remain `read`, `bash`, `powershell`, `edit`, `write`,
 `print-bearer-token`, and `check`; none was run. A promptless/no-inference
 direct RPC session confirmed success for `get_state`,
 `get_available_models`, `get_available_thinking_levels` (returned
-`high`,`max` for Command Code DeepSeek), `set_model` (exact provider/id),
+`high`,`max` for the probed model), `set_model` (exact provider/id),
 `set_thinking_level high` followed by `get_state` confirmation, and
 `get_last_assistant_text` returning `data:{}` for empty history. Idle
 `steer` accepted `pi-worker-0.85.1-probe` and emitted `queue_update`;
@@ -116,12 +116,10 @@ direct RPC session confirmed success for `get_state`,
 `abort` returned success; RPC process exited 0. Pi Worker candidate built
 with VerifiedVersion 0.85.1 reports `doctor ready:true` and
 `Pi version 0.85.1 is supported`; model catalog succeeds. A real Pi Worker
-dogfood task on local Pi 0.85.1 used paid
-`opencodex/command-code/xiaomi-mimo-v2.5`, thinking off, updated the five
-allowed pin surfaces, passed declared writes and post-run piversion
-verification, and completed normally. No Pi Worker production adaptation
-was needed; GPT-6 Astra appearing in the catalog does not add a Pi Worker
-special case.
+task on local Pi 0.85.1, thinking off, edited its pin files, passed declared
+writes and post-run piversion verification, and completed normally. No Pi
+Worker production adaptation was needed; GPT-6 Astra appearing in the catalog
+does not add a Pi Worker special case.
 
 The surface was re-probed on 2026-09-22 against 0.87.0; 0.86.0 (2026-09-19),
 0.86.1 (2026-09-20), and 0.87.0 (2026-09-21) are covered together, and 0.86.x
@@ -154,20 +152,18 @@ changes (Meta provider login, `/bug`, clipboard, z.ai overflow detection, and
 Cerebras strict schemas) are interactive-mode or provider-specific and do not
 reach Pi Worker. A promptless/no-inference direct RPC session confirmed
 success for `get_state`, `get_available_models`,
-`get_available_thinking_levels` (returned `high`,`max` for Command Code
-DeepSeek), `set_model` (exact provider/id), `set_thinking_level high` followed
+`get_available_thinking_levels` (returned `high`,`max` for the probed
+model), `set_model` (exact provider/id), `set_thinking_level high` followed
 by `get_state` confirmation, and `get_last_assistant_text` returning `data:{}`
 for empty history. Idle `steer` accepted `pi-worker-0.87.0-probe` and emitted
 `queue_update`; `clear_queue` returned that exact steering text and emptied
 the queue; `abort` returned success; the RPC process exited 0. A real
-tool-calling Pi Worker task on `local/ornith-1.5-9b` used `read`, `write`,
+tool-calling Pi Worker task on a local model used `read`, `write`,
 `bash`, and `edit`, passed its `--verify` check and declared writes, and
-completed. This pin change was made by a Pi Worker dogfood task on local Pi
-0.87.0 using paid `opencodex/command-code/deepseek-deepseek-v4-flash`,
-thinking `high`. A Pi Worker candidate built with VerifiedVersion 0.87.0
+completed. A Pi Worker candidate built with VerifiedVersion 0.87.0
 reports `Pi version 0.87.0 is supported` and `ready: yes` from `doctor`,
 `pi-worker models` lists the catalog, and the same bounded
-`local/ornith-1.5-9b` task completed with its `--verify` check passing and no
+local-model task completed with its `--verify` check passing and no
 undeclared writes. No Pi Worker production adaptation was needed.
 
 The surface was re-probed on 2026-09-30 against 0.99.1; 0.87.1 (2026-09-22),
@@ -196,13 +192,13 @@ now disables them too. Measured with a temporary `PI_CODING_AGENT_DIR` whose
 without `--no-extensions` started the server (marker created), and a session
 with Pi Worker's exact launch flags did not (marker absent).
 `pi-worker models --json` returned the identical selector set on 0.87.0 and
-0.99.1 (134 selectors each); the `local` provider comes from `models.json`, not
-from the built-in llama.cpp extension, and is unaffected. A
+0.99.1 (134 selectors each); the local-model provider comes from `models.json`,
+not from the built-in llama.cpp extension, and is unaffected. A
 promptless/no-inference direct RPC session with Pi Worker's launch flags
 confirmed success for `get_state`, `set_model` (exact provider/id),
 `get_available_thinking_levels`, `set_thinking_level high` followed by
 `get_state` confirmation, and `get_last_assistant_text` returning `data:{}` for
-empty history. For Command Code DeepSeek the levels were `low`, `medium`,
+empty history. For the model probed on 0.87.0 the levels were `low`, `medium`,
 `high`, `xhigh`, `max`; 0.87.0 returned the same set on the same day, so the
 difference from the earlier `high`,`max` record comes from the model catalog,
 not from Pi. Idle `steer` accepted `pi-worker-0.99.1-probe`, answered
@@ -216,10 +212,9 @@ Worker: codemode's structured `bash` results apply only to codemode scripts;
 the `RpcClient` listener fix is in the TypeScript client, which Pi Worker does
 not use; `builtin:<name>` naming appears in RPC source info, which Pi Worker
 does not read; session files are now created at the first user message, and Pi
-Worker does not read session files. This pin change was made by a Pi Worker
-dogfood task on local Pi 0.99.1 using
-`opencodex/command-code/deepseek-deepseek-v4-flash`, thinking `high`. No Pi
-Worker production adaptation was needed.
+Worker does not read session files. A real Pi Worker task with thinking
+`high` completed on local Pi 0.99.1. No Pi Worker production adaptation was
+needed.
 
 The surface was re-probed on 2026-10-02 against 1.0.0; 0.99.2 (2026-09-30) and
 1.0.0 (2026-10-01) are covered together, and 0.99.2 was never pinned. Both
@@ -238,9 +233,8 @@ byte-identical to 0.99.1, so the issue #439 reading still holds on 1.0.0.
 1.0.0 on the same day (99 selectors each). The drop from the 134 recorded for
 0.99.1 comes from the provider catalog, not from Pi. A promptless/no-inference
 direct RPC session with Pi Worker's launch flags confirmed success for
-`get_state`, `set_model` (exact provider/id, switching from
-`opencodex/opencode-go/deepseek-v4.1-flash` to
-`opencodex/opencode-go/muse-spark-1.2-contributor`, confirmed by `get_state`),
+`get_state`, `set_model` (exact provider/id, switching from one catalog model
+to another, confirmed by `get_state`),
 `get_available_thinking_levels` (`low`, `medium`, `high`, `xhigh` for that
 model), `set_thinking_level high` followed by `get_state` confirmation, and
 `get_last_assistant_text` returning `data:{}` for empty history. Idle `steer`
@@ -262,9 +256,8 @@ renaming, and `quietStartup` are interactive, codemode, or MCP surfaces, and Pi
 Worker runs `--no-extensions`. 0.99.2 also changed provider retries after an
 unparseable `Retry-After` date from immediate to exponential backoff.
 `@earendil-works/pi-durable`, published alongside 1.0.0, is not a dependency of
-`@earendil-works/pi-coding-agent` and does not change `--mode rpc`. This pin
-change was made by a Pi Worker dogfood task on local Pi 1.0.0 using
-`opencodex/opencode-go/deepseek-v4.1-flash`, thinking `high`. No Pi Worker
+`@earendil-works/pi-coding-agent` and does not change `--mode rpc`. A real
+Pi Worker task with thinking `high` completed on local Pi 1.0.0. No Pi Worker
 production adaptation was needed.
 
 The surface was re-probed on 2026-10-07 against 1.0.4; 1.0.1 (2026-10-03),
@@ -311,7 +304,7 @@ ended early (missing_terminal_event)` on both 1.0.0 and 1.0.4, so the issue
 #439 reading still holds. `pi-worker models --json` returned the identical
 selector set on 1.0.0 and 1.0.4 on the same day (100 selectors each). The
 promptless/no-inference RPC probe described for 1.0.0, now switching to
-`opencodex/opencode-go/muse-spark-1.3-contributor` and steering
+another catalog model and steering
 `pi-worker-1.0.4-probe`, gave responses identical to the same probe on 1.0.0
 the same day, and the RPC process exited 0. MCP isolation was re-measured with
 the 1.0.0 recipe on both installations: the server started without
@@ -324,10 +317,9 @@ reach Pi Worker: MCP project overrides, MCP OAuth and client registration, tool
 renderers, Cloudflare classifiers, the Nix flake, codemode image handling, the
 Azure provider rename and Foundry deployments, `samplingParamsByThinkingLevel`,
 owner-only output-file permissions, and editor key changes are interactive,
-codemode, MCP, or provider-configuration surfaces. This pin change was made by
-a Pi Worker dogfood task on local Pi 1.0.4 using
-`opencodex/opencode-go/deepseek-v4.1-flash`, thinking `high`. No Pi Worker
-production adaptation was needed.
+codemode, MCP, or provider-configuration surfaces. A real Pi Worker task with
+thinking `high` completed on local Pi 1.0.4. No Pi Worker production
+adaptation was needed.
 
 The surface was re-probed on 2026-11-13 against 1.5.2; 1.1.0 (2026-10-07),
 1.2.0 (2026-10-12), 1.3.0 (2026-10-15), 1.4.0 (2026-10-21), 1.5.0
