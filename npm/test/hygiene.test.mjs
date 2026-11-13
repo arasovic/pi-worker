@@ -124,6 +124,8 @@ test("rejects model selectors in tracked content", (t) => {
     joinParts("vendor", "/model-4o-mini"),
     joinParts("Use vendor", "/model-1.2."),
     joinParts("vendor", "/Model-7B"),
+    joinParts("run", "/vendor/name-2"),
+    joinParts("acme", "/vendor/name-2"),
   ];
   for (const selector of selectors) {
     assertRejected({ "notes.md": `${selector}\n` }, "notes.md", "H012", t);

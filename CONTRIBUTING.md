@@ -16,7 +16,7 @@ Run checks appropriate to the changed surface:
 
 - `npm run verify` covers formatting (`gofmt`), vetting (`go vet ./...`), the Go suite with race detection (`go test -race -count=1 ./...`), the JavaScript suite (`npm test`), and the four project checks (`check:rules`, `check:notices`, `check:piversion`, `check:hygiene`).
 - Focused per-check commands: `npm run check:gofmt`, `npm run check:govet`, `npm run check:gotest`, `npm run check:rules`, `npm run check:notices`, `npm run check:piversion`, and `npm run check:hygiene`.
-- `check:hygiene` rule `H012` rejects model selectors (`provider/name-<number>`) in tracked files. Name test models `acme/m-1`, `acme/m-2`, and so on. If it flags something that is not a model, such as a branch name, rephrase it or add its first segment to `SELECTOR_PREFIX_ALLOWLIST` in `npm/scripts/check-hygiene.mjs`.
+- `check:hygiene` rule `H012` rejects model selectors (`provider/name-<number>`) in tracked files. Name test models `acme/m-1`, `acme/m-2`, and so on. If it flags something that is not a model, such as a branch name or a path, rephrase it or add its first segment to `SELECTOR_PREFIX_ALLOWLIST` in `npm/scripts/check-hygiene.mjs`; this exempts only two-segment tokens, `<prefix>/<name>`, and a token with more segments under that prefix is still rejected. Routed `acme` fixtures with more than two segments should keep a last segment without a hyphen and a number, like the existing `acme/upstream/model`.
 - `verify` does not cover `go build ./...`, which CI runs, or `git diff --check`, which you run before every commit.
 - Install the pinned npm dependencies in the checkout before `npm test` with
   `npm ci --ignore-scripts`; never run the postinstall script locally, it
