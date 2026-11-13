@@ -26,7 +26,7 @@ func validStartRequest() supervisorStartRequest {
 		tasks: []run.Task{
 			{
 				Prompt:        "first task",
-				Model:         "anthropic/claude-4",
+				Model:         "acme/m-1",
 				ThinkingLevel: pi.ThinkingMedium,
 				Writes:        run.WriteDeclaration{Declared: true, Paths: []string{"a.txt"}},
 				Data: []run.DataFile{
@@ -36,7 +36,7 @@ func validStartRequest() supervisorStartRequest {
 			},
 			{
 				Prompt: "second task",
-				Model:  "openai/gpt-5",
+				Model:  "acme/m-2",
 				// Declared with the empty set: this task writes nothing,
 				// while task one keeps the run's declaration uniform.
 				Writes: run.WriteDeclaration{Declared: true},
@@ -59,7 +59,7 @@ func validStartRequest() supervisorStartRequest {
 // transcript kept.
 func minimalStartRequest() supervisorStartRequest {
 	req := validStartRequest()
-	req.tasks = []run.Task{{Prompt: "p", Model: "anthropic/claude-4"}}
+	req.tasks = []run.Task{{Prompt: "p", Model: "acme/m-1"}}
 	req.verify = nil
 	req.executionTimeout = time.Hour
 	req.worktree = nil
@@ -76,7 +76,7 @@ func minimalStartRequestJSON() supervisorStartRequestJSON {
 		RunID:            "20250102T101112Z-4242",
 		AcceptedAt:       time.Date(2025, 1, 2, 10, 11, 12, 0, time.UTC),
 		Workspace:        "ws",
-		Tasks:            []taskJSON{{Prompt: "p", Model: "anthropic/claude-4"}},
+		Tasks:            []taskJSON{{Prompt: "p", Model: "acme/m-1"}},
 		ExecutionTimeout: "1h0m0s",
 		BackgroundRoot:   "/bg",
 		AdmissionRoot:    "/adm",
@@ -107,7 +107,7 @@ func TestSupervisorStartRequestEncodeMinimalExactJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	want := `{"schemaVersion":1,"runId":"20250102T101112Z-4242","acceptedAt":"2025-01-02T10:11:12Z","workspace":"ws","tasks":[{"prompt":"p","model":"anthropic/claude-4","writesDeclared":false}],"executionTimeout":"1h0m0s","backgroundRoot":"/bg","admissionRoot":"/adm","maxModelWorkers":2,"piExecutable":"/usr/bin/pi","debug":false}`
+	want := `{"schemaVersion":1,"runId":"20250102T101112Z-4242","acceptedAt":"2025-01-02T10:11:12Z","workspace":"ws","tasks":[{"prompt":"p","model":"acme/m-1","writesDeclared":false}],"executionTimeout":"1h0m0s","backgroundRoot":"/bg","admissionRoot":"/adm","maxModelWorkers":2,"piExecutable":"/usr/bin/pi","debug":false}`
 	if string(encoded) != want {
 		t.Fatalf("encoded JSON mismatch:\n got: %s\nwant: %s", encoded, want)
 	}
@@ -161,10 +161,10 @@ func TestSupervisorStartRequestRoundTrip(t *testing.T) {
 	if first.Prompt != big || second.Prompt != "second task" {
 		t.Fatalf("task prompts not preserved in order")
 	}
-	if first.Model != "anthropic/claude-4" || first.ThinkingLevel != pi.ThinkingMedium {
+	if first.Model != "acme/m-1" || first.ThinkingLevel != pi.ThinkingMedium {
 		t.Fatalf("task 1 model/thinking mismatch: %q %q", first.Model, first.ThinkingLevel)
 	}
-	if second.Model != "openai/gpt-5" || second.ThinkingLevel != "" {
+	if second.Model != "acme/m-2" || second.ThinkingLevel != "" {
 		t.Fatalf("task 2 model/thinking mismatch: %q %q", second.Model, second.ThinkingLevel)
 	}
 
@@ -253,7 +253,7 @@ func TestSupervisorStartRequestDecodeRejects(t *testing.T) {
 
 	// The content value is invalid base64; decoding fails on it before
 	// any domain validation runs.
-	malformedBase64 := []byte(`{"schemaVersion":1,"tasks":[{"prompt":"p","model":"anthropic/claude-4","writesDeclared":false,"data":[{"path":"f.bin","content":"@@@"}]}]}`)
+	malformedBase64 := []byte(`{"schemaVersion":1,"tasks":[{"prompt":"p","model":"acme/m-1","writesDeclared":false,"data":[{"path":"f.bin","content":"@@@"}]}]}`)
 
 	tests := []struct {
 		name    string
@@ -297,7 +297,7 @@ func TestSupervisorStartRequestEncodeValidation(t *testing.T) {
 		{"too many tasks", func(r *supervisorStartRequest) {
 			tasks := make([]run.Task, run.MaxTasks+1)
 			for i := range tasks {
-				tasks[i] = run.Task{Prompt: "p", Model: "anthropic/claude-4"}
+				tasks[i] = run.Task{Prompt: "p", Model: "acme/m-1"}
 			}
 			r.tasks = tasks
 		}, "at most 3 tasks are supported"},
