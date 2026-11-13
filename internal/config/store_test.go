@@ -46,7 +46,7 @@ func TestValidate(t *testing.T) {
 		{name: "empty model", cfg: Config{SchemaVersion: 2, MaxModelWorkers: 3}, wantErr: false},
 		{name: "empty model string", cfg: Config{SchemaVersion: 2, DefaultModel: "", MaxModelWorkers: 3}, wantErr: false},
 		{name: "valid selector", cfg: Config{SchemaVersion: 2, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: false},
-		{name: "valid selector with dashes", cfg: Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3}, wantErr: false},
+		{name: "valid selector with dashes", cfg: Config{SchemaVersion: 2, DefaultModel: "acme/m-1-mini", MaxModelWorkers: 3}, wantErr: false},
 		{name: "schema zero", cfg: Config{SchemaVersion: 0, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: true},
 		{name: "schema negative", cfg: Config{SchemaVersion: -1, MaxModelWorkers: 3}, wantErr: true},
 		{name: "schema one", cfg: Config{SchemaVersion: 1, DefaultModel: "provider/model", MaxModelWorkers: 3}, wantErr: true},
@@ -98,8 +98,8 @@ func TestLoad(t *testing.T) {
 		},
 		{
 			name:    "v1 full",
-			content: `{"schemaVersion":1,"defaultModel":"openai/gpt-4o-mini"}`,
-			want:    Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3},
+			content: `{"schemaVersion":1,"defaultModel":"acme/m-1-mini"}`,
+			want:    Config{SchemaVersion: 2, DefaultModel: "acme/m-1-mini", MaxModelWorkers: 3},
 		},
 		{
 			name:    "v1 trailing newline",
@@ -114,8 +114,8 @@ func TestLoad(t *testing.T) {
 		},
 		{
 			name:    "v2 full",
-			content: `{"schemaVersion":2,"defaultModel":"openai/gpt-4o-mini","maxModelWorkers":5}`,
-			want:    Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 5},
+			content: `{"schemaVersion":2,"defaultModel":"acme/m-1-mini","maxModelWorkers":5}`,
+			want:    Config{SchemaVersion: 2, DefaultModel: "acme/m-1-mini", MaxModelWorkers: 5},
 		},
 		// Schema 2 round trip.
 		{
@@ -291,7 +291,7 @@ func TestLoadRefusesDanglingSymlinkedConfigPath(t *testing.T) {
 func TestLoadV1BytesUntouched(t *testing.T) {
 	// Write exact schema-1 bytes. Load returns the effective schema-2/default
 	// configuration, but the file on disk must not be rewritten.
-	want := `{"schemaVersion":1,"defaultModel":"openai/gpt-4o-mini"}`
+	want := `{"schemaVersion":1,"defaultModel":"acme/m-1-mini"}`
 	dir := t.TempDir()
 	path := writeConfig(t, dir, "config.json", want)
 
@@ -299,7 +299,7 @@ func TestLoadV1BytesUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(%q) error: %v", path, err)
 	}
-	if cfg != (Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3}) {
+	if cfg != (Config{SchemaVersion: 2, DefaultModel: "acme/m-1-mini", MaxModelWorkers: 3}) {
 		t.Fatalf("Load(%q) = %+v, want schema 2, default maxModelWorkers 3", path, cfg)
 	}
 
@@ -333,7 +333,7 @@ func TestSaveRoundTrip(t *testing.T) {
 func TestSaveCreatesMissingParents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deep", "nested", "dirs", "config.json")
-	want := Config{SchemaVersion: 2, DefaultModel: "openai/gpt-4o-mini", MaxModelWorkers: 3}
+	want := Config{SchemaVersion: 2, DefaultModel: "acme/m-1-mini", MaxModelWorkers: 3}
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save(%q) error: %v", path, err)
 	}

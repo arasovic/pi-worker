@@ -117,6 +117,35 @@ test("rejects credential names, private markers, internal material, and package 
   for (const [entries, path, rule] of cases) assertRejected(entries, path, rule, t);
 });
 
+test("rejects model selectors in tracked content", (t) => {
+  const selectors = [
+    joinParts("vendor", "/family-1.2"),
+    joinParts("gateway", "/plan/model-v4.1-fast"),
+    joinParts("vendor", "/model-4o-mini"),
+    joinParts("Use vendor", "/model-1.2."),
+  ];
+  for (const selector of selectors) {
+    assertRejected({ "notes.md": `${selector}\n` }, "notes.md", "H012", t);
+  }
+});
+
+test("accepts fixture selectors, run branches, package names, URLs, and versioned file paths", (t) => {
+  const root = fixture(t, {
+    "notes.md": [
+      "acme/m-1",
+      "acme/m-1-mini",
+      "run/issue-204",
+      "@scope/name-1.2.3",
+      "https://example.invalid/a/b-1",
+      "dist/pi-worker-0.1.0.tgz",
+      "dir/case-1.json",
+      "provider/model-id",
+    ].join("\n") + "\n",
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("reports only the relative path and stable rule ID", (t) => {
   const secretText = joinParts("do", "-not-report-this");
   const root = fixture(t, { "notes.txt": `${joinParts("cred", "ential=")}${secretText}\n` });

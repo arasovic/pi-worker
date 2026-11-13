@@ -40,6 +40,10 @@ const CREDENTIAL_NAME = /(?:^|[/.])(?:.*\.env(?:\..*)?|credentials?(?:\..*)?|id_
 const ARCHIVE_NAME = /\.(?:tgz|tar|tar\.gz|zip|gz|bz2|xz|7z|rar)$/i;
 const EXECUTABLE_NAME = /\.(?:exe|dll|so|dylib|bin|appimage)$/i;
 const GIT_OUTPUT_LIMIT = 4096;
+// shortcut: matches only `provider/…/name-<number>` selectors; widen the shape when a selector without a hyphen-number slips through.
+const MODEL_SELECTOR = /(?<![\w./@:-])([a-z][a-z0-9-]*)(?:\/[a-z0-9][a-z0-9.-]*)*\/[a-z](?=[a-z0-9.-]*-v?\d)[a-z0-9.-]*(?<!\.[a-z]+)(?![\w/@.-])/g;
+// `acme` is the test fixture provider; `run/<name>` is Pi Worker's own worktree branch.
+const SELECTOR_PREFIX_ALLOWLIST = new Set(["acme", "run"]);
 
 class HygieneError extends Error {
   constructor(path, rule) {
@@ -178,6 +182,13 @@ function hasDirectory(relativePath, directory) {
   return relativePath === directory || relativePath.startsWith(`${directory}/`) || relativePath.includes(`/${directory}/`);
 }
 
+function hasModelSelector(bytes) {
+  for (const match of bytes.toString("latin1").matchAll(MODEL_SELECTOR)) {
+    if (!SELECTOR_PREFIX_ALLOWLIST.has(match[1])) return true;
+  }
+  return false;
+}
+
 function checkPath(relativePath) {
   if (PRIVATE_PATH_MARKERS.some((marker) => relativePath.includes(marker))) return "H002";
   if (CREDENTIAL_NAME.test(relativePath)) return "H001";
@@ -194,6 +205,7 @@ function checkContent(relativePath, bytes) {
   }
   if (!CODEX_CONTENT_ALLOWLIST.has(relativePath) && hasBytes(bytes, CODEX_MARKER)) return "H002";
   if (CREDENTIAL_MARKERS.some((marker) => hasBytes(bytes, marker))) return "H007";
+  if (hasModelSelector(bytes)) return "H012";
   return undefined;
 }
 
