@@ -4,7 +4,7 @@
 
 Observed binary: a local `pi` executable resolved from `PATH`.
 
-Observed version: `1.0.4`.
+Observed version: `1.5.2`.
 
 Evidence was collected on 2026-08-10 from `pi --version`, `pi --help`, and
 `pi auth --help`. The installed package source and bundled RPC documentation
@@ -329,9 +329,70 @@ a Pi Worker dogfood task on local Pi 1.0.4 using
 `opencodex/opencode-go/deepseek-v4.1-flash`, thinking `high`. No Pi Worker
 production adaptation was needed.
 
+The surface was re-probed on 2026-11-13 against 1.5.2; 1.1.0 (2026-10-07),
+1.2.0 (2026-10-12), 1.3.0 (2026-10-15), 1.4.0 (2026-10-21), 1.5.0
+(2026-11-02), 1.5.1 (2026-11-09), and 1.5.2 (2026-11-10) are covered
+together, and 1.1.0 through 1.5.1 were never pinned. Both local global
+installations (`/opt/homebrew/bin/pi` and the NVM `pi` path) report exactly
+1.5.2; they were installed with `npm i -g
+@earendil-works/pi-coding-agent@1.5.2`. The package still ships no
+`npm-shrinkwrap.json`, but its `@earendil-works/*` dependencies are now exact
+1.5.2 pins rather than `^` ranges; both installations resolved `pi-agent-core`,
+`pi-ai`, `pi-codemode`, `pi-mcp`, `pi-schema`, `pi-telemetry`, and `pi-tui` to
+1.5.2, and `chord` is no longer a dependency. A copy of the 1.5.2 installation
+with every dependency removed gave the same promptless RPC probe output and MCP
+isolation result as the full installation, and passed `npm run
+check:livepiprobe` 2/2; the full installation also passed 2/2. Thus
+`pi --version` still identifies the Pi code Pi Worker runs. Every launch flag
+Pi Worker passes remains in `pi --help`, and built-in tool names are unchanged.
+`--tools` also accepts `+name` and `-name` entries to add to or remove from
+the default tools; a list without them remains an allowlist, and Pi Worker's
+allowlists contain neither. Other help changes describe session, `auth`,
+`mcp`, and `--export` options Pi Worker does not pass. Package exports `.` and
+`./rpc-entry` are unchanged, source-only `./client` and
+`./experimental/plugin` entries were removed, and `bin` is identical.
+`dist/modes/rpc/` `rpc-types` and `jsonl` are byte-identical to 1.0.4. The
+`rpc-mode.js` changes only in shutdown handling (1.5.1): an extension shutdown
+request now waits until input is attached, no command is running, and the
+session is idle; signal handlers remain registered during shutdown, so one
+SIGTERM or SIGHUP no longer forces an exit and a repeated one does; stdin EOF
+still shuts Pi down. Pi Worker closes stdin, kills the process tree after its
+grace period, and sends no SIGTERM. `pi-worker run --timeout 3s` on 1.5.2
+exited 7 with outcome `timed-out` and no leftover Pi process. `get_state`
+returns the same fields as on 1.0.4. Additive fields are `aborted` on
+`agent_settled` (1.1.0), optional `durationMs` on tool results and assistant
+messages, optional `argumentsError` on tool calls, and optional
+`usage.cost.totalFromProvider` (1.5.0). `usage.cost.total` may now be the
+provider-billed cost rather than the catalog estimate; Pi Worker's usage
+passthrough copies it as Pi reports it. The `cache_warm` usage entry shape is
+unchanged. `RETRYABLE_PROVIDER_ERROR_PATTERN` gained transient phrases such as
+`server_busy`, `upstream_stream_read_error`, and `stream disconnected before
+completion`, and now matches status codes as whole numbers.
+`isRetryableAssistantError` still returns false for `Upstream incomplete:
+missing_terminal_event` and `upstream stream ended early
+(missing_terminal_event)` on 1.5.2, so the issue #439 reading still holds.
+`pi-worker models --json` returned the identical selector set on 1.0.4 and
+1.5.2 the same day (121 selectors each). The promptless/no-inference RPC probe
+described for 1.0.0, now switching between two catalog models and steering
+`pi-worker-1.5.2-probe`, gave responses identical to the same probe on 1.0.4
+the same day, and the RPC process exited 0. MCP isolation, re-measured with
+the 1.0.0 recipe on the full installation and dependency-free copy, started
+the server without `--no-extensions` and did not start it with Pi Worker's
+exact launch flags. `pi-worker doctor` on 1.5.2 before the pin moved reported
+an unverified version warning with `ready: yes`. The remaining 1.1.0 through
+1.5.2 changes do not reach Pi Worker: the interactive TUI, extension API, MCP
+OAuth, codemode, provider catalogs and default models, `pi update`,
+tool-argument validation through `@earendil-works/pi-schema` (a 1.5.0
+breaking change for extension tool schemas), and the `cacheWarming` default `idle`,
+which warms caches between agent runs while the Pi process lives; Pi Worker's
+Pi process exits when the run ends. The built-in `grep` tool now resolves
+`glob` relative to `path` and takes context lines from ripgrep; that is tool
+behaviour the model sees, not an RPC surface Pi Worker parses. No Pi Worker
+production adaptation was needed.
+
 ## Compatibility gate
 
-**Gate result: pass for Pi 1.0.4.** The expected `--mode rpc` surface and all
+**Gate result: pass for Pi 1.5.2.** The expected `--mode rpc` surface and all
 required flags are present. Pin or re-probe this exact surface before allowing
 an unpinned Pi upgrade, because RPC command names and event shapes are not
 guaranteed stable by this document.
@@ -497,7 +558,7 @@ The `get_available_models` success container is exactly
 data:{models: Model[]}}`. The `set_model` success container is exactly
 `{type:"response", command:"set_model", success:true, data:Model}`. The
 full version-pinned upstream `Model` declaration is in
-`@earendil-works/pi-coding-agent@1.0.4/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
+`@earendil-works/pi-coding-agent@1.5.2/node_modules/@earendil-works/pi-ai/dist/types.d.ts`;
 it is not duplicated here because v0 must not validate or reconstruct it.
 
 V0 decodes each catalog entry as this projection only:
@@ -519,7 +580,7 @@ null, mistyped, or mismatched confirmation as a protocol violation: the
 response `provider` and `id` strings must exactly equal the requested catalog
 pair. Success without that confirmation is never accepted.
 
-Pi 1.0.4 observes the `get_available_thinking_levels` success container as
+Pi 1.5.2 observes the `get_available_thinking_levels` success container as
 `data:{levels: ThinkingLevel[]}`, where the levels are the active model's
 supported subset of the recognized seven levels (`off`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, `max`), not always all seven. V0 requires a non-null
@@ -528,13 +589,13 @@ levels). A well-formed `set_thinking_level success:false` is the
 only setter rejection that worker policy may recover from; transport and
 malformed responses remain failures.
 
-Pi 1.0.4 observes the `get_state` success container exactly as
+Pi 1.5.2 observes the `get_state` success container exactly as
 `{type:"response", command:"get_state", success:true, data:RpcSessionState}`.
 V0 projects only `model.provider`, `model.id`, and `thinkingLevel`. All are
 required after model activation; the model must equal the selected catalog
 entry and thinking must be one recognized value. The full version-pinned
 upstream declaration is in
-`@earendil-works/pi-coding-agent@1.0.4/dist/modes/rpc/rpc-types.d.ts`; V0
+`@earendil-works/pi-coding-agent@1.5.2/dist/modes/rpc/rpc-types.d.ts`; V0
 does not reconstruct or re-serialize the remaining state.
 
 ### V0 outbound RPC allowlist
@@ -556,7 +617,7 @@ response correlation, it emits only these request shapes:
 | `get_last_assistant_text` | `type` |
 
 Pi-worker must reject every other RPC type. In particular,
-it must reject direct RPC `bash`: Pi 1.0.4 dispatches that command directly,
+it must reject direct RPC `bash`: Pi 1.5.2 dispatches that command directly,
 so it bypasses the CLI `--tools` allowlist.
 
 ### Debug observability
@@ -642,7 +703,7 @@ into the fixed continuation prompt, the warning, or the debug stream.
 
 ## Tool semantics
 
-Built-in tool names reported by `pi --help` as of Pi 1.0.4 are `read`,
+Built-in tool names reported by `pi --help` as of Pi 1.5.2 are `read`,
 `bash`, `edit`, `write`, `grep`, `find`, `ls`, and `powershell`. Pi-worker
 intentionally continues enabling only its established seven
 (`read,grep,find,ls,edit,write,bash`) and does not enable `powershell` in
